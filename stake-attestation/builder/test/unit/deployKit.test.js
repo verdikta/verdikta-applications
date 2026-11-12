@@ -65,7 +65,8 @@ test('check-scan-limits runs the scan\'s own sandbox, the pinned gitleaks image,
   assert.equal(run[0], 'run');
   // the scan's flags, exactly: only the container's name and the command differ
   const normalize = (args) => args.map((a, i) => (args[i - 1] === '--name' ? '<name>' : a)).slice(0, args.indexOf(SCAN_TOOLS.gitleaks.image) + 1);
-  const scanArgs = sandboxRunArgs({ image: SCAN_TOOLS.gitleaks.image, platform: 'linux/amd64', name: 'x', label: 'io.verdikta.builder=1', argv: ['true'] });
+  // as the scan's runTool asks for them (src/scan.js): stdin, no logging driver, the default limits
+  const scanArgs = sandboxRunArgs({ image: SCAN_TOOLS.gitleaks.image, platform: 'linux/amd64', name: 'x', label: 'io.verdikta.builder=1', argv: ['true'], interactive: true, keepLogs: false });
   assert.deepEqual(normalize(run), normalize(scanArgs));
   assert.deepEqual(run.slice(run.indexOf(SCAN_TOOLS.gitleaks.image) + 1), ['cat', '/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory.swap.max', '/sys/fs/cgroup/pids.max', '/sys/fs/cgroup/cpu.max']);
   assert.deepEqual(docker.calls[2].slice(0, 3), ['rm', '--force', '--volumes'], 'the container removed, as the scan removes it');

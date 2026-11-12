@@ -76,7 +76,6 @@ test.describe('the deploy kit\'s headers', () => {
     await expect.poll(() => cspWatch.violations.some((v) => v.directive === 'connect-src') && cspWatch.violations.some((v) => v.console)).toBe(true);
     cspWatch.violations.length = 0; // made on purpose
   });
-
 });
 
 function reports() {

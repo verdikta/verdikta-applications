@@ -349,9 +349,10 @@ test('the unit runs the server as an unprivileged user, with its environment in 
 test('the unit\'s state directory is the template\'s SA_DATA_DIR, and its paths are the template\'s', () => {
   const u = unit();
   const env = parseEnvFile(read(FILES.serverEnv));
-  const state = u.get('StateDirectory')[0];
-  assert.ok(env.get('SA_DATA_DIR').startsWith(`/var/lib/${state}/`), 'SA_DATA_DIR under the unit\'s StateDirectory');
-  assert.ok(env.get('SA_BUILDER_WORK_DIR').startsWith(`/var/lib/${state}/`));
+  const [state, ...more] = u.get('StateDirectory')[0].split(/\s+/);
+  assert.ok(env.get('SA_DATA_DIR').startsWith(`/var/lib/${state}/`), 'SA_DATA_DIR under the unit\'s StateDirectory (the server makes it)');
+  // the server makes its build folders inside SA_BUILDER_WORK_DIR, and does not make that one: systemd does
+  assert.ok(more.map((d) => `/var/lib/${d}`).includes(env.get('SA_BUILDER_WORK_DIR')), 'SA_BUILDER_WORK_DIR is a StateDirectory of the unit');
   assert.equal(env.get('SA_BUILDER_CONFIG'), `${path.posix.dirname(u.get('EnvironmentFile')[0])}/builder.json`);
 });
 
@@ -414,7 +415,7 @@ test('README "Running the site": the host, the launch order of owner decision Q5
   const steps = ['deploy_testnet.sh', 'server.env', 'systemctl enable --now verdikta-verifiers', 'required reviewers on', 'turn off required reviewers', 'fixWindowDays', 'npm run smoke'];
   let at = -1;
   for (const step of steps) {
-    const i = s.indexOf(step, at + 1);
+    const i = s.toLowerCase().indexOf(step.toLowerCase(), at + 1);
     assert.ok(i > at, `launch order: "${step}" after the step before it`);
     at = i;
   }

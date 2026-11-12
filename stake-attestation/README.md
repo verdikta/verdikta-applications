@@ -74,6 +74,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 | `shared/` | Code shared by the packages (the banned-words helper, the rules of the project's proof, the warning every listing page carries, "did the builder sign this listing") and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8); the listing's proof, refused before anything is built (P9). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
 | `e2e/` | The scripted local end-to-end round (P7): every piece together, with nothing live. See "The local round". | `npm test`, `npm run round` |
+| `deploy/` | The site's deploy kit (P23): the nginx site config and its headers file, the server's systemd unit and environment template, the client's build environment, the scan's builder config and its limits check. Files, not a package. See "Running the site". | `shared/test/repo/deploy.test.js`, `server/test/deployEnv.test.js`, `builder/test/unit/deployKit.test.js`, `npm run test:e2e:csp` in `client/`, `npm run smoke` in `onchain/` |
 | `docs/` | `BUILD_PLAN.md`, `control-proof.md` (the project's proof: what a listing needs, every refusal, what counts). | |
 
 Ports 5009 and 5176 are the next free ones after the apps in the repository's
@@ -284,6 +285,210 @@ writes `deployments/<chainId>-<network>.json` and the merged ABI, and verifies
 on BaseScan when `ETHERSCAN_API_KEY` is set (`deploy/verify.js` retries).
 `npx hardhat run deploy/01_deploy_stake_attestation.js` with no network
 deploys on the in-process network against the mock aggregator, as a test.
+
+## Running the site
+
+The testnet site runs at https://verifiers.verdikta.org on one Linux host the owner commissions, from the files in
+`deploy/` (node P23). Nothing in this repository names the host: its address, provider and accounts are the owner's.
+nginx holds the certificate, serves the client's build and sends `/api` to the server on 127.0.0.1:5009, which runs
+as a systemd unit. Builds and signatures happen in Verdikta's signing workflow (`SA_BUILD_BACKEND=workflow`,
+[`docs/builder-kms-signing.md`](docs/builder-kms-signing.md)); of the builder, the host runs only the baseline scan.
+The kit deploys nothing by itself.
+
+| File | On the host | |
+|---|---|---|
+| `deploy/nginx/verifiers.verdikta.org.conf` | `/etc/nginx/sites-available/verifiers.verdikta.org`, linked from `sites-enabled/` | HTTP to HTTPS, certbot's certificate, the client's build, `/api` to the server, the body, time and rate limits |
+| `deploy/nginx/verifiers.verdikta.org-headers.conf` | `/etc/nginx/snippets/` | the Content-Security-Policy and the other headers, the one file for them |
+| `deploy/systemd/verdikta-verifiers.service` | `/etc/systemd/system/` | the server, as the unprivileged user `verifiers`, restarted on failure |
+| `deploy/systemd/user@.service.d/delegate.conf` | `/etc/systemd/system/user@.service.d/` | cgroup v2 delegation, so rootless Docker applies the scan's limits |
+| `deploy/server.env.example` | `/etc/verdikta-verifiers/server.env` (root:verifiers, 0640) | the server's environment: every variable it reads, for Base Sepolia, production trust, the workflow backend and Pinata, with the secrets left empty |
+| `deploy/builder.json` | `/etc/verdikta-verifiers/builder.json` | the builder config the scan reads |
+| `deploy/client.env` | `client/.env.production.local` in the checkout | the client's build: Base Sepolia, its RPC endpoint and its IPFS gateway |
+| `deploy/check-scan-limits.mjs` | run from the checkout | whether the scan's memory, pids and cpu limits hold under the host's Docker |
+
+### The host
+
+What the code needs:
+
+- **Linux on amd64, with systemd and cgroup v2**: Ubuntu 24.04 LTS or Debian 12, whose paths the kit uses. amd64,
+  because the baseline scan pulls and runs `linux/amd64` images, the class platform.
+- **Node.js 22 LTS** at `/usr/bin/node` (the packages need 20 or later; CI runs 22), from nodejs.org's releases: the
+  distribution's is older.
+- **git**: the server's control check and the scan's fetch run the `git` binary (`builder/src/git.js`).
+- **Rootless Docker** for the service user, with cgroup v2 delegation of `cpu`, `memory` and `pids`
+  (`delegate.conf`). The scan (`builder/src/scan.js`, `builder/src/docker.js`) pulls Semgrep and gitleaks by digest
+  from Docker Hub and runs each with `--network none --read-only --cap-drop ALL --security-opt no-new-privileges
+  --user 10001`, 4096 MB, 2 CPUs and 4096 pids, under the daemon's default runtime: it needs neither gVisor nor the
+  code-runner. The user is not in the `docker` group, which would make it root's equal; the scan reaches the user's
+  own daemon through `DOCKER_HOST=unix:///run/user/<uid>/docker.sock`, passed to it by name
+  (`SA_BUILDER_SCAN_ENV=DOCKER_HOST`). With the workflow backend the build and the listing check run in Actions, so the
+  host never runs a maker's setup or the code-runner, and never contacts GHCR.
+- **nginx and certbot**, the distribution's.
+- **Disk**: the scan's images (Semgrep about 1.6 GB) in the user's Docker storage; `SA_BUILDER_WORK_DIR` for one build
+  at a time, which holds the listed commit's objects for the control check and the scan (at most 256 MiB,
+  `SA_CONTROL_CHECK_MAX_BYTES`) and the signed artifact the workflow hands back (at most 64 MiB,
+  `SA_BUILD_ARTIFACT_MAX_BYTES`); `SA_DATA_DIR`, the indexer's `state.json` (every event of the deployment, a few MB at
+  launch and growing with it), the build budget's counts and a small lock file per start. 20 GB free leaves room.
+- **Outbound HTTPS** to `api.github.com` and GitHub Actions' artifact storage (the workflow backend), the git hosts in
+  `SA_CONTROL_GIT_HOSTS`, Docker Hub, the pinning service's API, a Base Sepolia RPC endpoint (`SA_RPC_URL`), the IPFS
+  gateways (`@verdikta/common`'s list and `SA_IPFS_GATEWAYS`), Let's Encrypt, the distribution's package mirrors and
+  npm. Inbound, 80 and 443 only: 5009 stays on loopback.
+
+Rootless Docker without delegation drops a container's limits with a warning and runs it anyway, so check that the
+scan's hold once Docker is set up, and after any change to it:
+
+```bash
+sudo -u verifiers DOCKER_HOST=unix:///run/user/$(id -u verifiers)/docker.sock \
+  node /opt/verdikta-verifiers/stake-attestation/deploy/check-scan-limits.mjs
+```
+
+It pulls the scan's pinned gitleaks image, runs it exactly as the scan runs a tool, reads the container's
+`memory.max`, `memory.swap.max`, `pids.max` and `cpu.max`, and exits 0 only when each is the limit the scan's flags
+set (`memory.max` 4294967296). By hand, for memory alone: `docker run --rm --memory 4096m <the image> cat
+/sys/fs/cgroup/memory.max` prints 4294967296, and `max` when the limit was dropped.
+
+### The launch order
+
+1. **Deploy the contract**, from a checkout of the release commit, on the machine that holds the deployer's key (not
+   the host):
+
+   ```bash
+   cd stake-attestation/onchain && npm ci
+   export PRIVATE_KEY=…   # the deployer's; in the shell, never in a file in the repository
+   VERDIKTA_AGGREGATOR_BASE_SEPOLIA=0xe8a385E473EA710c5a88Cc72681a16a26fe380e4 \
+   SA_INITIAL_OWNER=<the owner> SA_FEE_RECIPIENT=<the fee recipient> SA_LISTING_FEE_WEI=100000000000000 \
+     ./deploy_testnet.sh
+   ```
+
+   The listing fee, 0.0001 ETH per 30 days, is a testnet launch value (owner decision Q76), revisited before mainnet.
+   The script writes `deployments/84532-base_sepolia.json` (the address and `deploymentBlock`) and the merged ABI
+   beside it; keep both, for step 7.
+2. **Fill the env file.** On the host: the release checkout (owned by root, read by the service user), a normal user
+   (so it gets the subordinate ids rootless Docker needs), its Docker, and the config.
+
+   ```bash
+   sudo git clone https://github.com/verdikta/verdikta-applications /opt/verdikta-verifiers
+   sudo git -C /opt/verdikta-verifiers checkout <the release commit>
+   cd /opt/verdikta-verifiers/stake-attestation
+   sudo useradd --create-home --shell /usr/sbin/nologin verifiers
+   sudo install -D -m 0644 deploy/systemd/user@.service.d/delegate.conf /etc/systemd/system/user@.service.d/delegate.conf
+   sudo systemctl daemon-reload
+   sudo loginctl enable-linger verifiers   # its user manager, and so its Docker, starts at boot
+   # Docker Engine with its rootless extras and uidmap, from Docker's apt repository; then, as the user:
+   sudo -u verifiers XDG_RUNTIME_DIR=/run/user/$(id -u verifiers) dockerd-rootless-setuptool.sh install
+   sudo systemctl disable --now docker.service docker.socket   # nothing here runs containers as root
+   sudo install -d -m 0750 -o root -g verifiers /etc/verdikta-verifiers
+   sudo install -m 0640 -o root -g verifiers deploy/server.env.example /etc/verdikta-verifiers/server.env
+   sudo install -m 0644 deploy/builder.json /etc/verdikta-verifiers/builder.json
+   ```
+
+   Then fill in the empty settings of `server.env`; a comment above each says where it comes from: the address and
+   block from step 1, a Base Sepolia RPC endpoint, the keeper's key (an account of its own with a little Base Sepolia
+   ETH for gas), the caller repository and its Actions token (`docs/builder-kms-signing.md`, the owner's steps 4 and
+   6), the Pinata JWT, and `DOCKER_HOST` with the user's uid. Run `check-scan-limits.mjs` (above). The badge floor
+   (`SA_BADGE_FLOOR_WEI=10000000000000000`, 0.01 ETH) and the under-staked share (`SA_UNDER_STAKED_RATIO_BPS=1000`, 10%)
+   are filled in: testnet launch values (Q76), revisited before mainnet. `SA_ETH_USD_FEED` is Chainlink's ETH / USD
+   on Base Sepolia, from Chainlink's data feeds documentation. `builder.json` names a code-runner the scan never calls:
+   the builder's config reader requires one.
+3. **Start the server**, in `/opt/verdikta-verifiers/stake-attestation`, once verifiers.verdikta.org resolves to the
+   host:
+
+   ```bash
+   (cd server && sudo npm ci --omit=dev --ignore-scripts) && (cd builder && sudo npm ci --omit=dev --ignore-scripts)
+   sudo cp deploy/client.env client/.env.production.local   # and fill VITE_SA_CONTRACT from step 1
+   (cd client && sudo npm ci --ignore-scripts && sudo npm run build)
+   sudo rsync -a --delete client/dist/ /var/www/verifiers.verdikta.org/
+   # the certificate, while the distribution's default site still answers on port 80 from /var/www/html
+   sudo certbot certonly --webroot -w /var/www/html -d verifiers.verdikta.org --deploy-hook 'systemctl reload nginx'
+   sudo install -m 0644 deploy/nginx/verifiers.verdikta.org.conf /etc/nginx/sites-available/verifiers.verdikta.org
+   sudo install -m 0644 deploy/nginx/verifiers.verdikta.org-headers.conf /etc/nginx/snippets/
+   sudo ln -s /etc/nginx/sites-available/verifiers.verdikta.org /etc/nginx/sites-enabled/
+   sudo rm /etc/nginx/sites-enabled/default
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo install -m 0644 deploy/systemd/verdikta-verifiers.service /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now verdikta-verifiers
+   curl -s http://127.0.0.1:5009/health && curl -s https://verifiers.verdikta.org/api/status
+   ```
+
+   The site's HTTP server keeps answering certbot's challenges from `/var/www/html`, so renewals need nothing more.
+   One server per deployment: its keeper is the only keeper (see "The feed, the record and the badge").
+4. **The first listing goes through the signing workflow with required reviewers on** (owner decision Q51): a real
+   listing, its proof and its wallet, through the site. Its page shows `awaiting_approval` until the owner approves
+   the run; then check what `docs/builder-kms-signing.md` step 8 lists (the attestation says `trust: production` and
+   the key id, and CloudTrail shows one `Sign`).
+5. **Turn off required reviewers**, an owner step, after that listing passes and before outside makers list:
+   `docs/builder-kms-signing.md`, "With reviewers off". It is a GitHub setting; nothing here changes with it.
+6. **Seed listings** on Verdikta repositories with `fixWindowDays` 0 and 7 (the form's fix window, in days). A maker
+   has at most one open listing per artifact hash, which is the repository and the commit (the scope is not part of
+   it), so the two seeded listings of one maker go at two different commits, and each of those commits holds
+   `.verdikta/stake-control.json` naming the maker ([`docs/control-proof.md`](docs/control-proof.md)). List and fund
+   each through the site.
+7. **Run the smoke check** for each seeded listing's artifact hash, from the checkout that deployed (it holds
+   `deployments/`):
+
+   ```bash
+   cd stake-attestation/onchain
+   read -rs SA_RPC_URL && export SA_RPC_URL   # a Base Sepolia endpoint, typed, so it is in no history
+   npm run smoke -- --deployment deployments/84532-base_sepolia.json --site https://verifiers.verdikta.org --hash 0x…
+   ```
+
+   `scripts/smoke.js` asks the site's `/api/status` which deployment it serves, reads `GET /api/records/<hash>`, and
+   calls the lens's `recordByHash` at the block that answer is of, by its hash. It exits 0 only when both answer for
+   the hash, the site's record is fresh, every listing is on it or apart from it, and every fact both carry agrees
+   (uints as decimal strings, enums by name, the record restricted to the listings the site counts, the artifact
+   hashing to the key); 1 names each miss or difference; 2 is a usage error. It never prints the RPC URL.
+
+### The rate limits
+
+nginx's `limit_req`, per client address, on `/api` only, answering 429 past a burst:
+
+| Zone | Routes | Rate, burst | Why |
+|---|---|---|---|
+| `verifiers_api` | every request under `/api` | `5r/s`, 30 | The client's fastest call of its own is its poll of a listing being built: `GET /api/listings/:id` every 500 ms at first, backing off to every 5 s (`client/src/lib/api.js`). A page load makes 2 or 3 calls (a record and its badge, or the feed and a record), and the feed and records are read once a page, never polled. One tab never uses half the rate; the burst covers several opened at once. |
+| `verifiers_work` | every POST under `/api` | `12r/m`, 12 | Each POST starts work or takes a wallet sign-in challenge: the listing request's challenge and the request itself, a scan's or a dispute statement's challenge and its answer, a statement's pin, a contract's control proof (four at a time on the server), the deployment message. A maker's whole session is fewer than 12. |
+| `verifiers_build` | `POST /api/listings` | `2r/m`, 2 | A submission starts a build in Verdikta's signing workflow. The server's build budget still decides how many run (3 a wallet, 5 a repository owner, 20 in all a day); this keeps one address from filling the queue's 8 places. |
+
+The server sees every request from 127.0.0.1 and keys nothing on a client's address, so it needs no trusted-proxy
+setting. A CDN or another proxy in front of nginx would make every client one address: nginx would then need
+`set_real_ip_from` and `real_ip_header` for it. Bodies: 2 MB on the two listing routes (the server takes 1 MB and
+answers its own 413 between), 64 KB on the rest of `/api` (the largest other body is a dispute statement's 32 KB),
+16 KB elsewhere. Waits: 5 s to reach the server, 120 s for its answer (the slowest is a dispute statement, pinned with
+a 60 s timeout).
+
+### The Content-Security-Policy
+
+The header file allows exactly what the built client loads and connects to: its own scripts, stylesheet and images
+(the badge), `/api`, and the two off-origin URLs its build calls, the RPC endpoint and the IPFS gateway of
+`deploy/client.env`, by origin. No `unsafe-inline` or `unsafe-eval`, no wildcard, `frame-ancestors 'none'`,
+`base-uri 'none'`, `object-src 'none'`, `form-action 'none'`. The build has no inline script or style (index.html loads
+one module), so there is no hash or nonce to go stale. A browser wallet works under it: an extension puts its provider
+in the page as a content script, which the page's policy does not govern, and its RPC traffic leaves from the
+extension. HSTS (a year, no preload),
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and a Permissions-Policy denying every feature the
+site does not use are in the same file. Changing the RPC endpoint or the gateway is a change to `client.env` and to the
+header file together: `shared/test/repo/deploy.test.js` holds them to each other.
+
+`npm run test:e2e:csp` in `client/` serves the production build with exactly that file's headers
+(`e2e/support/headerServer.mjs`: the two off-origin sources mapped to the test stack's stand-ins and a report-uri added,
+nothing else changed) and runs every Playwright flow, failing on any `securitypolicyviolation` event, CSP console
+error or report. CI runs it, `nginx -t` on the site config as installed (a throwaway certificate at certbot's paths),
+and nginx itself in front of a stub server (`shared/test/deploy/nginxLive.test.js`): the redirect, the headers on every
+kind of answer, the proxy, the body limits and the rate limits, polling included.
+
+### Upgrade and rollback
+
+An upgrade is another release commit: check it out in `/opt/verdikta-verifiers`, `npm ci` the server and the builder
+again, rebuild the client into the web root, compare `server.env` with the new `deploy/server.env.example`, and
+`systemctl restart verdikta-verifiers`. A rollback is the same with the earlier commit. Either way **keep `SA_DATA_DIR`**
+(`/var/lib/verdikta-verifiers/data`): the indexer resumes from its cursor, the build budget keeps its counts, and the
+keeper keeps the record of its transaction in flight, which is what stops a restart from sending a call twice.
+
+**A rollback or an upgrade across a `@verdikta/common` change can drop earlier listings from the record and the feed.**
+The site counts a listing only when its archive is, byte for byte, the one the installed common rebuilds from its
+members ("The feed, the record and the badge"; `readSignedListing`, `shared/src/builderSignature.js`). A common release
+that changes those bytes (the query, the panel, a member's form) makes every listing built under another release fail
+that check: it leaves the record and the feed, shown apart with no amount, until a server on its release runs again.
+Nothing on-chain changes, and the kit does not work around it.
 
 ## The listing API
 
@@ -1188,7 +1393,8 @@ mock pinning, dev trust and the server's own fake builder CLI as its builder, an
 (indexer, keeper, feed, record mirror, badge, a Chainlink ETH/USD stand-in); an IPFS gateway
 stand-in that also serves what the server pinned; and the production build. The browser's wallet is an injected EIP-1193 provider that
 forwards to the local node's unlocked accounts. `SA_SCREENSHOTS=1` writes the screenshots under
-`client/test-results/screenshots/`, with every private-key field masked.
+`client/test-results/screenshots/`, with every private-key field masked. `npm run test:e2e:csp` runs the same flows
+again under the deploy kit's headers and fails on any Content-Security-Policy violation ("Running the site").
 
 ## The local round
 
@@ -1337,6 +1543,7 @@ the contract sizer, the coverage gate (a job of its own), the client's Playwrigh
 tests against local Hardhat and the server, the builder's Docker tests (a job of its own, with
 registry:2 and the pinned code-runner under runc, and gVisor for the real Semgrep's answer), the banned-words check and actionlint
 (1.7.12, checksum pinned) over it and the reusable builder workflow, the local round (a job of its own,
-on linux/amd64), and uses no secrets. A new
+on linux/amd64), the client's flows again under the deploy kit's headers, and the deploy kit's nginx config (a job of
+its own: `nginx -t`, then nginx in front of a stub server), and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;
 the workflow test fails until both list it.

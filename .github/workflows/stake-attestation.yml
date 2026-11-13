@@ -19,7 +19,9 @@ concurrency:
 # No job reads a secret: contracts run on the in-process Hardhat network, the client's
 # production build against that network and the server (its builder stubbed), the builder
 # against a local registry:2, recorded explorer responses and a per-run dev signing key, with a
-# stub for the aws command line where it tests the KMS signer: no job here reaches a cloud.
+# stub for the aws command line where it tests the KMS signer: no job here reaches a cloud. The dry run of the
+# reusable builder workflow (builder-dry-run) builds and validates a seed listing on the runner's loopback
+# registry, with build-only: it publishes nothing and signs nothing.
 jobs:
   shared:
     name: Shared helper, scope and wording
@@ -73,7 +75,8 @@ jobs:
     # Builds the fixture listing's env image, pushes it to a throwaway registry:2, compiles it for
     # the verified-source check (recorded explorer responses, no live explorer), and validates it
     # on the code-runner from verdikta-arbiter at the commit in
-    # stake-attestation/builder/test/docker/code-runner.pin.json, run as a sidecar under runc.
+    # stake-attestation/builder/test/docker/code-runner.pin.json, run as a sidecar under runc. It builds
+    # under the reusable workflow's egress rules, set where its build job sets them (before gVisor's install).
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -84,6 +87,10 @@ jobs:
       - name: Install locked dependencies without lifecycle scripts
         working-directory: stake-attestation/builder
         run: npm ci --ignore-scripts
+      - name: The build job's egress rules, as its step has them now
+        run: |
+          sudo iptables -I DOCKER-USER -d 169.254.169.254 -j DROP
+          sudo iptables -I DOCKER-USER -d 168.63.129.16 -j DROP
       - name: Install gVisor (pinned, SHA-512 checked, systrap platform), which only the scan's own test uses
         working-directory: stake-attestation/builder
         run: |
@@ -112,7 +119,111 @@ jobs:
         env:
           CODE_RUNNER_RUNTIME: runc
           SA_BUILDER_TEST_RUNSC: '1'
+          SA_BUILDER_EGRESS_RULES: '1'
         run: npm run test:docker
+
+  builder-dry-run-due:
+    name: Whether the builder's dry run is due
+    # On a pull request, when it changes what the dry run runs: the two workflows, the builder's action and
+    # source, its locked dependencies (they pin the base image and gVisor's release) and the seed's draft.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      due: ${{ steps.paths.outputs.due }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2 # the merge commit and its first parent, the base branch
+          persist-credentials: false
+      - name: The pull request's files against the dry run's paths
+        id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN_PATHS: |
+            .github/workflows/stake-attestation.yml
+            .github/workflows/stake-attestation-builder.yml
+            stake-attestation/builder/action/
+            stake-attestation/builder/src/
+            stake-attestation/builder/package.json
+            stake-attestation/builder/package-lock.json
+            stake-attestation/builder/test/fixtures/seed-listing/
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != pull_request ]; then echo "due=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          mapfile -t paths <<< "$DRY_RUN_PATHS"
+          rc=0
+          git diff --quiet HEAD^1 HEAD -- "${paths[@]}" || rc=$?
+          case "$rc" in
+            0) due=false ;;
+            1) due=true ;;
+            *) echo "::error::git diff failed ($rc)"; exit 1 ;;
+          esac
+          echo "due=$due" >> "$GITHUB_OUTPUT"
+          echo "the dry run is due: $due"
+
+  builder-dry-run:
+    name: Builder dry run on the seed listing
+    # The reusable builder workflow, called as Verdikta's caller calls it for a production listing, on a draft of
+    # the seed listing (verdikta/verdikta-arbiter at the commit below, its arbiter-operator/README.md "Foundry"
+    # fields), with build-only: the build job checks the draft, runs the setup under the egress rules, pushes to
+    # registry:2 on the runner's loopback and validates there under gVisor; the image goes nowhere else, and
+    # publish and sign are skipped.
+    needs: builder-dry-run-due
+    if: needs.builder-dry-run-due.outputs.due == 'true'
+    uses: ./.github/workflows/stake-attestation-builder.yml
+    # GitHub checks each called job's permissions against the caller's before anything runs, whatever the
+    # job's condition, so publish's packages: write is granted here though build-only skips publish. No job
+    # that runs holds it: source has contents: read, build has nothing.
+    permissions:
+      contents: read
+    with:
+      builder-ref: ${{ github.workflow_sha }}
+      spec: stake-attestation/builder/test/fixtures/seed-listing/code_review.json
+      maker: '0xC8658795Faa64Ac57230c07F15055f33bD06aBDB'
+      publish-repository: ghcr.io/verdikta/stake-env
+      signing: production
+      runtime: runsc
+      build-only: true
+
+  builder-dry-run-report:
+    name: The dry run's validation report
+    needs: builder-dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download the listing folder the build job left
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.builder-dry-run.outputs.artifact-id }}-listing
+          path: listing
+      - name: Every step ok, on the class platform under gVisor, with the solc the setup downloaded
+        env:
+          BASE_COMMIT: c5264e4b6ab5f088098d43ca4619fd74cf6148ab
+          PUBLISH_REPOSITORY: ghcr.io/verdikta/stake-env
+          SOLC: 0.8.19
+        run: |
+          set -euo pipefail
+          report=listing/validation-report.json
+          spec=listing/code_review.json
+          echo "validation report: $(jq -r .status "$report")"
+          jq -r '.steps[] | "  \(.name): \(.status), \(.durationMs / 1000) s\(if .detail then " (\(.detail))" else "" end)"' "$report"
+          jq -r '.listingCheck.timings // {} | "code-runner timings: \(tojson)"' "$report"
+          jq -r '.listingCheck.compilers.checked[]? | "the setup left solc \(.release) at \(.path)"' "$report"
+          problems=$(jq -r --arg commit "$BASE_COMMIT" --arg repository "$PUBLISH_REPOSITORY" --arg solc "$SOLC" --slurpfile spec "$spec" '
+            (if .status != "accepted" then "the listing is \(.status)" else empty end),
+            (.steps[] | select(.status != "ok" and ([.name, .status] != ["verifiedSource", "skipped"])) | "step \(.name) is \(.status)"),
+            (["build", "listingCheck"] - [.steps[] | select(.status == "ok") | .name] | .[] | "no \(.) step"),
+            (.devOnly[]? | "fit for dev trust only: \(.code)"),
+            (if .listingCheck.runner.runtime != "runsc" then "validated under \(.listingCheck.runner.runtime)" else empty end),
+            (if [.listingCheck.compilers.checked[]? | select(.release == $solc and (.path | startswith("/opt/verdikta/tools/share/svm/")))] == [] then "no solc \($solc) from the setup in the image" else empty end),
+            (if $spec[0].baseCommit != $commit then "code_review.json lists \($spec[0].baseCommit)" else empty end),
+            (if ($spec[0].env.image | startswith($repository + "@sha256:")) then empty else "code_review.json names \($spec[0].env.image)" end)
+          ' "$report")
+          if [ -n "$problems" ]; then
+            while IFS= read -r line; do echo "::error::$line"; done <<< "$problems"
+            exit 1
+          fi
+          echo "every step ok (verifiedSource skipped: a repository listing); validated under runsc; solc $SOLC came from the setup"
 
   onchain:
     name: Contracts

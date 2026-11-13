@@ -33,6 +33,11 @@ name: Stake attestation builder
 # baseline scan is not run here: its findings are the maker's, and this workflow's logs and
 # artifacts can be public.
 #
+# With build-only, the build job validates the listing as it always does and stops there: the image stays on the
+# runner's loopback registry, publish and sign are skipped, and outputs-sha256 is empty, so the signing workflow
+# refuses the run (its first step, before --check-registry would find no published image). This repository's CI
+# runs the workflow that way on a seed listing (stake-attestation.yml, builder-dry-run).
+#
 # This file can't reach the production key: no job here can mint a cloud identity and it reads no
 # secret, so a caller grants it nothing beyond the above. With signing: production it builds and
 # publishes for production and stops; stake-attestation-builder-sign.yml signs, as the next job of
@@ -40,8 +45,8 @@ name: Stake attestation builder
 # id-token permission against the caller before anything runs, whatever the job's condition, which is
 # why that job has a file of its own: in this file, every maker would have to grant it.
 #
-# It has no trigger of its own and nothing in this repository calls it: publishing an image in
-# Verdikta's own registry namespace is owner gate G1.
+# It has no trigger of its own, and the only call in this repository is that dry run, which publishes nothing:
+# publishing an image in Verdikta's own registry namespace is owner gate G1.
 on:
   workflow_call:
     inputs:
@@ -107,6 +112,11 @@ on:
         required: false
         type: string
         default: ''
+      build-only:
+        description: true builds and validates the listing and stops there. The image stays on the runner's loopback registry and is not uploaded, publish and sign are skipped, and outputs-sha256 is empty, so nothing can sign the build. False by default.
+        required: false
+        type: boolean
+        default: false
     outputs:
       image:
         description: The env image, by digest, as code_review.json names it.
@@ -118,8 +128,8 @@ on:
         description: The prefix of this invocation's artifact names, for stake-attestation-builder-sign.yml.
         value: ${{ jobs.build.outputs.artifact-id }}
       outputs-sha256:
-        description: The digest of the output folder, which stake-attestation-builder-sign.yml checks before it signs. Empty unless signing is production, so a listing that skipped production's checks at the build can't be handed on to be signed.
-        value: ${{ inputs.signing == 'production' && jobs.build.outputs.outputs-sha256 || '' }}
+        description: The digest of the output folder, which stake-attestation-builder-sign.yml checks before it signs. Empty unless signing is production (and build-only is off), so a listing that skipped production's checks at the build, or was never published, can't be handed on to be signed.
+        value: ${{ inputs.signing == 'production' && !inputs.build-only && jobs.build.outputs.outputs-sha256 || '' }}
 
 permissions: {}
 
@@ -308,6 +318,7 @@ jobs:
           # A listing may name its files with a leading dot (.attestation.json, say).
           include-hidden-files: true
       - name: Upload the image
+        if: ${{ !inputs.build-only }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ needs.source.outputs.artifact-id }}-env-image
@@ -321,6 +332,7 @@ jobs:
   publish:
     name: Publish the env image
     needs: build
+    if: ${{ !inputs.build-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -359,7 +371,7 @@ jobs:
   sign:
     name: Sign attestation.json
     needs: [build, publish]
-    if: inputs.signing != 'production'
+    if: inputs.signing != 'production' && !inputs.build-only
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

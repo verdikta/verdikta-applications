@@ -185,7 +185,8 @@ describe('where a listing\'s image goes (Q42)', () => {
     assert.equal(inputs.signing.default, 'dev');
     assert.equal(inputs['publish-repository'].required, true);
     assert.equal(inputs['publish-repository'].default, undefined);
-    assert.equal(builder.jobs.sign.if, "inputs.signing != 'production'");
+    assert.equal(builder.jobs.sign.if, "inputs.signing != 'production' && !inputs.build-only");
+    assert.equal(inputs['build-only'].default, false, 'and builds that publish nothing are asked for by name');
   });
 });
 

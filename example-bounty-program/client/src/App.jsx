@@ -12,6 +12,7 @@ import BountyDetails from './pages/BountyDetails';
 import SubmitWork from './pages/SubmitWork';
 import MyBounties from './pages/MyBounties';
 import Analytics from './pages/Analytics';
+import Hunters from './pages/Hunters';
 import Agents from './pages/Agents';
 import Skills from './pages/Skills';
 import Blockchain from './pages/Blockchain';
@@ -118,6 +119,7 @@ function AppContent() {
           <Route path="/bounty/:bountyId/submit" element={<SubmitWork walletState={walletState} />} />
           <Route path="/my-bounties" element={<MyBounties walletState={walletState} onConnect={handleConnect} />} />
           <Route path="/analytics" element={<Analytics />} />
+          <Route path="/analytics/hunters" element={<Hunters />} />
           <Route path="/agents" element={<Agents walletState={walletState} />} />
           <Route path="/skills" element={<Skills />} />
           <Route path="/blockchain" element={<Blockchain />} />

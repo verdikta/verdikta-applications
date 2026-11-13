@@ -21,6 +21,17 @@ const { config } = require('../config');
 function normalizeJobs(jobs) {
   let changed = false;
   for (const j of jobs) {
+    // Derive `passedUnpaid` from the on-chain status. Several writers set
+    // onChainStatus/paidWinner but not passedUnpaid, so a submission that passed
+    // but lost the bounty could be served as `passedUnpaid: false`. Only touch
+    // records that disagree, so untouched submissions don't gain a new field.
+    for (const sub of j.submissions || []) {
+      const lost = sub.onChainStatus === 'PassedUnpaid';
+      if (lost ? sub.passedUnpaid !== true : sub.passedUnpaid === true) {
+        sub.passedUnpaid = lost;
+        changed = true;
+      }
+    }
     let amounts;
     try {
       // Validate before changing this record so a failed migration preserves it.

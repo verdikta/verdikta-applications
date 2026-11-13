@@ -39,6 +39,8 @@ import {
 } from '../utils/statusDisplay';
 import './MyBounties.css';
 
+const UNVERIFIED_RETRY_MS = 30_000;
+
 /**
  * Copy text to clipboard with fallback for HTTP (non-secure) contexts.
  */
@@ -168,6 +170,15 @@ function MyBounties({ walletState, onConnect }) {
       setLoading(false);
     }
   }, [isConnected, address, loadBounties, loadActionRequired]);
+
+  // Some expired bounties could not be checked on-chain (RPC failure). They are
+  // NOT counted in the banner; re-check shortly instead of guessing.
+  const unverifiedCount = actionRequired?.unverifiedCount || 0;
+  useEffect(() => {
+    if (unverifiedCount === 0) return undefined;
+    const id = setTimeout(loadActionRequired, UNVERIFIED_RETRY_MS);
+    return () => clearTimeout(id);
+  }, [actionRequired, unverifiedCount, loadActionRequired]);
 
   // Quick-lookup map of action-required entries by jobId
   const actionByJobId = (() => {
@@ -378,6 +389,17 @@ function MyBounties({ walletState, onConnect }) {
               ))}
             </ul>
           </details>
+        </div>
+      )}
+
+      {unverifiedCount > 0 && (
+        <div className="action-unverified-notice" role="status">
+          <RefreshCw size={14} className="inline-icon" />
+          Couldn't check the on-chain status of {unverifiedCount} expired
+          bount{unverifiedCount === 1 ? 'y' : 'ies'} right now — retrying shortly.{' '}
+          <button type="button" className="link-button" onClick={loadActionRequired}>
+            Retry now
+          </button>
         </div>
       )}
 

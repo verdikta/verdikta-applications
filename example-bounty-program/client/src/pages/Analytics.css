@@ -156,6 +156,23 @@
   letter-spacing: 0.05em;
 }
 
+.analytics a.stat-card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.analytics a.stat-card-link:hover,
+.analytics a.stat-card-link:focus-visible {
+  border-color: var(--primary);
+}
+
+.analytics a.stat-card-link .stat-label {
+  color: var(--primary);
+}
+
 /* Chart Containers */
 .analytics .chart-container {
   position: relative;

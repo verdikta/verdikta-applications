@@ -13,6 +13,8 @@ const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/ver
 const { getContractService } = require('../utils/contractService');
 const { classMap } = require('@verdikta/common');
 const { summarizeTemplateUsage } = require('../utils/templateUsage');
+const hunterLinks = require('../utils/hunterLinks');
+const scoreSpread = require('../utils/scoreSpread');
 
 /**
  * GET /api/analytics/overview
@@ -34,13 +36,14 @@ router.get('/overview', async (req, res) => {
     }
 
     // Gather all analytics data
-    const [arbiterData, bountyData, submissionData, systemData, fulfilledData, templateData] = await Promise.all([
+    const [arbiterData, bountyData, submissionData, systemData, fulfilledData, templateData, hunterData] = await Promise.all([
       getArbiterAnalytics(),
       getBountyAnalytics(),
       getSubmissionAnalytics(),
       getSystemHealth(),
       getFulfilledBounties(),
-      getTemplateUsageAnalytics()
+      getTemplateUsageAnalytics(),
+      getHunterAnalytics()
     ]);
 
     const result = {
@@ -50,6 +53,12 @@ router.get('/overview', async (req, res) => {
       system: systemData,
       fulfilledBounties: fulfilledData,
       templates: templateData,
+      // Counts only; the per-address list is served by GET /hunters.
+      hunters: {
+        totalSubmitters: hunterData.totalSubmitters,
+        totalWinners: hunterData.totalWinners,
+        ...(await getConnectionCounts(hunterData))
+      },
       generatedAt: Date.now()
     };
 
@@ -210,6 +219,113 @@ router.get('/templates', async (req, res) => {
 });
 
 /**
+ * GET /api/analytics/hunters?view=submitters|winners
+ * Distinct hunter addresses with per-address submission and win counts.
+ * view=winners keeps only addresses with at least one paid win.
+ */
+router.get('/hunters', async (req, res) => {
+  try {
+    const view = req.query.view === 'winners' ? 'winners' : 'submitters';
+    const cacheKey = 'analytics_hunters';
+    const cached = analyticsCache.get(cacheKey);
+    const data = cached ? cached.data : await getHunterAnalytics();
+    if (!cached) analyticsCache.set(cacheKey, data);
+
+    const { groupOf } = await getConnections(data);
+    const hunters = (view === 'winners' ? data.hunters.filter(h => h.wins > 0) : data.hunters)
+      .map(h => ({ ...h, group: groupOf[h.address.toLowerCase()] ?? null }));
+
+    return res.json({
+      success: true,
+      data: { ...data, view, hunters },
+      cached: !!cached,
+      cachedAt: cached?.timestamp
+    });
+  } catch (error) {
+    logger.error('[analytics/hunters] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get hunter analytics',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/hunters/connections
+ * Groups of hunter addresses linked on chain (one funded another, same parent
+ * account, or a token transfer between them), from the cached background
+ * analysis in utils/hunterLinks.js. Heuristic: links are evidence, not proof
+ * of common ownership.
+ */
+router.get('/hunters/connections', async (req, res) => {
+  try {
+    const cacheKey = 'analytics_hunters';
+    const cached = analyticsCache.get(cacheKey);
+    const data = cached ? cached.data : await getHunterAnalytics();
+    if (!cached) analyticsCache.set(cacheKey, data);
+
+    const { groups, hubs, coverage } = await getConnections(data);
+    const stats = new Map(data.hunters.map(h => [h.address.toLowerCase(), h]));
+    const enriched = groups.map(g => {
+      const members = g.addresses.map(a => {
+        const h = stats.get(a) || {};
+        return { address: h.address || a, submissions: h.submissions || 0, wins: h.wins || 0, ethWon: h.ethWon || 0 };
+      }).sort((x, y) => y.wins - x.wins || y.submissions - x.submissions);
+      return {
+        id: g.id,
+        members,
+        wins: members.reduce((n, m) => n + m.wins, 0),
+        ethWon: Math.round(members.reduce((n, m) => n + m.ethWon, 0) * 1e6) / 1e6,
+        links: g.links
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: { groups: enriched, hubs, coverage, status: hunterLinks.getStatus() }
+    });
+  } catch (error) {
+    logger.error('[analytics/hunters/connections] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get hunter connections',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/analytics/score-spread?days=14
+ * How far apart the arbiters' scores are for the same submission in the same
+ * round: per-round standard deviation over the 3 or 4 verified reveals,
+ * pooled and per day, plus every round (worst first) and a per-bounty roll-up.
+ * Served from the background collection in utils/scoreSpread.js; never waits on RPC.
+ */
+router.get('/score-spread', async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(scoreSpread.MAX_REPORT_DAYS, parseInt(req.query.days, 10) || 14));
+    const cacheKey = `analytics_score_spread_${days}`;
+    const cached = analyticsCache.get(cacheKey);
+    if (cached) {
+      return res.json({ success: true, data: cached.data, cached: true, cachedAt: cached.timestamp });
+    }
+    const [state, listed] = await Promise.all([scoreSpread.readState(), jobStorage.listJobs({})]);
+    const data = {
+      ...scoreSpread.buildReport(state, listed.jobs || listed, { days }),
+      status: scoreSpread.getStatus(),
+      generatedAt: Date.now()
+    };
+    analyticsCache.set(cacheKey, data);
+    return res.json({ success: true, data, cached: false });
+  } catch (error) {
+    logger.error('[analytics/score-spread] error', { msg: error.message });
+    return res.status(500).json({
+      error: 'Failed to get arbiter score spread',
+      details: error.message
+    });
+  }
+});
+
+/**
  * GET /api/analytics/system
  * Returns system health and configuration
  */
@@ -273,13 +389,18 @@ router.post('/refresh', async (req, res) => {
 /**
  * Get arbiter/oracle analytics from ReputationKeeper contract
  */
+// Last successful arbiter read. A transient RPC failure (e.g. Infura 429
+// "Too Many Requests") serves this, marked stale, instead of dropping the page to
+// class-only data — and caching that degraded result for the full cache TTL.
+let lastGoodArbiterAnalytics = null;
+
 async function getArbiterAnalytics() {
   const verdiktaService = getVerdiktaService();
 
   // If Verdikta service is not configured, return class data from classMap only
   if (!verdiktaService) {
     logger.info('Verdikta service not available, returning class-only data');
-    return getClassOnlyAnalytics();
+    return getClassOnlyAnalytics('Verdikta aggregator not configured - showing class information only');
   }
 
   try {
@@ -297,23 +418,32 @@ async function getArbiterAnalytics() {
       };
     }
 
-    return {
+    const result = {
       byClass: enrichedByClass,
       totalOracles: arbiterData.totalOracles,
       verdiktaConnected: true,
       timestamp: arbiterData.timestamp
     };
+    lastGoodArbiterAnalytics = result;
+    return result;
   } catch (error) {
     logger.error('Failed to get arbiter analytics from contract', { msg: error.message });
-    // Fall back to class-only data
-    return getClassOnlyAnalytics();
+    if (lastGoodArbiterAnalytics) {
+      return {
+        ...lastGoodArbiterAnalytics,
+        stale: true,
+        message: 'Live arbiter data temporarily unavailable (blockchain RPC error) - showing the last successful read'
+      };
+    }
+    // Nothing read yet since startup: fall back to class-only data
+    return getClassOnlyAnalytics('Arbiter data temporarily unavailable (blockchain RPC error) - showing class information only. Try Refresh in a minute.');
   }
 }
 
 /**
  * Get class information without oracle data (fallback when Verdikta not available)
  */
-function getClassOnlyAnalytics() {
+function getClassOnlyAnalytics(message) {
   const classes = classMap.listClasses({});
   const byClass = {};
 
@@ -338,7 +468,7 @@ function getClassOnlyAnalytics() {
     byClass,
     totalOracles: null,
     verdiktaConnected: false,
-    message: 'Verdikta aggregator not configured - showing class information only',
+    message,
     timestamp: Date.now()
   };
 }
@@ -683,6 +813,101 @@ async function getTemplateUsageAnalytics() {
   } catch (error) {
     logger.error('Failed to get template usage analytics', { msg: error.message });
     throw error;
+  }
+}
+
+/**
+ * Hunters on the current contract: every distinct address that has a submission
+ * (prepared or evaluated), and which of them won. A win is a PassedPaid
+ * submission, or the bounty's recorded winner, counted once per bounty.
+ * ETH won uses effectiveBountyAmount, since payoutWei is zeroed after payout.
+ */
+async function getHunterAnalytics() {
+  try {
+    const jobs = await jobStorage.listJobs({});
+    const jobList = jobs.jobs || jobs;
+    const byAddress = new Map();
+
+    const entryFor = (address) => {
+      const key = address.toLowerCase();
+      let h = byAddress.get(key);
+      if (!h) {
+        h = {
+          address,
+          submissions: 0,
+          bounties: new Set(),
+          wins: 0,
+          ethWon: 0,
+          wonBountyIds: [],
+          firstSubmittedAt: null,
+          lastSubmittedAt: null
+        };
+        byAddress.set(key, h);
+      }
+      return h;
+    };
+
+    for (const job of jobList) {
+      const winners = new Set();
+      for (const sub of job.submissions || []) {
+        if (!sub.hunter) continue;
+        const h = entryFor(sub.hunter);
+        h.submissions++;
+        h.bounties.add(job.jobId);
+        const at = Number(sub.submittedAt) || null;
+        if (at) {
+          if (h.firstSubmittedAt == null || at < h.firstSubmittedAt) h.firstSubmittedAt = at;
+          if (h.lastSubmittedAt == null || at > h.lastSubmittedAt) h.lastSubmittedAt = at;
+        }
+        const status = (sub.onChainStatus || sub.status || '').toLowerCase();
+        if (status === 'passedpaid') winners.add(sub.hunter.toLowerCase());
+      }
+      if (job.status === 'AWARDED' && job.winner) winners.add(job.winner.toLowerCase());
+
+      for (const key of winners) {
+        const h = byAddress.get(key) || entryFor(job.winner);
+        h.wins++;
+        h.ethWon += effectiveBountyAmount(job);
+        h.wonBountyIds.push(job.jobId);
+      }
+    }
+
+    const hunters = [...byAddress.values()]
+      .map(h => ({
+        ...h,
+        bounties: h.bounties.size,
+        ethWon: Math.round(h.ethWon * 1e6) / 1e6,
+        wonBountyIds: h.wonBountyIds.sort((a, b) => b - a)
+      }))
+      .sort((a, b) => b.wins - a.wins || b.submissions - a.submissions);
+
+    return {
+      hunters,
+      totalSubmitters: hunters.filter(h => h.submissions > 0).length,
+      totalWinners: hunters.filter(h => h.wins > 0).length,
+      timestamp: Date.now()
+    };
+  } catch (error) {
+    logger.error('Failed to get hunter analytics', { msg: error.message });
+    throw error;
+  }
+}
+
+/** Hunter connection groups from the cached analysis state (cheap; no RPC). */
+async function getConnections(hunterData) {
+  const state = await hunterLinks.readState();
+  return hunterLinks.buildConnections(state, hunterData.hunters.map(h => h.address));
+}
+
+/** Counts for the overview; null until the first background run completes. */
+async function getConnectionCounts(hunterData) {
+  try {
+    const { groups, coverage } = await getConnections(hunterData);
+    if (!coverage.lastRunAt) return { linkedHunters: null, connectionGroups: null };
+    return { linkedHunters: coverage.linkedHunters, connectionGroups: groups.length };
+  } catch (error) {
+    logger.warn('Failed to read hunter connections', { msg: error.message });
+    return { linkedHunters: null, connectionGroups: null };
   }
 }
 

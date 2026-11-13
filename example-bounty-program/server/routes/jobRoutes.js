@@ -36,6 +36,7 @@ const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRES
 const { rubricTemplateRecord, summarizeTemplateUsage, classifyRubric } = require('../utils/templateUsage');
 const { expandRubricTemplate } = require('../utils/rubricTemplates');
 const { findFinalizeBlockers, blockerCalldata, blockersHint } = require('../utils/finalizeBlockers');
+const { buildActionRequired } = require('../utils/actionRequired');
 const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
 const { verifyWagerPackage } = require('../utils/wagerPackage');
 const { looksLikeMutualWager } = require('../../shared/mutualWager');
@@ -1340,6 +1341,7 @@ router.get('/admin/expired', async (req, res) => {
             // Check for pending submissions
             const subCount = Number(await contract.submissionCount(onChainBountyId));
             let hasPending = false;
+            let subReadFailed = 0;
 
             for (let i = 0; i < subCount; i++) {
               try {
@@ -1353,11 +1355,15 @@ router.get('/admin/expired', async (req, res) => {
                   });
                 }
               } catch (subErr) {
-                // Ignore individual submission errors
+                // An unread submission might be pending — never report canClose on partial data.
+                subReadFailed++;
               }
             }
 
-            if (hasPending) {
+            if (subReadFailed > 0) {
+              bountyInfo.canClose = false;
+              bountyInfo.blockedBy = `Chain read failed for ${subReadFailed} submission(s) — retry`;
+            } else if (hasPending) {
               bountyInfo.blockedBy = `${bountyInfo.pendingSubmissions.length} submission(s) still pending evaluation`;
               bountyInfo.canClose = false;
               summary.blockedByPendingEval++;
@@ -1399,6 +1405,10 @@ router.get('/admin/expired', async (req, res) => {
  *                       settled with no result (`timeoutEligible`); then the bounty
  *                       can be closed)
  *
+ * Bounties whose on-chain state could not be read (RPC failure) are NOT in
+ * `bounties`/`count`; they are listed in `unverified` (`unverifiedCount`) so a
+ * flaky RPC never raises a false "needs your attention" banner.
+ *
  * Designed to be safe to poll (e.g., from a nav badge) — small response, no
  * mutations. Returns 200 with empty list when the creator has nothing to do.
  */
@@ -1411,11 +1421,8 @@ router.get('/mine/action-required', async (req, res) => {
         details: 'Pass ?creator=0x... (40 hex chars)'
       });
     }
-    const creatorLc = creator.toLowerCase();
-
     const jobs = await jobStorage.listJobs({ includeOrphans: false });
     const jobList = jobs.jobs || jobs;
-    const nowSeconds = Math.floor(Date.now() / 1000);
 
     let contract = null;
     let cs = null;
@@ -1426,96 +1433,15 @@ router.get('/mine/action-required', async (req, res) => {
       logger.warn('[mine/action-required] Could not get contract service', { msg: e.message });
     }
 
-    const bounties = [];
-    let totalReclaimableWei = 0n;
-
-    for (const job of jobList) {
-      if (!job.creator || job.creator.toLowerCase() !== creatorLc) continue;
-      const deadline = job.submissionCloseTime || 0;
-      if (deadline === 0 || nowSeconds < deadline) continue;
-      if (!job.onChain && !job.syncedFromBlockchain) continue;
-
-      const onChainBountyId = job.jobId;
-      const entry = {
-        jobId: job.jobId,
-        title: job.title,
-        bountyAmount: job.bountyAmount,
-        bountyAmountWei: job.bountyAmountWei,
-        deadline,
-        expiredMinutesAgo: Math.floor((nowSeconds - deadline) / 60),
-        canClose: false,
-        blockedBy: null,
-        pendingSubmissions: []
-      };
-
-      if (!contract) {
-        entry.blockedBy = 'Chain read unavailable';
-        bounties.push(entry);
-        continue;
-      }
-
-      try {
-        const chainBounty = await contract.getBounty(onChainBountyId);
-        const statusNames = ['Open', 'Awarded', 'Closed'];
-        const onChainStatus = statusNames[Number(chainBounty.status)] || `Unknown(${chainBounty.status})`;
-
-        if (onChainStatus !== 'Open') continue; // Already resolved on-chain — nothing for creator to do
-
-        const subCount = Number(await contract.submissionCount(onChainBountyId));
-        for (let i = 0; i < subCount; i++) {
-          try {
-            const chainSub = await contract.getSubmission(onChainBountyId, i);
-            if (Number(chainSub.status) === 1) { // PendingVerdikta
-              const submittedAt = Number(chainSub.submittedAt);
-              // Aggregator-state gate (same rule as failTimedOutSubmission).
-              const gate = await cs.getForceFailEligibility(chainSub.verdiktaAggId);
-              entry.pendingSubmissions.push({
-                submissionId: i,
-                hunter: chainSub.hunter,
-                submittedAt,
-                ageMinutes: Math.floor((nowSeconds - submittedAt) / 60),
-                timeoutEligible: gate.eligible === true,
-                hasResult: gate.hasResult === true,
-                action: gate.hasResult ? 'finalize' : (gate.eligible ? 'timeout' : 'wait'),
-                secondsUntilTimeout: gate.secondsUntilTimeout ?? null,
-                forceFail: gate
-              });
-            }
-          } catch (_) { /* ignore individual submission errors */ }
-        }
-
-        if (entry.pendingSubmissions.length > 0) {
-          entry.blockedBy = `${entry.pendingSubmissions.length} submission(s) still pending evaluation`;
-          entry.canClose = false;
-        } else {
-          entry.canClose = true;
-          try {
-            totalReclaimableWei += BigInt(chainBounty.payoutWei.toString());
-          } catch (_) { /* skip totals on parse failure */ }
-        }
-      } catch (chainErr) {
-        entry.blockedBy = `Chain read failed: ${chainErr.message}`;
-      }
-
-      bounties.push(entry);
-    }
-
-    const totalReclaimableEth = (() => {
-      try {
-        return ethers.formatEther(totalReclaimableWei);
-      } catch (_) { return '0'; }
-    })();
-
-    return res.json({
-      success: true,
-      creator,
-      count: bounties.length,
-      readyToCloseCount: bounties.filter(b => b.canClose).length,
-      blockedCount: bounties.filter(b => !b.canClose).length,
-      totalReclaimableWei: totalReclaimableWei.toString(),
-      totalReclaimableEth,
-      bounties
+    const body = await buildActionRequired({
+      jobs: jobList, creator, contract, cs, nowSeconds: Math.floor(Date.now() / 1000)
     });
+    if (body.unverifiedCount > 0) {
+      logger.warn('[mine/action-required] chain read failed for some bounties', {
+        creator, unverified: body.unverified.map(b => b.jobId)
+      });
+    }
+    return res.json(body);
   } catch (error) {
     logger.error('[mine/action-required] error', { msg: error.message });
     return res.status(500).json({ error: 'Failed to list action-required bounties', details: error.message });
@@ -2111,6 +2037,7 @@ function submissionRecordFromChain(job, submissionId, chainSub, extras = {}) {
     creatorWindowEnd: Number(chainSub.creatorWindowEnd) || null,
     ethMaxBudget: chainSub.ethMaxBudget?.toString() || null,
     paidWinner: statusIndex === 3,
+    passedUnpaid: statusIndex === 4,
     clientType: extras.clientType || 'unknown',
     clientId: extras.clientId || null,
   };

@@ -3,13 +3,16 @@
  * Reads bounty data from deployed BountyEscrow smart contract
  *
  * Optimized for event-based sync: getBounty() uses 1 RPC call (not 4),
- * getEventsSince() fetches all events in a single eth_getLogs call,
+ * getEventsSince() fetches all events with one eth_getLogs call per 10K blocks,
  * getEvaluationByAggId() skips the redundant getSubmission() call.
  */
 
 const { ethers } = require('ethers');
 const { fundedBountyWei } = require('./bountyAmounts');
 const logger = require('./logger');
+
+// Largest block range per eth_getLogs call (Infura and public Base RPCs reject more).
+const GET_LOGS_MAX_BLOCKS = 10_000;
 
 // BountyEscrow ABI — functions + events
 const BOUNTY_ESCROW_ABI = [
@@ -193,18 +196,45 @@ class ContractService {
 
   /**
    * Fetch all BountyEscrow events between fromBlock and toBlock (inclusive).
-   * Single eth_getLogs call with no topic filter (gets all events from contract).
-   * Returns array of { name, args, blockNumber, transactionHash }.
+   * No topic filter (gets all events from contract). Returns array of
+   * { name, args, blockNumber, transactionHash } in block order.
+   *
+   * RPCs cap eth_getLogs at 10,000 blocks, so a longer range (the sync fell
+   * behind: an outage, or Base Sepolia's 0.2 s blocks, where 10K blocks is only
+   * ~33 min) is fetched in 10K-block chunks. Without this, a gap over 10K blocks
+   * failed every cycle and grew, so the sync never caught up.
    *
    * Retries with exponential backoff on rate-limit (429) or server errors.
    */
   async getEventsSince(fromBlock, toBlock) {
-    const filter = {
-      address: this.contractAddress,
-      fromBlock,
-      toBlock
-    };
+    const logs = [];
+    for (let start = fromBlock; start <= toBlock; start += GET_LOGS_MAX_BLOCKS) {
+      const end = Math.min(toBlock, start + GET_LOGS_MAX_BLOCKS - 1);
+      logs.push(...await this._getLogsWithRetry({ address: this.contractAddress, fromBlock: start, toBlock: end }));
+    }
 
+    const events = [];
+    for (const log of logs) {
+      try {
+        const parsed = this._iface.parseLog({ topics: log.topics, data: log.data });
+        if (parsed) {
+          events.push({
+            name: parsed.name,
+            args: parsed.args,
+            blockNumber: log.blockNumber,
+            transactionHash: log.transactionHash
+          });
+        }
+      } catch {
+        // Unknown event (not in our ABI) — skip
+      }
+    }
+
+    return events;
+  }
+
+  async _getLogsWithRetry(filter) {
+    const { fromBlock, toBlock } = filter;
     let logs;
     const MAX_RETRIES = 3;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -230,25 +260,7 @@ class ContractService {
         throw error;
       }
     }
-
-    const events = [];
-    for (const log of logs) {
-      try {
-        const parsed = this._iface.parseLog({ topics: log.topics, data: log.data });
-        if (parsed) {
-          events.push({
-            name: parsed.name,
-            args: parsed.args,
-            blockNumber: log.blockNumber,
-            transactionHash: log.transactionHash
-          });
-        }
-      } catch {
-        // Unknown event (not in our ABI) — skip
-      }
-    }
-
-    return events;
+    return logs;
   }
 
   // ---------------------------------------------------------------------------

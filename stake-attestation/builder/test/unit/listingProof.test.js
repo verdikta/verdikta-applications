@@ -8,17 +8,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { Wallet, getAddress } from 'ethers';
 
 import { main } from '../../src/cli.js';
+import { parseConfig } from '../../src/config.js';
 import { explorerChain, createExplorer } from '../../src/explorer.js';
-import { deploymentMessage } from '../../src/listingProof.js';
+import { deploymentMessage, recheckForSigning } from '../../src/listingProof.js';
 import { REPO, MAKER, attempt, config, deployment, stake } from '../helpers/proof.js';
 import { makeRepo, proofFile } from '../helpers/proofRepo.js';
 import { contractDraft, draftSpec, runnerWithGrammar } from '../helpers/specs.js';
 
 const STRANGER = getAddress('0xab8483f64d9c6d1ecf9b849ae677dd3315835cb2');
+const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 
 // a temporary folder of this file's: another test file counts what the real check leaves in the shared one
 process.env.TMPDIR = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-proof-tests-'));
@@ -189,6 +192,51 @@ test('a contract\'s signature that does not count is refused with its code', asy
   nothingBuilt(await attempt({ h, draft, chain: deployment({ owner: owner.address, code: '0x' }), deploymentProof: proof({ signer: owner.address, signature: await owner.signMessage(message) }) }), 'NO_CONTRACT_AT_ADDRESS');
   // not a proof at all
   nothingBuilt(await attempt({ h, draft, chain, deploymentProof: proof({ signer: 'nobody', signature: 'x' }) }), 'SIGNATURE_INVALID');
+});
+
+// Node P25: the testnet maker's wallet has code, an EIP-7702 delegation designator (0xef0100 and a delegate's
+// address), and its owner signs with the account's own key. Its signature is ordinary ECDSA wherever the builder
+// checks it: the proof check recovers it before it reads any code, and sign repeats that recovery.
+test('a maker whose wallet holds a 7702 designator owns the deployment and signs with its own key: ECDSA, no isValidSignature, and sign takes it too', async () => {
+  const h = repo();
+  const wallet = Wallet.createRandom();
+  const designator = `0xef0100${Wallet.createRandom().address.slice(2).toLowerCase()}`;
+  const draft = contractDraft({ repo: REPO, baseCommit: h.commit({ file: proofFile(wallet.address) }) });
+  const base = deployment({ owner: wallet.address });
+  const reads = [];
+  const chain = {
+    ...base,
+    getCode: async (address, tag) => { reads.push({ getCode: address }); return address === wallet.address ? designator : base.getCode(address, tag); },
+    call: async (tx) => { reads.push({ call: tx.to, selector: tx.data.slice(0, 10) }); return base.call(tx); },
+  };
+  const signature = await wallet.signMessage(deploymentMessage({ spec: draft, maker: wallet.address, stake }));
+  const r = await attempt({ h, draft, chain, maker: wallet.address, deploymentProof: { signer: wallet.address, signature, stakeChainId: stake.chainId, stakeContract: stake.address } });
+  assert.equal(r.status, 'accepted', JSON.stringify(r.report.refusals ?? r.report.error));
+  assert.equal(r.report.control.maker, wallet.address);
+  assert.equal(r.report.control.deployment.signer, wallet.address);
+  assert.equal(r.report.control.deployment.role, 'owner');
+  assert.equal(r.report.control.deployment.contractSigner, false);
+  assert.equal(reads.some((x) => x.selector === '0x1626ba7e'), false, 'no EIP-1271 call');
+  assert.equal(reads.some((x) => x.getCode === wallet.address), false, 'ECDSA first: the wallet\'s code is never read');
+  assert.ok(reads.some((x) => x.getCode === getAddress(draft.artifact.address.toLowerCase())), 'the deployment\'s code is read, as for any listing');
+
+  const cfg = parseConfig(config({ repoMirrors: { [draft.repo]: h.mirror } }), { baseDir: '/tmp', env: { CODE_RUNNER_TOKEN: 'runner-token-0123456789abcdef0123456789' } });
+  await recheckForSigning({ spec: draft, report: r.report, maker: wallet.address, config: cfg });
+});
+
+// Node P25: the testnet launch's seeded listings are of this repository, and the builder reads its proof file as it
+// reads any listing's. shared/test/repo/controlFile.test.js holds the file to its format and its maker.
+test('this repository\'s own proof file, as the builder reads it: a listing of it passes for the maker it names, and no one else', async () => {
+  const text = fs.readFileSync(path.join(REPO_ROOT, '.verdikta', 'stake-control.json'), 'utf8');
+  const named = JSON.parse(text).maker;
+  const checkRepositoryControl = async () => ({ reachable: true, ref: 'refs/heads/main', file: { path: '.verdikta/stake-control.json', mode: '100644', blob: 'b'.repeat(40), size: Buffer.byteLength(text), text, problem: null } });
+  const h = repo();
+  const commit = h.commit();
+  const repoUrl = 'https://github.com/verdikta/verdikta-applications';
+  const ok = await attempt({ h, commit, repoUrl, maker: named, checkRepositoryControl });
+  assert.equal(ok.status, 'accepted', JSON.stringify(ok.report.refusals ?? ok.report.error));
+  assert.equal(ok.report.control.maker, named, 'the file writes the maker in the form the builder compares');
+  nothingBuilt(await attempt({ h, commit, repoUrl, maker: STRANGER, checkRepositoryControl }), 'PROOF_NAMES_ANOTHER_ADDRESS');
 });
 
 test('a chain that cannot be read is an error to retry, never an acceptance', async () => {

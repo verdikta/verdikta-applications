@@ -47,6 +47,8 @@ test('runs on pull requests into main and claude/stake-attestation that touch th
   assert.deepEqual([...pr.branches].sort(), ['claude/stake-attestation', 'main']);
   assert.ok(pr.paths.includes('stake-attestation/**'));
   assert.ok(pr.paths.includes('.github/workflows/stake-attestation.yml'));
+  // node P25: the repository's own proof file, which controlFile.test.js holds to its format
+  assert.ok(pr.paths.includes('.verdikta/**'));
 });
 
 test('needs no secrets and only reads the repository', () => {

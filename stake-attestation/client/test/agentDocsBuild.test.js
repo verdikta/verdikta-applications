@@ -55,7 +55,9 @@ function divById(html, id) {
 const decode = (s) => s
   .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0*39;|&apos;/g, '\'')
   .replace(/&amp;/g, '&');
-const stripTags = (html) => decode(html.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+// an inline tag goes without a trace (so "<a ...>/agents.txt</a>," reads "/agents.txt,"), any other leaves a space
+const stripTags = (html) =>
+  decode(html.replace(/<\/?(?:a|abbr|b|code|em|i|small|span|strong)\b[^>]*>/gi, '').replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
 const dropNoscript = (html) => html.replace(/<noscript\b[\s\S]*?<\/noscript\s*>/gi, ' ');
 /** The text that a fetch tool which runs no JavaScript, and drops <head> and every <noscript>, shows of a page. */
 const textWithoutHeadOrNoscript = (html) => stripTags(dropNoscript(html.replace(/<head\b[\s\S]*?<\/head\s*>/gi, ' ')));

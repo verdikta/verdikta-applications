@@ -1452,14 +1452,20 @@ goes in a URL.
   each pays, reading `/api/feed` and the listing archive, a claim's life and deadlines from the contract, costs read
   live, getting and running `verdikta-attest` from this branch, the claim folder, pinning and the wallet, `check`,
   keeping `.verdikta-claim/`), and `client/public/llms.txt`, an index in the llms.txt format (a title, a summary and
-  lists of links) that points to it. Every page's footer links both. Neither states a listing's value as a fact: each
+  lists of links) that points to it. Every page's footer links both, and so does the page as a fetch that runs no
+  JavaScript gets it (node P29): `client/index.html` has an `alternate` link to each and a description naming
+  `/agents.txt` in `<head>`, and inside `#root` a short paragraph linking both, with a `<noscript>` holding the same
+  links, so a tool that turns the page into text and drops `<head>` and `<noscript>` still finds them. React's first
+  render replaces everything in `#root`, so a browser shows the paragraph only until the app mounts. It is static
+  markup the Content-Security-Policy allows as it is. Neither document states a listing's value as a fact: each
   names the field that holds it. They stay true by `client/test/agentDocs.test.js`, which fails when a command, flag,
   environment variable, exit code, API route, contract function or constant, file, `@verdikta/common` version in a
   link or host they name stops matching the code (the CLI's own lists, the tool's exit table, `server/src`'s routes,
   the tool's merged ABI, the Solidity source, common's installed release), and which names the branch they send an
   agent to for the tool once, `TOOL_REF`: at G3 that line becomes `main`, with the documents.
-  `client/test/agentDocsBuild.test.js` builds the client and reads both files in the build, and CI's deploy job reads
-  them back through nginx with the kit's headers. So a change to what they name fails the client's tests until the
+  `client/test/agentDocsBuild.test.js` builds the client and reads both files in the build, and the build's
+  `index.html`: its two links and description, the text left once `<head>`, `<noscript>` and tags are stripped, and
+  each path it names in `client/public/`. CI's deploy job reads both files back through nginx with the kit's headers. So a change to what they name fails the client's tests until the
   documents say it.
 
 **Config** is Vite's build environment: `VITE_SA_CHAIN_ID`, `VITE_SA_CONTRACT`,

@@ -2,7 +2,7 @@
  * Blockchain Sync Service — Event-Based
  *
  * Replaces the old full-scan approach with event-driven sync:
- *   Phase A — getBlockNumber() + getEventsSince() (2 RPC calls)
+ *   Phase A — getBlockNumber() + getEventsSince() (1 + one getLogs per 10K blocks)
  *   Phase B — Process events locally (0 RPC for most events)
  *   Phase C — Hot polling: check oracle results for pending submissions (P calls)
  *   Phase D — Belt-and-suspenders bountyCount() check (1 call)
@@ -1078,6 +1078,7 @@ class SyncService {
             // hunter-address match, which mis-attributes when one hunter has several
             // submissions on the same bounty.
             sub.paidWinner = statusIndex === 3;
+            sub.passedUnpaid = statusIndex === 4;
             if (chainSub.acceptance != null) sub.acceptance = Number(chainSub.acceptance);
             if (chainSub.rejection != null) sub.rejection = Number(chainSub.rejection);
             if (chainSub.funder && !/^0x0{40}$/i.test(chainSub.funder)) sub.funder = chainSub.funder;
@@ -1456,6 +1457,7 @@ class SyncService {
             // PayoutSent handler's hunter-address match).
             sub.paidWinner = paid;
           }
+          sub.passedUnpaid = statusIndex === 4;
           sub.acceptance = acceptance;
           sub.rejection = rejection;
           sub.finalizedAt = Math.floor(Date.now() / 1000);

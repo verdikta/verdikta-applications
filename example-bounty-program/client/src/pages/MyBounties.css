@@ -33,6 +33,31 @@
   font-size: 0.8rem;
 }
 
+/* Shown instead of the banner when some expired bounties couldn't be read on-chain */
+.my-bounties .action-unverified-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  padding: 0.6rem 1rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+}
+
+.my-bounties .action-unverified-notice .link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
 /* Action-required banner: shown when creator has expired bounties needing attention */
 .my-bounties .action-required-banner {
   background-color: var(--warning-light);

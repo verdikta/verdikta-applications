@@ -954,7 +954,11 @@ the discovery endpoint and drive the close flow themselves.
                      { submissionId, hunter, submittedAt,
                        ageMinutes, timeoutEligible: bool }
                    ] }
-               ] }
+               ],
+               unverifiedCount, unverified: [ { jobId, ..., unverified: true, blockedBy } ] }
+   count/bounties cover only bounties whose on-chain state was read. If an RPC
+   read failed, the bounty is in unverified instead (state unknown — it may
+   already be closed) — re-query shortly rather than acting on it.
    For a system-wide view (all creators), use GET /api/jobs/admin/expired.
 
 2. For each entry in pendingSubmissions where timeoutEligible is true:

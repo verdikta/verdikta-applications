@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   BarChart3,
   RefreshCw,
@@ -23,9 +23,13 @@ import {
   Zap,
   Award,
   ExternalLink,
-  LayoutTemplate
+  LayoutTemplate,
+  UserCheck,
+  Trophy,
+  Link2
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
+import ScoreSpreadSection from '../components/ScoreSpreadSection';
 import { apiService } from '../services/api';
 import { config } from '../config';
 import {
@@ -444,7 +448,7 @@ function Analytics() {
       {/* Arbiter Availability Section */}
       <section className="analytics-section">
         <h2 title="Six non-blocked arbiter queries will be made, with duplicate selection if necessary, and four must respond."><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
-        {!data?.arbiters?.verdiktaConnected && (
+        {(!data?.arbiters?.verdiktaConnected || data?.arbiters?.stale) && (
           <div className="info-banner">
             <AlertTriangle size={16} />
             <span>{data?.arbiters?.message || 'Verdikta aggregator not connected'}</span>
@@ -755,6 +759,44 @@ function Analytics() {
         </div>
       </section>
 
+      {/* Bounty Hunters Section: counts here, address lists on /analytics/hunters */}
+      {data?.hunters && (
+        <section className="analytics-section">
+          <h2><UserCheck size={20} className="inline-icon" /> Bounty Hunters</h2>
+          <div className="section-content">
+            <div className="stat-grid">
+              <Link
+                to="/analytics/hunters?view=submitters"
+                className="stat-card stat-card-link"
+                title="Distinct wallet addresses with at least one submission on the current contract. Click to list them."
+              >
+                <div className="stat-icon"><Users size={24} /></div>
+                <div className="stat-value">{data.hunters.totalSubmitters ?? 0}</div>
+                <div className="stat-label">Submitters</div>
+              </Link>
+              <Link
+                to="/analytics/hunters?view=winners"
+                className="stat-card stat-card-link success"
+                title="Distinct wallet addresses that have been paid for at least one bounty. Click to list them."
+              >
+                <div className="stat-icon"><Trophy size={24} /></div>
+                <div className="stat-value">{data.hunters.totalWinners ?? 0}</div>
+                <div className="stat-label">Winners</div>
+              </Link>
+              <Link
+                to="/analytics/hunters?view=connections"
+                className="stat-card stat-card-link warning"
+                title="Hunter addresses linked on chain to another hunter: one funded the other, they share a parent account, or tokens moved between them. Evidence of a connection, not proof of common ownership. Click for the groups and the evidence."
+              >
+                <div className="stat-icon"><Link2 size={24} /></div>
+                <div className="stat-value">{data.hunters.linkedHunters ?? '—'}</div>
+                <div className="stat-label">Linked Hunters</div>
+              </Link>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Submission Metrics Section */}
       <section className="analytics-section">
         <h2><Activity size={20} className="inline-icon" /> Submission Metrics</h2>
@@ -837,6 +879,9 @@ function Analytics() {
           )}
         </div>
       </section>
+
+      {/* Arbiter Score Spread: per-round sd of the 3-4 reveals, 14-day trend, worst-case drill-down */}
+      <ScoreSpreadSection refreshKey={lastUpdated?.getTime()} />
 
       {/* System Health Section */}
       <section className="analytics-section">

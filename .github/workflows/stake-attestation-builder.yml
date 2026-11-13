@@ -33,10 +33,10 @@ name: Stake attestation builder
 # baseline scan is not run here: its findings are the maker's, and this workflow's logs and
 # artifacts can be public.
 #
-# With build-only, the build job validates the listing as it always does and stops there: the image stays on the
-# runner's loopback registry, publish and sign are skipped, and outputs-sha256 is empty, so the signing workflow
-# refuses the run (its first step, before --check-registry would find no published image). This repository's CI
-# runs the workflow that way on a seed listing (stake-attestation.yml, builder-dry-run).
+# With build-only, the build job validates the listing as it always does, prints the image build's log, and stops
+# there: the image stays on the runner's loopback registry, publish and sign are skipped, and outputs-sha256 is
+# empty, so the signing workflow refuses the run (its first step, before --check-registry would find no published
+# image). This repository's CI runs the workflow that way on a seed listing (stake-attestation.yml, builder-dry-run).
 #
 # This file can't reach the production key: no job here can mint a cloud identity and it reads no
 # secret, so a caller grants it nothing beyond the above. With signing: production it builds and
@@ -113,7 +113,7 @@ on:
         type: string
         default: ''
       build-only:
-        description: true builds and validates the listing and stops there. The image stays on the runner's loopback registry and is not uploaded, publish and sign are skipped, and outputs-sha256 is empty, so nothing can sign the build. False by default.
+        description: true builds and validates the listing, prints the image build's log, and stops there. The image stays on the runner's loopback registry and is not uploaded, publish and sign are skipped, and outputs-sha256 is empty, so nothing can sign the build. False by default.
         required: false
         type: boolean
         default: false

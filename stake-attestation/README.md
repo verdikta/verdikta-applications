@@ -1152,7 +1152,9 @@ only, as Docker's default bridge has no IPv6, and the script refuses to go on wh
 
 **Build only.** With `build-only: true` the build job does everything it does for a listing, the egress rules,
 gVisor, the draft's and the commands' checks, the setup, the push to its loopback registry and the code-runner's
-validation, and stops: the image is not uploaded, publish and sign are skipped, and `outputs-sha256` is empty, so
+validation, prints the image build's log from the daemon's build history (the setup's output included, with the
+runner's workflow commands stopped around it), and stops: the image is not uploaded, publish and sign are skipped,
+and `outputs-sha256` is empty, so
 `stake-attestation-builder-sign.yml` refuses the run at its first step (and `--check-registry` would find no
 image). Without it, the workflow runs as it did. This repository's CI uses it for its dry run (`builder-dry-run`
 in `.github/workflows/stake-attestation.yml`): on a pull request that changes either workflow, `builder/action`,

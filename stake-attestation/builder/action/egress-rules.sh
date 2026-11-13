@@ -9,8 +9,8 @@
 #
 #   169.254.169.254  the instance metadata service. Dropped, all of it.
 #   168.63.129.16    the VM host's address. Dropped, but for port 53. It is also the resolver the VM was given,
-#                    and Docker hands a build's containers that resolver: the host's own, systemd-resolved on
-#                    127.0.0.53, is a loopback a container can't use. With the whole address dropped, a setup
+#                    and Docker hands a build's containers that resolver: the host's own, systemd-resolved's
+#                    stub, is on a loopback address a container can't use. With the whole address dropped, a setup
 #                    has no DNS at all, and the first production listing failed that way (IMAGE_BUILD_FAILED,
 #                    "Temporary failure in name resolution"). So UDP and TCP port 53 go back to Docker's own
 #                    chains (RETURN, not ACCEPT). Nothing else on that address answers a name, and what does

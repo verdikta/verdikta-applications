@@ -302,6 +302,18 @@ jobs:
           if [ -n "$DEPLOYMENT_PROOF" ]; then proof=(--control-proof "listing-source/$DEPLOYMENT_PROOF"); fi
           node "$VAB_BUILDER/bin/verdikta-build-env.js" build --config "$VAB_WORK/builder.json" --spec "listing-source/$SPEC" "${known[@]}" "${proof[@]}" --maker "$MAKER" --out "$VAB_OUT"
           echo "image=$(jq -r .env.image "$VAB_OUT/code_review.json")" >> "$GITHUB_OUTPUT"
+      - name: The image build's log, the setup's output included, from the daemon's build history (build-only runs only)
+        if: ${{ !cancelled() && inputs.build-only }}
+        env:
+          BUILDX_EXPERIMENTAL: '1'
+        # The setup's output is the maker's text: the runner reads no workflow command in it.
+        run: |
+          token=$(openssl rand -hex 16)
+          echo "::stop-commands::$token"
+          rc=0
+          docker buildx history logs || rc=$?
+          echo "::$token::"
+          if [ "$rc" -ne 0 ]; then echo "::warning::the daemon's build history holds no log to show ($rc)"; fi
       - name: Export the validated image, byte for byte (skopeo's dir layout keeps any manifest type)
         run: node "$VAB_BUILDER/action/image.js" export --from "$(jq -r .image.stagedRef "$VAB_OUT/validation-report.json")" --dir "$VAB_IMAGE"
       - name: Digest of the output folder, for the sign job

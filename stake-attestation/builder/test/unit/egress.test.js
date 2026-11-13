@@ -128,9 +128,9 @@ test('its comment says why DNS stays open and why nothing else on that address d
   for (const needle of ['the resolver the VM was given', 'Docker hands a build\'s containers that resolver', 'UDP and TCP port 53', 'RETURN, not ACCEPT', 'Nothing else on that address answers a name', 'the host agent\'s endpoints, 80 and 32526', 'IPv4 only']) {
     assert.ok(comment.includes(needle), needle);
   }
-  // IPv4 addresses: the two the rules name, and the loopback the comment explains; nothing of a host of ours.
+  // IPv4 addresses: the two the rules name; nothing of a host of ours.
   const addresses = [...new Set(text.match(/\b[0-9]{1,3}(?:\.[0-9]{1,3}){3}\b/g))].sort();
-  assert.deepEqual(addresses, ['127.0.0.53', HOST, METADATA].sort());
+  assert.deepEqual(addresses, [HOST, METADATA].sort());
 });
 
 test('the build job runs it in place of its inline rules, before gVisor\'s install and anything of the maker\'s', () => {

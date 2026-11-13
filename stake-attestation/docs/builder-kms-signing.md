@@ -41,7 +41,7 @@ The owner also accepted the container boundary for testnet:
 production` it stops there, and the caller's next job calls `stake-attestation-builder-sign.yml`:
 
 1. The first step, before any checkout, refuses a trigger other than `workflow_dispatch`, an `outputs-sha256` that isn't a digest (the builder workflow hands one on only with
-   `signing: production`, whose checks the listing then passed), empty references, a job with no OIDC token, and a
+   `signing: production`, whose checks the listing then passed, and without `build-only`, which publishes nothing), empty references, a job with no OIDC token, and a
    `builder-ref` that isn't the commit the workflow is called at.
 2. `site-request.js check` recovers the maker's wallet from the signed request, and refuses unless it signed these
    exact bytes and the built `code_review.json` and known issues keep every term it signed. Then

@@ -29,7 +29,7 @@ const dryRun = ci.jobs['builder-dry-run'];
 const due = ci.jobs['builder-dry-run-due'];
 const report = ci.jobs['builder-dry-run-report'];
 
-test('build-only: a boolean input, off by default, read where the image could leave or be signed and nowhere else', () => {
+test('build-only: a boolean input, off by default, read where the image could leave or be signed, and by one step that prints', () => {
   const input = builder.on.workflow_call.inputs['build-only'];
   assert.deepEqual({ required: input.required, type: input.type, default: input.default }, { required: false, type: 'boolean', default: false });
   assert.equal(builder.jobs.publish.if, '${{ !inputs.build-only }}');
@@ -37,9 +37,14 @@ test('build-only: a boolean input, off by default, read where the image could le
   const upload = builder.jobs.build.steps.find((s) => s.name === 'Upload the image');
   assert.equal(upload.if, '${{ !inputs.build-only }}');
   assert.equal(builder.on.workflow_call.outputs['outputs-sha256'].value, "${{ inputs.signing == 'production' && !inputs.build-only && jobs.build.outputs.outputs-sha256 || '' }}");
-  assert.equal(builderText.match(/inputs\.build-only/g).length, 4, 'those four, and no other step or job reads it');
-  // Everything the build job checks still runs with it on: no step of build is conditional on it but the upload.
-  for (const s of builder.jobs.build.steps) if (s !== upload) assert.doesNotMatch(String(s.if ?? ''), /build-only/, s.name);
+  // And one step that only prints: the image build's log, the setup's output included, with workflow commands off.
+  const log = builder.jobs.build.steps.find((s) => /docker buildx history logs/.test(s.run ?? ''));
+  assert.equal(log.if, '${{ !cancelled() && inputs.build-only }}');
+  assert.match(log.run, /echo "::stop-commands::\$token"\n[^]*docker buildx history logs[^]*echo "::\$token::"/);
+  assert.doesNotMatch(log.run, /GITHUB_(OUTPUT|ENV)|exit 1/, 'it changes nothing and fails nothing');
+  assert.equal(builderText.match(/inputs\.build-only/g).length, 5, 'those five, and no other step or job reads it');
+  // Everything the build job checks still runs with it on: no step of build is conditional on it but those two.
+  for (const s of builder.jobs.build.steps) if (s !== upload && s !== log) assert.doesNotMatch(String(s.if ?? ''), /build-only/, s.name);
   assert.equal(builder.jobs.source.if, undefined);
   assert.equal(builder.jobs.build.if, undefined);
 });
@@ -109,7 +114,7 @@ test('the dry run is due on the paths of what it runs, and always when dispatche
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-due-'));
     try {
       const git = (...args) => {
-        const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@verdikta.invalid', ...args], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1' } });
+        const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=', ...args], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1' } });
         assert.equal(r.status, 0, r.stderr);
       };
       git('init', '-q');

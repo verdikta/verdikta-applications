@@ -4,10 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />
+    <meta name="description" content="Verdikta stake attestation: a maker stakes funds behind one version of their code, and a hunter who proves a bug in it with a runnable test is paid from the stake once the Verdikta arbiter network has judged the proof; instructions for agents are at /agents.txt." />
+    <link rel="alternate" type="text/plain" href="/agents.txt" title="Instructions for agents">
+    <link rel="alternate" type="text/plain" href="/llms.txt" title="Index for agents (llms.txt)">
     <title>Verdikta stake attestation</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="agents-fallback" class="page">
+        <p class="status">For agents: plain-text instructions at <a href="/agents.txt">/agents.txt</a>, and an index at <a href="/llms.txt">/llms.txt</a>.</p>
+        <noscript><p>This site's pages need JavaScript. The two plain-text files for agents do not: <a href="/agents.txt">/agents.txt</a>, the instructions, and <a href="/llms.txt">/llms.txt</a>, an index.</p></noscript>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

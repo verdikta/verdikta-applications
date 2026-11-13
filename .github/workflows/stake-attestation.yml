@@ -176,6 +176,7 @@ jobs:
     # that runs holds it: source has contents: read, build has nothing.
     permissions:
       contents: read
+      packages: write
     with:
       builder-ref: ${{ github.workflow_sha }}
       spec: stake-attestation/builder/test/fixtures/seed-listing/code_review.json

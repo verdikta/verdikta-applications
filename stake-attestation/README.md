@@ -1106,9 +1106,10 @@ listed commit's `.verdikta/stake-control.json`, or the build refuses the listing
 `publish-repository` (readable without a credential; a listing signed in production has its image in
 `ghcr.io/verdikta/stake-env`, pushed by this workflow as a job of Verdikta's own caller), `runtime` (`runsc` by default; a production key needs gVisor),
 `explorer-api-url` (a keyless Etherscan-shaped API for a contract listing's chain, so the build
-job holds no explorer key), `signing` (`dev` by default, or `production`) and `artifact-name`
+job holds no explorer key), `signing` (`dev` by default, or `production`), `artifact-name`
 (the prefix of its artifacts' names: by default one derived from the spec, known issues and
-repository, so one run can build several listings). Its outputs are `image`, `signed-artifact`
+repository, so one run can build several listings) and `build-only` (false by default: true builds and
+validates the listing and stops, below). Its outputs are `image`, `signed-artifact`
 (the artifact holding the signed listing files), and `artifact-id` and `outputs-sha256` for the
 signing workflow below. Four jobs:
 
@@ -1116,7 +1117,8 @@ signing workflow below. Four jobs:
    calling repository, or opens the site's request after checking the maker's wallet signed it
    (`builder/action/site-request.js`), and hands those files on as an artifact.
 2. **build**, `permissions: {}` and no secret: checks out the builder (the builder fetches the listed
-   commit itself), blocks the runner's metadata addresses from containers, installs common's gVisor release
+   commit itself), sets the egress rules for the runner's containers with `builder/action/egress-rules.sh`
+   (below), installs common's gVisor release
    (SHA-512-checked; `builder/action/pins.json`, which also pins registry:2, skopeo and the
    code-runner's commit), and starts with `builder/action/services.js` a
    registry:2 on the runner's loopback and the code-runner of verdikta-arbiter at the pinned
@@ -1127,14 +1129,40 @@ signing workflow below. Four jobs:
    the image leaves in skopeo's `dir:` layout (`builder/action/image.js export`: the pinned skopeo,
    `--preserve-digests`; unlike its `oci:` layout this reads back any manifest type, and `docker
    push` writes Docker schema-2) and the output folder as artifacts, the image and the folder's
-   digest as job outputs.
-3. **publish**, `packages: write`, runs none of the maker's code: `builder/action/image.js
+   digest as job outputs. With `build-only` the image is not uploaded: it stays on the loopback registry.
+3. **publish**, `packages: write`, skipped with `build-only`, runs none of the maker's code: `builder/action/image.js
    publish` checks the layout holds exactly the digest `code_review.json` names, with every
    manifest and blob intact, pushes it byte for byte with the job's token in an auth file of its
    own (never on a command line), and reads it back without a credential.
-4. **sign**, skipped with `signing: production`, with a key made for the run: checks out the
+4. **sign**, skipped with `signing: production` or `build-only`, with a key made for the run: checks out the
    builder only, downloads only the output folder, and runs `sign --expect-outputs <the build
    job's digest> --check-registry`.
+
+**The egress rules.** The maker's `commands.setup` runs in the image build with the build's network, and a
+Foundry listing needs it there (its `forge build` downloads solc from binaries.soliditylang.org). It must reach
+nothing private of the runner's. `egress-rules.sh` drops everything a container sends to `169.254.169.254`, the
+instance metadata service, and everything to `168.63.129.16`, the VM host's address, but DNS: on a GitHub-hosted
+runner that address is also the resolver Docker hands a build's containers, so UDP and TCP port 53 go back to
+Docker's own chains (`RETURN`) and nothing else there is reachable. Before node P26 the whole address was dropped
+and a setup had no DNS at all: the first production listing failed that way (`IMAGE_BUILD_FAILED`, "Temporary
+failure in name resolution"). The rules are a chain of their own, filled in order and jumped to from the top of
+`DOCKER-USER`, so their order does not depend on the order of insertions; the script prints them. They are IPv4
+only, as Docker's default bridge has no IPv6, and the script refuses to go on where it has, or where there is no
+`DOCKER-USER` chain.
+
+**Build only.** With `build-only: true` the build job does everything it does for a listing, the egress rules,
+gVisor, the draft's and the commands' checks, the setup, the push to its loopback registry and the code-runner's
+validation, and stops: the image is not uploaded, publish and sign are skipped, and `outputs-sha256` is empty, so
+`stake-attestation-builder-sign.yml` refuses the run at its first step (and `--check-registry` would find no
+image). Without it, the workflow runs as it did. This repository's CI uses it for its dry run (`builder-dry-run`
+in `.github/workflows/stake-attestation.yml`): on a pull request that changes either workflow, `builder/action`,
+`builder/src`, the builder's locked dependencies or the seed's draft (`builder/test/fixtures/seed-listing`), it
+calls the workflow as Verdikta's caller does for a production listing (`signing: production`, `runtime: runsc`,
+`publish-repository: ghcr.io/verdikta/stake-env`) on a draft of the seed listing, verdikta-arbiter at
+`c5264e4b6ab5f088098d43ca4619fd74cf6148ab` with its `arbiter-operator/README.md` "Foundry" fields, and a job after
+it holds the validation report to every step ok, validated under gVisor, with the solc the setup downloaded in
+the image. The call grants `packages: write`, because GitHub checks every called job's permissions before
+anything runs, publish's included, whatever its condition; no job that runs holds it.
 
 **Production signing** is `.github/workflows/stake-attestation-builder-sign.yml`, which Verdikta's
 own caller runs as its next job. It is the same `sign` with the KMS key, through the builder's command
@@ -1155,8 +1183,9 @@ required reviewers off are in `docs/builder-kms-signing.md`. So is the rule that
 only gets abstentions ends with the bond to the maker. What an operator's list holds can't be read from here, but the default of the runner at the pin
 can (`ghcr.io/verdikta`): `services.js` warns when `publish-repository` is off it, and with `signing: production` it stops.
 
-Neither workflow has a trigger of its own and nothing in this repository calls them: publishing under
-Verdikta's registry namespace and the key's access are owner gate G1. Their tests read their YAML and
+Neither workflow has a trigger of its own, and the only call in this repository is CI's dry run of the builder
+workflow, which publishes and signs nothing: publishing under Verdikta's registry namespace and the key's access
+are owner gate G1. Their tests read their YAML and
 unit-test the scripts they call (`test/unit/action.test.js`, `test/unit/kmsSigning.test.js` and
 `test/unit/kmsWorkflow.test.js`, which runs the KMS signer against a stub `aws` and never a cloud; the
 real check is opt-in, `builder/action/kms-live-check.js`); `test/docker/image.docker.test.js` runs the image hand-off
@@ -1174,7 +1203,10 @@ sidecar on loopback with its own token and environment (`SA_CODE_RUNNER_DIR` poi
 checkout of that commit's `code-runner/`; otherwise the tests fetch it). The fixture's commands are plain `forge`,
 its setup lets forge download an official solc (the build's network), and one of its tests asks through ffi
 for the routes it has, so a listing accepted with that test stable shows the network was there at setup and on none of the
-suite's runs. Shell-prefixed commands are refused there by the runner's own code, and an image holding a changed `solc` or a
+suite's runs. CI runs `builder/action/egress-rules.sh` before them, as the build job does, so they build under its rules,
+and `test/docker/egress.docker.test.js` holds those rules to both sides there: a setup resolves a public name and makes an
+HTTPS request, and gets no TCP connection to `169.254.169.254:80`, `168.63.129.16:80` or `168.63.129.16:32526` (it skips,
+saying why, where `SA_BUILDER_EGRESS_RULES=1` is not set). Shell-prefixed commands are refused there by the runner's own code, and an image holding a changed `solc` or a
 `vyper` is refused by name (`SOLC_NOT_OFFICIAL`, `VYPER_NOT_SUPPORTED`). `test/docker/action.docker.test.js` runs the reusable workflow's
 `services.js` for real, on Linux, where the Semgrep image a claim needs may not be there yet. `SA_BUILDER_TEST_RUNSC=1`, on a daemon
 with `runsc`, also runs the real Semgrep under gVisor.

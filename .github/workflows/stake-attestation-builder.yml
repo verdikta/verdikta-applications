@@ -253,10 +253,9 @@ jobs:
       - name: Install the builder's locked dependencies without lifecycle scripts
         run: npm ci --ignore-scripts --prefix "$VAB_BUILDER"
       - name: Keep the build's containers off the host's metadata services
-        # The maker's setup runs with network: it must reach nothing private from this runner.
-        run: |
-          sudo iptables -I DOCKER-USER -d 169.254.169.254 -j DROP
-          sudo iptables -I DOCKER-USER -d 168.63.129.16 -j DROP
+        # The maker's setup runs with network: it must reach nothing private from this runner, and it needs DNS,
+        # whose resolver here is on one of those addresses (action/egress-rules.sh says which ports stay open, and why).
+        run: sudo bash "$VAB_BUILDER/action/egress-rules.sh"
       - name: Install gVisor (pinned, SHA-512 checked, systrap platform)
         if: inputs.runtime == 'runsc'
         run: |

@@ -206,6 +206,19 @@ test('HTTPS serves the client\'s build from its web root: index.html never cache
   assert.deepEqual(one(location(https, '/assets/').block, 'expires').args, ['max']);
 });
 
+// Node P27: the agents' documents come with the client's build (client/public, which Vite copies to the build's root).
+// nginx names text/plain without a charset, so each has an exact location that adds charset utf-8 and nothing else:
+// no add_header (the include's headers stay inherited), no other type, the same web root.
+test('HTTPS serves /agents.txt and /llms.txt from the web root as UTF-8: an exact location each, with charset utf-8 alone', () => {
+  const https = siteServer(443);
+  for (const name of ['agents.txt', 'llms.txt']) {
+    assert.ok(fs.existsSync(path.join(APP_DIR, 'client', 'public', name)), `client/public/${name}`);
+    const l = location(https, '=', `/${name}`);
+    assert.deepEqual(l.block.map((d) => [d.name, ...d.args]), [['charset', 'utf-8']], `location = /${name}`);
+  }
+  assert.equal(all(tree(), 'charset').length, 2, 'charset only there');
+});
+
 const upstreams = () => tree().filter((n) => n.name === 'upstream');
 
 test('/api goes to the server on 127.0.0.1:5009, and nowhere else is proxied', () => {

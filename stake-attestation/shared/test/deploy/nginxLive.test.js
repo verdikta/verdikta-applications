@@ -98,6 +98,17 @@ test('HTTPS: the page, an asset, an API answer, a 404 and a 413 all carry the in
   hasKitHeaders(big, 'a 413');
 });
 
+// Node P27: CI's deploy job copies client/public's two files into the web root, as the client's build carries them.
+test('/agents.txt and /llms.txt: 200, text/plain; charset=utf-8, the include file\'s headers, and the client\'s files byte for byte', opts, async () => {
+  for (const name of ['agents.txt', 'llms.txt']) {
+    const r = await ask({ pathname: `/${name}` });
+    assert.equal(r.status, 200, name);
+    assert.equal(r.headers['content-type'], 'text/plain; charset=utf-8', name);
+    hasKitHeaders(r, `/${name}`);
+    assert.equal(r.body, fs.readFileSync(path.join(here, '..', '..', '..', 'client', 'public', name), 'utf8'), name);
+  }
+});
+
 test('/api is proxied to 127.0.0.1:5009 as it was asked, with the site\'s host; nothing else is', opts, async () => {
   seen.length = 0;
   const r = await ask({ method: 'POST', pathname: '/api/listings/deployment-message', body: '{"a":1}' });

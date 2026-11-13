@@ -297,7 +297,7 @@ The kit deploys nothing by itself.
 
 | File | On the host | |
 |---|---|---|
-| `deploy/nginx/verifiers.verdikta.org.conf` | `/etc/nginx/sites-available/verifiers.verdikta.org`, linked from `sites-enabled/` | HTTP to HTTPS, certbot's certificate, the client's build, `/api` to the server, the body, time and rate limits |
+| `deploy/nginx/verifiers.verdikta.org.conf` | `/etc/nginx/sites-available/verifiers.verdikta.org`, linked from `sites-enabled/` | HTTP to HTTPS, certbot's certificate, the client's build (with `/agents.txt` and `/llms.txt` as `text/plain; charset=utf-8`, an exact location each that adds the charset), `/api` to the server, the body, time and rate limits |
 | `deploy/nginx/verifiers.verdikta.org-headers.conf` | `/etc/nginx/snippets/` | the Content-Security-Policy and the other headers, the one file for them |
 | `deploy/systemd/verdikta-verifiers.service` | `/etc/systemd/system/` | the server, as the unprivileged user `verifiers`, restarted on failure |
 | `deploy/systemd/user@.service.d/delegate.conf` | `/etc/systemd/system/user@.service.d/` | cgroup v2 delegation, so rootless Docker applies the scan's limits |
@@ -1234,7 +1234,8 @@ real contract cannot produce is not added to the mock.
 ## The hunter tool
 
 `tool/` (node P5) is the hunter's side of a claim, a CLI and a library (`createHunter`, `src/hunter.js`): the CLI only parses
-arguments and prints. Base Sepolia and local nodes only, for now: any other chain is refused.
+arguments and prints. Base Sepolia and local nodes only, for now: any other chain is refused. An agent that has only the
+site's URL learns all of this from the site's `/agents.txt` ("The client", **For agents**).
 
 A claim folder holds `finding.json`, `report.md`, `poc.patch` and optionally `fix.patch`.
 
@@ -1445,6 +1446,21 @@ goes in a URL.
   archive hash, all in the browser. A key that is not the listing's is the maker's mistake and
   is reported as such. A copy that fails, or that cannot be fetched, may be flagged with
   `flagBadDisclosure` through the wallet while the chain's clock is inside the grace period.
+- **For agents** (node P27). An agent given only the site's URL learns what to do from two plain-text files in
+  `client/public/`, which Vite copies to the build's root and nginx serves as `text/plain; charset=utf-8`:
+  `client/public/agents.txt`, the hunter's guide (what a listing, a claim and the record are, the outcomes and what
+  each pays, reading `/api/feed` and the listing archive, a claim's life and deadlines from the contract, costs read
+  live, getting and running `verdikta-attest` from this branch, the claim folder, pinning and the wallet, `check`,
+  keeping `.verdikta-claim/`), and `client/public/llms.txt`, an index in the llms.txt format (a title, a summary and
+  lists of links) that points to it. Every page's footer links both. Neither states a listing's value as a fact: each
+  names the field that holds it. They stay true by `client/test/agentDocs.test.js`, which fails when a command, flag,
+  environment variable, exit code, API route, contract function or constant, file, `@verdikta/common` version in a
+  link or host they name stops matching the code (the CLI's own lists, the tool's exit table, `server/src`'s routes,
+  the tool's merged ABI, the Solidity source, common's installed release), and which names the branch they send an
+  agent to for the tool once, `TOOL_REF`: at G3 that line becomes `main`, with the documents.
+  `client/test/agentDocsBuild.test.js` builds the client and reads both files in the build, and CI's deploy job reads
+  them back through nginx with the kit's headers. So a change to what they name fails the client's tests until the
+  documents say it.
 
 **Config** is Vite's build environment: `VITE_SA_CHAIN_ID`, `VITE_SA_CONTRACT`,
 `VITE_SA_RPC_URL` (reads; without it, reads go through the wallet) and `VITE_IPFS_GATEWAY` (one
@@ -1627,6 +1643,6 @@ tests against local Hardhat and the server, the builder's Docker tests (a job of
 registry:2 and the pinned code-runner under runc, and gVisor for the real Semgrep's answer), the banned-words check and actionlint
 (1.7.12, checksum pinned) over it and the reusable builder workflow, the local round (a job of its own,
 on linux/amd64), the client's flows again under the deploy kit's headers, and the deploy kit's nginx config (a job of
-its own: `nginx -t`, then nginx in front of a stub server), and uses no secrets. A new
+its own: `nginx -t`, then nginx in front of a stub server, which also serves the agents' documents), and uses no secrets. A new
 package is added to the workflow and to `shared/test/repo/helpers.js` together;
 the workflow test fails until both list it.

@@ -279,20 +279,50 @@ test('every environment variable they name is one the tool reads, with the defau
   assert.deepEqual([...new Set(written)].sort(), [...backends].sort(), 'every backend the tool takes is shown');
 });
 
-test('the exit codes are the tool\'s table, and the flag each acknowledgement needs is on its line', () => {
+// Each exit's line names the error codes that end with it (all but 1's, which is every other refusal), so a code that
+// moves to another exit, an existing one included, fails here; and the CLI's own returns are on the lines they use.
+test('the exit codes are the tool\'s table: each line names exactly the error codes that end with it, and the flags they need', () => {
   const text = agents();
   const start = text.indexOf('\nExit codes:\n');
   assert.ok(start >= 0, 'agents.txt has an Exit codes block');
   const block = text.slice(start + 1).split('\n\n')[0];
-  const stated = new Map([...block.matchAll(/^ +(\d) {2}(.+)$/gm)].map((m) => [Number(m[1]), m[2]]));
+  const stated = new Map();
+  let last = null;
+  for (const line of lines(block).slice(1)) {
+    const m = /^ {2}(\d) {2}(.+)$/.exec(line);
+    if (m) stated.set((last = Number(m[1])), m[2]);
+    else if (last !== null && /^ {5}\S/.test(line)) stated.set(last, `${stated.get(last)} ${line.trim()}`);
+  }
   const exits = toolExits();
   assert.deepEqual([...stated.keys()].sort(), [...exits.keys()].sort(), 'the codes stated are the codes the tool returns');
-  for (const [exit, codes] of exits) {
-    if (exit <= 1) continue; // 1 is every other refusal's, and its texts name flags of their own
-    const flags = new Set(codes.flatMap((c) => [...ERROR_TEXTS[c].matchAll(/--[a-z][a-z-]*/g)].map((m) => m[0])));
-    for (const f of flags) assert.ok(stated.get(exit).includes(f), `exit ${exit} is ${codes.join(', ')}: its line names ${f}`);
+  const exitOf = (code) => new ToolError(code).exitCode;
+  for (const [exit, line] of stated) {
+    const named = [...line.matchAll(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*\b/g)].map((m) => m[0]).filter((c) => Object.hasOwn(ERROR_TEXTS, c));
+    for (const c of named) assert.equal(exitOf(c), exit, `exit ${exit}'s line names ${c}, which the tool ends with ${exitOf(c)}`);
+    if (exit <= 1) continue;
+    assert.deepEqual([...new Set(named)].sort(), [...exits.get(exit)].sort(), `exit ${exit}'s line names the codes that end with it`);
+    const flags = new Set(exits.get(exit).flatMap((c) => [...ERROR_TEXTS[c].matchAll(/--[a-z][a-z-]*/g)].map((m) => m[0])));
+    for (const f of flags) assert.ok(line.includes(f), `exit ${exit} is ${exits.get(exit).join(', ')}: its line names ${f}`);
   }
+  // the CLI's own: status --wait out of time, and check's forecast short of a pass
+  const cli = toolSrc('cli.js');
+  const waitExit = Number(/r\.timedOut \? (\d) : 0/.exec(cli)[1]);
+  const checkExit = Number(/r\.forecast\.verdict === 'pass' \? 0 : (\d)/.exec(cli)[1]);
+  assert.match(stated.get(waitExit), /status --wait/, `status --wait out of time ends with ${waitExit}`);
+  assert.match(stated.get(checkExit), /\bcheck\b/, `check short of a pass ends with ${checkExit}`);
   assert.match(stated.get(4), /again/, 'exit 4: run the same command again');
+});
+
+// tools/src/commit.js asks for --yes only before a commit is signed; a resumed one goes on without it (R1-F1).
+test('what they say commit does without --yes is what commit.js does', () => {
+  const commit = toolSrc('commit.js');
+  const asksOnlyFirst = /if \(!state \|\| state\.stage === 'prepared'\) \{\s*const \{ listing, inputs \} = await readyToCommit\(/.test(commit);
+  assert.ok(asksOnlyFirst, 'commit.js reads the acknowledgement only for a folder with no commit signed (readyToCommit)');
+  assert.match(/function readyToCommit[\s\S]*?\n\}/.exec(commit)[0], /NEEDS_ACKNOWLEDGEMENT/);
+  const text = agents().replace(/\s+/g, ' ');
+  assert.match(text, /`commit` on a folder with no commit signed yet/);
+  assert.match(text, /Once a commit is signed, `commit` resumes it on every run, --yes or not/);
+  assert.doesNotMatch(text, /verdikta-attest commit [^#\n]*# prints the terms and the price; sends nothing/);
 });
 
 test('every /api route they name is one of the server\'s, by method, and every #/ page one of the client\'s', () => {
@@ -468,8 +498,10 @@ test('no per-listing value is stated as a fact: no amount, address or hash, and 
       // the key file's modes, as the tool states them, and the umask that makes one: the bits cli.js refuses
       ...(ERROR_TEXTS.WALLET_KEY_FILE.match(/\b0[0-7]{3}\b/g) ?? []),
       ...[...toolSrc('cli.js').matchAll(/st\.mode & 0o(0[0-7]{2})\)/g)].map((m) => m[1]),
+      // the claim folder's and its files' modes, as tool/src/workspace.js sets them
+      ...[...toolSrc('workspace.js').matchAll(/\b0o([0-7]{3})\b/g)].map((m) => `0${m[1]}`),
     ]);
-    for (const m of stripped.matchAll(/(?<![\w.])\d{3,}(?![\w.])/g)) assert.ok(allowed.has(m[0]), `${name}: ${m[0]} is a number nothing here checks (a listing's value?)`);
+    for (const m of stripped.matchAll(/(?<!\w|\d\.)\d{3,}(?!\w|\.\d)/g)) assert.ok(allowed.has(m[0]), `${name}: ${m[0]} is a number nothing here checks (a listing's value?)`);
     assert.doesNotMatch(stripped, /\b\d+(?:\.\d+)?\s*(?:ETH|wei|gwei)\b/i, `${name}: an amount`);
     assert.doesNotMatch(text, /0x[0-9a-fA-F]{8,}/, `${name}: an address or a hash`);
     for (const m of text.matchAll(/\b(\d+)\b/g)) {

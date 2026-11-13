@@ -188,8 +188,11 @@ contract's own address):
     cast call "$VERDIKTA_CONTRACT" "commitPrice(uint256)(uint256)" <listingId> --rpc-url https://sepolia.base.org
     cast call "$VERDIKTA_CONTRACT" "disputeFee(uint256)(uint256)" <listingId> --rpc-url https://sepolia.base.org
 
-Or let the tool say it: `commit`, `appeal` and `reveal --retrigger` print what they will send,
-and send nothing without --yes (exit 3). The amount printed is the amount sent.
+Or let the tool say it: `commit` on a folder with no commit signed yet, `appeal` and
+`reveal --retrigger` print what they will send and send nothing without --yes (exit 3). The
+amount printed is the amount sent. Once a commit is signed, `commit` resumes it on every run,
+--yes or not: it sends the saved commit and then the disclose. So read a price for a claim
+already under way with cast, not with `commit`. `reveal` asks for no --yes: it pays the top-up.
 
 ## 5. Getting and running verdikta-attest
 
@@ -218,7 +221,7 @@ The environment it reads:
 The commands, in order (`./claim` is your claim folder, section 6):
 
     verdikta-attest check ./claim --listing <listingId>          # optional, needs a runner: section 8
-    verdikta-attest commit ./claim --listing <listingId>         # prints the terms and the price; sends nothing
+    verdikta-attest commit ./claim --listing <listingId>         # first run: the terms and the price; sends nothing
     verdikta-attest commit ./claim --listing <listingId> --yes   # commit, pin, disclose
     verdikta-attest status ./claim                               # where the claim stands, and what is next
     verdikta-attest reveal ./claim                               # once the fix window is over
@@ -235,9 +238,10 @@ wait for their transactions too: if your shell stops one, run the same command a
 Exit codes:
   0  done
   1  refused or failed: stderr says why, as "verdikta-attest: <CODE>: <text>" (check: its forecast)
-  2  usage error
-  3  it needs --yes (or --waive-appeal): read what it printed, then run it again with that flag
-  4  still pending: run the same command again
+  2  usage error (USAGE)
+  3  it needs --yes (NEEDS_ACKNOWLEDGEMENT) or --waive-appeal (NEEDS_WAIVER): read what it
+     printed, then run it again with that flag
+  4  still pending (TX_PENDING, WALLET_BUSY, or status --wait out of time): run the same command again
 
 A stopped run, at any point, can be run again: it goes on from what it saved and sends the saved
 transaction again rather than a new one, so it never pays twice. The tool refuses any chain but
@@ -324,9 +328,11 @@ The wallet:
 - Use one wallet for the whole claim: only the claim's hunter discloses, reveals and appeals,
   and the claim folder belongs to that wallet (STATE_MISMATCH otherwise).
 - Never pass the key or a token as a command argument, never print or log either, and never
-  put either in the claim folder or a repository. Make the key file without the key on a
-  command line, for example from a variable, with printf, a shell builtin:
-      (umask 077 && printf '%s\n' "$KEY" > "$HOME/hunter.key")
+  put either in the claim folder or a repository. Make the key file in a folder of its own that
+  did not exist before (mktemp -d makes it, mode 0700), so no older file or link is written
+  through, and without the key on a command line: from a variable, with printf, a shell builtin.
+      d="$(mktemp -d "$HOME/verdikta-key.XXXXXX")" && (umask 077 && printf '%s\n' "$KEY" > "$d/wallet.key")
+  Then pass --key-file "$d/wallet.key".
 - Set VERDIKTA_PIN_TOKEN (and VERDIKTA_WALLET_KEY, if you use it) from a file or a secret store,
   never by typing the value: export VERDIKTA_PIN_TOKEN="$(cat "$HOME/pin-token")".
 - The tool removes VERDIKTA_WALLET_KEY from its own environment once it has read it, and

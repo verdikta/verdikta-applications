@@ -9,6 +9,7 @@ on:
       - '.github/workflows/stake-attestation.yml'
       - '.github/workflows/stake-attestation-builder.yml'
       - '.github/workflows/stake-attestation-builder-sign.yml'
+      - '.verdikta/**'
   workflow_dispatch:
 permissions:
   contents: read

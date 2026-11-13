@@ -349,10 +349,20 @@ prevented, deployment branches limited to `main`, no administrator bypass. It ho
 person, until the owner's step under "With reviewers off".
 
 **6. The image and the token.** `ghcr.io/verdikta/stake-env` public, with only the caller given write access. A token
-with Actions: read and write on the caller and nothing else, without Deployments, held by an identity that isn't a
-required reviewer: `SA_BUILD_WORKFLOW_TOKEN` in the server's environment, with `SA_BUILD_BACKEND=workflow`,
+goes in the server's environment as `SA_BUILD_WORKFLOW_TOKEN`, with `SA_BUILD_BACKEND=workflow`,
 `SA_BUILD_WORKFLOW_REPO=verdikta/<caller>`, and `SA_BUILD_WORKFLOW_SITE` naming this site. Its reach is under "What the
 token can do".
+
+- **Who holds it:** a member of the organization who isn't a required reviewer, with Write on the caller and on no other
+  repository. An outside collaborator won't do: outside collaborators can use only classic tokens on an organization's
+  repositories
+  ([GitHub's personal-access-token docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)),
+  and a classic token can't be narrowed to Actions. A token can do no more than its holder, so the holder needs Write to
+  start and cancel runs. Turn on two-factor for that login, and keep the login off the site's host, so the host holds
+  only the token.
+- **The token:** fine-grained and owned by the organization, for the caller only, with Actions: read and write and no
+  Deployments. GitHub adds read-only Metadata to every such token; nothing else is granted. The organization may require
+  an owner to approve it before it works.
 
 The pin: this repository's packages pin `@verdikta/common` `1.9.0-attest.5`, which holds this key (it has since
 `1.9.0-attest.3`), so production signing is no longer refused as `SIGNING_KEY_NOT_TRUSTED`. `<commit>` has to be at or

@@ -214,7 +214,12 @@ export function createControlProof({ AbiCoder, Interface, getAddress, hashMessag
     return owner === ZERO ? null : owner;
   }
 
-  /** Whether `signer` signed `message`: { valid, contract }. */
+  /**
+   * Whether `signer` signed `message`: { valid, contract }. ECDSA first: a signature that recovers to the signer is its
+   * own, contract false, and nothing is read, whatever code its account holds (an EIP-7702 delegation designator, as
+   * the testnet maker's has). Only one that doesn't recover reads the signer's code and, if there is any, asks its
+   * EIP-1271 isValidSignature.
+   */
   async function signatureCheck(provider, { message, signer, signature, blockTag }) {
     let recovered = null;
     try {
@@ -233,9 +238,9 @@ export function createControlProof({ AbiCoder, Interface, getAddress, hashMessag
    * from the deployment's current owner (owner(), EIP-173's read) or its deployer (the transaction
    * that created it, given by its hash, so a reader can look it up: tx.from is the signer and its
    * receipt's contractAddress is the deployment; a deployment made through a factory has no such
-   * transaction and is proved by its owner). A signer with code answers through EIP-1271's
-   * isValidSignature; every other signer's signature is recovered. Every read is of one block, which
-   * the record states.
+   * transaction and is proved by its owner). The signer's signature is recovered first, and counts
+   * whatever code its account holds; one that doesn't recover counts only if the signer has code and
+   * its EIP-1271 isValidSignature answers for it. Every read is of one block, which the record states.
    * @param {{ send: Function, getBlockNumber: Function, getCode: Function, call: Function, getTransaction: Function, getTransactionReceipt: Function }} provider -
    *   the listing's chain
    * @param {object} o
@@ -271,5 +276,5 @@ export function createControlProof({ AbiCoder, Interface, getAddress, hashMessag
     return { ok: false, reason: 'SIGNER_NOT_CONTROLLER' };
   }
 
-  return { canonicalAddress, parseControlFile, readAnswerFile, controlMessage, contractArtifactHash, checkDeploymentProof, EIP1271_MAGIC };
+  return { canonicalAddress, parseControlFile, readAnswerFile, controlMessage, contractArtifactHash, signatureCheck, checkDeploymentProof, EIP1271_MAGIC };
 }

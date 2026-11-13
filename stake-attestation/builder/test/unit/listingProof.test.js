@@ -230,13 +230,13 @@ test('this repository\'s own proof file, as the builder reads it: a listing of i
   const text = fs.readFileSync(path.join(REPO_ROOT, '.verdikta', 'stake-control.json'), 'utf8');
   const named = JSON.parse(text).maker;
   const checkRepositoryControl = async () => ({ reachable: true, ref: 'refs/heads/main', file: { path: '.verdikta/stake-control.json', mode: '100644', blob: 'b'.repeat(40), size: Buffer.byteLength(text), text, problem: null } });
+  // the URL read is the stand-in's: what decides is the file's text, which is this repository's
   const h = repo();
   const commit = h.commit();
-  const repoUrl = 'https://github.com/verdikta/verdikta-applications';
-  const ok = await attempt({ h, commit, repoUrl, maker: named, checkRepositoryControl });
+  const ok = await attempt({ h, commit, maker: named, checkRepositoryControl });
   assert.equal(ok.status, 'accepted', JSON.stringify(ok.report.refusals ?? ok.report.error));
   assert.equal(ok.report.control.maker, named, 'the file writes the maker in the form the builder compares');
-  nothingBuilt(await attempt({ h, commit, repoUrl, maker: STRANGER, checkRepositoryControl }), 'PROOF_NAMES_ANOTHER_ADDRESS');
+  nothingBuilt(await attempt({ h, commit, maker: STRANGER, checkRepositoryControl }), 'PROOF_NAMES_ANOTHER_ADDRESS');
 });
 
 test('a chain that cannot be read is an error to retry, never an acceptance', async () => {

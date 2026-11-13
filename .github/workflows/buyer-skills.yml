@@ -10,7 +10,8 @@ permissions:
   contents: read
 jobs:
   offline-validation:
-    runs-on: ubuntu-latest
+    # ubuntu-latest is now ubuntu-26.04, where the locked Playwright 1.59.1 cannot install Chromium. Pin it until Playwright is bumped.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

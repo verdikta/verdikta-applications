@@ -8,7 +8,8 @@ import { execFileSync } from 'node:child_process';
 import { REPO_ROOT } from './helpers.js';
 
 // The reusable builder workflow (P3b) lives beside it: GitHub runs a called workflow only from .github/workflows.
-const ALLOWED_OUTSIDE = ['.github/workflows/stake-attestation.yml', '.github/workflows/stake-attestation-builder.yml', '.github/workflows/stake-attestation-builder-sign.yml'];
+// The repository's own proof file (P25) is at its root, where a listing of the repository looks for it.
+const ALLOWED_OUTSIDE = ['.github/workflows/stake-attestation.yml', '.github/workflows/stake-attestation-builder.yml', '.github/workflows/stake-attestation-builder-sign.yml', '.verdikta/stake-control.json'];
 const UNTOUCHABLE = ['example-bounty-program/onchain/contracts/BountyEscrow.sol'];
 
 function git(...args) {

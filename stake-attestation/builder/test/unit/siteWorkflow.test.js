@@ -208,6 +208,29 @@ describe('the docs say what the owner accepted', () => {
     assert.doesNotMatch(DOC, /can only start/i);
   });
 
+  // Node P25: outside collaborators can use only classic tokens on an organization's repositories, and a classic token
+  // can't be narrowed to Actions, so the holder is a member
+  test('step 6: the token\'s holder is a member of the organization and no required reviewer; the token is fine-grained, the organization\'s, for the caller alone', () => {
+    const start = DOC.indexOf('**6. The image and the token.**');
+    assert.ok(start >= 0, 'step 6');
+    const step = DOC.slice(start, DOC.indexOf('**7. ', start)).replace(/\s+/g, ' ');
+    for (const needle of [
+      /member of the organization who isn't a required reviewer/,
+      /outside collaborators can use only classic tokens/i,
+      /Write on the caller/,
+      /two-factor/,
+      /off the site's host/,
+      /fine-grained/,
+      /owned by the organization/,
+      /Actions: read and write/,
+      /no Deployments/,
+      /may require an owner to approve it/,
+      /What the token can do/,
+    ]) assert.match(step, needle);
+    assert.doesNotMatch(step, /held by an identity/);
+    assert.doesNotMatch(step, /base permission/i);
+  });
+
   test('no account detail', () => {
     for (const text of [DOC, callerText]) {
       assert.doesNotMatch(text, /\b[0-9]{12}\b/);
@@ -380,6 +403,19 @@ describe('the sign job checks the request again, on a machine the maker\'s code 
   test('production signing starts by workflow_dispatch alone, the caller\'s only trigger', () => {
     assert.match(signer.jobs.sign.steps[0].run, /workflow_dispatch\)/);
     assert.doesNotMatch(signer.jobs.sign.steps[0].run, /repository_dispatch/);
+  });
+});
+
+// Node P25: the testnet maker's wallet has code, an EIP-7702 delegation designator, and its owner signs with the
+// account's own key. Neither job reads a chain: they recover the wallet's signature of the request as any wallet's,
+// so what code the account holds cannot change their answer.
+describe('a maker whose wallet holds a 7702 designator', () => {
+  test('both jobs take its signature of a request, made with its own key, as any wallet\'s', async () => {
+    const delegated = Wallet.createRandom();
+    const signedJson = requestOf({ maker: delegated.address });
+    const { request, auth } = await signedBy(delegated, signedJson);
+    assert.equal(unpackSiteRequest({ request, auth, maker: delegated.address, out: tmp() }).spec, 'draft.json');
+    assert.equal(checkSignedFiles({ request, auth, maker: delegated.address, dir: builtFolder(signedJson), publishAs: IMAGE_REPOSITORY }).maker, delegated.address);
   });
 });
 

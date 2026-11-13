@@ -54,6 +54,16 @@ test('runs on pull requests into main and claude/stake-attestation that touch th
 test('needs no secrets and only reads the repository', () => {
   assert.equal(/secrets\./.test(text), false, 'the workflow references a secret');
   assert.deepEqual(wf.permissions, { contents: 'read' });
+  // But for the call of the builder's dry run (node P26): GitHub checks a called job's permissions before anything
+  // runs, so the call grants publish's packages: write, and build-only skips publish (builder/test/unit/dryRun.test.js).
+  for (const [name, job] of Object.entries(wf.jobs ?? {})) {
+    if (name === 'builder-dry-run') {
+      assert.deepEqual(job.permissions, { contents: 'read', packages: 'write' });
+      assert.equal(job.with?.['build-only'], true);
+    } else {
+      assert.equal(job.permissions, undefined, name);
+    }
+  }
 });
 
 test('every package gets npm ci and its tests', () => {

@@ -1,9 +1,9 @@
 // The reusable builder workflow (design §8.2 "a reusable GitHub Action", §20 decision 3; node P3b
 // acceptance 3): the same builder, no secrets in the build job, the image published by a job of
-// its own, signing in a separate job that receives only the build's outputs. Nothing here runs
-// it against a registry: the workflow has no trigger of its own (publishing under
-// ghcr.io/verdikta is owner gate G1). These tests read its YAML and unit-test the scripts it
-// calls; CI also lints it with actionlint.
+// its own, signing in a separate job that receives only the build's outputs. The workflow has no
+// trigger of its own (publishing under ghcr.io/verdikta is owner gate G1); CI runs it once, as a
+// dry run with build-only, which pushes only to the runner's loopback registry (test/unit/dryRun.test.js).
+// These tests read its YAML and unit-test the scripts it calls; CI also lints it with actionlint.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -33,7 +33,7 @@ const steps = (name) => job(name).steps;
 const uses = (name, action) => steps(name).filter((s) => String(s.uses ?? '').startsWith(`${action}@`));
 const runs = (name) => steps(name).filter((s) => s.run).map((s) => s.run).join('\n');
 
-test('a reusable workflow: it runs only when another workflow calls it, and nothing in this repository does (G1)', () => {
+test('a reusable workflow: it runs only when another workflow calls it, and in this repository only CI\'s dry run does, with build-only (G1)', () => {
   assert.deepEqual(Object.keys(wf.on), ['workflow_call']);
   const inputs = wf.on.workflow_call.inputs;
   for (const name of ['builder-ref', 'publish-repository']) assert.equal(inputs[name].required, true, name);
@@ -43,10 +43,15 @@ test('a reusable workflow: it runs only when another workflow calls it, and noth
   assert.equal(inputs.runtime.default, 'runsc');
   assert.doesNotMatch(text.slice(text.indexOf('\njobs:')), /ghcr\.io\/verdikta\b/, 'no job names a registry either');
   assert.deepEqual(wf.permissions, {}, 'each job asks for what it needs');
+  const callers = [];
   for (const f of fs.readdirSync(WORKFLOWS)) {
     if (f === path.basename(FILE)) continue;
-    assert.doesNotMatch(fs.readFileSync(path.join(WORKFLOWS, f), 'utf8'), /uses:\s*['"]?\S*stake-attestation-builder\.yml/, `${f} calls the builder workflow`);
+    const other = fs.readFileSync(path.join(WORKFLOWS, f), 'utf8');
+    if (!/uses:\s*['"]?\S*stake-attestation-builder\.yml/.test(other)) continue;
+    for (const [name, j] of Object.entries(parse(other).jobs)) if (/stake-attestation-builder\.yml/.test(String(j.uses ?? ''))) callers.push({ file: f, name, j });
   }
+  assert.deepEqual(callers.map((c) => `${c.file}#${c.name}`), ['stake-attestation.yml#builder-dry-run'], 'one call, the dry run');
+  assert.equal(callers[0].j.with['build-only'], true, 'it publishes and signs nothing');
 });
 
 test('artifact names are this invocation\'s: a caller may build several listings in one run', () => {
@@ -100,9 +105,8 @@ test('the build job holds no secret and no token scope, and runs the same builde
   assert.match(r, /action\/services\.js" stop\b/);
   // Inputs reach scripts through the environment, never spliced into the script text.
   for (const s of steps('build')) if (s.run) assert.doesNotMatch(s.run, /\$\{\{/, s.name);
-  // The build's containers cannot reach the host's metadata services.
-  assert.match(r, /DOCKER-USER -d 169\.254\.169\.254/);
-  assert.match(r, /DOCKER-USER -d 168\.63\.129\.16/);
+  // The build's containers cannot reach the host's metadata services (action/egress-rules.sh; test/unit/egress.test.js).
+  assert.match(r, /^sudo bash "\$VAB_BUILDER\/action\/egress-rules\.sh"$/m);
 });
 
 test('the image is published by a job of its own, which runs none of the maker\'s code', () => {
@@ -255,7 +259,7 @@ test('image.js: skopeo by digest, preserving digests, through its dir layout; pl
 test('CI lints this workflow with a pinned actionlint, and runs the app\'s checks when it changes', () => {
   const ci = parse(fs.readFileSync(path.join(WORKFLOWS, 'stake-attestation.yml'), 'utf8'));
   assert.ok(ci.on.pull_request.paths.includes('.github/workflows/stake-attestation-builder.yml'));
-  const all = Object.values(ci.jobs).flatMap((j) => j.steps).filter((s) => s.run).map((s) => s.run).join('\n');
+  const all = Object.values(ci.jobs).flatMap((j) => j.steps ?? []).filter((s) => s.run).map((s) => s.run).join('\n');
   assert.match(all, /actionlint_1\.7\.12_linux_amd64\.tar\.gz/);
   assert.match(all, /8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8/);
   assert.match(all, /actionlint[^\n]*\.github\/workflows\/stake-attestation-builder\.yml/);

@@ -49,13 +49,14 @@ test('the workflow a maker calls can\'t mint a cloud identity at all, reads no s
     assert.equal(j.permissions?.['id-token'], undefined, name);
     assert.equal(j.environment, undefined, name);
   }
-  assert.equal(mainWf.jobs.sign.if, "inputs.signing != 'production'");
+  assert.equal(mainWf.jobs.sign.if, "inputs.signing != 'production' && !inputs.build-only");
   assert.deepEqual(mainWf.jobs.sign.permissions, { contents: 'read' });
   // The next job of a production caller gets what it needs to check the build's outputs.
   assert.equal(mainWf.on.workflow_call.outputs['artifact-id'].value, '${{ jobs.build.outputs.artifact-id }}');
-  // Empty unless the build ran under production's checks (the publish target, the trusted key), and the signing
-  // workflow's first step refuses an empty digest: a listing built as dev can't be handed on to be signed.
-  assert.equal(mainWf.on.workflow_call.outputs['outputs-sha256'].value, "${{ inputs.signing == 'production' && jobs.build.outputs.outputs-sha256 || '' }}");
+  // Empty unless the build ran under production's checks (the publish target, the trusted key) and was published,
+  // and the signing workflow's first step refuses an empty digest: a listing built as dev, or built only (build-only,
+  // which publishes nothing), can't be handed on to be signed.
+  assert.equal(mainWf.on.workflow_call.outputs['outputs-sha256'].value, "${{ inputs.signing == 'production' && !inputs.build-only && jobs.build.outputs.outputs-sha256 || '' }}");
 });
 
 test('no other job in any workflow here asks for a cloud identity, and CI has no way to reach the key', () => {
@@ -219,7 +220,7 @@ test('a token endpoint that fails or answers nonsense is a refusal', () => {
 test('the signing workflow is linted and scanned in CI, and CI runs on a change to it', () => {
   const ci = parse(ciText);
   assert.ok(ci.on.pull_request.paths.includes('.github/workflows/stake-attestation-builder-sign.yml'));
-  const all = Object.values(ci.jobs).flatMap((j) => j.steps).filter((s) => s.run).map((s) => s.run).join('\n');
+  const all = Object.values(ci.jobs).flatMap((j) => j.steps ?? []).filter((s) => s.run).map((s) => s.run).join('\n');
   assert.match(all, /actionlint"? [^\n]*\.github\/workflows\/stake-attestation-builder-sign\.yml/);
   assert.match(all, /check-forbidden-words\.js[^\n]*\.github\/workflows\/stake-attestation-builder-sign\.yml/);
 });

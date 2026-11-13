@@ -297,7 +297,7 @@ test('the exit codes are the tool\'s table, and the flag each acknowledgement ne
 
 test('every /api route they name is one of the server\'s, by method, and every #/ page one of the client\'s', () => {
   const routes = serverRoutes();
-  assert.ok(routes.some((r) => r.path === '/api/feed'), 'server/src was read');
+  assert.ok(routes.length >= 10, 'server/src was read');
   let n = 0;
   for (const [name, text] of docs()) {
     for (const d of docRoutes(text)) {

@@ -339,6 +339,8 @@ jobs:
           set -euo pipefail
           echo '<!doctype html><title>stand-in</title>' | sudo tee /var/www/verifiers.verdikta.org/index.html > /dev/null
           echo 'export {};' | sudo tee /var/www/verifiers.verdikta.org/assets/index-test.js > /dev/null
+          # the agents' documents, as the client's build carries them (Vite copies client/public to the build's root)
+          sudo cp ../client/public/agents.txt ../client/public/llms.txt /var/www/verifiers.verdikta.org/
           echo 'test-token' | sudo tee /var/www/html/.well-known/acme-challenge/test-token > /dev/null
           sudo systemctl restart nginx
           node --test test/deploy/nginxLive.test.js

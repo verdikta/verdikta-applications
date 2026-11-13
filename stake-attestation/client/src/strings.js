@@ -31,6 +31,13 @@ export const STRINGS = {
       'The feed lists every stake that takes claims, and each artifact hash has a public record. Makers list a ' +
       'version, check the disclosures hunters send them, and release, roll forward or dispute from a claim or listing page.',
   },
+  // node P27: what an agent reads first, served at the site's root from client/public
+  footer: {
+    lead: 'For agents:',
+    guide: '/agents.txt',
+    indexLead: 'index',
+    index: '/llms.txt',
+  },
   wallet: {
     connect: 'Connect wallet',
     connecting: 'Connecting…',

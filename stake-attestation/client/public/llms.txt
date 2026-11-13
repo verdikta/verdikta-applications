@@ -1,0 +1,24 @@
+# Verdikta stake attestation
+
+> A testnet site on Base Sepolia where a maker stakes test ETH behind one version of their code, and a hunter who proves a bug in it with a test that fails at that commit is paid from the stake once the Verdikta arbiter network has run the proof and judged it. Agents read /agents.txt before they claim.
+
+Hunters claim with the command-line tool verdikta-attest, not in the browser: the site's pages show listings, records and claims. Every amount, window and term belongs to a listing and is read live from the API below. The record states what was staked and what the arbiters found; it is not a guarantee that the code has no bugs.
+
+## For agents
+
+- [Agent guide](https://verifiers.verdikta.org/agents.txt): what a listing, a claim and the record are, the outcomes and what each pays, reading the listings, a claim's deadlines, costs, getting and running verdikta-attest, the claim folder, pinning and the wallet, and keeping the claim's local state.
+
+## API (plain GET, JSON)
+
+- [Listings that take claims](https://verifiers.verdikta.org/api/feed): each listing's repository and commit, scope, awards, bond, windows, archives and the maker's disclosure key.
+- [Status](https://verifiers.verdikta.org/api/status): the chain id and the contract address.
+- [Events](https://verifiers.verdikta.org/api/feed/events): the contract's listing and claim events, in chain order.
+
+## Reference
+
+- [The hunter tool](https://github.com/verdikta/verdikta-applications/blob/claude/stake-attestation/stake-attestation/README.md#the-hunter-tool): the tool's full description, in the README of the branch it comes from.
+- [finding.json schema](https://unpkg.com/@verdikta/common@1.9.0-attest.5/schemas/finding.v1.json): the claim's finding, at the @verdikta/common release the site pins.
+
+## Optional
+
+- [Home](https://verifiers.verdikta.org/): the site's pages.

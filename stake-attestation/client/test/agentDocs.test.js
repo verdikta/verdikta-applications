@@ -193,7 +193,7 @@ test('agents.txt keeps the order the issue sets: the site, the listings, the cla
   headings.forEach((h, i) => assert.match(h, order[i], h));
 });
 
-test('llms.txt has llmstxt.org\'s shape and points to agents.txt', () => {
+test('llms.txt has the llms.txt format\'s shape (a title, a summary, lists of links) and points to agents.txt', () => {
   const text = read('client', 'public', 'llms.txt');
   const ls = lines(text);
   assert.match(ls[0], /^# \S/, 'an H1 with the site\'s name first');
@@ -331,6 +331,38 @@ test('every contract function they name is in the ABI, with the arguments it tak
     });
   }
   assert.ok(n >= 10, `the documents name the contract's functions (${n})`);
+});
+
+const solidityEnum = (name) => {
+  const m = new RegExp(`enum ${name} \\{([^}]*)\\}`).exec(read('onchain', 'contracts', 'StakeAttestation.sol'));
+  assert.ok(m, `StakeAttestation.sol: enum ${name}`);
+  return m[1].split(',').map((s) => s.trim());
+};
+
+test('the outcomes are the contract\'s, in its order, and every claim state named is one of its states', () => {
+  const text = agents().replace(/\s+/g, ' ');
+  const m = /six outcomes, in this order: ((?:[A-Z]+, )+[A-Z]+),/.exec(text);
+  assert.ok(m, 'agents.txt lists the outcomes in order');
+  assert.deepEqual(m[1].split(', '), solidityEnum('Outcome'));
+  const states = solidityEnum('ClaimState');
+  const named = [...text.matchAll(/\b(?:the claim is|leaves the claim|it is) ([A-Z][a-z]+(?:[A-Z][a-z]+)*)\b/g)].map((x) => x[1]);
+  assert.ok(named.length >= 2, 'the documents name claim states');
+  for (const s of named) assert.ok(states.includes(s), `${s} is no ClaimState (${states.join(', ')})`);
+  // a word in CamelCase is a state, a contract or GitHub: anything else is a name nothing here checks
+  const contracts = fs.readdirSync(path.join(APP, 'onchain', 'contracts', 'libraries')).concat(fs.readdirSync(path.join(APP, 'onchain', 'contracts'))).map((f) => f.replace(/\.sol$/, ''));
+  for (const [name, t] of docs()) {
+    for (const w of t.matchAll(/\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b/g)) assert.ok(states.includes(w[0]) || contracts.includes(w[0]) || w[0] === 'GitHub', `${name}: ${w[0]}`);
+  }
+});
+
+test('every CODE they name is an error code of the tool, a variable it reads or a constant of the contract', () => {
+  const env = toolEnv();
+  const { raw } = solidity();
+  for (const [name, text] of docs()) {
+    for (const m of text.matchAll(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b(?!\.[a-z])/g)) { // not a file's name
+      assert.ok(Object.hasOwn(ERROR_TEXTS, m[0]) || env.has(m[0]) || raw.has(m[0]), `${name}: ${m[0]} is no error code, variable or constant of the code`);
+    }
+  }
 });
 
 test('every contract constant they state is the Solidity source\'s value, and every other time they state is the tool\'s', () => {

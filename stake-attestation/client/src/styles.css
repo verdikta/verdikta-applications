@@ -72,6 +72,19 @@ body {
   padding: 2rem 1rem 4rem;
 }
 
+/* node P27: what an agent reads first, on every page */
+.foot {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1rem 1rem 2rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.foot a {
+  color: var(--accent);
+}
+
 .lead {
   font-size: 1.1rem;
 }

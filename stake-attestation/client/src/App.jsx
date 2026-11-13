@@ -134,6 +134,12 @@ export default function App() {
         {r.page === 'check' && <CheckPage key={r.claimId ?? 'none'} claimId={r.claimId} />}
         {r.page === 'fund' && <FundPage key={r.listingId ?? 'none'} listingId={r.listingId} />}
       </main>
+      <footer className="foot">
+        <p>
+          <span>{STRINGS.footer.lead}</span> <a href={STRINGS.footer.guide}>{STRINGS.footer.guide}</a>
+          {' '}<span className="hint">({STRINGS.footer.indexLead} <a href={STRINGS.footer.index}>{STRINGS.footer.index}</a>)</span>
+        </p>
+      </footer>
     </WalletContext.Provider>
   );
 }

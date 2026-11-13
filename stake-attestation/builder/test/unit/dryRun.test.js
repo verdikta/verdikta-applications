@@ -104,8 +104,39 @@ test('the dry run is due on the paths of what it runs, and always when dispatche
     'stake-attestation/builder/test/fixtures/seed-listing/',
   ]);
   for (const p of step.env.DRY_RUN_PATHS.trim().split('\n')) assert.ok(fs.existsSync(path.join(REPO_ROOT, p)), p);
-  assert.match(step.run, /git diff --quiet HEAD\^1 HEAD -- "\$\{paths\[@\]\}"/);
-  assert.match(step.run, /"\$EVENT_NAME" != pull_request \]; then echo "due=true"/);
+  // The step itself, in a repository whose last commit changes `files`.
+  const dueFor = (files, event = 'pull_request') => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vab-due-'));
+    try {
+      const git = (...args) => {
+        const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@verdikta.invalid', ...args], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1' } });
+        assert.equal(r.status, 0, r.stderr);
+      };
+      git('init', '-q');
+      fs.writeFileSync(path.join(dir, 'README.md'), 'base\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'base');
+      for (const f of files) {
+        fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+        fs.writeFileSync(path.join(dir, f), 'changed\n');
+      }
+      git('add', '-A');
+      git('commit', '-q', '--allow-empty', '-m', 'change');
+      const output = path.join(dir, 'github-output');
+      const r = spawnSync('bash', ['-c', step.run], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: dir, GITHUB_OUTPUT: output, EVENT_NAME: event, DRY_RUN_PATHS: step.env.DRY_RUN_PATHS } });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      return fs.readFileSync(output, 'utf8').trim();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  for (const f of ['stake-attestation/builder/src/pipeline.js', 'stake-attestation/builder/action/egress-rules.sh', 'stake-attestation/builder/action/pins.json', 'stake-attestation/builder/package-lock.json', '.github/workflows/stake-attestation-builder.yml', '.github/workflows/stake-attestation.yml', 'stake-attestation/builder/test/fixtures/seed-listing/code_review.json']) {
+    assert.equal(dueFor([f]), 'due=true', f);
+  }
+  for (const f of ['stake-attestation/client/src/App.jsx', 'stake-attestation/builder/test/unit/cli.test.js', 'stake-attestation/builder/README.md', 'stake-attestation/server/src/index.js']) {
+    assert.equal(dueFor([f]), 'due=false', f);
+  }
+  assert.equal(dueFor([], 'workflow_dispatch'), 'due=true', 'always when dispatched');
   const checkout = due.steps.find((s) => String(s.uses ?? '').startsWith('actions/checkout@'));
   assert.equal(checkout.with['fetch-depth'], 2);
   assert.equal(checkout.with['persist-credentials'], false);

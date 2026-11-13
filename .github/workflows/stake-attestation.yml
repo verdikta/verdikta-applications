@@ -150,9 +150,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" != pull_request ]; then echo "due=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          mapfile -t paths <<< "$DRY_RUN_PATHS"
+          set --
+          while IFS= read -r path; do
+            if [ -n "$path" ]; then set -- "$@" "$path"; fi
+          done <<< "$DRY_RUN_PATHS"
           rc=0
-          git diff --quiet HEAD^1 HEAD -- "${paths[@]}" || rc=$?
+          git diff --quiet HEAD^1 HEAD -- "$@" || rc=$?
           case "$rc" in
             0) due=false ;;
             1) due=true ;;

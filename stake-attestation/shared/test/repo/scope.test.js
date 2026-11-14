@@ -9,7 +9,8 @@ import { REPO_ROOT } from './helpers.js';
 
 // The reusable builder workflow (P3b) lives beside it: GitHub runs a called workflow only from .github/workflows.
 // The repository's own proof file (P25) is at its root, where a listing of the repository looks for it.
-const ALLOWED_OUTSIDE = ['.github/workflows/stake-attestation.yml', '.github/workflows/stake-attestation-builder.yml', '.github/workflows/stake-attestation-builder-sign.yml', '.verdikta/stake-control.json'];
+// Buyer skills' runner pin to ubuntu-24.04 (P28) goes to main too: ubuntu-latest is 26.04, where the bounty client's locked Playwright can't install Chromium.
+const ALLOWED_OUTSIDE = ['.github/workflows/stake-attestation.yml', '.github/workflows/stake-attestation-builder.yml', '.github/workflows/stake-attestation-builder-sign.yml', '.verdikta/stake-control.json', '.github/workflows/buyer-skills.yml'];
 const UNTOUCHABLE = ['example-bounty-program/onchain/contracts/BountyEscrow.sol'];
 
 function git(...args) {

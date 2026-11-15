@@ -30,13 +30,18 @@ Commands:
 ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`).join('\n')}
 
   check <claim-dir> (--listing <id> | --listing-archive <file>) [--no-pack] [--remote-runner]
+                     run it before committing: nothing leaves this machine, and it is the only place some
+                     failures show. commit does not ask for it
                      --no-pack prints status and codes only: no pack, and nothing else that can quote the proof
                      on a listing that names documents (stake.documents), check shows the documents tier the runner
                      built: the maker's statement of what the code must do. Documents never widen the scope
   commit <claim-dir> --listing <id> [--yes] [--restart] [--accept-unread-pin]
   reveal <claim-dir> [--retrigger] [--yes]
+                     pins the plaintext and pays any top-up the live fee needs; prints it, and sends only with --yes
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes
   status <claim-dir|claim-id> [--wait] [--max-wait-ms <n>]
+                     a round with no verdict reads as one as soon as the aggregator's time for it is over, before
+                     anyone finalizes it; the reveal deadline is the chain's, and status says when a release moved it
   claim <claim-dir|claim-id> [--waive-appeal]
                      --waive-appeal settles your own INVALID before anyone else may, which waives its appeal
   appeal <claim-dir|claim-id> [--yes]
@@ -50,6 +55,14 @@ Writing report.md:
 ${CONSEQUENCE}
 ${wrap(REQUIREMENT)}
 check warns, and refuses nothing, when report.md has no such section; commit says so again.
+
+Exit codes:
+  0  done
+  1  refused or failed (check: its forecast short of a pass)
+  2  usage error
+  3  it needs --yes or --waive-appeal: read what it printed, then run it again with that flag
+  4  still pending (a transaction, or status --wait out of time): run the same command again
+  5  status --wait: the claim's round ended with no verdict, finalized or not yet: read what it printed
 
 Options:
   --json             Print the result as JSON

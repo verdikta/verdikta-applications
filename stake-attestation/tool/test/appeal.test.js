@@ -30,7 +30,7 @@ const revealed = async (over = {}) => {
   const l = await w.listing(over);
   const dir = makeClaimDir();
   const { claimId } = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
-  await w.hunter().reveal({ claimDir: dir });
+  await w.hunter().reveal({ claimDir: dir, acknowledge: true });
   return { l, dir, claimId };
 };
 const script = async (claimId, v, { panel = false } = {}) => {

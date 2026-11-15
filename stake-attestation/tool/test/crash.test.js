@@ -263,7 +263,7 @@ test('every reveal step is on the list, in order, in a clean run', async () => {
   const dir = makeClaimDir();
   await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
   const seen = [];
-  await w.hunter({ onStep: (s) => seen.push(s) }).reveal({ claimDir: dir });
+  await w.hunter({ onStep: (s) => seen.push(s) }).reveal({ claimDir: dir, acknowledge: true });
   assert.deepEqual(seen, [...REVEAL_STEPS]);
 });
 
@@ -274,7 +274,7 @@ for (const step of REVEAL_STEPS) {
     const r0 = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
     const killed = await child('reveal', dir, l.listingId, step);
     assert.equal(killed.signal, 'SIGKILL', killed.out);
-    const resumed = await runCli(w, ['reveal', dir]);
+    const resumed = await runCli(w, ['reveal', dir, '--yes']);
     assert.equal(resumed.code, 0, `${resumed.stdout}\n${resumed.stderr}`);
     const claim = await w.sa.getClaim(r0.claimId);
     const archive = fs.readFileSync(statePath(dir, 'archive.zip'));

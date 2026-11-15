@@ -36,7 +36,7 @@ test('what the CLI itself prints across a claim\'s life passes the wording check
     await run(['check', dir, '--listing', String(l.listingId), '--no-pack'], { runner: { url: runner.url, token: TOKEN } });
     await run(['commit', dir, '--listing', String(l.listingId), '--yes']);
     await run(['status', dir]);
-    await run(['reveal', dir]);
+    await run(['reveal', dir, '--yes']);
     await run(['status', dir]);
     const { claimId } = JSON.parse(fs.readFileSync(path.join(dir, '.verdikta-claim', 'state.json'), 'utf8'));
     await (await w.aggregator.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();

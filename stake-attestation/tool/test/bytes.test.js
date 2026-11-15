@@ -170,7 +170,7 @@ test('reveal: a lying pin target or gateway for the plaintext: no reveal, no key
     const dir = makeClaimDir();
     const { claimId } = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
     w.ipfs.faults[fault] = true;
-    await assert.rejects(w.hunter().reveal({ claimDir: dir }), (e) => e.code === 'PIN_CID_MISMATCH' || e.code === 'PIN_READBACK_MISMATCH', fault);
+    await assert.rejects(w.hunter().reveal({ claimDir: dir, acknowledge: true }), (e) => e.code === 'PIN_CID_MISMATCH' || e.code === 'PIN_READBACK_MISMATCH', fault);
     w.ipfs.faults[fault] = false;
     assert.equal((await w.sa.getClaim(claimId)).state, 0n, fault);
   }
@@ -181,7 +181,7 @@ test('reveal: the disclosed ciphertext is no longer served: pinned again from di
   const dir = makeClaimDir();
   const { claimId, ciphertextCid } = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
   w.ipfs.drop(ciphertextCid);
-  const r = await w.hunter().reveal({ claimDir: dir });
+  const r = await w.hunter().reveal({ claimDir: dir, acknowledge: true });
   assert.equal(r.state, 'Revealed');
   assert.equal(sha256(w.ipfs.store.get(ciphertextCid)), (await w.sa.getClaim(claimId)).ciphertextSha256);
 });
@@ -194,7 +194,7 @@ test('nothing plain is uploaded by commit, and the plaintext only at reveal', as
   assert.equal(w.ipfs.uploads.length, start + 1);
   assert.ok(!w.ipfs.uploads[start].bytes.includes(REPORT_MARKER));
   assert.equal(sha256(w.ipfs.uploads[start].bytes), readJson(statePath(dir)).ciphertextSha256);
-  await w.hunter().reveal({ claimDir: dir });
+  await w.hunter().reveal({ claimDir: dir, acknowledge: true });
   assert.equal(w.ipfs.uploads.length, start + 2);
   assert.ok(w.ipfs.uploads[start + 1].bytes.includes(REPORT_MARKER));
   assert.equal(sha256(w.ipfs.uploads[start + 1].bytes), readJson(statePath(dir)).archiveSha256);

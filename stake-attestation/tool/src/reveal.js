@@ -3,12 +3,16 @@
 // the chain's hashes, the arbiters' disclosure gate on those bytes, and a dry run of the call at the send's own gas
 // limit and value. The dry run carries zero keys and a stand-in CID: the contract reads neither, and no RPC sees a
 // real key before the plaintext is out. Only the signed reveal carries them, and it is saved before it is sent.
+//
+// Then it says what it would send and why (revealNotice), and without `acknowledge` (--yes) it stops there, as a
+// re-trigger, a commit and an appeal do (node P32): nothing is pinned, signed or saved. Saved reveal bytes a run
+// would send again need it too.
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { bindingOf, checkBinding, pinVerified, readBack, readProvenFiles } from './commit.js';
 import { fail } from './errors.js';
-import { retriggerNotice } from './notices.js';
+import { retriggerNotice, revealNotice } from './notices.js';
 import { rawCid, sha256Hex0x } from './ipfs.js';
-import { failedRoundNext } from './status.js';
+import { failedRoundNext, readClaimRound } from './status.js';
 import { openWorkspace } from './workspace.js';
 
 const ZERO_KEY16 = `0x${'00'.repeat(16)}`;
@@ -16,7 +20,7 @@ const ZERO_KEY32 = `0x${'00'.repeat(32)}`;
 /** Above SUBMISSION_GAS_NEEDED: the reveal's own work (measured 530k, more with prior findings). Only gas used is paid. */
 const REVEAL_OWN_GAS = 1_750_000n;
 
-async function outcomeOf(ctx, state, topUpWei = null, tx = state.revealTx?.hash ?? null) {
+async function outcomeOf(ctx, state, topUpWei = null, tx = state.revealTx?.hash ?? null, action = 'reveal') {
   const [claim, lens] = await Promise.all([ctx.readSettled('getClaim', [state.claimId]), ctx.read('claimState', [state.claimId])]);
   const name = CLAIM_STATES[Number(lens)];
   return {
@@ -26,6 +30,7 @@ async function outcomeOf(ctx, state, topUpWei = null, tx = state.revealTx?.hash 
     requestId: claim.requestId,
     topUpWei,
     tx,
+    action,
     next: name === 'RoundFailed' ? failedRoundNext({ deadline: await ctx.read('retriggerDeadline', [state.claimId]), requestId: claim.requestId, roundStarted: claim.roundStarted }) : 'status --wait polls the evaluation, for up to 15 minutes.',
   };
 }
@@ -61,10 +66,10 @@ async function retrigger(ctx, ws, state, acknowledge) {
       if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
       await ctx.broadcast(rec0);
     }
-    await ctx.waitMined(rec0);
-    const after = { ...state, retriggerTx: null };
+    const mined = await ctx.waitMined(rec0);
+    const after = { ...state, retriggerTx: keptHash(rec0, mined) };
     ws.saveState(after);
-    return outcomeOf(ctx, after, null, rec0.hash);
+    return outcomeOf(ctx, after, null, rec0.hash, 'retrigger');
   }
   const { archive, ciphertext } = readProvenFiles(ctx, ws, state);
   const topUp = await ctx.read('retriggerTopUp', [state.claimId]);
@@ -88,20 +93,24 @@ async function retrigger(ctx, ws, state, acknowledge) {
   const next = { ...state, retriggerTx: rec };
   ws.saveState(next);
   await ctx.broadcast(rec);
-  await ctx.waitMined(rec);
-  const after = { ...next, retriggerTx: null };
+  const mined = await ctx.waitMined(rec);
+  const after = { ...next, retriggerTx: keptHash(rec, mined) };
   ws.saveState(after);
-  return outcomeOf(ctx, after, topUp, rec.hash);
+  return outcomeOf(ctx, after, topUp, rec.hash, 'retrigger');
 }
 
+/** What state.json keeps of a re-trigger once it is mined (node P32): its hash, as reveal keeps its own; nothing for one that reverted or whose nonce went to another. */
+const keptHash = (rec, { receipt }) => (receipt?.status === 1 ? { hash: rec.hash } : null);
+
 /**
- * reveal, or a resume of one. `retrigger`: send a failed round again instead, which pays, so only with `acknowledge`.
+ * reveal, or a resume of one; `retrigger`: send a failed round again instead. Each says what it sends, and sends
+ * nothing without `acknowledge` (node P32 for the reveal, P19 for the re-trigger).
  * @param {{ claimDir: string, retrigger?: boolean, acknowledge?: boolean }} o
  */
 export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = false, acknowledge = false }) {
   const hunter = await ctx.hunterAddress();
-  // What a re-trigger costs must reach someone: a library caller gives it somewhere to go.
-  if (wantRetrigger && !ctx.onNotice) throw fail('USAGE', 'reveal --retrigger needs onNotice, for what must be said before anyone pays.');
+  // What a reveal or a re-trigger sends must reach someone: a library caller gives it somewhere to go.
+  if (!ctx.onNotice) throw fail('USAGE', `${wantRetrigger ? 'reveal --retrigger' : 'reveal'} needs onNotice, for what must be said before anyone pays.`);
   await ctx.ensureChain();
   const ws = openWorkspace(claimDir);
   if (!ws.exists()) throw fail('NO_CLAIM_HERE');
@@ -112,17 +121,41 @@ export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = fals
     if (!state.claimId) throw fail('NOT_DISCLOSED', 'Nothing has been committed yet: run commit again.');
 
     let lens = CLAIM_STATES[Number(await ctx.readSettled('claimState', [state.claimId]))];
+    // A re-trigger an earlier run saved may have been mined before this run began (node P32, R1-F1): the claim is then
+    // past RoundFailed, where retrigger() never runs. Keep its hash, as retrigger() does, and a resume answers with it.
+    if (state.retriggerTx?.raw && lens !== 'RoundFailed') {
+      const rec = state.retriggerTx;
+      const receipt = await ctx.rpc(() => ctx.provider.getTransactionReceipt(rec.hash));
+      if (receipt) {
+        state = { ...state, retriggerTx: keptHash(rec, { receipt }) };
+        ws.saveState(state);
+        if (wantRetrigger && receipt.status === 1) return outcomeOf(ctx, state, null, rec.hash, 'retrigger');
+      }
+    }
     if (lens === 'RoundFailed') return wantRetrigger ? retrigger(ctx, ws, state, acknowledge) : outcomeOf(ctx, state);
     if (lens === 'Expired') {
       const c = await ctx.read('getClaim', [state.claimId]);
       throw fail('CLAIM_ENDED', `Expired: ${EXPIRIES[Number(c.expiry)]}.`);
     }
     // --retrigger never reveals: what would pin the plaintext and pay is a plain reveal, asked for as one
-    if (wantRetrigger && (lens === 'Committed' || lens === 'Revealable')) throw fail('NOT_RETRIGGERABLE', `It is ${lens}.`);
+    if (wantRetrigger && (lens === 'Committed' || lens === 'Revealable')) throw fail('NOT_RETRIGGERABLE', `It is ${lens}: run reveal without --retrigger to reveal it.`);
+    // Nor does it answer for a claim past its reveal as if it had sent something (node P32, R1-F2): a round with no
+    // verdict that finalize has not recorded yet is said as that, read as status reads it; any other has none to send.
+    if (wantRetrigger) {
+      if ((await readClaimRound(ctx, state.claimId)).roundFailed) throw fail('ROUND_NOT_RECORDED', `Claim ${state.claimId}.`);
+      throw fail('NOT_RETRIGGERABLE', `It is ${lens}.`);
+    }
 
-    // A reveal already signed decides first: it is the same call, at its nonce.
+    // A reveal already signed decides first: it is the same call, at its nonce. Sent again only with --yes.
     if (state.revealTx?.raw && (lens === 'Committed' || lens === 'Revealable')) {
-      const { receipt, gone } = await ctx.settleSaved(state.revealTx);
+      const rec = state.revealTx;
+      const { revealDeadline } = await ctx.read('claimTimes', [state.claimId]);
+      const { receipt, gone } = await ctx.settleSaved(rec, {
+        beforeResend: () => {
+          ctx.notice(revealNotice({ claimId: state.claimId, valueWei: BigInt(rec.value), deadline: revealDeadline }));
+          if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
+        },
+      });
       if (receipt?.status === 1) await ctx.step('reveal:mined');
       lens = CLAIM_STATES[Number(await ctx.readSettled('claimState', [state.claimId]))];
       if (lens !== 'Committed' && lens !== 'Revealable') {
@@ -161,8 +194,6 @@ export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = fals
     if (sha256Hex0x(archive) !== claim.archiveHash) throw fail('FILE_CHANGED', 'archive.zip');
     if (sha256Hex0x(ciphertext) !== claim.ciphertextSha256) throw fail('FILE_CHANGED', 'ciphertext.age');
     if (l.disclosureKey.toLowerCase() !== state.disclosureKey.toLowerCase()) throw fail('CLAIM_MISMATCH', 'The listing holds another disclosure key.');
-    await ctx.step('reveal:verified');
-    await ensureServed(ctx, claim.ciphertextCid, ciphertext, claim.ciphertextSha256, 'ciphertext.age');
 
     // Everything that could stop it, before the plaintext is out.
     const gasLimit = (await ctx.read('SUBMISSION_GAS_NEEDED')) + REVEAL_OWN_GAS;
@@ -174,6 +205,11 @@ export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = fals
       if (err.code === 'CONTRACT_REFUSED') throw fail('REVEAL_REFUSED', err.detail);
       throw err;
     });
+    // What it would send and why, on every run from which a reveal may go out; without --yes, nothing more (node P32).
+    ctx.notice(revealNotice({ claimId: state.claimId, valueWei: topUp, deadline: times.revealDeadline }));
+    if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
+    await ctx.step('reveal:verified');
+    await ensureServed(ctx, claim.ciphertextCid, ciphertext, claim.ciphertextSha256, 'ciphertext.age');
 
     let cid = state.bcid ?? null;
     if (cid) {

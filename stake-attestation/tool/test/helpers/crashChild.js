@@ -24,4 +24,4 @@ const hunter = createHunter({
   },
 });
 if (env.CRASH_VERB === 'commit') await hunter.commit({ claimDir: env.CRASH_DIR, listingId: BigInt(env.CRASH_LISTING), acknowledge: true });
-else await hunter.reveal({ claimDir: env.CRASH_DIR });
+else await hunter.reveal({ claimDir: env.CRASH_DIR, acknowledge: true });

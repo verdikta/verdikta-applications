@@ -80,7 +80,7 @@ export async function runClaim(ctx, { claimId, claimDir, waiveAppeal = false }) 
   await ctx.ensureChain();
   const id = claimIdOf({ claimId, claimDir });
   const sent = [];
-  let s = await runStatus(ctx, { claimId: id });
+  let s = await runStatus(ctx, { claimId: id, claimDir });
   // Anyone may call these, and the site's keeper does: losing that race is no failure.
   const unlessBeaten = async (fn) => {
     try {
@@ -88,7 +88,7 @@ export async function runClaim(ctx, { claimId, claimDir, waiveAppeal = false }) 
     } catch (err) {
       if (err.code !== 'NOT_READY') throw err;
     }
-    s = await runStatus(ctx, { claimId: id });
+    s = await runStatus(ctx, { claimId: id, claimDir });
   };
   if (s.ready === 'finalize') await unlessBeaten(() => runFinalize(ctx, id));
   if (s.state === 'Judged' && s.times.settleableAt !== 0n && s.times.settleableAt <= s.chainTime) {

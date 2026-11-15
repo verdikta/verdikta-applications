@@ -514,3 +514,28 @@ test('before it pays, commit says to make the PoC demonstrate the consequence, a
   await w.hunter({ onNotice: (t) => quiet.push(t) }).commit({ claimDir: makeClaimDir({ report: '# Title\n\nThe vault is drained.\n\n## Requirement\n\nNothing in the code or the listing states it.\n' }), listingId: l.listingId, acknowledge: true });
   assert.doesNotMatch(quiet.join('\n'), /REQUIREMENT_SECTION/);
 });
+
+// node P32: commit prints the reveal deadline and records what it printed, while that deadline is still to come.
+test('P32: commit records the reveal deadline it prints, the earliest one behind an earlier claim, and none once revealed', async () => {
+  const { readJson: rj, statePath: sp } = await import('./helpers/cli.js');
+  const l = await w.listing({ stake: { fixWindowDays: 14, disclosureGraceHours: 48 } });
+  const first = makeClaimDir();
+  const second = makeClaimDir();
+  const a = await w.hunter().commit({ claimDir: first, listingId: l.listingId, acknowledge: true });
+  const b = await w.hunter().commit({ claimDir: second, listingId: l.listingId, acknowledge: true });
+  assert.equal(a.revealDeadlineEarliest, false);
+  assert.equal(a.revealDeadline, (await w.sa.claimTimes(a.claimId)).revealDeadline);
+  assert.equal(rj(sp(first)).told.revealDeadline, String(a.revealDeadline));
+  // behind the first claim the lens has no deadline yet: the earliest it can be, said as that
+  assert.equal((await w.sa.claimTimes(b.claimId)).revealDeadline, 0n);
+  assert.equal(b.revealDeadlineEarliest, true);
+  assert.equal(b.revealDeadline, b.revealableAt + BigInt((await w.sa.getListing(l.listingId)).revealWindow));
+  assert.deepEqual(rj(sp(second)).told, { revealableAt: String(b.revealableAt), revealDeadline: String(b.revealDeadline), earliest: true });
+  // a re-run once the claim has revealed says no deadline and keeps the record it had
+  await (await w.sa.connect(w.maker).release(a.claimId)).wait();
+  await w.hunter().reveal({ claimDir: first, acknowledge: true });
+  const told = rj(sp(first)).told;
+  const again = await w.hunter().commit({ claimDir: first, listingId: l.listingId });
+  assert.equal(again.revealDeadline, null);
+  assert.deepEqual(rj(sp(first)).told, told);
+});

@@ -347,6 +347,13 @@ async function finishDiscloseWait(ctx, ws, state, { receipt, gone }) {
 async function resultOf(ctx, state) {
   const claim = await ctx.readSettled('getClaim', [state.claimId]);
   const times = await ctx.read('claimTimes', [state.claimId]);
+  // node P32: the reveal deadline as the lens has it, or, while an earlier claim heads the queue, the earliest it can be
+  // (revealWindow from the fix window's end; later if that claim is still open then). Only while it is still to come:
+  // a re-run on a claim that has revealed, or ended, says none.
+  const { revealWindow } = await ctx.read('getListing', [claim.listingId]);
+  const lens = CLAIM_STATES[Number(await ctx.read('claimState', [state.claimId]))];
+  const ahead = lens === 'Committed' || lens === 'Revealable';
+  const earliest = ahead ? times.revealDeadline === 0n : null;
   return {
     stage: state.stage,
     claimId: BigInt(state.claimId),
@@ -359,6 +366,8 @@ async function resultOf(ctx, state) {
     prepayWei: claim.prepayWei,
     discloseDeadline: times.discloseDeadline,
     revealableAt: times.revealableAt,
+    revealDeadline: !ahead ? null : earliest ? times.revealableAt + BigInt(revealWindow) : times.revealDeadline,
+    revealDeadlineEarliest: earliest,
     commitTx: state.commitTx?.hash ?? null,
     discloseTx: state.discloseTx?.hash ?? null,
   };
@@ -408,6 +417,11 @@ export async function runCommit(ctx, { claimDir, listingId, acknowledge = false,
       state = await sendCommit(ctx, ws, state, id);
     }
     while (state.stage !== 'disclosed') state = await disclose(ctx, ws, state, { acceptUnreadPin });
-    return resultOf(ctx, state);
+    const result = await resultOf(ctx, state);
+    // What this run says of the reveal, recorded (node P32): status compares the chain's deadline with it, and says
+    // when a release or a roll-forward moved it earlier than the hunter was told.
+    const told = result.revealDeadline === null ? null : { revealableAt: String(result.revealableAt), revealDeadline: String(result.revealDeadline), earliest: result.revealDeadlineEarliest };
+    if (told && JSON.stringify(state.told) !== JSON.stringify(told)) ws.saveState({ ...state, told });
+    return result;
   });
 }

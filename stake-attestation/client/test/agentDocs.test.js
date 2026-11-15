@@ -304,14 +304,101 @@ test('the exit codes are the tool\'s table: each line names exactly the error co
     const flags = new Set(exits.get(exit).flatMap((c) => [...ERROR_TEXTS[c].matchAll(/--[a-z][a-z-]*/g)].map((m) => m[0])));
     for (const f of flags) assert.ok(line.includes(f), `exit ${exit} is ${exits.get(exit).join(', ')}: its line names ${f}`);
   }
-  // the CLI's own: status --wait out of time, and check's forecast short of a pass
+  // the CLI's own: status --wait out of time, status --wait on a round with no verdict, and check's forecast short of a pass
   const cli = toolSrc('cli.js');
-  const waitExit = Number(/r\.timedOut \? (\d) : 0/.exec(cli)[1]);
+  const waitExit = Number(/if \(r\.timedOut\) return (\d);/.exec(cli)[1]);
+  const failedExit = Number(/if \(wait && r\.roundFailed\) return (\d);/.exec(cli)[1]);
   const checkExit = Number(/r\.forecast\.verdict === 'pass' \? 0 : (\d)/.exec(cli)[1]);
   assert.match(stated.get(waitExit), /status --wait/, `status --wait out of time ends with ${waitExit}`);
+  assert.match(stated.get(failedExit), /status --wait/, `status --wait on a round with no verdict ends with ${failedExit}`);
+  assert.match(stated.get(failedExit), /no verdict/, `exit ${failedExit}: a round with no verdict`);
   assert.match(stated.get(checkExit), /\bcheck\b/, `check short of a pass ends with ${checkExit}`);
   assert.match(stated.get(4), /again/, 'exit 4: run the same command again');
+  // node P32: a code of its own, which no error of the tool and no other return of the CLI ends with
+  assert.deepEqual(exits.get(failedExit), [], `no error code ends with ${failedExit}`);
+  assert.ok(![0, 1, 2, 3, waitExit, checkExit].includes(failedExit), `exit ${failedExit} is no other exit's`);
 });
+
+/** The help's exit codes: the "Exit codes:" block of tool/src/usage.js's USAGE, code -> its text. */
+function usageExits() {
+  const usage = toolSrc('usage.js');
+  const start = usage.indexOf('\nExit codes:\n');
+  assert.ok(start >= 0, 'USAGE has an Exit codes block');
+  const out = new Map();
+  let last = null;
+  for (const line of lines(usage.slice(start + 1).split('\n\n')[0]).slice(1)) {
+    const m = /^ {2}(\d) {2}(.+)$/.exec(line);
+    if (m) out.set((last = Number(m[1])), m[2]);
+    else if (last !== null && /^ {5}\S/.test(line)) out.set(last, `${out.get(last)} ${line.trim()}`);
+  }
+  return out;
+}
+
+test('node P32: the help lists the same exit codes as agents.txt, status --wait\'s round with no verdict among them', () => {
+  const text = agents();
+  const block = text.slice(text.indexOf('\nExit codes:\n') + 1).split('\n\n')[0];
+  const stated = new Set([...block.matchAll(/^ {2}(\d) {2}/gm)].map((m) => Number(m[1])));
+  const help = usageExits();
+  assert.deepEqual([...help.keys()].sort(), [...stated].sort(), 'the same codes');
+  assert.deepEqual([...help.keys()].sort(), [...toolExits().keys()].sort(), 'the codes the tool returns');
+  const failedExit = Number(/if \(wait && r\.roundFailed\) return (\d);/.exec(toolSrc('cli.js'))[1]);
+  assert.match(help.get(failedExit), /status --wait/);
+  assert.match(help.get(failedExit), /no verdict/);
+});
+
+test('node P32: the new command lines: reveal is a dry run without --yes, as commit, reveal --retrigger and appeal', () => {
+  const reveal = toolSrc('reveal.js');
+  const main = /export async function runReveal[\s\S]*$/.exec(reveal)[0];
+  assert.match(main, /revealNotice\(/, 'reveal says what it would send');
+  assert.match(main, /if \(!acknowledge\) throw fail\('NEEDS_ACKNOWLEDGEMENT'\)/, 'and sends nothing without acknowledge');
+  const text = agents();
+  const flat = text.replace(/\s+/g, ' ');
+  assert.match(flat, /`commit` on a folder with no commit signed yet, `reveal`, `reveal --retrigger` and `appeal` print what they will send and send nothing without --yes \(exit 3\)/);
+  assert.doesNotMatch(flat, /`reveal` asks for no --yes/);
+  const block = lines(text.slice(text.indexOf('The commands, in order'), text.indexOf('\nIf it is judged INVALID')));
+  assert.ok(block.some((l) => /^ {4}verdikta-attest reveal \.\/claim +# .*sends nothing/.test(l)), 'the dry run');
+  assert.ok(block.some((l) => /^ {4}verdikta-attest reveal \.\/claim --yes +#/.test(l)), 'the reveal');
+  // section 4's cast lines: commitPrice, revealTopUp, retriggerTopUp and disputeFee, each by the id it takes
+  const costs = text.slice(text.indexOf('\n## 4. '), text.indexOf('\n## 5. '));
+  for (const [fn, arg] of [['commitPrice', 'listingId'], ['revealTopUp', 'claimId'], ['retriggerTopUp', 'claimId'], ['disputeFee', 'listingId']]) {
+    const line = `    cast call "$VERDIKTA_CONTRACT" "${fn}(uint256)(uint256)" <${arg}> --rpc-url https://sepolia.base.org`;
+    assert.ok(costs.includes(line), `section 4: ${line.trim()}`);
+    const abi = ABI.find((f) => f.name === fn);
+    assert.equal(abi.inputs[0].name, arg, `${fn} takes ${arg}`);
+  }
+});
+
+test('node P32: check is described as the tool describes it, never as optional', () => {
+  const line = quoted(/export const DILIGENCE = Object\.freeze\(\[([\s\S]*?)\]\)/.exec(toolSrc('notices.js'))[1]).find((l) => /^Run check /.test(l));
+  assert.ok(line, 'the tool\'s diligence text says when to run check');
+  const flat = agents().replace(/\s+/g, ' ');
+  assert.ok(flat.includes(line), `agents.txt says it word for word: ${line}`);
+  for (const m of flat.matchAll(/[^.]*\boptional\b[^.]*/gi)) assert.doesNotMatch(m[0], /\bcheck\b|runner/, `"${m[0].trim()}"`);
+});
+
+test('node P32: the gaps a fresh agent met are filled: dry runs, the human\'s step, known issues, Apple silicon, a round with no verdict, a moved deadline', () => {
+  const flat = agents().replace(/\s+/g, ' ');
+  // what a dry run needs and writes: the token is read only when a pin is made (tool/src/ipfs.js)
+  assert.match(toolSrc('ipfs.js'), /const pinFor = [\s\S]*?if \(needsToken && !token\) throw fail\('PIN_CONFIG'/);
+  assert.match(flat, /A dry run needs the wallet key[^.]*VERDIKTA_PIN_BACKEND[^.]*not VERDIKTA_PIN_TOKEN/);
+  assert.match(flat, /writes `claim\/\.verdikta-claim\/` with a `\.gitignore`/);
+  // a human's go-ahead, twice
+  assert.match(flat, /human[^.]*wallet key[^.]*code-runner|human[^.]*code-runner[^.]*wallet key/i);
+  // a listing that names no known issues file has none (tool/src/listing.js takes it as [])
+  assert.match(toolSrc('listing.js'), /knownIssues: spec\.stake\?\.knownIssues \? [^:]+ : \[\]/);
+  assert.match(flat, /names no `stake\.knownIssues` file has no known issues/);
+  // Apple silicon: the class platform is common's, and the runner README's "Run it" says how
+  assert.ok(flat.includes(`\`${codeReview.OCI_PLATFORM}\``), `the platform, ${codeReview.OCI_PLATFORM}`);
+  assert.match(flat, /On Apple silicon, `check` runs the runner in amd64 mode/);
+  assert.match(flat, /code-runner \(its README, "Run it"\)/);
+  // a round with no verdict: what it means, and that a re-trigger of the same claim likely fails the same way
+  assert.match(flat, /status --wait` exits 5[^.]*no verdict/);
+  assert.match(flat, /likely to fail the same way/);
+  // a release moves the reveal deadline earlier, and status says so
+  assert.match(toolSrc('status.js'), /moved earlier/);
+  assert.match(flat, /release[^.]*moves your reveal deadline earlier[^.]*run `verdikta-attest status/);
+});
+
 
 // tools/src/commit.js asks for --yes only before a commit is signed; a resumed one goes on without it (R1-F1).
 test('what they say commit does without --yes is what commit.js does', () => {

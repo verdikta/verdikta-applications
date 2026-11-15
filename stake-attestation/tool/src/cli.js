@@ -185,19 +185,40 @@ function printCommit(out, r) {
   out(`ciphertext sha256 ${r.ciphertextSha256}`);
   out(`ciphertext CID ${r.ciphertextCid}`);
   out(`Revealable at ${when(r.revealableAt)}. Keep .verdikta-claim: losing its keys forfeits the bond.`);
+  out(r.revealDeadlineEarliest
+    ? `Reveal before ${when(r.revealDeadline)} at the earliest: later if an earlier claim on the listing is still open when the fix window ends. A release by the maker moves it earlier: status says so.`
+    : `Reveal before ${when(r.revealDeadline)}. A release by the maker ends the fix window early and moves this earlier: status says so.`);
+}
+
+// node P32: a Committed claim says whether it is disclosed; a round with no verdict says so before it is finalized
+function stageOf(s) {
+  if (s.state === 'Committed') return s.disclosed ? `, disclosed${s.inFixWindow ? ', in its fix window' : ''}` : ', not disclosed';
+  if (s.state === 'Revealed' && s.roundFailed) return ', its round ended with no verdict';
+  return '';
+}
+
+function printFailedRound(out, f) {
+  if (!f) return;
+  if (!f.recorded) out(`Round: no verdict, not recorded yet: finalize records it (the site's keeper does, and claim does it now)`);
+  if (!f.retriggerDeadline && f.retriggerWindow !== null) out(`Re-trigger within ${f.retriggerWindow} s of when the round is recorded`);
+  if (f.retriggerWei !== null) out(`A re-trigger sends ${eth(f.retriggerWei)} now: reveal --retrigger says it again, and sends only with --yes`);
+  if (f.spentWei !== null) out(`This round: prepay ${eth(f.prepayWei)}, base fees ${eth(f.spentWei)}, back to you ${eth(f.refundWei)}`);
+  else if (!f.refused && f.prepayWei) out(`This round: prepay ${eth(f.prepayWei)}; the aggregator does not say how much the base fees took`);
 }
 
 function printStatus(out, s) {
-  out(`Claim ${s.claimId} on listing ${s.listingId}: ${s.state}${s.outcome ? ` ${s.outcome}` : ''}`);
+  out(`Claim ${s.claimId} on listing ${s.listingId}: ${s.state}${s.outcome ? ` ${s.outcome}` : ''}${stageOf(s)}`);
   if (s.times.revealableAt) out(`Revealable at ${when(s.times.revealableAt)}`);
   if (s.times.revealDeadline) out(`Reveal before ${when(s.times.revealDeadline)}`);
+  if (s.revealDeadlineMoved) out(`The reveal deadline moved earlier, from ${when(s.revealDeadlineMoved.from)}${s.revealDeadlineMoved.cause === 'release' ? ': the maker released the claim' : s.revealDeadlineMoved.cause === 'rollForward' ? ': the maker rolled the listing forward' : ''}`);
   if (s.disputeKind && s.disputeKind !== 'None') out(`Round kind: ${s.disputeKind}${s.dispute && s.dispute !== 'None' ? ` (${s.dispute})` : ''}`);
   if (s.times.appealDeadline) out(`Appeal before ${when(s.times.appealDeadline)}: appeal shows the cost`);
   if (s.times.confirmDeadline) out(`Confirmation by the dispute panel: from ${when(s.times.confirmOpensAt)}, until ${when(s.times.confirmDeadline)}`);
   if (s.narrow === true) out('A narrow INVALID: its valid mass is at least the listing\'s floor, so its bond comes back when it settles');
   if (s.bond) out(`Bond: ${s.bond === 'returned' ? 'returned to the hunter' : 'to the maker'}`);
   if (s.times.settleableAt) out(`Settleable at ${when(s.times.settleableAt)}`);
-  if (s.times.retriggerDeadline) out(`Re-trigger before ${when(s.times.retriggerDeadline)}`);
+  if (s.times.retriggerDeadline || s.failedRound?.retriggerDeadline) out(`Re-trigger before ${when(s.times.retriggerDeadline || s.failedRound.retriggerDeadline)}`);
+  printFailedRound(out, s.failedRound);
   if (s.paidWei) out(`Paid ${eth(s.paidWei)}`);
   if (s.owedWei) out(`Owed ${eth(s.owedWei)}`);
   if (s.evidence) {
@@ -301,6 +322,7 @@ async function dispatch(verb, args, io, env, write) {
       if (json) write(io.stdout, asJson(r));
       else {
         out(`Claim ${r.claimId}: ${r.state}.`);
+        if (r.tx) out(`${r.action === 'retrigger' ? 'Re-trigger' : 'Reveal'} transaction ${r.tx}`);
         if (r.bcid) out(`bCID ${r.bcid}`);
         if (r.topUpWei) out(`Top-up ${eth(r.topUpWei)}`);
         if (r.next) out(r.next);
@@ -319,7 +341,10 @@ async function dispatch(verb, args, io, env, write) {
       const r = await hunter.status({ ...target, wait, maxWaitMs: wait ? Math.max(0, limit - (Date.now() - started)) : undefined });
       if (json) write(io.stdout, asJson(r));
       else printStatus(out, r);
-      return r.timedOut ? 4 : 0;
+      if (r.timedOut) return 4;
+      // node P32: the claim's own round ended with no verdict, finalized or not yet: an exit of its own
+      if (wait && r.roundFailed) return 5;
+      return 0;
     }
     case 'claim': {
       const target = claimTarget(positional);
@@ -351,7 +376,7 @@ async function dispatch(verb, args, io, env, write) {
 
 /**
  * Runs the CLI and returns its exit code: 0 on success, 1 refused or failed, 2 a usage error, 3 an acknowledgement
- * needed, 4 still pending (run the same command again).
+ * needed, 4 still pending (run the same command again), 5 status --wait on a claim whose round ended with no verdict.
  * @param {string[]} argv arguments after the program name
  * @param {{ stdout: { write(s: string): unknown }, stderr: { write(s: string): unknown } }} io
  * @param {Record<string, string|undefined>} env

@@ -17,7 +17,7 @@ const revealed = async (over = {}) => {
   const l = await w.listing(over);
   const dir = makeClaimDir();
   const { claimId } = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
-  await w.hunter().reveal({ claimDir: dir });
+  await w.hunter().reveal({ claimDir: dir, acknowledge: true });
   return { l, dir, claimId, requestId: (await w.sa.getClaim(claimId)).requestId };
 };
 const script = async (requestId, outcome) => (await w.aggregator.scriptResult(requestId, vectorOf(outcome), JUSTIFICATION_CID)).wait();
@@ -333,7 +333,7 @@ test('a refused request is not a paid round: nothing spent, the bond comes back 
   const dir = makeClaimDir();
   const { claimId } = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
   await (await w.aggregator.setPaused(true)).wait();
-  const r = await w.hunter().reveal({ claimDir: dir });
+  const r = await w.hunter().reveal({ claimDir: dir, acknowledge: true });
   await (await w.aggregator.setPaused(false)).wait();
   assert.equal(r.state, 'RoundFailed');
   for (const s of [r, await w.hunter({ signer: undefined }).status({ claimId })]) {
@@ -372,4 +372,202 @@ test('the CLI: status --wait exits 4 while pending, 0 when done; claim settles; 
   assert.match(claimed.stdout, /Settled/);
   assert.match(claimed.stdout, /INVALID/);
   assert.ok(readJson(statePath(dir)).claimId);
+});
+
+// ---------------------------------------------------------------------------------------------------- node P32
+// A fresh agent's claim on testnet (Q84 item 3): a round that ended with no verdict read "The round is over: run
+// claim to record it." with exit 0, and only status --json said RoundFailed, after the keeper's finalize.
+
+const timeOut = async () => w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+
+test('P32: a round with no verdict reads as failed from the moment the aggregator\'s timeout fails it, before finalize and after', async () => {
+  const { l, dir, claimId } = await revealed();
+  await timeOut(); // the aggregator's own rule: past responseTimeoutSeconds with no commits, the round has failed
+  const early = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+  assert.equal(early.state, 'Revealed', 'nobody has finalized it');
+  assert.equal(early.ready, 'finalize');
+  assert.equal(early.roundResult, 'noVerdict');
+  assert.equal(early.roundFailed, true);
+  assert.equal(early.failedRound.recorded, false);
+  assert.equal(early.failedRound.retriggerDeadline, null, 'the lens has none before finalize');
+  assert.equal(early.failedRound.retriggerWindow, BigInt((await w.sa.getListing(l.listingId)).revealWindow));
+  assert.equal(early.failedRound.retriggerWei, (await w.sa.commitPrice(l.listingId)) - l.params.bondWei, 'a fresh prepay in full, read from the chain');
+  assert.match(early.next, /no verdict/);
+  assert.match(early.next, /\bcheck\b/);
+  assert.match(early.next, /--retrigger/);
+  assert.doesNotMatch(early.next, /The round is over: run claim to record it/);
+
+  const waited = await runCli(w, ['status', dir, '--wait', '--max-wait-ms', '5000'], { keyVia: 'none' });
+  assert.equal(waited.code, 5, `status --wait has an exit of its own for a round with no verdict: ${waited.stderr}`);
+  assert.match(waited.stdout, /no verdict/);
+  assert.match(waited.stdout, /--retrigger/);
+  const asJson = await runCli(w, ['status', dir, '--wait', '--json'], { keyVia: 'none' });
+  assert.equal(asJson.code, 5, asJson.stderr);
+  assert.equal(JSON.parse(asJson.stdout).roundFailed, true);
+
+  await (await w.sa.finalize(claimId)).wait();
+  const late = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+  assert.equal(late.state, 'RoundFailed');
+  assert.equal(late.roundFailed, true);
+  assert.equal(late.failedRound.recorded, true);
+  assert.equal(late.failedRound.retriggerDeadline, await w.sa.retriggerDeadline(claimId));
+  assert.equal(late.failedRound.retriggerWei, await w.sa.retriggerTopUp(claimId));
+  assert.match(late.next, /no verdict/);
+  const after = await runCli(w, ['status', dir, '--wait'], { keyVia: 'none' });
+  assert.equal(after.code, 5, after.stderr);
+  assert.match(after.stdout, new RegExp(String(late.failedRound.retriggerDeadline)), 'the re-trigger deadline');
+  const plain = await runCli(w, ['status', dir], { keyVia: 'none' });
+  assert.equal(plain.code, 0, 'a plain status is a read, and exits 0');
+});
+
+test('P32: a vector that is no verdict reads as failed before finalize too; a verdict reads as one, exit 0', async () => {
+  const bad = await revealed();
+  await (await w.aggregator.scriptResult(bad.requestId, [1000000n, 0n], JUSTIFICATION_CID)).wait(); // two scores, not six
+  const s = await w.hunter({ signer: undefined }).status({ claimId: bad.claimId });
+  assert.equal(s.state, 'Revealed');
+  assert.equal(s.roundResult, 'noVerdict');
+  assert.equal(s.roundFailed, true);
+  const good = await revealed();
+  await script(good.requestId, 'HIGH');
+  const g = await w.hunter({ signer: undefined }).status({ claimId: good.claimId });
+  assert.equal(g.roundResult, 'verdict');
+  assert.equal(g.roundFailed, false);
+  assert.equal(g.failedRound, null);
+  const cli = await runCli(w, ['status', String(good.claimId), '--wait'], { keyVia: 'none' });
+  assert.equal(cli.code, 0, cli.stderr);
+});
+
+test('P32: a slow round still open is never read as failed, however long the watch has run', async () => {
+  const { dir } = await revealed();
+  await (await w.aggregator.setResponseTimeout(3600n)).wait();
+  try {
+    await w.increase(20 * 60); // past the watch's 15 minutes, inside the aggregator's timeout
+    const s = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+    assert.equal(s.state, 'Revealed');
+    assert.equal(s.pending, true);
+    assert.equal(s.ready, null);
+    assert.equal(s.roundResult, null);
+    assert.equal(s.roundFailed, false);
+    assert.equal(s.failedRound, null);
+    assert.match(s.next, /still open/);
+    const cli = await runCli(w, ['status', dir, '--wait', '--max-wait-ms', '400'], { keyVia: 'none' });
+    assert.equal(cli.code, 4, `out of time, not failed: ${cli.stderr}`);
+    assert.doesNotMatch(cli.stdout, /no verdict/);
+  } finally {
+    await (await w.aggregator.setResponseTimeout(300n)).wait();
+  }
+});
+
+test('P32: a committed, disclosed claim says it is disclosed and in its fix window, in the text and in --json', async () => {
+  const l = await w.listing({ stake: { fixWindowDays: 14, disclosureGraceHours: 48 } });
+  const dir = makeClaimDir();
+  await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+  const s = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+  assert.equal(s.state, 'Committed');
+  assert.equal(s.disclosed, true);
+  assert.equal(s.inFixWindow, true);
+  const text = await runCli(w, ['status', dir], { keyVia: 'none' });
+  assert.equal(text.code, 0, text.stderr);
+  assert.match(text.stdout, /: Committed, disclosed, in its fix window/);
+  const json = JSON.parse((await runCli(w, ['status', dir, '--json'], { keyVia: 'none' })).stdout);
+  assert.equal(json.disclosed, true);
+  assert.equal(json.inFixWindow, true);
+  // committed, not disclosed: says so
+  const undisclosed = makeClaimDir();
+  await w.hunter({ onStep: (x) => { if (x === 'commit:saved') throw new Error('stop'); } }).commit({ claimDir: undisclosed, listingId: l.listingId, acknowledge: true }).catch(() => {});
+  const u = await w.hunter({ signer: undefined }).status({ claimDir: undisclosed });
+  assert.equal(u.disclosed, false);
+  assert.equal(u.inFixWindow, false);
+  assert.match((await runCli(w, ['status', undisclosed], { keyVia: 'none' })).stdout, /: Committed, not disclosed/);
+});
+
+test('P32: status reads the reveal deadline from the chain and says when a release moved it earlier than the tool said', async () => {
+  const l = await w.listing({ stake: { fixWindowDays: 14, disclosureGraceHours: 48 } });
+  const dir = makeClaimDir();
+  const printed = await runCli(w, ['commit', dir, '--listing', String(l.listingId), '--yes']);
+  assert.equal(printed.code, 0, printed.stderr);
+  const { claimId } = readJson(statePath(dir));
+  const told = (await w.sa.claimTimes(claimId)).revealDeadline;
+  assert.ok(told > 0n);
+  assert.ok(printed.stdout.includes(`Reveal before ${told}`), 'commit printed the reveal deadline');
+  assert.equal(readJson(statePath(dir)).told.revealDeadline, String(told), 'and recorded it');
+  const before_ = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+  assert.equal(before_.revealDeadlineMoved, null);
+
+  await (await w.sa.connect(w.maker).release(claimId)).wait();
+  const now = (await w.sa.claimTimes(claimId)).revealDeadline;
+  assert.ok(now < told, 'the release ended the fix window, and the deadline came with it');
+  const s = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+  assert.equal(s.times.revealDeadline, now, 'the chain\'s');
+  assert.deepEqual(s.revealDeadlineMoved, { from: told, to: now, cause: 'release' });
+  const cli = await runCli(w, ['status', dir], { keyVia: 'none' });
+  assert.match(cli.stdout, new RegExp(`Reveal before ${now}`));
+  assert.match(cli.stdout, new RegExp(`moved earlier[^\\n]*${told}`));
+  assert.match(cli.stdout, /released/);
+  // by its id there is no record of what the hunter was told: the chain's facts, and no claim that it moved
+  const byId = await w.hunter({ signer: undefined }).status({ claimId });
+  assert.equal(byId.revealDeadlineMoved, null);
+  assert.equal(byId.released, true);
+  const idText = await runCli(w, ['status', String(claimId)], { keyVia: 'none' });
+  assert.match(idText.stdout, /released/);
+  assert.doesNotMatch(idText.stdout, /moved/);
+});
+
+// The real aggregator's view of a round's money (verdikta-dispatcher, ReputationAggregator.getEthAccounting), which
+// the mock does not have: answered here from the mock's own ethReceived and the refund the test sets.
+function withEthAccounting(provider, aggregatorAddress, refundWei) {
+  const { ethers } = w.hre;
+  const iface = new ethers.Interface(['function getEthAccounting(bytes32) view returns (uint256 ethReceived, uint256 baseCredited, uint256 bonusCredited, uint256 bonusMultiplierSnap, uint256 reserved)']);
+  const selector = iface.getFunction('getEthAccounting').selector;
+  return new Proxy(provider, {
+    get(target, prop) {
+      if (prop === 'call') {
+        return async (tx) => {
+          if (String(tx.to).toLowerCase() === aggregatorAddress.toLowerCase() && String(tx.data).startsWith(selector)) {
+            const [aggId] = iface.decodeFunctionData('getEthAccounting', tx.data);
+            const received = await w.aggregator.ethReceived(aggId);
+            const [complete] = await w.aggregator.getAggregationStatus(aggId);
+            return iface.encodeFunctionResult('getEthAccounting', [received, received - refundWei, 0n, 0n, complete ? 0n : refundWei]);
+          }
+          return target.call(tx);
+        };
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+}
+
+test('P32: a failed round\'s cost is its own numbers in ETH (testnet: 0.00012 of a 0.00144 ETH prepay), with no dollar figure', async () => {
+  const { ABSTAIN_COSTS, ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST, retriggerNotice } = await import('../src/index.js');
+  for (const text of [ABSTAIN_COSTS, ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST, retriggerNotice({ claimId: 1n, valueWei: 1n, deadline: 2n })]) assert.doesNotMatch(text, /\$/, text);
+  // the listing's oracle fee is 0.00012 ETH: twelve of it is the prepay; the oracles leave 0.00132 ETH of it unspent
+  await (await w.aggregator.setFeeMultiplier(12n)).wait();
+  await (await w.aggregator.setRefundAmount(1320000000000000n)).wait();
+  try {
+    const { dir, claimId } = await revealed();
+    assert.equal((await w.sa.getClaim(claimId)).prepayWei, 1440000000000000n);
+    await timeOut();
+    const provider = withEthAccounting(w.provider, await w.aggregator.getAddress(), 1320000000000000n);
+    for (const finalized of [false, true]) {
+      if (finalized) await (await w.sa.finalize(claimId)).wait();
+      const s = await w.hunter({ provider, signer: undefined }).status({ claimDir: dir });
+      assert.equal(s.state, finalized ? 'RoundFailed' : 'Revealed');
+      assert.equal(s.failedRound.prepayWei, 1440000000000000n);
+      assert.equal(s.failedRound.spentWei, 120000000000000n);
+      assert.equal(s.failedRound.refundWei, 1320000000000000n);
+      for (const amount of ['0.00012 ETH', '0.00144 ETH', '0.00132 ETH']) assert.ok(s.next.includes(amount), `${amount}: ${s.next}`);
+      assert.doesNotMatch(s.next, /\$/);
+    }
+    // an aggregator without that view: the prepay the round was sent, in ETH, and no figure made up for the split
+    const bare = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+    assert.equal(bare.failedRound.prepayWei, 1440000000000000n);
+    assert.equal(bare.failedRound.spentWei, null);
+    assert.equal(bare.failedRound.refundWei, null);
+    assert.ok(bare.next.includes('0.00144 ETH'), bare.next);
+    assert.doesNotMatch(bare.next, /\$/);
+  } finally {
+    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+    await (await w.aggregator.setRefundAmount(0n)).wait();
+  }
 });

@@ -1263,8 +1263,8 @@ export CODE_RUNNER_URL=http://127.0.0.1:8090  CODE_RUNNER_TOKEN=…   # for chec
 verdikta-attest check  ./claim --listing 12        # free, and nothing leaves this machine
 verdikta-attest commit ./claim --listing 12 --yes  # bond + prepay; asks for --yes after saying what that means
 verdikta-attest status ./claim                     # the fix window, and what comes next
-verdikta-attest reveal ./claim
-verdikta-attest status ./claim --wait              # polls the evaluation, up to 15 minutes
+verdikta-attest reveal ./claim --yes               # the plaintext and the reveal; asks for --yes after saying what it sends
+verdikta-attest status ./claim --wait              # polls the evaluation, up to 15 minutes; exit 5 for a round with no verdict
 verdikta-attest reveal ./claim --retrigger --yes   # a failed round again, for the live top-up; asks for --yes after saying what it costs
 verdikta-attest claim  ./claim                     # finalize, settle, withdraw: whatever is due
 verdikta-attest appeal ./claim --yes               # an INVALID to the dispute panel, for the live dispute fee
@@ -1277,7 +1277,8 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   (`--no-pack` prints status and codes alone). The runner must
   be on this machine unless `--remote-runner` is passed, since it reads the plaintext. A failed gate says what it would settle as
   (`external-adapter/src/codeReview/settlement.js`). An **abstain** (a proof that loops or runs out of memory) is shown as one, with
-  what it costs: every arbiter abstains the same way, each failed round costs the base fees, the bond goes to the maker if no
+  what it costs: every arbiter abstains the same way, each failed round costs its base fees (status shows a failed round's own
+  numbers, in ETH), the bond goes to the maker if no
   round settles, and nothing on-chain or on IPFS says why, so `check` is the only place to see it. On `linux/arm64` there is no
   report, only gates and the pack. The forecast does not catch a trap keyed on the date: the runner fakes no clock. On a
   listing that names `stake.documents`, the request carries the spec as signed, so the runner reads the documents from the
@@ -1292,12 +1293,22 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   It sends `commit` with the bond and the live fee, and only once that is mined pins the ciphertext and calls `disclose`.
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
-- **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. `reveal --retrigger`
-  sends a failed round again. It pays the lens's `retriggerTopUp` (the live maximum fee less any prepay a refused submission
+- **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. Then, as `commit`,
+  `reveal --retrigger` and `appeal`, it prints what it would send (the lens's `revealTopUp`, read again as it signs) and why,
+  and without `--yes` pins, signs and saves nothing (exit 3; node P32). `reveal --retrigger`
+  sends a failed round again, and keeps its transaction's hash in `state.json` (`retriggerTx`) once it is mined. It pays the lens's `retriggerTopUp` (the live maximum fee less any prepay a refused submission
   left held, so after a round that ran a fresh prepay in full), and, as `commit` and `appeal`, prints what it costs and sends
   nothing without `--yes`; the amount printed is the amount sent. Its balance check and dry run come first. A saved
   re-trigger this run would send again asks for `--yes` too; one whose nonce is used, or that the node already holds, is
   only waited for, never sent again. On a claim with no failed round, `--retrigger` refuses and never reveals.
+- **`status`** reads a round that is over the way `finalize` reads it (node P32): the aggregator's result, judged by the lens's
+  `judgeVector`, or with none the aggregator's `getAggregationStatus`. So a round with no verdict reads as failed from the
+  moment the aggregator's own timeout fails it, before anyone finalizes it, with the re-trigger's quote and deadline from the
+  chain, what the round cost (the aggregator's `getEthAccounting`; the prepay alone where it has none), and the pointer to
+  `check`; `status --wait` exits 5 for it. An open round never reads as failed: `finalize`'s dry run is refused until the
+  aggregator's timeout. A Committed claim says whether it is disclosed and in its fix window. The reveal deadline is the
+  lens's, and against what `commit` printed and recorded (`told` in `state.json`) `status` says when a release or a
+  roll-forward moved it earlier; by a claim id, with nothing recorded, it says only what the chain says.
 - **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text
   after it can say anything, and is not read. It shows the settlement safeguards (errata E7-E9), each from the lens: the appeal
   window (`appealDeadline`), the dispute-panel round's kind and result, a confirmation's window (`confirmWindow`), an appeal's
@@ -1346,7 +1357,8 @@ the gate's answer. So:
 A pinned file is held to the chain: its bytes are hashed against the on-chain commitment before the upload and read back through
 the gateway after it, and a raw CID (`bafkrei…`) is recomputed. So a gateway the arbiters cannot reach is the hunter's to avoid:
 read-back through a local gateway proves less than one through a public one. Exit codes: 0 done, 1 refused or failed, 2 usage,
-3 `--yes` (or `--waive-appeal`) needed, 4 still pending (run the same command again).
+3 `--yes` (or `--waive-appeal`) needed, 4 still pending (run the same command again), 5 `status --wait` on a claim whose round
+ended with no verdict.
 
 ## The client
 

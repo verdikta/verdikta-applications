@@ -49,7 +49,7 @@ test('the whole life of a claim through the CLI: no output carries a key, a cred
   assert.equal(c.code, 0, c.stderr);
   const s = await run(['status', dir]);
   assert.equal(s.code, 0, s.stderr);
-  const v = await run(['reveal', dir]);
+  const v = await run(['reveal', dir, '--yes']);
   assert.equal(v.code, 0, v.stderr);
   const { claimId } = readJson(statePath(dir));
   await (await w.aggregator.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
@@ -67,7 +67,7 @@ test('an RPC that quotes every request back in its errors, at each verb: nothing
   const ok = await runCli(w, ['commit', dir, '--listing', String(l.listingId), '--yes'], { extra });
   assert.equal(ok.code, 0, ok.stderr);
   const secrets = secretsOf(dir);
-  for (const args of [['reveal', dir], ['status', dir], ['claim', dir], ['commit', dir, '--listing', String(l.listingId), '--yes']]) {
+  for (const args of [['reveal', dir, '--yes'], ['status', dir], ['claim', dir], ['commit', dir, '--listing', String(l.listingId), '--yes']]) {
     rpc.options.echoErrors = true;
     const r = await runCli(w, args, { extra });
     rpc.options.echoErrors = false;
@@ -83,13 +83,13 @@ test('the CLI\'s signed reveal bounced by an RPC that quotes it: no key on the t
   await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
   const secrets = secretsOf(dir);
   rpc.options.echoOnly = ['eth_sendRawTransaction'];
-  const bounced = await runCli(w, ['reveal', dir], { extra });
+  const bounced = await runCli(w, ['reveal', dir, '--yes'], { extra });
   rpc.options.echoOnly = null;
   assert.equal(bounced.code, 1, bounced.stderr);
   assert.match(bounced.stderr, /RPC_UNAVAILABLE/);
   assertNoForms(`${bounced.stdout}\n${bounced.stderr}`, secrets, 'reveal under an echoing send');
   assert.equal(bounced.stderr.includes('rejected:'), false);
-  const done = await runCli(w, ['reveal', dir], { extra });
+  const done = await runCli(w, ['reveal', dir, '--yes'], { extra });
   assert.equal(done.code, 0, done.stderr);
   assert.match(done.stdout, /Revealed/);
 });
@@ -113,7 +113,7 @@ test('the signed reveal bounced by an RPC that quotes it: the error is ours, wit
       return typeof v === 'function' ? v.bind(target) : v;
     },
   });
-  const err = await w.hunter({ provider: quoting, signer: new ethers.Wallet(w.hunterKey, w.provider) }).reveal({ claimDir: dir }).catch((e) => e);
+  const err = await w.hunter({ provider: quoting, signer: new ethers.Wallet(w.hunterKey, w.provider) }).reveal({ claimDir: dir, acknowledge: true }).catch((e) => e);
   assert.equal(err.code, 'RPC_UNAVAILABLE');
   assertNoForms(allForms(err), { contentKey: formsOf(keys.contentKey), ephemeralKey: formsOf(keys.ephemeralKey), wallet: formsOf(w.hunterKey) }, 'error');
   assertNoForms(util.inspect(err, { depth: 10, showHidden: true }), { contentKey: formsOf(keys.contentKey), ephemeralKey: formsOf(keys.ephemeralKey), wallet: formsOf(w.hunterKey) }, 'inspected error');
@@ -154,7 +154,7 @@ test('callbacks and results of the library carry no secret', async () => {
   const seen = [];
   const hunter = w.hunter({ onStep: (...a) => seen.push(a), onNotice: (...a) => seen.push(a) });
   const c = await hunter.commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
-  const v = await hunter.reveal({ claimDir: dir });
+  const v = await hunter.reveal({ claimDir: dir, acknowledge: true });
   const secrets = secretsOf(dir);
   delete secrets.wallet;
   const dump = (x) => util.inspect(x, { depth: 10, showHidden: true });

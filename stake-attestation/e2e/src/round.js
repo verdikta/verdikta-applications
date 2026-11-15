@@ -518,7 +518,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       log('[round] break: the AI Node goes down, so the jury cannot be reached');
       await aiNode.close();
     }
-    const validReveal = await tool('reveal', validDir);
+    const validReveal = await tool('reveal', validDir, '--yes');
     toolDone('reveal', validReveal);
     const hunterAfterReveal = await balanceAfterTx(hunter, validReveal.json.tx);
     const makerBeforeJudge = await balanceAfterTx(maker, validReveal.json.tx);
@@ -643,7 +643,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     // ---------------------------------------------------------------- a claim the gates settle
     stage('gate: reveal, INVALID, the appeal window, the bond to the maker');
     const before2 = counts();
-    const gateReveal = await tool('reveal', gateDir);
+    const gateReveal = await tool('reveal', gateDir, '--yes');
     toolDone('reveal', gateReveal);
     const hunterAfterGateReveal = await balanceAfterTx(hunter, gateReveal.json.tx);
     const makerBeforeGate = await balanceAfterTx(maker, gateReveal.json.tx);
@@ -702,7 +702,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
 
     stage('integrity: reveal, DUPLICATE, the bond back');
     const beforeIntegrity = counts();
-    const integrityReveal = await tool('reveal', integrityDir);
+    const integrityReveal = await tool('reveal', integrityDir, '--yes');
     toolDone('reveal', integrityReveal);
     const hunterAfterIntegrityReveal = await balanceAfterTx(hunter, integrityReveal.json.tx);
     const makerBeforeIntegrity = await balanceAfterTx(maker, integrityReveal.json.tx);
@@ -766,7 +766,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     await makerRelease(abstainId);
     const before3 = counts();
     const pinsBeforeAbstain = ipfs.pins.length;
-    const abstainReveal = await tool('reveal', abstainDir);
+    const abstainReveal = await tool('reveal', abstainDir, '--yes');
     toolDone('reveal', abstainReveal);
     const hunterAfterAbstainReveal = await balanceAfterTx(hunter, abstainReveal.json.tx);
     const firstRound = await roundOf(abstainId);
@@ -883,7 +883,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     toolDone('commit', appealCommit);
     const appealId = BigInt(appealCommit.json.claimId);
     await makerRelease(appealId);
-    const appealReveal = await tool('reveal', appealDir);
+    const appealReveal = await tool('reveal', appealDir, '--yes');
     toolDone('reveal', appealReveal);
     const appealClaimRound = await roundOf(appealId);
     expect(servedRoundChecks('appeal', appealClaimRound, { vector: INVALID_VECTOR }));
@@ -940,7 +940,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     toolDone('commit', narrowCommit);
     const narrowId = BigInt(narrowCommit.json.claimId);
     await makerRelease(narrowId);
-    const narrowReveal = await tool('reveal', narrowDir);
+    const narrowReveal = await tool('reveal', narrowDir, '--yes');
     toolDone('reveal', narrowReveal);
     const narrowRound = await roundOf(narrowId);
     expect(servedRoundChecks('narrow', narrowRound, { vector: NARROW_AVERAGE }));

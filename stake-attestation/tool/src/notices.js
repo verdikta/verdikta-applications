@@ -26,8 +26,24 @@ export const REQUIREMENT = 'In report.md, a section headed "## Requirement" says
 export const DATE_TRAP = 'The forecast does not catch a trap keyed on the date: the runner fakes no clock, so what repository code or a vyper does on a later day may differ.';
 export const INTEGRITY_COSTS = 'A tamper flag costs the bond, even beside another failed check. Any other failed integrity check returns the bond, with no award.';
 
-/** Design §12: nothing of this reaches the chain or IPFS, so the words are all a hunter gets. */
-export const ABSTAIN_COSTS = 'Each failed round costs you the base fees (K × the per-oracle fee, about $1.75 of the $3.50 standard prepay); the rest of the prepay comes back at finalize. If no round settles, the bond goes to the maker at expiry. Nothing on-chain or on IPFS says why.';
+/**
+ * Design §12: nothing of this reaches the chain or IPFS, so the words are all a hunter gets. No amount is fixed here
+ * (node P32): the fee follows the aggregator's, so status reads a failed round's own numbers from the chain.
+ */
+export const ABSTAIN_COSTS = 'Each failed round costs you its base fees (K × the per-oracle fee), a part of its prepay; the rest of the prepay comes back at finalize, and status shows the round\'s own numbers, in ETH. If no round settles, the bond goes to the maker at expiry. Nothing on-chain or on IPFS says why.';
+
+/**
+ * What a round that ends with no verdict means (node P32): too few arbiters' answers in the aggregator's time, which is
+ * its responseTimeoutSeconds, read from the chain when `timeoutSeconds` is given.
+ * @param {bigint|null} [timeoutSeconds]
+ */
+export function noVerdictMeans(timeoutSeconds = null) {
+  const time = timeoutSeconds ? `its response timeout, ${timeoutSeconds} s now` : 'its response timeout';
+  return `A round ends with no verdict when too few arbiters commit and reveal a result within the aggregator's time for it (${time}): most often every arbiter abstained on this claim, from a proof that loops or runs out of time, memory or processes, or a build the runner could not finish; or the arbiters were down.`;
+}
+
+/** Why a re-trigger of the same claim is likely to fail as the last round did (node P32). */
+export const RETRIGGER_SAME_CLAIM = 'A re-trigger sends the same committed claim to the same arbiters, so unless the cause was on their side it is likely to fail the same way: run check on this claim first, and re-trigger only once it does not abstain there.';
 export const ABSTAIN_BY_CLAIM = `A run that ends this way decides nothing: every arbiter abstains the same way, with no commit and no verdict, unless its host differs. ${ABSTAIN_COSTS} So this check is the one place you can see it.`;
 export const ABSTAIN_BY_HOST = `No forecast: this machine's runner could not finish the run, which says nothing of your claim. Fix it and run check again. On the arbiters, an abstain costs this: ${ABSTAIN_COSTS}`;
 
@@ -102,6 +118,20 @@ export function retriggerNotice({ claimId, valueWei, deadline }) {
     `This sends ${eth(valueWei)} from this wallet: the top-up the contract quotes now, the live maximum fee less any prepay a refused submission left held. A round that ran took its prepay, so after one this is a fresh prepay in full.`,
     `If this round fails too: ${ABSTAIN_COSTS}`,
     `Re-trigger before ${deadline} on the chain's clock: a round that fails again does not move that time.`,
+  ].join('\n');
+}
+
+/**
+ * What a reveal sends and does, said before anything is pinned or sent (node P32): without `acknowledge` (--yes) it is
+ * a dry run, as a re-trigger is. The top-up is the lens's revealTopUp, read again just before the reveal is signed.
+ * @param {{ claimId: bigint, valueWei: bigint, deadline: bigint }} r
+ */
+export function revealNotice({ claimId, valueWei, deadline }) {
+  return [
+    `Reveal claim ${claimId}: this pins the plaintext archive, your proof and report, which is public from then on, and sends the reveal with its keys.`,
+    `It sends ${eth(valueWei)} from this wallet now: the top-up the contract quotes (revealTopUp), the rise in the live fee since your commit, 0 when the prepay covers it, read again as it is signed. Gas is on top.`,
+    'The arbiters then run the round; status --wait follows it.',
+    `Reveal before ${deadline} on the chain's clock: unrevealed by then, anyone may expire the claim, and the bond goes to the maker.`,
   ].join('\n');
 }
 

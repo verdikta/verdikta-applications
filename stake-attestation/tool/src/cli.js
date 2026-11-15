@@ -185,6 +185,7 @@ function printCommit(out, r) {
   out(`ciphertext sha256 ${r.ciphertextSha256}`);
   out(`ciphertext CID ${r.ciphertextCid}`);
   out(`Revealable at ${when(r.revealableAt)}. Keep .verdikta-claim: losing its keys forfeits the bond.`);
+  if (r.revealDeadline === null) return;
   out(r.revealDeadlineEarliest
     ? `Reveal before ${when(r.revealDeadline)} at the earliest: later if an earlier claim on the listing is still open when the fix window ends. A release by the maker moves it earlier: status says so.`
     : `Reveal before ${when(r.revealDeadline)}. A release by the maker ends the fix window early and moves this earlier: status says so.`);

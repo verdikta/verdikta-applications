@@ -159,7 +159,9 @@ each deadline of your claim and what comes next.
    arbiters committed and revealed a result in that time: most often every arbiter abstained on
    your claim (a proof that loops, or runs out of time, memory or processes, or a build the runner
    could not finish), or the arbiters were down. Nothing on-chain says which, and the round's
-   base fees are spent. Finalized, it leaves the claim RoundFailed.
+   base fees are spent. Finalized, it leaves the claim RoundFailed; until then there is nothing to
+   re-trigger (ROUND_NOT_RECORDED), so run `verdikta-attest claim ./claim` to record it, as anyone
+   may and the site's keeper does, and `status` then says RoundFailed.
    `verdikta-attest reveal ./claim --retrigger` says what a new round costs, and with --yes sends
    it, for the live top-up, until `retriggerDeadline(claimId)` (`windows.revealWindow` after it
    first failed). A re-trigger sends the same committed claim to the same arbiters, so unless the
@@ -259,7 +261,8 @@ The commands, in order (`./claim` is your claim folder, section 6):
     verdikta-attest claim ./claim                                # finalize, settle, withdraw: whatever is due
 
 If it is judged INVALID: `verdikta-attest appeal ./claim`, read the cost, then again with --yes.
-If its round ended with no verdict (exit 5): read section 3, step 6, run `check`, then
+If its round ended with no verdict (exit 5): read section 3, step 6. If `status` says the round
+is not recorded yet, `verdikta-attest claim ./claim` records it. Run `check`, then
 `verdikta-attest reveal ./claim --retrigger`, and again with --yes.
 `status`, `claim` and `appeal` also take the claim id in place of the folder, but only a folder
 holds what `commit` printed, against which `status` tells a moved reveal deadline. --json prints

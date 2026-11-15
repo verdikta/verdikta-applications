@@ -393,3 +393,58 @@ test('P32: a dry run needs the wallet key, a gateway and a pin backend, not the 
   assert.deepEqual(fs.readdirSync(statePath(dir, '')).sort(), files);
   assert.equal(fs.readFileSync(statePath(dir), 'utf8'), saved);
 });
+
+test('P32 (R1-F1): a saved re-trigger mined before the next run began is answered with, and its hash kept', async () => {
+  const { dir, claimId } = await failedRound();
+  const topUp = await w.sa.retriggerTopUp(claimId);
+  const nonce = await w.provider.getTransactionCount(w.hunterWallet.address, 'pending');
+  const fee = await w.provider.getFeeData();
+  const raw = await w.hunterWallet.signTransaction({
+    type: 2, chainId: 31337n, nonce, to: w.address, data: w.sa.interface.encodeFunctionData('retrigger', [claimId]), value: topUp, gasLimit: 12_000_000n,
+    maxFeePerGas: fee.maxFeePerGas, maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
+  });
+  const rec = { hash: w.hre.ethers.Transaction.from(raw).hash, raw, nonce, from: w.hunterWallet.address, value: topUp.toString(), gasLimit: '12000000' };
+  const file = statePath(dir);
+  fs.writeFileSync(file, `${JSON.stringify({ ...readJson(file), retriggerTx: rec }, null, 2)}\n`, { mode: 0o600 });
+  // the run that sent it stopped before it saw the receipt; the transaction is mined before the next run begins
+  await (await w.provider.broadcastTransaction(raw)).wait();
+  assert.equal(await w.sa.claimState(claimId), 2n, 'Revealed again');
+  const cli = await runCli(w, ['reveal', dir, '--retrigger', '--yes']);
+  assert.equal(cli.code, 0, cli.stderr);
+  assert.ok(cli.stdout.includes(`Re-trigger transaction ${rec.hash}`), cli.stdout);
+  assert.deepEqual(readJson(file).retriggerTx, { hash: rec.hash }, 'the hash, and no saved bytes');
+  assert.equal(await nonceOf(), nonce + 1, 'nothing more sent');
+  // once it is done, another --retrigger has no failed round to send
+  await assert.rejects(w.hunter().reveal({ claimDir: dir, retrigger: true, acknowledge: true }), (e) => e.code === 'NOT_RETRIGGERABLE' && /Revealed/.test(e.message));
+});
+
+test('P32 (R1-F2): the documented way on from exit 5 before finalize: --retrigger says to record it, claim records it, then the re-trigger', async () => {
+  const { dir, claimId } = await committed();
+  await w.hunter().reveal({ claimDir: dir, acknowledge: true });
+  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  const waited = await runCli(w, ['status', dir, '--wait'], { keyVia: 'none' });
+  assert.equal(waited.code, 5, waited.stderr);
+  assert.match(waited.stdout, /Run claim to record it/);
+  const nonce = await nonceOf();
+  for (const args of [['reveal', dir, '--retrigger'], ['reveal', dir, '--retrigger', '--yes']]) {
+    const early = await runCli(w, args);
+    assert.equal(early.code, 1, `${args.join(' ')}: ${early.stderr}`);
+    assert.match(early.stderr, /ROUND_NOT_RECORDED/);
+    assert.match(early.stderr, /run claim to record it/);
+    assert.doesNotMatch(early.stdout, /Reveal transaction/, 'never the reveal as if it were the re-trigger');
+  }
+  assert.equal(await nonceOf(), nonce, 'nothing sent');
+  const recorded = await runCli(w, ['claim', dir]);
+  assert.equal(recorded.code, 0, recorded.stderr);
+  assert.match(recorded.stdout, /Sent finalize/);
+  assert.equal(await w.sa.claimState(claimId), ROUND_FAILED);
+  const after = await runCli(w, ['status', dir, '--wait'], { keyVia: 'none' });
+  assert.equal(after.code, 5);
+  assert.match(after.stdout, /RoundFailed/);
+  const quote = await runCli(w, ['reveal', dir, '--retrigger']);
+  assert.equal(quote.code, 3, quote.stderr);
+  const sent = await runCli(w, ['reveal', dir, '--retrigger', '--yes']);
+  assert.equal(sent.code, 0, sent.stderr);
+  assert.match(sent.stdout, /Re-trigger transaction 0x[0-9a-f]{64}/);
+  assert.equal(await w.sa.claimState(claimId), 2n);
+});

@@ -1305,8 +1305,9 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   `judgeVector`, or with none the aggregator's `getAggregationStatus`. So a round with no verdict reads as failed from the
   moment the aggregator's own timeout fails it, before anyone finalizes it, with the re-trigger's quote and deadline from the
   chain, what the round cost (the aggregator's `getEthAccounting`; the prepay alone where it has none), and the pointer to
-  `check`; `status --wait` exits 5 for it. An open round never reads as failed: `finalize`'s dry run is refused until the
-  aggregator's timeout. A Committed claim says whether it is disclosed and in its fix window. The reveal deadline is the
+  `check`; `status --wait` exits 5 for it. Until `finalize` records it there is nothing to re-trigger: `reveal --retrigger`
+  refuses with `ROUND_NOT_RECORDED`, and `claim` records it. An open round never reads as failed: `finalize`'s dry run is
+  refused until the aggregator's timeout. A Committed claim says whether it is disclosed and in its fix window. The reveal deadline is the
   lens's, and against what `commit` printed and recorded (`told` in `state.json`) `status` says when a release or a
   roll-forward moved it earlier; by a claim id, with nothing recorded, it says only what the chain says.
 - **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text

@@ -74,7 +74,7 @@ export function roundCostText({ prepayWei = null, spentWei = null, refundWei = n
 export function failedRoundNext({ deadline, requestId, roundStarted, recorded = true, window = null, retriggerWei = null, cost = null, timeoutSeconds = null }) {
   const refused = ZERO_ID.test(String(requestId));
   const span = window === null || window === undefined ? 'the listing\'s reveal window' : `${window} s`;
-  const when = deadline ? `before ${deadline} on the chain's clock` : `within ${span} of when finalize records the round as failed (anyone may finalize it, the site's keeper does, and claim does it now)`;
+  const when = deadline ? `before ${deadline} on the chain's clock` : `within ${span} of when finalize records the round as failed`;
   const quote = retriggerWei === null || retriggerWei === undefined ? '' : ` It sends ${eth(retriggerWei)} now, the contract's quote.`;
   if (refused && !roundStarted) return `The aggregator refused the request, so no round ran and nothing was spent: it holds no fault of your claim's. reveal --retrigger says what that costs and, with --yes, sends it again ${when}: only what the live fee has risen by.${quote} If every attempt is refused, anyone may expire the claim from then on, and the bond and the prepay come back to you.`;
   if (refused) return `The aggregator refused this attempt, so the prepay is still held. An earlier round ran: ${ABSTAIN_COSTS} reveal --retrigger says what it costs and, with --yes, sends it again ${when}.${quote}`;
@@ -85,7 +85,9 @@ export function failedRoundNext({ deadline, requestId, roundStarted, recorded = 
     roundCostText(cost ?? {}, { recorded }),
     ABSTAIN_COSTS,
     RETRIGGER_SAME_CLAIM,
-    `reveal --retrigger says what it costs and, with --yes, sends the round again, with a fresh prepay, ${when}.${quote}`,
+    // nothing re-triggers a round finalize has not recorded (R1-F2): claim records it, as anyone may, the keeper too
+    recorded ? '' : 'Run claim to record it as failed now (anyone may, and the site\'s keeper does); until then reveal --retrigger has nothing to send.',
+    `${recorded ? '' : 'Then '}reveal --retrigger says what it costs and, with --yes, sends the round again, with a fresh prepay, ${when}.${quote}`,
   ].filter(Boolean).join(' ');
 }
 
@@ -460,6 +462,9 @@ export async function runStatus(ctx, { claimId, claimDir, wait = false, maxWaitM
   delete out.block;
   return out;
 }
+
+/** A claim's state with its round read as status reads it (readNow), for reveal --retrigger (node P32). */
+export const readClaimRound = (ctx, claimId) => readNow(ctx, BigInt(claimId));
 
 // A pending round is over only when the chain says so: finalize's dry run passes, at the snapshot's block. Then what
 // finalize would record is read from the aggregator (roundResultOf): a round with no verdict is failed from then on.

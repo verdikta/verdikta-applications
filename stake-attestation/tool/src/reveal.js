@@ -12,7 +12,7 @@ import { bindingOf, checkBinding, pinVerified, readBack, readProvenFiles } from 
 import { fail } from './errors.js';
 import { retriggerNotice, revealNotice } from './notices.js';
 import { rawCid, sha256Hex0x } from './ipfs.js';
-import { failedRoundNext } from './status.js';
+import { failedRoundNext, readClaimRound } from './status.js';
 import { openWorkspace } from './workspace.js';
 
 const ZERO_KEY16 = `0x${'00'.repeat(16)}`;
@@ -121,13 +121,30 @@ export async function runReveal(ctx, { claimDir, retrigger: wantRetrigger = fals
     if (!state.claimId) throw fail('NOT_DISCLOSED', 'Nothing has been committed yet: run commit again.');
 
     let lens = CLAIM_STATES[Number(await ctx.readSettled('claimState', [state.claimId]))];
+    // A re-trigger an earlier run saved may have been mined before this run began (node P32, R1-F1): the claim is then
+    // past RoundFailed, where retrigger() never runs. Keep its hash, as retrigger() does, and a resume answers with it.
+    if (state.retriggerTx?.raw && lens !== 'RoundFailed') {
+      const rec = state.retriggerTx;
+      const receipt = await ctx.rpc(() => ctx.provider.getTransactionReceipt(rec.hash));
+      if (receipt) {
+        state = { ...state, retriggerTx: keptHash(rec, { receipt }) };
+        ws.saveState(state);
+        if (wantRetrigger && receipt.status === 1) return outcomeOf(ctx, state, null, rec.hash, 'retrigger');
+      }
+    }
     if (lens === 'RoundFailed') return wantRetrigger ? retrigger(ctx, ws, state, acknowledge) : outcomeOf(ctx, state);
     if (lens === 'Expired') {
       const c = await ctx.read('getClaim', [state.claimId]);
       throw fail('CLAIM_ENDED', `Expired: ${EXPIRIES[Number(c.expiry)]}.`);
     }
     // --retrigger never reveals: what would pin the plaintext and pay is a plain reveal, asked for as one
-    if (wantRetrigger && (lens === 'Committed' || lens === 'Revealable')) throw fail('NOT_RETRIGGERABLE', `It is ${lens}.`);
+    if (wantRetrigger && (lens === 'Committed' || lens === 'Revealable')) throw fail('NOT_RETRIGGERABLE', `It is ${lens}: run reveal without --retrigger to reveal it.`);
+    // Nor does it answer for a claim past its reveal as if it had sent something (node P32, R1-F2): a round with no
+    // verdict that finalize has not recorded yet is said as that, read as status reads it; any other has none to send.
+    if (wantRetrigger) {
+      if ((await readClaimRound(ctx, state.claimId)).roundFailed) throw fail('ROUND_NOT_RECORDED', `Claim ${state.claimId}.`);
+      throw fail('NOT_RETRIGGERABLE', `It is ${lens}.`);
+    }
 
     // A reveal already signed decides first: it is the same call, at its nonce. Sent again only with --yes.
     if (state.revealTx?.raw && (lens === 'Committed' || lens === 'Revealable')) {

@@ -74,6 +74,12 @@ test('a version\'s record: stake, labels, history, findings, flags, lineage, lat
   await expect(page.getByTestId('record-repo')).toHaveText('https://github.com/acme/vault');
   await expect(page.getByTestId('record-commit')).toHaveText(commit);
   await expect(page.getByTestId('record-listing-count')).toHaveText('1');
+  // how many of them are not closed: a count, as the line above it is, never the listings' ids (which is what
+  // record.active holds); each of them is linked by its page
+  const { record: mirrored } = await (await fetch(`${stack.apiUrl}/api/records/${first.artifactHash}`)).json();
+  expect(mirrored.active).toEqual([String(id)]);
+  await expect(page.getByTestId('record-active')).toHaveText('1');
+  await expect(page.getByTestId('record-active-listings').getByRole('link')).toHaveText([fill(R.listing, { id })]);
 
   // the stake, its labels and its lineage
   const s = (f) => page.getByTestId(`listing-${id}-${f}`);

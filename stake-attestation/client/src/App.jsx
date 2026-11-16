@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowRight, Bot, FileText, GitBranch, Lock, Plus, Scale, Search, Terminal, Wallet } from 'lucide-react';
 
 import { connectWallet, hasWallet, stillConnected } from './chain/wallet.js';
 import { CheckPage } from './components/CheckPage.jsx';
@@ -8,6 +9,7 @@ import { FundPage } from './components/FundPage.jsx';
 import { ListingPage } from './components/ListingPage.jsx';
 import { RecordPage } from './components/RecordPage.jsx';
 import { WalletContext, useWalletContext, walletMessage } from './components/wallet.js';
+import { CONFIG } from './config.js';
 import { STRINGS, fill } from './strings.js';
 
 // #/              home
@@ -88,6 +90,7 @@ function WalletBar() {
         <span data-testid="wallet">{fill(STRINGS.wallet.connected, { account: w.wallet.account })}</span>
       ) : (
         <button type="button" onClick={() => w.connect().catch(() => {})} disabled={w.busy}>
+          <Wallet size={18} aria-hidden="true" />
           {w.busy ? STRINGS.wallet.connecting : STRINGS.wallet.connect}
         </button>
       )}
@@ -96,13 +99,84 @@ function WalletBar() {
   );
 }
 
+/** One side's steps, numbered, as the bounty site's "How It Works" draws them. */
+function Steps({ side, className, icon, action }) {
+  return (
+    <div className={`how-card ${className}`}>
+      <div className="how-head">
+        <h3><span className="how-icon">{icon}</span>{side.title}</h3>
+        {action}
+      </div>
+      <ol className="how-steps">
+        {side.steps.map((s, i) => (
+          <li key={s.title}>
+            <span className="step-n" aria-hidden="true">{i + 1}</span>
+            <h4>{s.title}</h4>
+            <p>{s.text}</p>
+          </li>
+        ))}
+      </ol>
+      {side.note && <p className="how-note"><Terminal size={18} aria-hidden="true" /><span>{side.note}</span></p>}
+    </div>
+  );
+}
+
 function Home() {
+  const H = STRINGS.home;
   return (
     <>
-      <p className="lead">{STRINGS.home.lead}</p>
-      <p>{STRINGS.home.recordNote}</p>
-      <p className="status">{STRINGS.home.status}</p>
+      <section className="hero">
+        <h2>{H.headline}</h2>
+        <p className="lead">{H.lead}</p>
+        <p className="hero-actions">
+          <a className="button hero-primary" href="#/feed"><Search size={20} aria-hidden="true" />{H.seeFeed}</a>
+          <a className="button hero-ghost" href="#/list"><Plus size={20} aria-hidden="true" />{STRINGS.nav.list}</a>
+        </p>
+        <ul className="hero-points">
+          <li><Lock size={16} aria-hidden="true" />{H.points.escrow}</li>
+          <li><Scale size={16} aria-hidden="true" />{H.points.judged}</li>
+          <li><FileText size={16} aria-hidden="true" />{H.points.record}</li>
+        </ul>
+        {/* what the record is not, where the promise is read */}
+        <p className="hero-note">{H.recordNote}</p>
+      </section>
+      <section className="how">
+        <h2>{H.how.title}</h2>
+        <p className="status">{H.status}</p>
+        <Steps
+          side={H.how.makers}
+          className="how-makers"
+          icon={<GitBranch size={20} aria-hidden="true" />}
+          action={<a className="button" href="#/list">{STRINGS.nav.list}<ArrowRight size={16} aria-hidden="true" /></a>}
+        />
+        {/* the guide a hunter's agent reads before it pays anything; the footer links it on every page */}
+        <Steps
+          side={H.how.hunters}
+          className="how-hunters"
+          icon={<Bot size={20} aria-hidden="true" />}
+          action={<a className="button secondary mono" href={STRINGS.footer.guide}>{STRINGS.footer.guide}<ArrowRight size={16} aria-hidden="true" /></a>}
+        />
+      </section>
     </>
+  );
+}
+
+// the header's links, in order, each with the page it is the link of
+const NAV = [['home', '#/'], ['feed', '#/feed'], ['record', '#/record'], ['list', '#/list'], ['claim', '#/claim'], ['check', '#/check']];
+// the home page is as wide as the header; a form or one claim reads better in a narrower column
+const PAGE_CLASS = { home: 'page page-wide', list: 'page page-narrow', claim: 'page page-narrow', check: 'page page-narrow' };
+
+/** The site's name with what it is, and the network the build is for, under it. */
+function Brand() {
+  const network = STRINGS.networks[CONFIG.chainId];
+  return (
+    <a className="brand" href="#/">
+      <Scale className="brand-mark" size={30} aria-hidden="true" />
+      <div className="brand-text">
+        <h1>{STRINGS.appName}</h1>
+        <span className="network">{network ? fill(STRINGS.taglineOn, { tagline: STRINGS.tagline, network }) : STRINGS.tagline}</span>
+      </div>
+    </a>
   );
 }
 
@@ -112,18 +186,15 @@ export default function App() {
   return (
     <WalletContext.Provider value={wallet}>
       <header className="top">
-        <h1>{STRINGS.appName}</h1>
-        <nav>
-          <a href="#/">{STRINGS.nav.home}</a>
-          <a href="#/feed">{STRINGS.nav.feed}</a>
-          <a href="#/record">{STRINGS.nav.record}</a>
-          <a href="#/list">{STRINGS.nav.list}</a>
-          <a href="#/claim">{STRINGS.nav.claim}</a>
-          <a href="#/check">{STRINGS.nav.check}</a>
-        </nav>
-        <WalletBar />
+        <div className="top-inner">
+          <Brand />
+          <nav>
+            {NAV.map(([page, href]) => <a key={page} href={href} aria-current={r.page === page ? 'page' : undefined}>{STRINGS.nav[page]}</a>)}
+          </nav>
+          <WalletBar />
+        </div>
       </header>
-      <main className="page">
+      <main className={PAGE_CLASS[r.page] ?? 'page'}>
         {r.page === 'home' && <Home />}
         {r.page === 'feed' && <FeedPage />}
         {r.page === 'record' && <RecordPage key={r.hash ?? 'none'} hash={r.hash} />}
@@ -136,6 +207,7 @@ export default function App() {
       </main>
       <footer className="foot">
         <p>
+          <Bot size={16} aria-hidden="true" />
           <span>{STRINGS.footer.lead}</span> <a href={STRINGS.footer.guide}>{STRINGS.footer.guide}</a>
           {' '}<span className="hint">({STRINGS.footer.indexLead} <a href={STRINGS.footer.index}>{STRINGS.footer.index}</a>)</span>
         </p>

@@ -5,6 +5,8 @@ import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { safeguardTerms } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
+import { AwardLine, StatePill } from './Awards.jsx';
+import { Code } from './Copy.jsx';
 import { TextField } from './Field.jsx';
 import { FundListing } from './FundListing.jsx';
 import { ListingMore } from './ListingExtras.jsx';
@@ -77,15 +79,15 @@ export function FundPage({ listingId }) {
     <>
       {header}
       <ListingWarning />
-      <section className="claim" aria-labelledby={headingId} data-testid="listing-summary">
+      <section className="claim card-main" aria-labelledby={headingId} data-testid="listing-summary">
         <h3 id={headingId}>{fill(F.summary, { id: listingId })}</h3>
         <dl>
-          <dt>{F.maker}</dt><dd className="mono">{l.maker}</dd>
-          <dt>{F.state}</dt><dd>{F.states[openedHere ? 'Open' : state] ?? state}</dd>
-          <dt>{F.listingCid}</dt><dd className="mono">{l.listingCid}</dd>
+          <dt>{F.maker}</dt><dd><Code value={l.maker} what={F.maker} /></dd>
+          <dt>{F.state}</dt><dd><StatePill state={openedHere ? 'Open' : state} text={F.states[openedHere ? 'Open' : state] ?? state} /></dd>
+          <dt>{F.listingCid}</dt><dd><Code value={l.listingCid} what={F.listingCid} /></dd>
         </dl>
-        <ul>
-          <li>{fill(STRINGS.chain.awards, Object.fromEntries(CLASSES.map((c, i) => [c, formatEth(l.awards[i])])))}</li>
+        <ul className="terms">
+          <li><AwardLine text={fill(STRINGS.chain.awards, Object.fromEntries(CLASSES.map((c, i) => [c, formatEth(l.awards[i])])))} /></li>
           <li>{fill(STRINGS.chain.bond, { bond: formatEth(l.bondWei) })}</li>
           <li>{fill(STRINGS.chain.windows, { fix: Number(l.fixWindow) / 86400, dispute: Number(l.disputeWindow) / 3600, grace: Number(l.disclosureGrace) / 3600, reveal: Number(l.revealWindow) / 86400 })}</li>
           <li>{l.allowlist.length ? fill(STRINGS.chain.allowlist, { count: l.allowlist.length }) : STRINGS.chain.open}</li>

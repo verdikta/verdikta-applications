@@ -1,92 +1,329 @@
+/* The look of bounties.verdikta.org (example-bounty-program/client/src/App.css): Inter, its indigo and
+   purple, white cards on a pale page, light and dark. One stylesheet and no inline style, as the
+   Content-Security-Policy asks (deploy/nginx/verifiers.verdikta.org-headers.conf: style-src 'self'). */
+
+/* Inter, the variable font, Latin subset, served by the site itself (font-src 'self'): src/fonts/README.md. */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('./fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
+  /* the bounty site's primary and accent. White text on --primary is 3.7:1, under the 4.5:1 a reader
+     needs, so buttons, links and the hero start one step darker (--primary-strong, 4.9:1); --primary
+     itself is for icons, rings and borders. */
+  --primary: #667eea;
+  --primary-strong: #5a67d8;
+  --primary-dark: #4c51bf;
+  --accent: #764ba2;
   --bg: #ffffff;
-  --fg: #1b1f24;
-  --muted: #57606a;
-  --line: #d0d7de;
-  --panel: #f6f8fa;
-  --accent: #0969da;
-  --ok: #1a7f37;
-  --bad: #cf222e;
-  --warn: #9a6700;
+  --bg-page: #f8fafc;
+  --bg-soft: #f1f5f9;
+  --fg: #1e293b;
+  --fg-soft: #475569;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --link: #5a67d8;
+  /* a link on a tinted ground, where --link falls under 4.5:1 */
+  --link-strong: #4c51bf;
+  --tint: #eef2ff;
+  --tint-line: #c7d2fe;
+  --tint-fg: #3730a3;
+  --tint-2: #f3e8ff;
+  --ok: #047857;
+  --ok-bg: #ecfdf5;
+  --ok-line: #a7f3d0;
+  --ok-fg: #065f46;
+  --bad: #b91c1c;
+  --bad-bg: #fef2f2;
+  --bad-line: #fecaca;
+  --warn: #92400e;
+  --warn-bg: #fffbeb;
+  --warn-line: #fde68a;
+  --warn-fg: #78350f;
+  --warn-icon: #b45309;
+  --code-bg: #0f172a;
+  --code-fg: #e2e8f0;
+  --code-line: #334155;
+  --code-muted: #94a3b8;
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  --radius: 12px;
+  --font-sans: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color-scheme: light dark;
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  line-height: 1.5;
+  font-family: var(--font-sans);
+  line-height: 1.6;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1117;
-    --fg: #e6edf3;
-    --muted: #8d96a0;
-    --line: #30363d;
-    --panel: #161b22;
-    --accent: #4493f8;
-    --ok: #3fb950;
-    --bad: #f85149;
-    --warn: #d29922;
+    --primary: #818cf8;
+    --bg: #1e293b;
+    --bg-page: #0f172a;
+    --bg-soft: #172033;
+    --fg: #e2e8f0;
+    --fg-soft: #cbd5e1;
+    --muted: #94a3b8;
+    --line: #334155;
+    --line-strong: #475569;
+    --link: #a5b4fc;
+    --link-strong: #a5b4fc;
+    --tint: #27245e;
+    --tint-line: #3730a3;
+    --tint-fg: #c7d2fe;
+    --tint-2: #3b2a55;
+    --ok: #6ee7b7;
+    --ok-bg: rgba(16, 185, 129, 0.14);
+    --ok-line: rgba(16, 185, 129, 0.4);
+    --ok-fg: #6ee7b7;
+    --bad: #fca5a5;
+    --bad-bg: rgba(239, 68, 68, 0.14);
+    --bad-line: rgba(239, 68, 68, 0.4);
+    --warn: #fcd34d;
+    --warn-bg: rgba(245, 158, 11, 0.12);
+    --warn-line: rgba(245, 158, 11, 0.4);
+    --warn-fg: #fde68a;
+    --warn-icon: #fcd34d;
+    --code-bg: #0b1220;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--bg-page);
   color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-.top {
+/* the page fills the window, so the footer sits at its foot on a short page */
+#root {
+  min-height: 100vh;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 1.5rem;
-  padding: 0.75rem 1rem;
+  flex-direction: column;
+}
+
+a {
+  color: var(--link);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--fg);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: 2rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+}
+
+h3 {
+  font-size: 1.375rem;
+  margin: 0 0 0.75rem;
+}
+
+h4 {
+  font-size: 1.125rem;
+  margin: 0 0 0.5rem;
+}
+
+/* a keyboard's focus, on everything that takes it */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* said to a screen reader, not drawn: a label a pill stands in for, the comma between two chips */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- the header -------------------------------------------------------------------------- */
+
+.top {
+  background: var(--bg);
   border-bottom: 1px solid var(--line);
 }
 
+.top-inner {
+  max-width: 75rem;
+  margin: 0 auto;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 2rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.brand-mark {
+  flex: none;
+  color: var(--primary);
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+}
+
 .top h1 {
-  font-size: 1.15rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
   margin: 0;
 }
 
-.top nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 1rem;
+.network {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--link);
+  padding-left: 0.125rem;
 }
 
-.top a {
-  color: var(--accent);
+.top nav {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.5rem;
+}
+
+.top nav a {
+  color: var(--muted);
+  font-size: 0.9375rem;
+  font-weight: 500;
   text-decoration: none;
+  padding: 0.625rem 0;
+  border-bottom: 2px solid transparent;
+}
+
+.top nav a:hover {
+  color: var(--link);
+}
+
+/* the page you are on */
+.top nav a[aria-current='page'] {
+  color: var(--link);
+  font-weight: 600;
+  border-bottom-color: var(--link);
 }
 
 .wallet {
   margin-left: auto;
+  font-size: 0.9375rem;
 }
 
 .wallet p {
   margin: 0.25rem 0 0;
 }
 
+.wallet [data-testid='wallet'] {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--fg-soft);
+}
+
+/* ---- the page and the footer -------------------------------------------------------------- */
+
 .page {
-  max-width: 48rem;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 67rem;
   margin: 0 auto;
-  padding: 2rem 1rem 4rem;
+  padding: 2.5rem 1rem 4rem;
+}
+
+/* the home page: as wide as the header */
+.page-wide {
+  max-width: 75rem;
+  padding-top: 2rem;
+}
+
+/* a form or one claim: a narrower column reads better */
+.page-narrow {
+  max-width: 52rem;
 }
 
 /* node P27: what an agent reads first, on every page */
 .foot {
-  max-width: 48rem;
-  margin: 0 auto;
-  padding: 1rem 1rem 2rem;
+  background: var(--bg);
   border-top: 1px solid var(--line);
   color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.foot p {
+  max-width: 75rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+}
+
+.foot svg {
+  flex: none;
 }
 
 .foot a {
-  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--link-strong);
+  background: var(--bg-soft);
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  text-decoration: none;
+}
+
+.foot a:hover {
+  text-decoration: underline;
+}
+
+.foot .hint {
+  margin: 0;
+  font-size: inherit;
 }
 
 .lead {
-  font-size: 1.1rem;
+  font-size: 1.125rem;
+  color: var(--fg-soft);
+  max-width: 52rem;
+  margin: 0 0 1.5rem;
 }
 
 .status,
@@ -99,23 +336,62 @@ body {
   margin: 0.25rem 0 0.5rem;
 }
 
-fieldset {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  margin: 0 0 1rem;
-  padding: 0.75rem 1rem 1rem;
+.small {
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  margin-left: 0.5rem;
 }
 
-legend {
-  font-weight: 600;
-  padding: 0 0.25rem;
-}
+/* ---- cards --------------------------------------------------------------------------------- */
 
+.claim,
+.report,
+.ready,
+.check-run,
+.check-result,
+.key-panel,
+fieldset,
 details {
+  background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 6px;
-  margin: 0 0 1rem;
-  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem 1.75rem;
+  margin: 1.5rem 0;
+}
+
+/* a card inside a card: flat, on the page's colour */
+.claim .report,
+.claim .claim,
+fieldset fieldset,
+fieldset details,
+fieldset .report,
+fieldset .key-panel,
+.report .report {
+  background: var(--bg-page);
+  box-shadow: none;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0;
+}
+
+fieldset {
+  min-width: 0;
+}
+
+/* a fieldset's name, inside its card as a card's heading is, not on its border */
+legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 0.75rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+legend + * {
+  clear: both;
 }
 
 summary {
@@ -123,59 +399,457 @@ summary {
   font-weight: 600;
 }
 
-.field {
+/* a card's first line: its name on the left, its pills on the right */
+.card-head {
   display: flex;
-  flex-direction: column;
-  margin: 0.5rem 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin: 0 0 1rem;
 }
 
-.field label {
-  font-size: 0.9rem;
-  margin-bottom: 0.2rem;
+.card-head h3,
+.card-head h4 {
+  margin: 0;
+  font-size: 1.375rem;
 }
 
-input[type='text'],
-textarea,
-select {
-  font: inherit;
-  color: inherit;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0.35rem 0.5rem;
+/* the card a page is about: the artifact on its record, the listing on its page */
+.card-main {
+  border-top: 4px solid var(--primary);
 }
 
-input[aria-invalid='true'],
-textarea[aria-invalid='true'] {
-  border-color: var(--bad);
+/* ---- facts: a label and its value ---------------------------------------------------------- */
+
+dl {
+  display: grid;
+  grid-template-columns: minmax(0, 17rem) minmax(0, 1fr);
+  gap: 0.5rem 1.5rem;
+  margin: 1rem 0;
 }
 
-.mono,
-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
+/* a form or one claim: shorter labels in a narrower column */
+.page-narrow dl {
+  grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
+}
+
+.fact {
+  display: contents;
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.grid4 {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: 0 0.75rem;
+dd > p:first-child {
+  margin-top: 0;
 }
 
-button {
-  font: inherit;
-  border-radius: 4px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: #fff;
-  padding: 0.4rem 0.9rem;
-  cursor: pointer;
+dd > p {
+  margin: 0.375rem 0;
 }
 
-button.secondary {
+/* the figures a reader looks for first, as tiles */
+dl.tiles {
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.75rem;
+}
+
+.tile {
+  background: var(--bg-page);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.75rem 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.tile dt {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.tile dd {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.tile dd.tile-links {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-top: 0.25rem;
+}
+
+/* a fact that reads as one word or one line, as a pill beside the card's name */
+dl.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.pill-fact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.pill-fact dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.pill,
+.pill-fact.pill-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.2rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
+  color: var(--fg-soft);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+/* a label and its value in one pill: "Staker named by the repository: yes" */
+.pill-fact.pill-line {
+  font-weight: 500;
+}
+
+.pill-fact.pill-line dt {
+  color: inherit;
+}
+
+.pill-fact.pill-line dt::after {
+  content: ':';
+}
+
+.pill-tint {
+  background: var(--tint);
+  border-color: var(--tint-line);
+  color: var(--tint-fg);
+}
+
+.pill-ok,
+.pill-fact.pill-line.pill-ok {
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+  color: var(--ok-fg);
+}
+
+.pill-warn,
+.pill-fact.pill-line.pill-warn {
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+  color: var(--warn);
+}
+
+a.pill {
+  text-decoration: none;
+}
+
+a.pill:hover {
+  border-color: var(--primary);
+}
+
+.pill-dot::before {
+  content: '';
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* a fact whose label sits above its value: the artifact a card is about */
+dl.facts-lead {
+  display: block;
+}
+
+dl.facts-lead .fact {
+  display: block;
+}
+
+dl.facts-lead dt {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.375rem;
+}
+
+/* The project's proof, in a box of its own. Each line's answer sits beside its label; what a line rests
+   on goes under its label, so a command has the box's whole width. */
+dl.proof {
+  display: block;
+  background: var(--bg-page);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+dl.proof .fact {
+  display: block;
+  margin-top: 0.875rem;
+}
+
+dl.proof .fact:first-child {
+  margin-top: 0;
+}
+
+dl.proof dt {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.375rem;
+}
+
+dl.proof .fact:has(> dd > .pill:only-child) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.75rem;
+}
+
+dl.proof .fact:has(> dd > .pill:only-child) dt {
+  color: var(--fg);
+  font-size: 1rem;
+  letter-spacing: 0;
+  text-transform: none;
+  margin: 0;
+}
+
+/* ---- hashes, addresses, commands ----------------------------------------------------------- */
+
+.mono,
+code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+/* a long value and the button that copies it: the value wraps, it never runs off the card */
+.code-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.code-row > .mono {
+  min-width: 0;
+  word-break: break-all;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  color: var(--fg);
+  line-height: 1.5;
+}
+
+.code-key > .mono {
+  font-size: 0.9375rem;
+  background: var(--tint);
+  border-color: var(--tint-line);
+  color: var(--tint-fg);
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+}
+
+button.copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+button.copy:hover {
+  color: var(--link);
+  border-color: var(--tint-line);
+  background: var(--bg);
+}
+
+button.copy[data-copied] {
+  color: var(--ok);
+  border-color: var(--ok-line);
+}
+
+/* in a table a long value shows its two ends; the whole of it is in the page, the title and the copy */
+.short {
+  display: inline-flex;
+  max-width: 100%;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.short-head {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 8ch;
+}
+
+/* a part of a value that stays on one line: a time breaks between its date and its hour, nowhere else */
+.nb {
+  display: inline-block;
+}
+
+/* the commands that check a proof without this site */
+.cmds {
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 0.375rem;
+  margin: 0.5rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.cmd {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.375rem 0.375rem 0.375rem 0.75rem;
+}
+
+.cmd::before {
+  content: '$';
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: var(--code-muted);
+}
+
+.cmd code {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-all;
+  line-height: 1.7;
+  color: var(--code-fg);
+}
+
+.cmd button.copy {
   background: transparent;
-  color: var(--accent);
+  border-color: var(--code-line);
+  color: var(--code-muted);
+}
+
+.cmd button.copy:hover {
+  background: transparent;
+  color: var(--code-fg);
+  border-color: var(--code-muted);
+}
+
+/* ---- the award table, as four chips ------------------------------------------------------- */
+
+.awards {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.5rem;
+}
+
+.award {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  padding: 0.125rem 0.625rem;
+  border-radius: 8px;
+  background: var(--tint);
+  border: 1px solid var(--tint-line);
+  color: var(--tint-fg);
+  font-weight: 600;
+}
+
+.award b {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+/* a class below the lowest one the listing counts */
+.award-off {
+  background: var(--bg-soft);
+  border-color: var(--line);
+  color: var(--fg-soft);
+}
+
+.awards-unit {
+  color: var(--fg-soft);
+  font-weight: 500;
+}
+
+/* ---- buttons -------------------------------------------------------------------------------- */
+
+button,
+a.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0 1.125rem;
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  border-radius: 8px;
+  border: 1px solid var(--primary-strong);
+  background: var(--primary-strong);
+  color: #fff;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+button:hover:not(:disabled),
+a.button:hover {
+  background: var(--primary-dark);
+  border-color: var(--primary-dark);
+}
+
+button.secondary,
+a.button.secondary {
+  background: var(--bg);
+  border-color: var(--line-strong);
+  color: var(--fg);
+}
+
+button.secondary:hover:not(:disabled),
+a.button.secondary:hover {
+  background: var(--tint);
+  border-color: var(--primary);
+  color: var(--tint-fg);
 }
 
 button:disabled {
@@ -186,23 +860,180 @@ button:disabled {
 .actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+/* the foot of a card: where it leads */
+.card-foot {
+  margin: 1.25rem -1.75rem -1.5rem;
+  padding: 1rem 1.75rem;
+  border-top: 1px solid var(--line);
+  background: var(--bg-page);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+/* the line over a list: which block it is of, and the button that reads again */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin: 1.5rem 0 0;
+}
+
+.toolbar .hint {
+  margin: 0;
+}
+
+.as-of {
+  display: flex;
+  align-items: center;
   gap: 0.5rem;
-  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+
+.as-of svg {
+  flex: none;
+}
+
+/* ---- forms ---------------------------------------------------------------------------------- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  margin: 0.75rem 0;
+  min-width: 0;
+}
+
+.field label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--fg-soft);
+  margin-bottom: 0.375rem;
+}
+
+input[type='text'],
+textarea,
+select {
+  font: inherit;
+  font-size: 0.9375rem;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  max-width: 100%;
+}
+
+input[type='text'],
+select {
+  min-height: 2.75rem;
+}
+
+input.mono,
+textarea.mono {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+input[type='text']:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 0;
+  border-color: var(--primary);
+}
+
+input[readonly],
+textarea[readonly] {
+  background: var(--bg-soft);
+}
+
+input[aria-invalid='true'],
+textarea[aria-invalid='true'] {
+  border-color: var(--bad);
+}
+
+.grid4 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0 0.75rem;
+}
+
+.lookup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.lookup .field {
+  flex: 1 1 16rem;
+  margin: 0;
 }
 
 .known-issue {
-  background: var(--panel);
+  background: var(--bg-page);
 }
 
-.once {
-  border: 2px solid var(--warn);
-  border-radius: 6px;
-  padding: 0.5rem 0.75rem;
-  margin: 0.5rem 0;
+.submit {
+  margin: 1.25rem 0;
+}
+
+/* ---- what a page tells you: warnings, errors, things done ------------------------------------ */
+
+/* who reads a proof first, on every listing page */
+.claim.warning {
+  background: var(--warn-bg);
+  border-color: var(--warn-line);
+  box-shadow: none;
+  color: var(--warn-fg);
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+}
+
+.claim.warning h3 {
+  color: var(--warn);
+  font-size: 1.0625rem;
+  margin: 0 0 0.5rem;
+}
+
+.claim.warning p {
+  font-size: 0.9375rem;
+  margin: 0 0 0.5rem;
+}
+
+.claim.warning p:last-child {
+  margin-bottom: 0;
+}
+
+.alert-icon {
+  flex: none;
+  margin-top: 0.125rem;
+  color: var(--warn-icon);
 }
 
 .warning {
   color: var(--warn);
+}
+
+p.warning {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+}
+
+.once {
+  border: 2px solid var(--warn-icon);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  margin: 0.75rem 0;
 }
 
 .field-error,
@@ -212,32 +1043,42 @@ button:disabled {
 
 .field-error {
   font-size: 0.9rem;
-  margin: 0.2rem 0 0;
+  margin: 0.25rem 0 0;
 }
 
 .ok {
   color: var(--ok);
 }
 
+/* a line that says something was done, or is as it should be */
+p.ok {
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-line);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  color: var(--ok-fg);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+p.error[role='alert'] {
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-line);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  overflow-wrap: anywhere;
+}
+
+.wallet p.error[role='alert'] {
+  padding: 0.375rem 0.625rem;
+  font-size: 0.875rem;
+}
+
 .refused {
-  border: 1px solid var(--bad);
-  border-radius: 6px;
-  padding: 0.5rem 1rem;
-  margin: 1rem 0;
-}
-
-.submit {
-  margin: 1rem 0;
-}
-
-.report,
-.ready,
-.claim,
-.check-run,
-.check-result {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.5rem 1rem 1rem;
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-line);
+  border-radius: 10px;
+  padding: 0.75rem 1.25rem;
   margin: 1rem 0;
 }
 
@@ -267,35 +1108,7 @@ button:disabled {
   font-weight: 600;
 }
 
-dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.25rem 1rem;
-}
-
-dt {
-  color: var(--muted);
-}
-
-dd {
-  margin: 0;
-}
-
-.lookup {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.75rem;
-}
-
-.fact {
-  display: contents;
-}
-
-.small {
-  font-size: 0.85rem;
-  font-weight: normal;
-  margin-left: 0.5rem;
-}
+/* ---- short lists: verdicts by outcome, a listing's claims, its terms ------------------------- */
 
 .inline {
   list-style: none;
@@ -303,61 +1116,414 @@ dd {
   margin: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem 1rem;
+  gap: 0.375rem 0.5rem;
 }
+
+.inline li {
+  padding: 0.125rem 0.625rem;
+  border-radius: 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.inline li.mono {
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+
+/* the terms list() stored, one to a line */
+.terms {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.terms li {
+  position: relative;
+  padding: 0.625rem 0 0.625rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.terms li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.terms li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 1.2rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+/* two short cards side by side, one under the other on a phone */
+.pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 0 1.5rem;
+}
+
+/* ---- tables --------------------------------------------------------------------------------- */
 
 .table-wrap,
 .badge-wrap {
   overflow-x: auto;
 }
 
+.table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin: 0.75rem 0;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 0.9rem;
-  margin: 0.5rem 0;
+  font-size: 0.875rem;
+  margin: 0.75rem 0;
+}
+
+.table-wrap table {
+  margin: 0;
+  min-width: 46rem;
+  font-size: 0.8125rem;
+}
+
+.table-wrap th,
+.table-wrap td {
+  padding: 0.625rem;
+}
+
+/* an amount stays on one line */
+td.amount {
+  white-space: nowrap;
 }
 
 caption {
   text-align: left;
   font-weight: 600;
-  padding: 0.25rem 0;
+  padding: 0.25rem 0 0.5rem;
 }
 
 th,
 td {
-  border: 1px solid var(--line);
-  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.625rem 0.75rem;
   text-align: left;
   vertical-align: top;
 }
 
-th {
-  background: var(--panel);
-  font-weight: 600;
+tbody tr:last-child td {
+  border-bottom: 0;
 }
+
+th {
+  background: var(--bg-page);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+td .code-row {
+  align-items: center;
+}
+
+/* a table that is not in a scroller keeps its frame */
+.diligence table {
+  border: 1px solid var(--line);
+}
+
+.badge-wrap {
+  background: var(--bg-page);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem;
+  margin: 0.75rem 0;
+}
+
+.badge-wrap img {
+  display: block;
+}
+
+/* ---- what a record says, and what it does not ----------------------------------------------- */
 
 .diligence {
   border-top: 1px solid var(--line);
-  margin-top: 2rem;
-  padding-top: 0.5rem;
+  margin-top: 3rem;
+  padding-top: 1.5rem;
 }
 
-.actions a {
+.diligence p,
+.diligence ul {
+  max-width: 52rem;
+  color: var(--fg-soft);
+}
+
+.actions a:not(.button) {
+  color: var(--link);
+}
+
+/* ---- the home page -------------------------------------------------------------------------- */
+
+.hero {
+  background: linear-gradient(135deg, var(--primary-strong) 0%, var(--accent) 100%);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(90, 103, 216, 0.25);
+  padding: 3.5rem 2rem 2.5rem;
+  color: #fff;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.hero h2 {
+  color: #fff;
+  font-size: 2.5rem;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.hero .lead {
+  color: #fff;
+  max-width: 49rem;
+  margin: 0;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem;
+  margin: 0;
+}
+
+.hero-actions a.button {
+  min-height: 3.5rem;
+  padding: 0 1.875rem;
+  border-radius: 10px;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+a.button.hero-primary,
+a.button.hero-primary:hover {
+  background: #fff;
+  border-color: #fff;
+  color: var(--primary-dark);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.15);
+}
+
+a.button.hero-ghost,
+a.button.hero-ghost:hover {
+  background: rgba(15, 23, 42, 0.18);
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #fff;
+}
+
+a.button.hero-primary:hover,
+a.button.hero-ghost:hover {
+  transform: translateY(-1px);
+}
+
+.hero a:focus-visible {
+  outline-color: #fff;
+}
+
+.hero-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem 1.75rem;
+  font-size: 0.875rem;
+}
+
+.hero-points li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* what the record is not, where the promise is read */
+.hero-note {
+  max-width: 49rem;
+  margin: 0.5rem 0 0;
+  padding: 0.875rem 1.25rem;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+.how {
+  margin-top: 3rem;
+}
+
+.how > h2,
+.how > .status {
+  text-align: center;
+}
+
+.how > .status {
+  max-width: 52rem;
+  margin: 0 auto 1.5rem;
+}
+
+.how-card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 2rem;
+  margin: 1.5rem 0;
+}
+
+.how-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1.75rem;
+}
+
+.how-head h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0;
+}
+
+.how-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 10px;
+  background: var(--tint);
+  color: var(--link);
+}
+
+.how-hunters .how-icon {
+  background: var(--tint-2);
   color: var(--accent);
 }
 
+.how-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
+  gap: 1.75rem;
+}
+
+.how-steps li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.625rem;
+}
+
+.step-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  background: var(--primary-strong);
+  color: #fff;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.how-hunters .step-n {
+  background: var(--accent);
+}
+
+.how-steps h4 {
+  font-size: 1.1875rem;
+  margin: 0;
+}
+
+.how-steps p {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: var(--muted);
+}
+
+.how-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin: 1.75rem 0 0;
+  padding: 0.875rem 1.125rem;
+  border-radius: 10px;
+  background: var(--bg-page);
+  border: 1px solid var(--line);
+  font-size: 0.9375rem;
+  color: var(--fg-soft);
+}
+
+.how-note svg {
+  flex: none;
+  margin-top: 0.2rem;
+  color: var(--accent);
+}
+
+a.button.mono {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .how-hunters .how-icon,
+  .how-note svg {
+    color: #d8b4fe;
+  }
+}
+
 /* A phone: nothing is wider than the screen. Each fact's label sits above its value, and a hash, an
-   address, a key or a figure longer than the line wraps rather than running past the edge. Wider
-   screens keep the layout above. */
+   address, a key or a figure longer than the line wraps rather than running past the edge. A table and
+   the badge keep their size and scroll sideways in their own row. Wider screens keep the layout above. */
 @media (max-width: 40rem) {
   .page {
     overflow-wrap: break-word;
+    padding-top: 1.5rem;
+  }
+
+  h2 {
+    font-size: 1.625rem;
   }
 
   .wallet,
   dd {
     overflow-wrap: anywhere;
+  }
+
+  .wallet {
+    margin-left: 0;
+  }
+
+  .top h1 {
+    font-size: 1.25rem;
   }
 
   dl {
@@ -366,6 +1532,41 @@ th {
   }
 
   dd {
-    margin-bottom: 0.4rem;
+    margin-bottom: 0.5rem;
+  }
+
+  dl.tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .tile dd,
+  .pill-fact dd {
+    margin-bottom: 0;
+  }
+
+  .claim,
+  .report,
+  .ready,
+  .check-run,
+  .check-result,
+  .key-panel,
+  fieldset,
+  details,
+  .how-card {
+    padding: 1.125rem 1rem;
+  }
+
+  .card-foot {
+    margin: 1rem -1rem -1.125rem;
+    padding: 0.875rem 1rem;
+  }
+
+  .hero {
+    padding: 2.25rem 1.125rem 1.75rem;
+  }
+
+  .hero h2 {
+    font-size: 1.875rem;
   }
 }

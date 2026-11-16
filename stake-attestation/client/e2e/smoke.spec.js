@@ -14,6 +14,13 @@ test('home page renders from the production build', async ({ page }) => {
   await expect(page.getByText(STRINGS.home.recordNote)).toBeVisible();
   expect(errors).toEqual([]);
   await shot(page, 'home');
+  // the same page for a reader whose system asks for dark, and on a phone
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot(page, 'home-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await shot(page, 'home-phone');
+  expect(errors).toEqual([]);
 });
 
 // Node P27: an agent that opens the site finds what to read, and following the link gets the document itself.
@@ -34,7 +41,8 @@ test('the home page links the agents\' documents, and the build serves both', as
 
 // Node P29: a fetch of / that runs no JavaScript gets the shell, client/index.html, which names both documents in a
 // fallback inside #root (test/agentDocsBuild.test.js holds it to that). The app's first render replaces the fallback,
-// so once the app has mounted the page has the app's own footer link and nothing of the shell's.
+// so once the app has mounted the page has the app's own footer link and nothing of the shell's. (The home page's
+// steps for hunters link the guide as well, so the count is the footer's.)
 test('the shell\'s fallback for agents is in / as served, and gone once the app mounts', async ({ page, request }) => {
   const shell = await request.get('/');
   expect(shell.status()).toBe(200);
@@ -47,7 +55,7 @@ test('the shell\'s fallback for agents is in / as served, and gone once the app 
   await expect(page.locator('#agents-fallback')).toHaveCount(0);
   await expect(page.locator('#root noscript')).toHaveCount(0);
   for (const href of [STRINGS.footer.guide, STRINGS.footer.index]) {
-    await expect(page.locator(`#root a[href="${href}"]`)).toHaveCount(1);
+    await expect(page.locator(`#root footer a[href="${href}"]`)).toHaveCount(1);
     await expect(page.locator('footer').getByRole('link', { name: href, exact: true })).toBeVisible();
   }
   await expect(page.locator('footer').getByText(STRINGS.footer.lead, { exact: true })).toBeVisible();

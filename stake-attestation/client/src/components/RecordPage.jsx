@@ -6,10 +6,12 @@ import { formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { safeguardTerms } from '../lib/claimActions.js';
 import { recordView } from '../lib/record.js';
 import { STRINGS, fill } from '../strings.js';
+import { AwardLine, LabelPills, StatePill } from './Awards.jsx';
 import { BadgeEmbed } from './BadgeEmbed.jsx';
 import { ControlProofForm, controlRows } from './ControlFacts.jsx';
+import { Code, CopyButton, Short } from './Copy.jsx';
 import { Diligence } from './Diligence.jsx';
-import { AsOf, Facts, labelText, siteErrorText } from './Facts.jsx';
+import { AsOf, Facts, Pills, Tiles, siteErrorText } from './Facts.jsx';
 import { TextField } from './Field.jsx';
 import { ListingWarning } from './ListingWarning.jsx';
 
@@ -19,10 +21,21 @@ const HASH = /^0x[0-9a-fA-F]{64}$/;
 
 const eth = (wei) => fill(R.eth, { eth: formatEth(wei) });
 const when = (t) => (t === null ? R.none : formatTime(t));
+/** A time in a table's cell: the same text, breaking only between its date and its hour. */
+function When({ t }) {
+  if (t === null) return R.none;
+  const text = formatTime(t);
+  return <><span className="nb">{text.slice(0, 10)}</span><span className="nb">{text.slice(10)}</span></>;
+}
 // the first of the build's gateways (VITE_IPFS_GATEWAY)
-const archiveLink = (cid) => (CONFIG.ipfsGateway
-  ? <a className="mono" href={`${CONFIG.ipfsGateway}/ipfs/${cid}`} rel="noreferrer noopener" target="_blank">{cid}</a>
-  : <span className="mono">{cid}</span>);
+const archiveLink = (cid) => (
+  <span className="code-row">
+    {CONFIG.ipfsGateway
+      ? <a href={`${CONFIG.ipfsGateway}/ipfs/${cid}`} rel="noreferrer noopener" target="_blank"><Short value={cid} /></a>
+      : <Short value={cid} />}
+    <CopyButton value={cid} what={R.findingArchive} />
+  </span>
+);
 
 function HashLookup({ initial = '' }) {
   const [hash, setHash] = useState(initial);
@@ -65,22 +78,36 @@ function termRows(l, f) {
   ];
 }
 
+/**
+ * One listing that counts, as a card: its name with its state and labels beside it, the stake's
+ * figures as tiles, the award table, what the project's proof rests on in a box of its own, then
+ * every other fact. Each value is the text it was, under the same `data-testid`.
+ */
 function Stake({ l }) {
   const id = useId();
   const f = (name) => `listing-${l.id}-${name}`;
   return (
     <section className="claim" aria-labelledby={id} data-testid={`listing-${l.id}`}>
-      <h4 id={id}>{fill(R.listing, { id: l.id })} <a className="small" href={`#/fund/${l.id}`}>{R.listingPage}</a></h4>
-      <Facts rows={[
-        { id: f('maker'), label: R.maker, value: <span className="mono">{l.maker}</span> },
-        { id: f('state'), label: R.state, value: E.listingStates[l.state] ?? l.state },
-        { id: f('labels'), label: R.labels, value: labelText(l.labels) || R.none },
-        ...controlRows(l.control, f),
-        { id: f('awards'), label: R.awards, value: fill(R.awardsLine, Object.fromEntries(Object.entries(l.awards).map(([c, w]) => [c, formatEth(w)]))) },
-        { id: f('lowest'), label: R.lowest, value: l.lowest },
-        { id: f('bond'), label: R.bond, value: eth(l.bondWei) },
-        ...termRows(l, f),
+      <div className="card-head">
+        <h4 id={id}>{fill(R.listing, { id: l.id })} <a className="small" href={`#/fund/${l.id}`}>{R.listingPage}</a></h4>
+        <Pills rows={[
+          { id: f('state'), label: R.state, value: <StatePill state={l.state} text={E.listingStates[l.state] ?? l.state} /> },
+          { id: f('labels'), label: R.labels, value: <LabelPills labels={l.labels} /> },
+        ]} />
+      </div>
+      <Tiles rows={[
         { id: f('escrow'), label: R.escrow, value: eth(l.escrowWei) },
+        { id: f('bond'), label: R.bond, value: eth(l.bondWei) },
+        { id: f('lowest'), label: R.lowest, value: l.lowest },
+        { id: f('days-open'), label: R.daysOpen, value: String(l.daysOpen) },
+      ]} />
+      <Facts rows={[
+        { id: f('awards'), label: R.awards, value: <AwardLine text={fill(R.awardsLine, Object.fromEntries(Object.entries(l.awards).map(([c, w]) => [c, formatEth(w)])))} lowest={l.lowest} /> },
+      ]} />
+      <Facts className="proof" rows={controlRows(l.control, f)} />
+      <Facts rows={[
+        { id: f('maker'), label: R.maker, value: <Code value={l.maker} what={R.maker} /> },
+        ...termRows(l, f),
         BigInt(l.owedWei) > 0n ? { id: f('owed'), label: R.owed, value: eth(l.owedWei) } : null,
         { id: f('value-at-risk'), label: R.valueAtRisk, value: l.valueAtRiskUsd === null ? R.notDeclared : fill(R.usd, { usd: formatWhole(l.valueAtRiskUsd) }) },
         // node P20: where the listing says its requirements are written
@@ -91,7 +118,6 @@ function Stake({ l }) {
         { id: f('funded-until'), label: R.fundedUntil, value: when(l.fundedUntil) },
         l.rolledAt !== null ? { id: f('rolled'), label: R.rolledAt, value: when(l.rolledAt) } : null,
         l.closedAt !== null ? { id: f('closed'), label: R.closedAt, value: when(l.closedAt) } : null,
-        { id: f('days-open'), label: R.daysOpen, value: String(l.daysOpen) },
         { id: f('predecessor'), label: R.predecessor, value: <Lineage to={l.predecessor} /> },
         { id: f('successor'), label: R.successor, value: <Lineage to={l.successor} /> },
         { id: f('integrity'), label: R.integrity, value: l.integrity.failed },
@@ -135,8 +161,8 @@ function NotCounted({ apart, hash, onChanged }) {
             testId={`not-counted-${l.id}`}
             rows={[
               { id: `not-counted-${l.id}-listing`, label: fill(N.listing, { id: l.id }), value: <a href={`#/fund/${l.id}`}>{R.listingPage}</a> },
-              { id: `not-counted-${l.id}-maker`, label: N.maker, value: <span className="mono">{l.maker}</span> },
-              { id: `not-counted-${l.id}-state`, label: N.state, value: E.listingStates[l.state] ?? l.state },
+              { id: `not-counted-${l.id}-maker`, label: N.maker, value: <Code value={l.maker} what={N.maker} /> },
+              { id: `not-counted-${l.id}-state`, label: N.state, value: <StatePill state={l.state} text={E.listingStates[l.state] ?? l.state} /> },
               { id: `not-counted-${l.id}-why`, label: N.why, value: l.detail ?? l.reason },
             ]}
           />
@@ -170,8 +196,8 @@ function FindingsTable({ findings, testId, rowId }) {
         <tbody>
           {findings.map((x) => (
             <tr key={x.claimId} data-testid={`${rowId}-${x.claimId}`}>
-              <td>{x.claimId}</td><td>{x.outcome}</td><td>{x.listingId}</td><td className="mono">{x.hunter}</td>
-              <td>{eth(x.paidWei)}</td><td>{eth(x.owedWei)}</td><td>{when(x.revealedAt)}</td><td>{when(x.settledAt)}</td>
+              <td>{x.claimId}</td><td>{x.outcome}</td><td>{x.listingId}</td><td><span className="code-row"><Short value={x.hunter} /><CopyButton value={x.hunter} what={R.findingHunter} /></span></td>
+              <td className="amount">{eth(x.paidWei)}</td><td className="amount">{eth(x.owedWei)}</td><td><When t={x.revealedAt} /></td><td><When t={x.settledAt} /></td>
               <td>{x.disputeKind === 'None' || x.disputeKind === 'Maker' ? (E.disputes[x.dispute] ?? x.dispute) : fill(R.findingRound, { kind: E.disputeKinds[x.disputeKind], result: E.panelResults[x.dispute] ?? x.dispute })}</td><td>{archiveLink(x.bcid)}</td>
             </tr>
           ))}
@@ -187,18 +213,30 @@ function Record({ v, onChanged }) {
   return (
     <>
       <AsOf view={v} testId="record-as-of" />
-      <section className="claim" data-testid="record-artifact">
-        <h3>{R.artifact}</h3>
+      <section className="claim card-main" data-testid="record-artifact">
+        <div className="card-head">
+          <h3>{R.artifact}</h3>
+          <Pills rows={[{ id: 'record-kind', label: R.kind, value: E.kinds[v.kind] ?? v.kind, line: true }]} />
+        </div>
+        <Facts className="facts-lead" rows={[
+          { id: 'record-hash', label: R.artifactHash, value: <Code value={v.hash} what={R.artifactHash} tone="key" /> },
+        ]} />
         <Facts rows={[
-          { id: 'record-hash', label: R.artifactHash, value: <span className="mono">{v.hash}</span> },
-          { id: 'record-kind', label: R.kind, value: E.kinds[v.kind] ?? v.kind },
           a ? { id: 'record-repo', label: R.repo, value: <span className="mono">{a.repo}</span> } : null,
-          a ? { id: 'record-commit', label: R.commit, value: <span className="mono">{a.baseCommit}</span> } : null,
-          a && v.kind === 'Contract' ? { id: 'record-address', label: R.address, value: <span className="mono">{a.address}</span> } : null,
+          a ? { id: 'record-commit', label: R.commit, value: <Code value={a.baseCommit} what={R.commit} /> } : null,
+          a && v.kind === 'Contract' ? { id: 'record-address', label: R.address, value: <Code value={a.address} what={R.address} /> } : null,
           a && v.kind === 'Contract' ? { id: 'record-chain', label: R.chainId, value: a.chainId } : null,
           a ? { id: 'record-fork', label: STRINGS.fork.label, value: <ForkLabel fork={v.fork} /> } : null,
+        ]} />
+        <Tiles rows={[
           { id: 'record-listing-count', label: R.listingCount, value: v.listingCount },
-          { id: 'record-active', label: R.active, value: v.active.length ? v.active.join(', ') : R.none },
+          // a count, as the line above it is: how many of v.active there are, then each of them by its page
+          {
+            id: 'record-active',
+            label: R.active,
+            value: String(v.active.length),
+            more: v.active.length ? { id: 'record-active-listings', value: v.active.map((id) => <a key={id} className="pill pill-tint" href={`#/fund/${id}`}>{fill(R.listing, { id })}</a>) } : null,
+          },
         ]} />
       </section>
 
@@ -211,10 +249,13 @@ function Record({ v, onChanged }) {
 
       <section className="claim" data-testid="record-history">
         <h3>{R.history}</h3>
-        <Facts rows={[
+        <Tiles rows={[
           { id: 'history-claims', label: R.claims, value: h.claims },
           { id: 'history-judged', label: R.judged, value: h.judged },
           { id: 'history-pending', label: R.pending, value: h.pending },
+          { id: 'history-disputes', label: R.disputes, value: h.disputes.filed },
+        ]} />
+        <Facts rows={[
           { id: 'history-verdicts-row', label: R.verdicts, value: verdictList(h.verdicts, 'history-verdicts') },
           { id: 'history-integrity', label: R.integrity, value: h.integrityFailed },
           h.integrityChecks.length > 0 ? { id: 'history-integrity-checks-row', label: R.integrityChecks, value: checkList(h.integrityChecks, 'history-integrity-checks') } : null,
@@ -224,7 +265,6 @@ function Record({ v, onChanged }) {
           { id: 'history-undisclosed', label: R.undisclosed, value: h.undisclosed },
           { id: 'history-unrevealed', label: R.unrevealed, value: h.unrevealed },
           { id: 'history-no-verdict', label: R.noVerdict, value: h.noVerdict },
-          { id: 'history-disputes', label: R.disputes, value: h.disputes.filed },
           { id: 'history-dispute-results', label: R.disputeResults, value: fill(R.disputeLine, h.disputes) },
           // the settlement safeguards (errata E7-E9): the contract's own counts, apart from the maker's disputes
           { id: 'history-appeals', label: R.appeals, value: h.appeals.filed },
@@ -271,7 +311,7 @@ function Record({ v, onChanged }) {
               <tbody>
                 {v.flags.map((x) => (
                   <tr key={x.claimId} data-testid={`flag-${x.claimId}`}>
-                    <td>{x.claimId}{x.late ? ` (${R.flagLate})` : ''}</td><td>{x.listingId}</td><td>{when(x.disclosedAt)}</td>
+                    <td>{x.claimId}{x.late ? ` (${R.flagLate})` : ''}</td><td>{x.listingId}</td><td><When t={x.disclosedAt} /></td>
                     <td>{E.claimStates[x.state] ?? x.state}</td>
                     <td>{x.verdict ? fill(R.judgedLine, { outcome: x.verdict.outcome, time: formatTime(x.verdict.at) }) : R.notJudged}</td>
                   </tr>

@@ -53,6 +53,10 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await expect(page.getByRole('heading', { name: STRINGS.diligence.title })).toBeVisible();
   expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
   await shot(page, 'feed', { target: card });
+  // the same card for a reader whose system asks for dark
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot(page, 'feed-dark', { target: card });
+  await page.emulateMedia({ colorScheme: 'light' });
 
   // a commit shows up in the count once the indexer reads it
   const commitArchive = new Uint8Array(Buffer.from(`PK\u0003\u0004 feed claim ${Math.random()}`, 'latin1'));

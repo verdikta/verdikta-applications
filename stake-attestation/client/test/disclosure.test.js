@@ -6,8 +6,10 @@ import assert from 'node:assert/strict';
 import common from '@verdikta/common';
 
 import {
+  DISCLOSURE_KEY_NOTE,
   disclosureKeyBytes32,
   disclosureRecipient,
+  disclosureRecipientOf,
   generateDisclosureKeyPair,
   identityFromKeyFile,
   keyFileName,
@@ -38,4 +40,16 @@ test('the bytes32 list() stores is the X25519 key common decodes from the recipi
   const { recipient } = generateDisclosureKeyPair();
   assert.equal(disclosureKeyBytes32(recipient), `0x${Buffer.from(common.codeReview.parseDisclosureKey(recipient)).toString('hex')}`);
   assert.throws(() => disclosureKeyBytes32('age1notakey'), /disclosure key/);
+});
+
+// node P35: the site shows a listing's bytes32 beside its age recipient, the other way round from list()
+test('the age recipient of a bytes32 is the one it came from: a round trip with keys common makes, exact both ways', () => {
+  for (let i = 0; i < 50; i += 1) {
+    const { recipient } = generateDisclosureKeyPair();
+    const bytes32 = disclosureKeyBytes32(recipient);
+    assert.equal(disclosureRecipientOf(bytes32), recipient);
+    assert.equal(disclosureKeyBytes32(disclosureRecipientOf(bytes32)), bytes32);
+  }
+  assert.throws(() => disclosureRecipientOf('0x1234'), TypeError);
+  assert.match(DISCLOSURE_KEY_NOTE, /one key/i);
 });

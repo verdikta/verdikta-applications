@@ -78,10 +78,14 @@ test('the safeguards on the listing, claim and record pages, each as the contrac
   await expect(page.getByTestId('claim-bond')).toHaveText(C.bonds.returned);
   await shot(page, 'claim-confirmed');
 
-  // the record: the contract's counts, and the listing's floor and size
+  // the record: the contract's counts, and the listing's floor and size. The confirmation is held
+  // in one transaction and the claim settles in a later one, and only the settlement puts the claim
+  // among the findings; the page reads the mirror once, so wait until the mirror has both.
   await chain.until(async () => {
     const r = await fetch(`${stack.apiUrl}/api/records/${artifactHash}`);
-    return r.ok && (await r.json()).record.history.confirmationsHeld === '1';
+    if (!r.ok) return false;
+    const { record } = await r.json();
+    return record.history.confirmationsHeld === '1' && record.findings.some((f) => f.claimId === String(high.claimId));
   }, { what: 'the record mirror' });
   await page.goto(`/#/record/${artifactHash}`);
   await expect(page.getByTestId('history-narrow-invalid')).toHaveText('1');

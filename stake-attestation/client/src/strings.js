@@ -8,7 +8,12 @@ import { STAKE_DOCUMENTS_NOTE } from '@verdikta/stake-attestation-shared/stake-d
 export const CONTROL_FILE_FORMAT = '{"version":1,"maker":"<address>"}';
 
 export const STRINGS = {
-  appName: 'Verdikta stake attestation',
+  // the site's name, as "Verdikta Bounties" is the bounty site's (owner, 2026-11-16); what it is stays under it
+  appName: 'Verdikta Verifiers',
+  tagline: 'Stake attestation',
+  taglineOn: '{tagline} · {network}',
+  // the network the build is for, by its chain id (VITE_SA_CHAIN_ID)
+  networks: { 84532: 'Base Sepolia', 8453: 'Base', 31337: 'Local network' },
   // every listing page, and the hunter tool (node P5): shared/src/listingWarning.js
   warning: LISTING_WARNING,
   nav: {
@@ -20,6 +25,62 @@ export const STRINGS = {
     claim: 'Claims',
   },
   home: {
+    headline: 'Code with a stake behind it',
+    seeFeed: 'See the feed',
+    // under the hero's buttons: three facts of the design, none of them a promise about the code
+    points: {
+      escrow: 'Stake held in escrow on-chain',
+      judged: 'Judged by the Verdikta arbiter network',
+      record: 'A public record for every artifact hash',
+    },
+    // How it works, for each side. A step's text is a sentence this file already has wherever one fits
+    // (test/strings.test.js holds those to their source); the others say no more than those do.
+    how: {
+      title: 'How it works',
+      makers: {
+        title: 'For makers',
+        steps: [
+          {
+            title: 'List a version',
+            text: 'Name the version you stake, what is in scope, what each class of finding pays and the windows a claim runs through.',
+          },
+          {
+            title: 'Fund and open',
+            text: 'The server builds and validates the environment before anything goes on-chain; then your wallet lists the version and funds the escrow.',
+          },
+          {
+            title: 'Show the badge',
+            text: 'The badge shows the live state of the stake on this hash. It changes with the record and ends when the stake ends.',
+          },
+          {
+            title: 'Answer claims',
+            text: 'Check the disclosures hunters send you, then release, roll forward to a fixed version, or dispute, from a claim or listing page.',
+          },
+        ],
+      },
+      hunters: {
+        title: 'For hunters',
+        steps: [
+          {
+            title: 'Pick a listing',
+            text: 'The feed lists every listing that takes claims: hash, image, scope, award table, bond, windows, days open, claims so far and escrow remaining.',
+          },
+          {
+            title: 'Prove the bug',
+            text: 'Find a bug inside the listing\'s scope and prove it with a runnable test.',
+          },
+          {
+            title: 'Commit and disclose',
+            text: 'Commit two hashes on-chain, then disclose the encrypted archive. The staker named on the listing reads it first, through the fix window.',
+          },
+          {
+            title: 'Reveal and be judged',
+            text: 'A claim is judged in minutes once its fix window ends, awards are paid on-chain, and a bond, not a ban, prices invalid claims.',
+          },
+        ],
+        note: 'Hunters claim with the command-line tool verdikta-attest, not in the browser. Autonomous hunters are welcome.',
+      },
+    },
     lead:
       'A maker stakes funds behind one version of their code. A hunter who proves a bug in it ' +
       'with a runnable test is paid from the stake, once the Verdikta arbiter network has run ' +
@@ -37,6 +98,12 @@ export const STRINGS = {
     guide: '/agents.txt',
     indexLead: 'index',
     index: '/llms.txt',
+  },
+  // the button beside a hash, an address or a command: its name for a screen reader, never drawn
+  copy: {
+    label: 'Copy: {what}',
+    command: 'Copy the command',
+    done: 'Copied',
   },
   wallet: {
     connect: 'Connect wallet',

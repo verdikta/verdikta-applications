@@ -490,8 +490,9 @@ a 60 s timeout).
 
 ### The Content-Security-Policy
 
-The header file allows exactly what the built client loads and connects to: its own scripts, stylesheet and images
-(the badge), `/api`, and the off-origin URLs its build calls, the RPC endpoint and each IPFS gateway of
+The header file allows exactly what the built client loads and connects to: its own scripts, stylesheet, font (Inter,
+a file of the build: `client/src/fonts/`) and images (the badge and the site's icon), `/api`, and the off-origin URLs
+its build calls, the RPC endpoint and each IPFS gateway of
 `deploy/client.env`, by origin. No `unsafe-inline` or `unsafe-eval`, no wildcard, `frame-ancestors 'none'`,
 `base-uri 'none'`, `object-src 'none'`, `form-action 'none'`. The build has no inline script or style (index.html loads
 one module), so there is no hash or nonce to go stale. A browser wallet works under it: an extension puts its provider
@@ -786,8 +787,11 @@ launch values at G1; `/api/status` and every record name the placeholders still 
 lowest class counted, with "under-staked" or "invited" after it when they apply) while a
 listing of the hash takes commits, only "scanned" below the floor, and "*n* valid finding(s) at
 or above *class*" once the record holds one; when no listing of the hash takes commits it says
-how the stake ended (closed, rolled forward, depleted, lapsed). Every string the server writes
-goes through the shared banned-words helper. The feed reads a listing archive's
+how the stake ended (closed, rolled forward, depleted, lapsed). It is drawn on lines of the
+message's own parts, what it states and then the shown listing's proof under it (a contract's on
+two lines), so a repository's badge is about two thirds as wide as one line would be; a line break
+stands where a " · " was, and the SVG's title and aria-label hold the message whole. Every string
+the server writes goes through the shared banned-words helper. The feed reads a listing archive's
 `code_review.json` from the ZIP's central directory, never extracting it, with byte caps on the
 download (`SA_ARCHIVE_MAX_BYTES`) and on each member read, inflated or not. Archive reads run
 beside the indexer, one run at a time, so a slow gateway never delays a chain read; a failed
@@ -1414,8 +1418,9 @@ goes in a URL.
   first and that the code may exist elsewhere (`shared/src/listingWarning.js`, which the hunter
   tool repeats). A listing's own page says whether the site offers a commit on it.
 - **The record** (`#/record/<hash>`, design §4.1, §13.4): from `GET /api/records/:hash`, the
-  artifact (hash, kind, repository and commit from the Listed event, and whether the host says it
-  is a fork), each stake that counts (state, labels,
+  artifact (hash, kind, repository and commit from the Listed event, whether the host says it
+  is a fork, how many listings of it count and how many of those are not closed, each linked by its
+  page), each stake that counts (state, labels,
   award table, lowest class counted, bond, escrow, owed, declared value at risk and the top
   award's share of it, the times, days open, predecessor and successor, and the claims that failed
   integrity with each check's name, apart from its other duplicates), the history (claims,
@@ -1515,6 +1520,24 @@ in their own row. Wider screens keep the layout they had. `e2e/phone-width.spec.
 `document.documentElement.scrollWidth` at 390 x 844 on the feed, a record and the listing form,
 before and after the wallet connects, and fails if any is wider than the viewport or if the root or
 the body clips what overflows.
+
+**The look.** The site wears the bounty site's look (`example-bounty-program/client/src/App.css`): Inter,
+its indigo and purple, white cards on a pale page, `lucide-react` icons, light and dark by the reader's
+setting, all from one stylesheet (`client/src/styles.css`). Inter is a file of the build
+(`client/src/fonts/`, SIL Open Font License), so the policy's `font-src 'self'` is all it needs. Buttons and
+links are one step darker than the bounty site's primary, where white text reads at 4.9:1 and not 3.7:1.
+The header names the site Verdikta Verifiers, with "Stake attestation" and the network under it; the
+agents' documents keep their title. A fact is drawn as a row, a tile, a pill or a chip, and its value is the
+same text under the same `data-testid` whichever it is. That text is also one line of the page's text, which
+is what a reader selects and copies, what a search of the page finds and what a tool reads (`e2e/src/browser.js`
+reads the record by `innerText`): the award table's chips and a listing's labels are inline boxes around
+parts of their line, with the commas between them text of no size. A flex item or an absolutely placed box
+inside a value would put a line break in that text, so a value never holds one. A hash, an address, an image
+or a command wraps where the line ends and has a button that copies all of it. In a table a long value shows
+its two ends: the value is one piece of text cut off with an ellipsis, its last characters are drawn after it
+by the stylesheet, and its title shows it whole. `client/e2e/record.spec.js` and `feed.spec.js` hold the
+page's text to this. Every sentence about what a stake means is in
+`client/src/strings.js`, as before.
 
 ## The local round
 

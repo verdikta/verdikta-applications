@@ -74,6 +74,12 @@ test('a version\'s record: stake, labels, history, findings, flags, lineage, lat
   await expect(page.getByTestId('record-repo')).toHaveText('https://github.com/acme/vault');
   await expect(page.getByTestId('record-commit')).toHaveText(commit);
   await expect(page.getByTestId('record-listing-count')).toHaveText('1');
+  // how many of them are not closed: a count, as the line above it is, never the listings' ids (which is what
+  // record.active holds); each of them is linked by its page
+  const { record: mirrored } = await (await fetch(`${stack.apiUrl}/api/records/${first.artifactHash}`)).json();
+  expect(mirrored.active).toEqual([String(id)]);
+  await expect(page.getByTestId('record-active')).toHaveText('1');
+  await expect(page.getByTestId('record-active-listings').getByRole('link')).toHaveText([fill(R.listing, { id })]);
 
   // the stake, its labels and its lineage
   const s = (f) => page.getByTestId(`listing-${id}-${f}`);
@@ -112,6 +118,19 @@ test('a version\'s record: stake, labels, history, findings, flags, lineage, lat
   await expect(finding).toContainText(fill(R.eth, { eth: '0.4' }));
   await expect(finding).toContainText(at(highClaim.revealedAt));
   await expect(finding).toContainText(high.bcid);
+  // The page's text holds each value whole, on one line: it is what a reader selects and copies, what a search of
+  // the page finds, and what the local round reads (e2e/src/browser.js takes the findings table by innerText). A
+  // value split between two boxes to draw it passes every toHaveText and toContainText here, which read
+  // textContent, and fails these.
+  expect(await page.getByTestId('record-findings').innerText()).toContain(high.bcid);
+  expect(await finding.innerText()).toContain(highClaim.hunter);
+  expect(await finding.innerText()).toContain(at(highClaim.revealedAt));
+  expect(await s('awards').innerText()).toBe(fill(R.awardsLine, { LOW: '0', MEDIUM: '0.1', HIGH: '0.4', CRITICAL: '2' }));
+  expect(await s('labels').innerText()).toBe(STRINGS.labels['under-staked']);
+  expect(await page.getByTestId('record-hash').innerText()).toBe(first.artifactHash.toLowerCase());
+  for (const whole of [high.bcid, at(highClaim.revealedAt), fill(R.awardsLine, { LOW: '0', MEDIUM: '0.1', HIGH: '0.4', CRITICAL: '2' })]) {
+    expect(await page.evaluate((text) => window.find(text, true, false, true), whole), `a search of the page finds ${whole}`).toBe(true);
+  }
   await expect(page.getByTestId('record-findings')).not.toContainText(String(late.bcid));
   await expect(page.getByTestId(`late-finding-${late.claimId}`)).toContainText('LOW');
   await expect(page.getByTestId('later-claims')).toHaveText('1');

@@ -3,6 +3,7 @@ import { useId, useState } from 'react';
 import { ApiError, sendControlProof } from '../lib/api.js';
 import { formatTime } from '../lib/format.js';
 import { CONTROL_FILE_FORMAT, STRINGS, fill } from '../strings.js';
+import { Cmd } from './Copy.jsx';
 import { TextField } from './Field.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
 
@@ -10,7 +11,8 @@ const C = STRINGS.control;
 const FILE_REASONS = new Set(['NO_PROOF_FILE', 'PROOF_FILE_INVALID', 'PROOF_NAMES_ANOTHER_ADDRESS']);
 const RETRY_REASONS = new Set(['REPO_UNAVAILABLE', 'CHAIN_UNAVAILABLE']);
 
-const Mono = ({ children }) => <p className="mono">{children}</p>;
+/** A proof line's answer as a pill: green for yes; a no is why the listing is shown apart. */
+const Answer = ({ yes }) => <span className={yes ? 'pill pill-ok' : 'pill pill-warn'}>{yes ? C.yes : C.no}</span>;
 
 function CheckTimes({ fact }) {
   return (
@@ -34,9 +36,11 @@ function RepositoryProof({ r, maker }) {
       {r.readable && (
         <>
           <p className="hint">{C.recheck}</p>
-          <Mono>{fill(C.recheckClone, { repo: r.repo })}</Mono>
-          <Mono>{fill(C.recheckRefs, { commit: r.commit })}</Mono>
-          <Mono>{fill(C.recheckFile, { commit: r.commit, path: r.path })}</Mono>
+          <div className="cmds">
+            <Cmd>{fill(C.recheckClone, { repo: r.repo })}</Cmd>
+            <Cmd>{fill(C.recheckRefs, { commit: r.commit })}</Cmd>
+            <Cmd>{fill(C.recheckFile, { commit: r.commit, path: r.path })}</Cmd>
+          </div>
         </>
       )}
       <CheckTimes fact={r} />
@@ -59,8 +63,10 @@ function DeploymentProof({ d }) {
         <>
           <TextField label={C.messageSigned} value={d.message} readOnly mono multiline rows={6} />
           <p className="hint">{C.recheckDeployment}</p>
-          <Mono>{fill(d.contractSigner ? C.recheckContractSignature : C.recheckSignature, v)}</Mono>
-          <Mono>{fill(d.role === 'deployer' ? C.recheckDeployer : C.recheckOwner, v)}</Mono>
+          <div className="cmds">
+            <Cmd>{fill(d.contractSigner ? C.recheckContractSignature : C.recheckSignature, v)}</Cmd>
+            <Cmd>{fill(d.role === 'deployer' ? C.recheckDeployer : C.recheckOwner, v)}</Cmd>
+          </div>
         </>
       )}
       <CheckTimes fact={d} />
@@ -77,10 +83,9 @@ function DeploymentProof({ d }) {
 export function controlRows(c, f) {
   const d = c.deployment;
   const r = c.repository;
-  const word = (yes) => (yes ? C.yes : C.no);
   return [
-    r ? { id: f('control'), label: C.repository, value: word(r.named === 'yes') } : { id: f('control'), label: C.repository, value: C.no },
-    d ? { id: f('control-deployment'), label: C.deployment, value: word(d.controls === 'yes') } : null,
+    { id: f('control'), label: C.repository, value: <Answer yes={r?.named === 'yes'} /> },
+    d ? { id: f('control-deployment'), label: C.deployment, value: <Answer yes={d.controls === 'yes'} /> } : null,
     c.proof === 'yes' ? null : { id: f('control-why'), label: C.why, value: c.detail ?? '' },
     r ? { id: f('control-proof'), label: C.proof, value: <RepositoryProof r={r} maker={c.maker} /> } : null,
     // a deployment with no signature on file rests on nothing yet: its form follows

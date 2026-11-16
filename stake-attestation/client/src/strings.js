@@ -205,8 +205,8 @@ export const STRINGS = {
     ownInvalid: 'This is not an age X25519 public key: {reason}',
     ownIsPrivate: 'That is a private key. Enter the age1… public key; the private key stays with you.',
     recipient: 'Public key (listed)',
-    // node P35: the same key as list() stores it, the form the feed shows
-    bytes32: 'On-chain, as the bytes32 {bytes32}. ' + DISCLOSURE_KEY_NOTE,
+    // node P35: the same key as list() stores it, the form the feed shows (the bytes32 follows, then the note)
+    bytes32: 'On-chain, as the bytes32',
     identity: 'Private key',
     shownOnce:
       'Shown once. It is never sent to the server or anywhere else, and this site keeps no copy: ' +

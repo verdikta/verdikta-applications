@@ -14,7 +14,8 @@ function KeyOnChain({ recipient }) {
   } catch {
     return null;
   }
-  return <p className="hint" data-testid="key-bytes32">{fill(K.bytes32, { bytes32 })}</p>;
+  // the bytes32 is one long word: in .mono it may break anywhere, so on a phone it never widens the fieldset
+  return <p className="hint" data-testid="key-bytes32">{K.bytes32} <span className="mono">{bytes32}</span>. {STRINGS.disclosure.note}</p>;
 }
 
 /**

@@ -13,7 +13,8 @@
 //   hosts                 an allowed set, GitHub links only to the two public repositories at their refs
 //   per-listing values    none stated: no wei or ETH amount, address, hash or number the code does not decide
 //
-// The branch the documents send an agent to for the tool is named once, below (TOOL_REF): at G3 it is main.
+// The branches the documents send an agent to are named once each, below: TOOL_REF for the tool and the site's code,
+// ARBITER_DOCS_REF for the arbiters' code-runner. No document names the integration branch the build was made on.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -29,8 +30,16 @@ const CLIENT = path.resolve(here, '..');
 const APP = path.resolve(CLIENT, '..');
 const read = (...parts) => fs.readFileSync(path.join(APP, ...parts), 'utf8');
 
-/** Where the documents send an agent for the tool, until G3 merges the build to main. Named here only. */
-const TOOL_REF = 'claude/stake-attestation';
+/** Where the documents send an agent for the tool: verdikta-applications' branch. Named here only. */
+const TOOL_REF = 'main';
+/**
+ * The verdikta-arbiter ref of the documents' code-runner link. Named here only, and not read from
+ * builder/test/docker/code-runner.pin.json: that pin moves with builder/action/pins.json and e2e/arbiter.pin.json (the
+ * builder's signing workflow and the round), and its branch stays the one its commit is on.
+ */
+const ARBITER_DOCS_REF = 'main';
+/** The branch the build was made on, which no document names: an agent that follows it gets a tool nobody maintains. */
+const INTEGRATION_BRANCH = 'claude/stake-attestation';
 const SITE = 'https://verifiers.verdikta.org';
 const APPS_REPO = 'verdikta/verdikta-applications';
 const ARBITER_REPO = 'verdikta/verdikta-arbiter';
@@ -545,9 +554,41 @@ test('every @verdikta/common version in a link is the one this app pins, and eac
   assert.ok(agents().includes(`https://unpkg.com/@verdikta/common@${pinned}/schemas/finding.v1.json`), 'agents.txt links the finding schema');
 });
 
+const escaped = (ref) => ref.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+/**
+ * Every place a document sends an agent to a branch, held to TOOL_REF and ARBITER_DOCS_REF: the GitHub links (to the
+ * two public repositories only), the clone line and the prose of agents.txt, and any branch of the build's (claude/...)
+ * named anywhere. An empty list is a document that sends an agent nowhere else.
+ */
+function refProblems(name, text) {
+  const problems = [];
+  for (const m of text.matchAll(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?=[/\s)#]|$)(\/(?:tree|blob)\/([^\s)#]+))?/g)) {
+    if (![APPS_REPO, ARBITER_REPO].includes(m[1])) {
+      problems.push(`${name}: github.com/${m[1]} is not a public repository of the site's`);
+      continue;
+    }
+    if (m[3] === undefined) continue;
+    const ref = m[1] === APPS_REPO ? TOOL_REF : ARBITER_DOCS_REF;
+    if (!m[3].startsWith(`${ref}/`)) problems.push(`${name}: ${m[1]} at ${m[3]}: the ref is ${ref}`);
+  }
+  for (const m of text.matchAll(/--branch (\S+)/g)) {
+    if (m[1] !== TOOL_REF) problems.push(`${name}: git clone --branch ${m[1]}: the ref is ${TOOL_REF}`);
+  }
+  for (const m of text.matchAll(/(?<![\w-])claude\/[\w.-]*\w/g)) {
+    problems.push(`${name}:${text.slice(0, m.index).split('\n').length}: names the branch ${m[0]}`);
+  }
+  if (/\bmoves? to main\b/i.test(text)) problems.push(`${name}: says the tool moves to main: it is there`);
+  if (name === 'agents.txt') {
+    if (!text.includes(`git clone --branch ${TOOL_REF} https://github.com/${APPS_REPO}.git`)) problems.push(`agents.txt: no clone of the tool at ${TOOL_REF}`);
+    if (!new RegExp(`(?<![\\w-])branch\\s+${escaped(TOOL_REF)}\\b`).test(text)) problems.push(`agents.txt: the prose does not name the branch ${TOOL_REF}`);
+    if (!text.includes(`https://github.com/${ARBITER_REPO}/tree/${ARBITER_DOCS_REF}/code-runner`)) problems.push(`agents.txt: no code-runner link at ${ARBITER_DOCS_REF}`);
+  }
+  return problems;
+}
+
 test('every host they name is an allowed one; GitHub links go to the two public repositories, at their refs', () => {
   const ALLOWED = new Set(['verifiers.verdikta.org', 'github.com', 'www.npmjs.com', 'unpkg.com', 'sepolia.base.org', 'sepolia.basescan.org', 'gateway.pinata.cloud', 'localhost']);
-  const arbiterRef = JSON.parse(read('builder', 'test', 'docker', 'code-runner.pin.json')).branch;
   for (const [name, text] of docs()) {
     for (const m of text.matchAll(/\bhttps?:\/\/([^/\s)<>"'`]+)/g)) {
       const host = m[1].replace(/:\d+$/, '').replace(/[.,;:]+$/, '').toLowerCase();
@@ -556,18 +597,32 @@ test('every host they name is an allowed one; GitHub links go to the two public 
     for (const m of text.matchAll(/\b(?:[a-z0-9-]+\.)+(?:org|io|com|net|cloud|dev|app|xyz|sh|ai|co|link|info)\b/gi)) {
       assert.ok(ALLOWED.has(m[0].toLowerCase()), `${name}: ${m[0]} is not an allowed host`);
     }
-    for (const m of text.matchAll(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?=[/\s)#]|$)(\/(?:tree|blob)\/([^\s)#]+))?/g)) {
-      assert.ok([APPS_REPO, ARBITER_REPO].includes(m[1]), `${name}: github.com/${m[1]} is not a public repository of the site's`);
-      if (m[3] === undefined) continue;
-      const ref = m[1] === APPS_REPO ? TOOL_REF : arbiterRef;
-      assert.ok(m[3].startsWith(`${ref}/`), `${name}: ${m[1]} at ${m[3]}: the ref is ${ref}`);
-    }
+    assert.deepEqual(refProblems(name, text), [], name);
   }
-  const text = agents();
-  assert.ok(text.includes(`git clone --branch ${TOOL_REF} https://github.com/${APPS_REPO}.git`), `agents.txt clones the tool at ${TOOL_REF}`);
-  for (const m of text.matchAll(/--branch (\S+)/g)) assert.equal(m[1], TOOL_REF);
-  assert.match(text, new RegExp(`branch\\s+${TOOL_REF.replace('/', '\\/')}`), 'it names the branch in the prose');
-  assert.doesNotMatch(text, /verdikta-common\b/, 'never the private repository of @verdikta/common');
+  assert.doesNotMatch(agents(), /verdikta-common\b/, 'never the private repository of @verdikta/common');
+});
+
+test('a document that still names the integration branch, in a link, the clone line or the prose, fails', () => {
+  const from = INTEGRATION_BRANCH;
+  const cases = [
+    ['llms.txt', 'the tool README link', (t) => t.replace(`${APPS_REPO}/blob/${TOOL_REF}/`, `${APPS_REPO}/blob/${from}/`)],
+    ['agents.txt', 'the tool README link', (t) => t.replace(`${APPS_REPO}/blob/${TOOL_REF}/`, `${APPS_REPO}/blob/${from}/`)],
+    ['agents.txt', 'the contracts link', (t) => t.replace(`${APPS_REPO}/tree/${TOOL_REF}/`, `${APPS_REPO}/tree/${from}/`)],
+    ['agents.txt', 'the code-runner link', (t) => t.replace(`${ARBITER_REPO}/tree/${ARBITER_DOCS_REF}/`, `${ARBITER_REPO}/tree/${from}/`)],
+    ['agents.txt', 'the clone line', (t) => t.replace(`--branch ${TOOL_REF} `, `--branch ${from} `)],
+    ['agents.txt', 'the prose naming the branch', (t) => t.replace(new RegExp(`(?<![\\w-])branch(\\s+)${escaped(TOOL_REF)}\\b`), `branch$1${from}`)],
+    ['agents.txt', 'the branch in other prose', (t) => t.replace('It is not on npm.', `It is not on npm. Its source was ${from}.`)],
+    ['llms.txt', 'the branch in other prose', (t) => t.replace('in the README of the branch', `in the README of ${from}, the branch`)],
+    ['agents.txt', 'the sentence that it moves to main', (t) => t.replace('It is not on npm.', 'It is not on npm. It moves to main once the site\'s build merges there.')],
+  ];
+  const texts = new Map(docs());
+  for (const [name, text] of texts) assert.deepEqual(refProblems(name, text), [], `${name} as it is`);
+  for (const [name, where, change] of cases) {
+    const text = texts.get(name);
+    const changed = change(text);
+    assert.notEqual(changed, text, `${name}, ${where}: the change applies to the document`);
+    assert.notDeepEqual(refProblems(name, changed), [], `${name}, ${where}: a document naming ${from} there fails`);
+  }
 });
 
 test('no per-listing value is stated as a fact: no amount, address or hash, and no number the code does not decide', () => {

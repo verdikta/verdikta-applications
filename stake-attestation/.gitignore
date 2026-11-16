@@ -1,0 +1,30 @@
+# Hardhat
+onchain/artifacts/
+onchain/cache/
+onchain/coverage/
+onchain/coverage.json
+onchain/typechain-types/
+onchain/gasReporterOutput.json
+onchain/deployments/
+
+# Vite and Playwright
+client/dist/
+client/test-results/
+client/playwright-report/
+client/blob-report/
+client/playwright/.cache/
+# the Playwright stack's per-run state (e2e/support/stack.mjs)
+client/.e2e/
+
+# The server's chain tests: onchain/contracts copied in, compiled on the in-process network
+server/.hardhat/
+
+# The tool's chain tests: the same, for the hunter tool
+tool/.hardhat/
+
+# The server's indexer and keeper state (SA_DATA_DIR default)
+server/data/
+
+# The local round: verdikta-arbiter at the pin, and the logs of the last run
+e2e/.arbiter/
+e2e/.round/

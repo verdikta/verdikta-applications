@@ -1,0 +1,4 @@
+{
+  "registry": { "repository": "ghcr.io/verdikta/stake-env" },
+  "runner": { "url": "http://127.0.0.1:9", "tokenEnv": "CODE_RUNNER_TOKEN" }
+}

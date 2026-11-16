@@ -1,0 +1,92 @@
+# Verdikta's baseline-scan rules for Solidity, rule set 2026.10 (@verdikta/common
+# SEMGREP_RULES_VERSION). The builder runs them with the pinned Semgrep, offline, over a
+# listing's in-scope files before escrow opens; what they find goes to the maker only (design
+# §8.3). src/scanTools.js pins this file's SHA-256: a change to any rule changes the hash and
+# needs a new rule-set version.
+rules:
+  - id: verdikta.solidity.tx-origin-auth
+    languages: [solidity]
+    severity: ERROR
+    message: tx.origin is used for authorization; a contract the authorized account calls can act as that account.
+    pattern-either:
+      - pattern: require(tx.origin == $X, ...);
+      - pattern: require($X == tx.origin, ...);
+      - pattern: if (tx.origin != $X) { ... }
+      - pattern: if ($X != tx.origin) { ... }
+
+  - id: verdikta.solidity.value-call-before-state-write
+    languages: [solidity]
+    severity: ERROR
+    message: Ether is sent with a low-level call before a later mapping write in the same block; a reentrant caller sees the old state.
+    patterns:
+      - pattern-inside: |
+          $FIRST;
+          ...
+          $MAP[$K] = $E;
+      - pattern: "$ADDR.call{value: $V}(...)"
+
+  - id: verdikta.solidity.unchecked-low-level-call
+    languages: [solidity]
+    severity: WARNING
+    message: The result of a low-level call is ignored; a failed call goes unnoticed.
+    patterns:
+      - pattern-either:
+          - pattern: "$ADDR.call(...)"
+          - pattern: "$ADDR.call{value: $V}(...)"
+          - pattern: "$ADDR.delegatecall(...)"
+      - pattern-not-inside: (bool $OK, ) = $EXPR;
+      - pattern-not-inside: (bool $OK, bytes memory $R) = $EXPR;
+      - pattern-not-inside: $LHS = $EXPR;
+      - pattern-not-inside: require(...);
+      - pattern-not-inside: if (...) { ... }
+      - pattern-not-inside: return ...;
+
+  - id: verdikta.solidity.unchecked-erc20-transfer
+    languages: [solidity]
+    severity: WARNING
+    message: The boolean an ERC-20 transfer returns is ignored; a token that returns false on failure is treated as paid.
+    patterns:
+      - pattern-either:
+          - pattern: $T.transfer($TO, $V)
+          - pattern: $T.transferFrom($FROM, $TO, $V)
+      - pattern-not-inside: bool $OK = $EXPR;
+      - pattern-not-inside: $LHS = $EXPR;
+      - pattern-not-inside: require(...);
+      - pattern-not-inside: if (...) { ... }
+      - pattern-not-inside: return ...;
+
+  - id: verdikta.solidity.arbitrary-transfer-from
+    languages: [solidity]
+    severity: ERROR
+    message: transferFrom takes tokens from an address the caller chooses; anyone can spend another holder's allowance.
+    patterns:
+      - pattern-inside: |
+          function $F(..., address $FROM, ...) external { ... }
+      - pattern-either:
+          - pattern: $T.transferFrom($FROM, $TO, $V)
+          - pattern: $T.safeTransferFrom($FROM, $TO, $V)
+
+  - id: verdikta.solidity.delegatecall-to-parameter
+    languages: [solidity]
+    severity: ERROR
+    message: delegatecall to an address the caller supplies runs any code with this contract's storage and balance.
+    patterns:
+      - pattern-inside: |
+          function $F(..., address $T, ...) { ... }
+      - pattern: $T.delegatecall(...)
+
+  - id: verdikta.solidity.predictable-randomness
+    languages: [solidity]
+    severity: WARNING
+    message: Block values are used as randomness; a block producer, or a contract in the same block, can foresee them.
+    pattern-either:
+      - pattern: keccak256(abi.encodePacked(..., block.timestamp, ...))
+      - pattern: keccak256(abi.encodePacked(..., block.prevrandao, ...))
+      - pattern: keccak256(abi.encodePacked(..., block.difficulty, ...))
+      - pattern: blockhash(...)
+
+  - id: verdikta.solidity.selfdestruct
+    languages: [solidity]
+    severity: WARNING
+    message: selfdestruct sends the contract's balance to an address of the caller's choosing.
+    pattern: selfdestruct(...)

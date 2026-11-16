@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "trust": "dev",
+  "issuedAt": "2026-11-11T00:00:00Z",
+  "repo": "https://github.com/acme/vault",
+  "baseCommit": "7f3a9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6f708",
+  "env": {
+    "image": "ghcr.io/verdikta/stake-env@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "from": "foundry",
+    "base": "ghcr.io/foundry-rs/foundry:v1.8.5@sha256:f00b023f65e3aab6b7f994dd13b9faff1441aba92df60a53850cb644a4b8b3b5",
+    "platform": "linux/amd64",
+    "unpackedBytes": 812000000
+  },
+  "sha256": {
+    "codeReview": "44f8279097f6966e5b3c23cb41e609aa03f36c6d13d7d7cd7cdf798cc02d3d82",
+    "baseline": "0910a396ac923515780de5e3fbdabd08474ee98e8eb8e23c3a3587416f76a713",
+    "knownIssues": null
+  },
+  "tools": {
+    "runner": "0.1.0",
+    "gvisor": "release-20260921.0",
+    "semgrepRules": "2026.10"
+  },
+  "signature": {
+    "algorithm": "SIGNATURE",
+    "keyId": "SIGNATURE",
+    "value": "SIGNATURE"
+  }
+}

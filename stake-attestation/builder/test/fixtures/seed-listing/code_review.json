@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "kind": "bug",
+  "repo": "https://github.com/verdikta/verdikta-arbiter",
+  "baseCommit": "c5264e4b6ab5f088098d43ca4619fd74cf6148ab",
+  "env": {
+    "from": "foundry"
+  },
+  "attestation": "attestation.json",
+  "commands": {
+    "framework": "forge",
+    "setup": "forge build",
+    "build": "forge build",
+    "test": "forge test",
+    "testFiles": "forge test --match-path $FILES",
+    "testIds": "forge test --match-test $TEST_IDS"
+  },
+  "baseline": "baseline.json",
+  "paths": {
+    "tests": [
+      "arbiter-operator/foundry/test/**"
+    ],
+    "protected": [
+      "foundry.toml",
+      "arbiter-operator/foundry/lib/**",
+      "arbiter-operator/foundry/test/base/**",
+      ".github/**",
+      ".verdikta/**"
+    ]
+  },
+  "stake": {
+    "awards": {
+      "LOW": "0",
+      "MEDIUM": "0.01 ETH",
+      "HIGH": "0.05 ETH",
+      "CRITICAL": "0.1 ETH"
+    },
+    "lowestClassCounted": "MEDIUM",
+    "bondWei": "1000000000000000",
+    "fixWindowDays": 14,
+    "disputeWindowHours": 72,
+    "disclosureGraceHours": 48,
+    "revealWindowDays": 7,
+    "scope": {
+      "include": [
+        "arbiter-operator/contracts/**"
+      ]
+    },
+    "severityRubric": "immunefi-v2.3",
+    "disclosureKey": "age1fxxhpw5t88yync25uk0ph498jqeka8x834q2vfq7yqyre9k7gvesswmck3"
+  }
+}

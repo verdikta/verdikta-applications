@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "kind": "bug",
+  "repo": "https://github.com/acme/vault",
+  "baseCommit": "7f3a9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6f708",
+  "env": {
+    "image": "ghcr.io/verdikta/stake-env@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "from": "foundry",
+    "platform": "linux/amd64",
+    "unpackedBytes": 812000000
+  },
+  "attestation": "attestation.json",
+  "commands": {
+    "framework": "forge",
+    "setup": "forge build",
+    "build": "forge build",
+    "test": "forge test",
+    "testFiles": "forge test --match-path $FILES",
+    "testIds": "forge test --match-test $TEST_IDS"
+  },
+  "baseline": "baseline.json",
+  "paths": {
+    "tests": [
+      "test/**"
+    ],
+    "protected": [
+      "foundry.toml",
+      "lib/**",
+      ".gitignore"
+    ]
+  },
+  "stake": {
+    "awards": {
+      "LOW": "0",
+      "MEDIUM": "0.1 ETH",
+      "HIGH": "0.4 ETH",
+      "CRITICAL": "2 ETH"
+    },
+    "lowestClassCounted": "MEDIUM",
+    "bondWei": "20000000000000000",
+    "scope": {
+      "include": [
+        "src/**"
+      ]
+    },
+    "severityRubric": "immunefi-v2.3",
+    "disclosureKey": "age1fxxhpw5t88yync25uk0ph498jqeka8x834q2vfq7yqyre9k7gvesswmck3"
+  },
+  "limits": {
+    "cpus": 2,
+    "memoryMb": 4096,
+    "buildSeconds": 13,
+    "testSeconds": 5,
+    "runSeconds": 34,
+    "maxPatchBytes": 2000000
+  }
+}

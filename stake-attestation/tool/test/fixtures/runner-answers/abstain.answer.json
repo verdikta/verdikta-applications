@@ -1,0 +1,118 @@
+{
+ "status": 503,
+ "body": {
+  "outcome": "abstain",
+  "runId": "f2998da96a1d5b9c",
+  "runner": {
+   "version": "0.1.0",
+   "runtime": "runc",
+   "platform": "linux/arm64",
+   "gvisor": "runc"
+  },
+  "limits": {
+   "cpus": 1,
+   "memoryMb": 1024,
+   "pids": 4096,
+   "buildSeconds": 90,
+   "testSeconds": 20,
+   "runSeconds": 120,
+   "maxPatchBytes": 2000000,
+   "patchExpansionBytes": 50000000,
+   "platform": "linux/amd64"
+  },
+  "abstain": {
+   "cause": "step_timeout",
+   "step": "poc:1",
+   "detail": "the step reached its wall-clock limit and the sandbox was killed"
+  },
+  "image": {
+   "ref": "docker.io/library/vcr-fixture-t76ef7b9735@sha256:a75b0b96f3ed157f54f0455dc0a9286ef562fe1132f210d17bdad814f42e2bbc",
+   "cache": "hit",
+   "durationMs": 30
+  },
+  "steps": [
+   {
+    "name": "build",
+    "outcome": "definitive",
+    "started": true,
+    "exitCode": 0,
+    "durationMs": 82,
+    "stdout": {
+     "text": "Compiling 4 files with Solc 0.8.31\nSolc 0.8.31 finished in 9.93ms\nCompiler run successful!\n",
+     "totalBytes": 91,
+     "omittedBytes": 0
+    },
+    "stderr": {
+     "text": "",
+     "totalBytes": 0,
+     "omittedBytes": 0
+    }
+   },
+   {
+    "name": "poc:1",
+    "outcome": "abstain",
+    "started": true,
+    "exitCode": null,
+    "durationMs": 20005,
+    "stdout": {
+     "text": "",
+     "totalBytes": 0,
+     "omittedBytes": 0
+    },
+    "stderr": {
+     "text": "",
+     "totalBytes": 0,
+     "omittedBytes": 0
+    },
+    "cause": "step_timeout",
+    "detail": "the step reached its wall-clock limit and the sandbox was killed"
+   }
+  ],
+  "gates": {
+   "applies": {
+    "status": "pass",
+    "basis": "exit_code",
+    "detail": "poc.patch applies to the listed commit 8ee43675c43825d47abf13755e7147339602a2f2 and writes 314 bytes"
+   },
+   "testPathsOnly": {
+    "status": "pass",
+    "basis": "exit_code",
+    "detail": "poc.patch touches 1 path, all under paths.tests"
+   },
+   "build": {
+    "status": "pass",
+    "basis": "exit_code",
+    "detail": "the build command exited 0"
+   }
+  },
+  "facts": {
+   "compiler": {
+    "tier": "A",
+    "solc": "/opt/solc/solc"
+   }
+  },
+  "report": null,
+  "reportSha256": null,
+  "reportUnavailable": null,
+  "contextPack": null
+ },
+ "finding": {
+  "version": 1,
+  "title": "One wei too many",
+  "claimedClass": "HIGH",
+  "rootCause": "Vault.deposit credits one wei more than it was given, so a depositor can withdraw more than it put in.",
+  "affectedPaths": [
+   "src/Vault.sol"
+  ],
+  "poc": {
+   "command": "forge test --match-test test_drain",
+   "observable": "test_drain fails with \"never here\""
+  }
+ },
+ "pocPatch": "diff --git a/test/Exploit.t.sol b/test/Exploit.t.sol\nnew file mode 100644\n--- /dev/null\n+++ b/test/Exploit.t.sol\n@@ -0,0 +1,7 @@\n+// SPDX-License-Identifier: MIT\n+pragma solidity ^0.8.0;\n+import {Vault} from \"../src/Vault.sol\";\n+import {Base, console} from \"./Vm.sol\";\n+contract ExploitTest is Base {\n+    function test_drain() public { string[] memory c = new string[](2); c[0] = \"sleep\"; c[1] = \"600\"; vm.ffi(c); require(false, \"never here\"); }\n+}\n",
+ "spec": {
+  "env": {
+   "image": "vcr-fixture-t76ef7b9735@sha256:a75b0b96f3ed157f54f0455dc0a9286ef562fe1132f210d17bdad814f42e2bbc"
+  }
+ }
+}

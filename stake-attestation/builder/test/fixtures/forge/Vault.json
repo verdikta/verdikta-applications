@@ -1,0 +1,174 @@
+{
+ "abi": [
+  {
+   "type": "constructor",
+   "inputs": [],
+   "stateMutability": "nonpayable"
+  },
+  {
+   "type": "function",
+   "name": "balanceOf",
+   "inputs": [
+    {
+     "name": "",
+     "type": "address",
+     "internalType": "address"
+    }
+   ],
+   "outputs": [
+    {
+     "name": "",
+     "type": "uint256",
+     "internalType": "uint256"
+    }
+   ],
+   "stateMutability": "view"
+  },
+  {
+   "type": "function",
+   "name": "deposit",
+   "inputs": [
+    {
+     "name": "amount",
+     "type": "uint256",
+     "internalType": "uint256"
+    }
+   ],
+   "outputs": [],
+   "stateMutability": "nonpayable"
+  },
+  {
+   "type": "function",
+   "name": "owner",
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "",
+     "type": "address",
+     "internalType": "address"
+    }
+   ],
+   "stateMutability": "view"
+  }
+ ],
+ "bytecode": {
+  "object": "0x60a0604052348015600e575f5ffd5b503360805260805161019961002a5f395f607a01526101995ff3fe608060405234801561000f575f5ffd5b506004361061003f575f3560e01c806370a08231146100435780638da5cb5b14610075578063b6b55f25146100b4575b5f5ffd5b6100626100513660046100fa565b5f6020819052908152604090205481565b6040519081526020015b60405180910390f35b61009c7f000000000000000000000000000000000000000000000000000000000000000081565b6040516001600160a01b03909116815260200161006c565b6100c76100c2366004610127565b6100c9565b005b6100d481600161013e565b335f90815260208190526040812080549091906100f290849061013e565b909155505050565b5f6020828403121561010a575f5ffd5b81356001600160a01b0381168114610120575f5ffd5b9392505050565b5f60208284031215610137575f5ffd5b5035919050565b8082018082111561015d57634e487b7160e01b5f52601160045260245ffd5b9291505056fea264697066735822122058a1f2051360a1b7d3d7b36f54a2d2f39f2cb1822a2eab0d8dca4bce6d9c220f64736f6c634300081f0033",
+  "sourceMap": "151:259:0:-:0;;;259:49;;;;;;;;;-1:-1:-1;291:10:0;283:18;;151:259;;;;;;;;;;;;",
+  "linkReferences": {}
+ },
+ "deployedBytecode": {
+  "object": "0x608060405234801561000f575f5ffd5b506004361061003f575f3560e01c806370a08231146100435780638da5cb5b14610075578063b6b55f25146100b4575b5f5ffd5b6100626100513660046100fa565b5f6020819052908152604090205481565b6040519081526020015b60405180910390f35b61009c7f000000000000000000000000000000000000000000000000000000000000000081565b6040516001600160a01b03909116815260200161006c565b6100c76100c2366004610127565b6100c9565b005b6100d481600161013e565b335f90815260208190526040812080549091906100f290849061013e565b909155505050565b5f6020828403121561010a575f5ffd5b81356001600160a01b0381168114610120575f5ffd5b9392505050565b5f60208284031215610137575f5ffd5b5035919050565b8082018082111561015d57634e487b7160e01b5f52601160045260245ffd5b9291505056fea264697066735822122058a1f2051360a1b7d3d7b36f54a2d2f39f2cb1822a2eab0d8dca4bce6d9c220f64736f6c634300081f0033",
+  "sourceMap": "151:259:0:-:0;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;208:44;;;;;;:::i;:::-;;;;;;;;;;;;;;;;;;451:25:3;;;439:2;424:18;208:44:0;;;;;;;;172:30;;;;;;;;-1:-1:-1;;;;;651:32:3;;;633:51;;621:2;606:18;172:30:0;487:203:3;314:94:0;;;;;;:::i;:::-;;:::i;:::-;;;391:10;:6;400:1;391:10;:::i;:::-;376;366:9;:21;;;;;;;;;;:35;;:21;;:9;:35;;;;;:::i;:::-;;;;-1:-1:-1;;;314:94:0:o;14:286:3:-;73:6;126:2;114:9;105:7;101:23;97:32;94:52;;;142:1;139;132:12;94:52;168:23;;-1:-1:-1;;;;;220:31:3;;210:42;;200:70;;266:1;263;256:12;200:70;289:5;14:286;-1:-1:-1;;;14:286:3:o;695:180::-;754:6;807:2;795:9;786:7;782:23;778:32;775:52;;;823:1;820;813:12;775:52;-1:-1:-1;846:23:3;;695:180;-1:-1:-1;695:180:3:o;880:222::-;945:9;;;966:10;;;963:133;;;1018:10;1013:3;1009:20;1006:1;999:31;1053:4;1050:1;1043:15;1081:4;1078:1;1071:15;963:133;880:222;;;;:::o",
+  "linkReferences": {},
+  "immutableReferences": {
+   "4": [
+    {
+     "start": 122,
+     "length": 32
+    }
+   ]
+  }
+ },
+ "methodIdentifiers": {
+  "balanceOf(address)": "70a08231",
+  "deposit(uint256)": "b6b55f25",
+  "owner()": "8da5cb5b"
+ },
+ "rawMetadata": "{\"compiler\":{\"version\":\"0.8.31+commit.fd3a2265\"},\"language\":\"Solidity\",\"output\":{\"abi\":[{\"inputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"constructor\"},{\"inputs\":[{\"internalType\":\"address\",\"name\":\"\",\"type\":\"address\"}],\"name\":\"balanceOf\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"uint256\",\"name\":\"amount\",\"type\":\"uint256\"}],\"name\":\"deposit\",\"outputs\":[],\"stateMutability\":\"nonpayable\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"owner\",\"outputs\":[{\"internalType\":\"address\",\"name\":\"\",\"type\":\"address\"}],\"stateMutability\":\"view\",\"type\":\"function\"}],\"devdoc\":{\"kind\":\"dev\",\"methods\":{},\"version\":1},\"userdoc\":{\"kind\":\"user\",\"methods\":{},\"notice\":\"A deliberately small vault for the builder's fixtures: deposits credit one wei too many.\",\"version\":1}},\"settings\":{\"compilationTarget\":{\"src/Vault.sol\":\"Vault\"},\"evmVersion\":\"cancun\",\"libraries\":{},\"metadata\":{\"bytecodeHash\":\"ipfs\"},\"optimizer\":{\"enabled\":true,\"runs\":200},\"remappings\":[]},\"sources\":{\"src/Vault.sol\":{\"keccak256\":\"0x14fd11ae8b293d5abb81c6e588b90d2630a4a30540d229cb51e754eaa4ded11c\",\"license\":\"MIT\",\"urls\":[\"bzz-raw://f83ac08b0434f87ed2fdd55a15c129ff05be161fa2e57a2d1ca6c20046e9a824\",\"dweb:/ipfs/QmXjh2AQR8H1wNzBPYpNFFKEaB4uwGAKSDeFXPD74bPj74\"]}},\"version\":1}",
+ "metadata": {
+  "compiler": {
+   "version": "0.8.31+commit.fd3a2265"
+  },
+  "language": "Solidity",
+  "output": {
+   "abi": [
+    {
+     "inputs": [],
+     "stateMutability": "nonpayable",
+     "type": "constructor"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "address",
+       "name": "",
+       "type": "address"
+      }
+     ],
+     "stateMutability": "view",
+     "type": "function",
+     "name": "balanceOf",
+     "outputs": [
+      {
+       "internalType": "uint256",
+       "name": "",
+       "type": "uint256"
+      }
+     ]
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "uint256",
+       "name": "amount",
+       "type": "uint256"
+      }
+     ],
+     "stateMutability": "nonpayable",
+     "type": "function",
+     "name": "deposit"
+    },
+    {
+     "inputs": [],
+     "stateMutability": "view",
+     "type": "function",
+     "name": "owner",
+     "outputs": [
+      {
+       "internalType": "address",
+       "name": "",
+       "type": "address"
+      }
+     ]
+    }
+   ],
+   "devdoc": {
+    "kind": "dev",
+    "methods": {},
+    "version": 1
+   },
+   "userdoc": {
+    "kind": "user",
+    "methods": {},
+    "version": 1
+   }
+  },
+  "settings": {
+   "remappings": [],
+   "optimizer": {
+    "enabled": true,
+    "runs": 200
+   },
+   "metadata": {
+    "bytecodeHash": "ipfs"
+   },
+   "compilationTarget": {
+    "src/Vault.sol": "Vault"
+   },
+   "evmVersion": "cancun",
+   "libraries": {}
+  },
+  "sources": {
+   "src/Vault.sol": {
+    "keccak256": "0x14fd11ae8b293d5abb81c6e588b90d2630a4a30540d229cb51e754eaa4ded11c",
+    "urls": [
+     "bzz-raw://f83ac08b0434f87ed2fdd55a15c129ff05be161fa2e57a2d1ca6c20046e9a824",
+     "dweb:/ipfs/QmXjh2AQR8H1wNzBPYpNFFKEaB4uwGAKSDeFXPD74bPj74"
+    ],
+    "license": "MIT"
+   }
+  },
+  "version": 1
+ },
+ "id": 0
+}

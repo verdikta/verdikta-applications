@@ -1,0 +1,38 @@
+# The stake attestation site's server (node P23; stake-attestation/README.md, "Running the site"). Install as
+# /etc/systemd/system/verdikta-verifiers.service. It runs server/src/index.js from the release checkout at
+# /opt/verdikta-verifiers, as the unprivileged user verifiers (not in the docker group: the scan uses the user's own
+# rootless Docker), with every setting in /etc/verdikta-verifiers/server.env (deploy/server.env.example).
+# One per deployment: its keeper is the deployment's only keeper (README, "The feed, the record and the badge").
+[Unit]
+Description=Verdikta stake attestation site server (verifiers.verdikta.org)
+Documentation=https://github.com/verdikta/verdikta-applications/blob/main/stake-attestation/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=verifiers
+Group=verifiers
+EnvironmentFile=/etc/verdikta-verifiers/server.env
+WorkingDirectory=/opt/verdikta-verifiers/stake-attestation/server
+ExecStart=/usr/bin/node src/index.js
+Restart=on-failure
+RestartSec=10s
+# SIGTERM: the server closes its indexer and keeper (src/index.js); a scan's docker run passes it to its container.
+TimeoutStopSec=60s
+# /var/lib/verdikta-verifiers: SA_DATA_DIR (which the server makes) and SA_BUILDER_WORK_DIR (which it does not)
+StateDirectory=verdikta-verifiers verdikta-verifiers/work
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

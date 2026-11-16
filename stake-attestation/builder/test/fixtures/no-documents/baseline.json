@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "baseCommit": "7f3a9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6f708",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/Vault.t.sol > VaultTest > test_deposit_credits()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/Vault.t.sol > VaultTest > test_owner_is_deployer()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/Vault.t.sol > VaultTest > test_deposit_credits()",
+    "test/Vault.t.sol > VaultTest > test_owner_is_deployer()"
+  ],
+  "unstable": [],
+  "timings": {
+    "buildSeconds": 4.2,
+    "testSeconds": [
+      1.5,
+      1.4,
+      1.6
+    ]
+  }
+}

@@ -706,11 +706,15 @@ test('node P35: every field agents.txt lists for a feed entry or a record is one
   assert.deepEqual(named, ['listingId', 'artifactHash', 'artifact', 'state', 'lapsed', 'counted', 'page']);
   for (const name of named) assert.ok(serverWrites(name), `${name} is a field of a related listing`);
   assert.match(flat, /artifact\.repo` exactly as/);
-  // R1-F1: the record is the version's, which listings at one commit share
+  // R1-F1: the record is the version's, which listings of one artifactHash share; the contract's artifactHashOf hashes
+  // the kind, the repository, the commit, the chain and the address
   const para = /Listings of one repository\.[^]*?not another's\./.exec(flat)?.[0];
   assert.ok(para, 'agents.txt says how listings of one repository relate');
-  assert.match(para, /The record is the version's \(its artifactHash\): listings at one commit share it/);
-  assert.doesNotMatch(para, /own [^.]*record\b/);
+  assert.match(para, /The record is the version's: listings with the same artifactHash share it, which is the same kind, repository and commit and, for a deployed contract, the same chain and address\./);
+  assert.doesNotMatch(para, /own [^.]*record\b|one commit share/);
+  const hashOf = /function artifactHashOf\([^)]*\)[^{]*\{([\s\S]*?)\n {4}\}/.exec(read('onchain', 'contracts', 'StakeAttestation.sol'));
+  assert.ok(hashOf, 'StakeAttestation.sol: artifactHashOf');
+  for (const field of ['kind', 'repo', 'baseCommit', 'chainId', 'addr']) assert.match(hashOf[1], new RegExp(`\\.${field}\\b`), `artifactHashOf hashes ${field}`);
   assert.match(flat, /#\/fund\/<listingId>/);
 });
 

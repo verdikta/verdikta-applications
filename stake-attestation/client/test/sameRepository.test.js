@@ -57,8 +57,11 @@ test('the page shows them under a heading of their own, and says what they are',
   for (const k of ['title', 'intro', 'none', 'line', 'notCounted', 'lapsed', 'unavailable']) assert.equal(typeof S[k], 'string', k);
   assert.match(S.intro, /repository/);
   assert.match(S.intro, /own terms/);
-  // R1-F1: listings at one commit share the version's record; no listing has a record of its own
-  assert.match(S.intro, /listings at one commit share it/);
+  // R1-F1: listings of one artifact hash share the version's record (a deployed contract's hash holds its chain and
+  // address too); no listing has a record of its own
+  assert.match(S.intro, /listings with the same artifact hash share it/);
+  assert.match(S.intro, /chain and address/);
+  assert.doesNotMatch(S.intro, /one commit share/);
   assert.doesNotMatch(S.intro, /own [^.]*record/);
   assert.match(S.line, /\{id\}/);
   assert.match(S.line, /\{commit\}/);

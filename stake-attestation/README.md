@@ -1528,10 +1528,15 @@ setting, all from one stylesheet (`client/src/styles.css`). Inter is a file of t
 links are one step darker than the bounty site's primary, where white text reads at 4.9:1 and not 3.7:1.
 The header names the site Verdikta Verifiers, with "Stake attestation" and the network under it; the
 agents' documents keep their title. A fact is drawn as a row, a tile, a pill or a chip, and its value is the
-same text under the same `data-testid` whichever it is: the award table's chips wrap parts of its line, and
-the commas between them are kept for a screen reader, not drawn. A hash, an address, an image or a command
-wraps where the line ends and has a button that copies all of it; in a table a long value shows its two
-ends, with the whole of it in the page and in its title. Every sentence about what a stake means is in
+same text under the same `data-testid` whichever it is. That text is also one line of the page's text, which
+is what a reader selects and copies, what a search of the page finds and what a tool reads (`e2e/src/browser.js`
+reads the record by `innerText`): the award table's chips and a listing's labels are inline boxes around
+parts of their line, with the commas between them text of no size. A flex item or an absolutely placed box
+inside a value would put a line break in that text, so a value never holds one. A hash, an address, an image
+or a command wraps where the line ends and has a button that copies all of it. In a table a long value shows
+its two ends: the value is one piece of text cut off with an ellipsis, its last characters are drawn after it
+by the stylesheet, and its title shows it whole. `client/e2e/record.spec.js` and `feed.spec.js` hold the
+page's text to this. Every sentence about what a stake means is in
 `client/src/strings.js`, as before.
 
 ## The local round

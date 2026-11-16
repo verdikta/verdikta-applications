@@ -153,7 +153,7 @@ h4 {
   border-radius: 4px;
 }
 
-/* said to a screen reader, not drawn: a label a pill stands in for, the comma between two chips */
+/* said to a screen reader, not drawn: a label a pill stands in for */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -164,6 +164,13 @@ h4 {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+/* The comma between two chips or two pills: in the page's text, so a selection copies the line whole and a
+   search finds it, and of no size, so it is not drawn. Not .sr-only: an absolutely placed box, like a flex
+   item, puts a line break in the page's text. */
+.sep {
+  font-size: 0;
 }
 
 /* ---- the header -------------------------------------------------------------------------- */
@@ -290,14 +297,11 @@ h4 {
   max-width: 75rem;
   margin: 0 auto;
   padding: 1.25rem 1rem;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.25rem 0.5rem;
 }
 
 .foot svg {
-  flex: none;
+  vertical-align: -0.2em;
+  margin-right: 0.375rem;
 }
 
 .foot a {
@@ -315,7 +319,7 @@ h4 {
 }
 
 .foot .hint {
-  margin: 0;
+  margin: 0 0 0 0.25rem;
   font-size: inherit;
 }
 
@@ -513,18 +517,14 @@ dl.pills {
   gap: 0.375rem;
 }
 
+/* A pill is an inline box, and two of them sit on one line with their comma between: a value of two labels
+   reads "under-staked, invited" in the page's text, as it did in a row. */
 .pill-fact dd {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem;
+  line-height: 2;
 }
 
 .pill,
 .pill-fact.pill-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
   padding: 0.2rem 0.75rem;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -533,6 +533,34 @@ dl.pills {
   font-size: 0.8125rem;
   font-weight: 600;
   line-height: 1.5;
+}
+
+.pill {
+  display: inline;
+  white-space: nowrap;
+}
+
+.pill-long {
+  white-space: normal;
+  border-radius: 10px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.sep + .pill {
+  margin-left: 0.375rem;
+}
+
+.pill-fact.pill-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  /* as tall as an inline pill beside it, whose box is its font's height and not its line's */
+  line-height: 1.2;
+}
+
+.pill-fact.pill-line dd {
+  line-height: inherit;
 }
 
 /* a label and its value in one pill: "Staker named by the repository: yes" */
@@ -578,8 +606,10 @@ a.pill:hover {
 
 .pill-dot::before {
   content: '';
+  display: inline-block;
   width: 0.5rem;
   height: 0.5rem;
+  margin-right: 0.375rem;
   border-radius: 50%;
   background: currentColor;
 }
@@ -706,23 +736,41 @@ button.copy[data-copied] {
   border-color: var(--ok-line);
 }
 
-/* in a table a long value shows its two ends; the whole of it is in the page, the title and the copy */
+/* In a table a long value shows its two ends. The value is one piece of text, cut off with an ellipsis, and
+   its last characters are drawn after it from data-tail; the page's text holds the value once, and whole. */
 .short {
-  display: inline-flex;
-  max-width: 100%;
+  display: inline-block;
   white-space: nowrap;
   vertical-align: bottom;
 }
 
-.short-head {
+.short-text {
+  display: inline-block;
+  max-width: 8ch;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 8ch;
+  vertical-align: bottom;
 }
 
-/* a part of a value that stays on one line: a time breaks between its date and its hour, nowhere else */
+.short::after {
+  content: attr(data-tail);
+}
+
+/* the drawn tail is not read out a second time, where a browser takes the empty alternative text */
+@supports (content: 'x' / '') {
+  .short::after {
+    content: attr(data-tail) / '';
+  }
+}
+
+/* A time in a table's cell breaks between its date and its hour, and nowhere else: each part stays on one
+   line, and the cell may break where nothing else lets it. */
 .nb {
-  display: inline-block;
+  white-space: nowrap;
+}
+
+td.when {
+  overflow-wrap: anywhere;
 }
 
 /* the commands that check a proof without this site */
@@ -774,29 +822,29 @@ button.copy[data-copied] {
 
 /* ---- the award table, as four chips ------------------------------------------------------- */
 
+/* Inline boxes on one line of text, so the line reads, copies and is found whole. Room between two lines of
+   chips where the line wraps. */
 .awards {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem 0.5rem;
+  line-height: 2.1;
 }
 
 .award {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.375rem;
+  white-space: nowrap;
   padding: 0.125rem 0.625rem;
+  margin-right: 0.5rem;
   border-radius: 8px;
   background: var(--tint);
   border: 1px solid var(--tint-line);
   color: var(--tint-fg);
   font-weight: 600;
+  line-height: 1.5;
 }
 
 .award b {
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.05em;
+  margin-right: 0.125rem;
 }
 
 /* a class below the lowest one the listing counts */

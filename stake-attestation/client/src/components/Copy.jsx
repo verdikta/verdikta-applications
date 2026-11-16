@@ -44,16 +44,19 @@ export function Code({ value, what, tone = null, children = null }) {
 }
 
 /**
- * In a table, a long value by its two ends. All of it is in the page, so it reads, searches and copies
- * whole; the stylesheet draws an ellipsis over the middle, and the title shows it on hover.
+ * In a table, a long value by its two ends. The value is one piece of text, all of it in the page, so
+ * the page's text holds it whole: what a reader selects and copies, what a search of the page finds,
+ * and what a tool reads (the local round reads the findings table this way, e2e/src/browser.js). Only
+ * the drawing is short: the stylesheet cuts the text off with an ellipsis and draws the value's last
+ * characters after it from `data-tail`, which is no part of the page's text. The title shows the whole
+ * value on hover. Never split the value between two elements to draw it: a split breaks all three.
  */
 export function Short({ value, tail = 6 }) {
   const s = String(value);
   if (s.length <= tail + 12) return <span className="mono">{s}</span>;
   return (
-    <span className="short mono" title={s}>
-      <span className="short-head">{s.slice(0, -tail)}</span>
-      <span>{s.slice(-tail)}</span>
+    <span className="short mono" title={s} data-tail={s.slice(-tail)}>
+      <span className="short-text">{s}</span>
     </span>
   );
 }

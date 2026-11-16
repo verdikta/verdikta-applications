@@ -21,7 +21,10 @@ const HASH = /^0x[0-9a-fA-F]{64}$/;
 
 const eth = (wei) => fill(R.eth, { eth: formatEth(wei) });
 const when = (t) => (t === null ? R.none : formatTime(t));
-/** A time in a table's cell: the same text, breaking only between its date and its hour. */
+/**
+ * A time in a table's cell (a `td.when`): the same text, which may break between its date and its hour and
+ * nowhere else. The two parts are plain inline text side by side, so the page's text holds the time whole.
+ */
 function When({ t }) {
   if (t === null) return R.none;
   const text = formatTime(t);
@@ -197,7 +200,7 @@ function FindingsTable({ findings, testId, rowId }) {
           {findings.map((x) => (
             <tr key={x.claimId} data-testid={`${rowId}-${x.claimId}`}>
               <td>{x.claimId}</td><td>{x.outcome}</td><td>{x.listingId}</td><td><span className="code-row"><Short value={x.hunter} /><CopyButton value={x.hunter} what={R.findingHunter} /></span></td>
-              <td className="amount">{eth(x.paidWei)}</td><td className="amount">{eth(x.owedWei)}</td><td><When t={x.revealedAt} /></td><td><When t={x.settledAt} /></td>
+              <td className="amount">{eth(x.paidWei)}</td><td className="amount">{eth(x.owedWei)}</td><td className="when"><When t={x.revealedAt} /></td><td className="when"><When t={x.settledAt} /></td>
               <td>{x.disputeKind === 'None' || x.disputeKind === 'Maker' ? (E.disputes[x.dispute] ?? x.dispute) : fill(R.findingRound, { kind: E.disputeKinds[x.disputeKind], result: E.panelResults[x.dispute] ?? x.dispute })}</td><td>{archiveLink(x.bcid)}</td>
             </tr>
           ))}
@@ -311,7 +314,7 @@ function Record({ v, onChanged }) {
               <tbody>
                 {v.flags.map((x) => (
                   <tr key={x.claimId} data-testid={`flag-${x.claimId}`}>
-                    <td>{x.claimId}{x.late ? ` (${R.flagLate})` : ''}</td><td>{x.listingId}</td><td><When t={x.disclosedAt} /></td>
+                    <td>{x.claimId}{x.late ? ` (${R.flagLate})` : ''}</td><td>{x.listingId}</td><td className="when"><When t={x.disclosedAt} /></td>
                     <td>{E.claimStates[x.state] ?? x.state}</td>
                     <td>{x.verdict ? fill(R.judgedLine, { outcome: x.verdict.outcome, time: formatTime(x.verdict.at) }) : R.notJudged}</td>
                   </tr>

@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/verdikta/verdikta-arbiter.git",
-  "branch": "claude/stake-attestation",
-  "commit": "fbc2febf988d25c8934e5c774d86c99e63b4d88e",
+  "branch": "main",
+  "commit": "331a605f1b1059d8984962b54d79c2edf6010a7f",
   "note": "The verdikta-arbiter commit whose code-runner (POST /v1/listing-checks) the Docker tests run as a sidecar. It moves with action/pins.json and e2e/arbiter.pin.json: see stake-attestation/README.md, Moving the arbiter pin."
 }

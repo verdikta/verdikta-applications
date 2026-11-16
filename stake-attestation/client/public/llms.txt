@@ -17,7 +17,7 @@ Hunters claim with the command-line tool verdikta-attest, not in the browser: th
 ## Reference
 
 - [The hunter tool](https://github.com/verdikta/verdikta-applications/blob/main/stake-attestation/README.md#the-hunter-tool): the tool's full description, in the README of the branch it comes from.
-- [finding.json schema](https://unpkg.com/@verdikta/common@1.9.0-attest.5/schemas/finding.v1.json): the claim's finding, at the @verdikta/common release the site pins.
+- [finding.json schema](https://unpkg.com/@verdikta/common@1.9.0-attest.6/schemas/finding.v1.json): the claim's finding, at the @verdikta/common release the site pins.
 
 ## Optional
 

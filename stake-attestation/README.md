@@ -1597,16 +1597,37 @@ Three files name one verdikta-arbiter commit: `builder/action/pins.json` (the ru
 `builder/test/docker/code-runner.pin.json` (P3a's Docker tests) and `e2e/arbiter.pin.json` (this round). `builder/test/unit/pins.test.js` fails if they
 differ, or if a fourth file names a commit of its own. None of them follows the branch. To move it:
 
-1. Choose a commit on the arbiter's `claude/stake-attestation` branch. It must have node A2c and A3c, which `e2e/test/grammar.test.js` checks by calling them.
+1. Choose a commit on the arbiter's `main`, the branch its releases land on, and name that branch in all three files. It must have nodes A2c and A3c, which `e2e/test/grammar.test.js`
+   checks by calling them, and A26, the class time floors, which `e2e/test/timeFloors.test.js` checks the same way.
 2. Put the whole commit in all three files, in one change.
-3. Run `cd builder && npm test`, `cd builder && npm run test:docker` and `cd e2e && npm test`: all three, and a green `builder-docker` and `e2e` on CI. `e2e/test/requestSize.test.js` holds
+3. If the arbiter at that commit pins another release of `@verdikta/common` (its `code-runner/package.json`), move the six packages that read it to that release in the same change:
+   `npm install --save-exact @verdikta/common@<release>` in each, which moves only common's entry in the lockfile, and the release and the registry's integrity in
+   `shared/test/repo/packages.test.js`. `e2e/test/requestSize.test.js` holds e2e's release to the arbiter's, and `client/test/agentDocs.test.js` holds the agents' documents' links to
+   the client's, so move those links too; `docs/builder-kms-signing.md` names it as well. The release must keep the builder key in common's trusted set.
+4. Run `cd builder && npm test`, `cd builder && npm run test:docker`, `cd shared && npm test` and `cd e2e && npm test`: all four, and a green `builder-docker` and `e2e` on CI. `e2e/test/requestSize.test.js` holds
    `shared/src/listingRequestSize.js` to the code at the pin: if a number moved, update that copy. The round shows whether a new honesty flag changed what the fixture settles as.
-4. Record the documents pack the tool's tests read again, from the runner at the new pin:
+5. Record the documents pack the tool's tests read again, from the runner at the new pin:
    `node tool/test/fixtures/runner-answers/documents.record.cjs e2e/.arbiter/<commit>/code-runner tool/test/fixtures/runner-answers/documents.pack.json <commit, 7 characters>`
    (`tool/test/check.test.js` fails until its commit is the pin's).
 
 **It must move before launch to whatever arbiter commit the canaries run.** The site's listing check and the arbiters must hold listings to one rule, and nothing can check that from here: a runner's
-version does not move with each commit (`0.3.0` at this pin), so nothing it answers names its commit. The builder's own check is a floor (a shell in front of a command refused, the image's compilers read), not a commit. A site's runner (`runner.url` in its `builder.json`) is its operator's to keep at that commit.
+version does not move with each commit (`0.3.0` at this pin, as at the one before it), so nothing it answers names its commit. The builder's own check is a floor (a shell in front of a command refused, the image's compilers read), not a commit. A site's runner (`runner.url` in its `builder.json`) is its operator's to keep at that commit.
+The pin is on the arbiter's `main` at the merge of its G3 pull request, the same tree as the commit the canaries were upgraded to, and its runner raises the defaults a listing
+check derives to the class time floors of `@verdikta/common` (60 s build, 30 s test, 180 s run), as every arbiter does for a claim's run. The builder writes those defaults into
+`code_review.json`, unless the draft states its own time limits.
+
+**Signing with a new pin is two steps of the owner's.** The pins decide what a listing check runs, in the build job of the reusable workflow at whichever commit of this repository calls
+it, and nothing here moves that commit. Verdikta's caller names the builder workflows at one commit of this repository (`@BUILDER_COMMIT` in its template), and the signing role's trust
+policy names the same commit, so the site's listings are checked and signed as before, by the runner of the old pin, until the owner moves both. For a release that should sign with this pin:
+
+1. In the caller repository, a reviewed change on its protected `main`: write `.github/workflows/stake-attestation-site-build.yml` again from `builder/caller/stake-attestation-site-build.yml`,
+   with every `BUILDER_COMMIT` replaced by one commit of this repository's `main` that holds the pin (`sed 's/BUILDER_COMMIT/<commit>/g'`, `docs/builder-kms-signing.md` step 4).
+2. In the signing role's trust policy, set `token.actions.githubusercontent.com:job_workflow_ref` to
+   `verdikta/verdikta-applications/.github/workflows/stake-attestation-builder-sign.yml@<the same commit>` (`docs/builder-kms-signing.md` step 2).
+
+Make both between two runs: with only one of them moved, every signature is refused at the sign step, which fails safe but signs nothing. The first run after them shows the new pin: its
+sign step prints the `job_workflow_ref` it presented, and its validation report's `listingCheck.limits` are at least the floors. Neither is in this repository: the template keeps its
+placeholder (`builder/test/unit/siteWorkflow.test.js`), and the trust policy is the cloud account's.
 
 A pin costs what the runner needs: the round warms the Semgrep image a claim's scan needs before its runner starts, because `/health` is 503 without it. It is the image the baseline scan pulls (a test holds the two digests equal), so that pull of about 1.6 GB moves
 to the round's `prepare` stage and is not a second one. The `builder-docker` job already pulled it for its scan test, and a maker's run of the reusable workflow does not pull it at all.

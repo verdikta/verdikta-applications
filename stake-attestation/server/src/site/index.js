@@ -34,7 +34,7 @@ import { FORK_TIMEOUT_MS, createForkChecker } from '../control/forkCheck.js';
 import { createRepositoryChecker } from '../control/gitCheck.js';
 import { ControlError, createControl } from '../control/index.js';
 import { RefusalCounter, refusalsFileIn } from '../listing/refusals.js';
-import { badgeFor, renderBadge } from '../record/badge.js';
+import { badgeDrawn, badgeFor, renderBadge } from '../record/badge.js';
 import { listingLabels } from '../record/labels.js';
 import { PriceError, readEthUsd } from '../record/price.js';
 import { integrityByListing, integrityNote } from '../record/integrity.js';
@@ -439,17 +439,17 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
    * record; a stale or unreadable one is "record unavailable".
    */
   async function badge(artifactHash) {
-    let b;
+    const unavailable = { badge: { state: 'unavailable', message: 'record unavailable', listingId: null, class: null } };
+    let drawn;
     try {
       const view = await record(artifactHash);
-      b = view && !view.fresh
-        ? { state: 'unavailable', message: 'record unavailable', listingId: null, class: null }
-        : badgeFor(view);
+      drawn = view && !view.fresh ? unavailable : badgeDrawn(view);
     } catch (err) {
       if (!(err instanceof SiteError)) throw err;
-      b = { state: 'unavailable', message: 'record unavailable', listingId: null, class: null };
+      drawn = unavailable;
     }
-    return { ...b, svg: renderBadge(b) };
+    // the answer is what it was: what the badge says, and its SVG; `lines` is only how the SVG lays the message out
+    return { ...drawn.badge, svg: renderBadge({ ...drawn.badge, lines: drawn.lines }) };
   }
 
   /** The feed's events after `after` ("<block>:<logIndex>"), at most `limit`. */

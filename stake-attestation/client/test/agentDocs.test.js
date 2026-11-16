@@ -706,6 +706,11 @@ test('node P35: every field agents.txt lists for a feed entry or a record is one
   assert.deepEqual(named, ['listingId', 'artifactHash', 'artifact', 'state', 'lapsed', 'counted', 'page']);
   for (const name of named) assert.ok(serverWrites(name), `${name} is a field of a related listing`);
   assert.match(flat, /artifact\.repo` exactly as/);
+  // R1-F1: the record is the version's, which listings at one commit share
+  const para = /Listings of one repository\.[^]*?not another's\./.exec(flat)?.[0];
+  assert.ok(para, 'agents.txt says how listings of one repository relate');
+  assert.match(para, /The record is the version's \(its artifactHash\): listings at one commit share it/);
+  assert.doesNotMatch(para, /own [^.]*record\b/);
   assert.match(flat, /#\/fund\/<listingId>/);
 });
 

@@ -106,9 +106,10 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
   does not need it.
 - GET https://verifiers.verdikta.org/api/feed/events lists the contract's events in chain order.
 
-Listings of one repository. A listing covers one version, a repository at one commit, and two
-listings of one repository are two stakes, each with its own terms, scope, known issues, findings
-and record. `sameRepository` names the others, each with its listingId, artifactHash, artifact
+Listings of one repository. A listing covers one version, a repository at one commit, and has
+its own terms, scope, known issues and findings. The record is the version's (its artifactHash):
+listings at one commit share it, listings at other commits have records of their own.
+`sameRepository` names the others, each with its listingId, artifactHash, artifact
 (with its baseCommit), state (Open, Depleted, Rolled or Closed), lapsed (its paid period has
 ended), counted (false: this site does not offer it) and page (on this site,
 /#/fund/<listingId>). It matches `artifact.repo` exactly as listed, so another spelling of a URL

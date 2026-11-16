@@ -7,6 +7,7 @@ import common from '@verdikta/common';
 
 import {
   DISCLOSURE_KEY_NOTE,
+  disclosureForms,
   disclosureKeyBytes32,
   disclosureRecipient,
   disclosureRecipientOf,
@@ -52,4 +53,14 @@ test('the age recipient of a bytes32 is the one it came from: a round trip with 
   }
   assert.throws(() => disclosureRecipientOf('0x1234'), TypeError);
   assert.match(DISCLOSURE_KEY_NOTE, /one key/i);
+});
+
+// R1-F2: the maker's panel shows both forms whatever form the key was entered in, base64 among them
+test('a key in either form common takes gives both forms: its age recipient and its bytes32', () => {
+  const { recipient } = generateDisclosureKeyPair();
+  const bytes = Buffer.from(common.codeReview.parseDisclosureKey(recipient));
+  const both = { recipient, bytes32: `0x${bytes.toString('hex')}` };
+  assert.deepEqual(disclosureForms(recipient), both);
+  assert.deepEqual(disclosureForms(bytes.toString('base64')), both, 'base64 shows as its age recipient too');
+  for (const bad of ['', 'age1notakey', bytes.toString('base64').slice(1), 'AGE-SECRET-KEY-1QQQQ']) assert.equal(disclosureForms(bad), null, bad);
 });

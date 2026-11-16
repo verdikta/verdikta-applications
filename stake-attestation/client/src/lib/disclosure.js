@@ -9,7 +9,9 @@
 import disclosure from '@verdikta/common/src/codeReview/disclosure.js';
 
 // node P35: the age recipient of a bytes32 the chain stores, and the sentence the site shows beside the two forms
-export { DISCLOSURE_KEY_NOTE, disclosureRecipientOf } from '@verdikta/stake-attestation-shared/disclosure-key';
+import { DISCLOSURE_KEY_NOTE, disclosureRecipientOf } from '@verdikta/stake-attestation-shared/disclosure-key';
+
+export { DISCLOSURE_KEY_NOTE, disclosureRecipientOf };
 
 export const {
   DisclosureError,
@@ -27,6 +29,21 @@ const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0'))
 /** The bytes32 StakeAttestation stores for an age recipient: the X25519 key it encodes. */
 export function disclosureKeyBytes32(recipient) {
   return `0x${hex(parseDisclosureKey(recipient))}`;
+}
+
+/**
+ * A disclosure key in both its forms (node P35), from any form common takes: an age recipient or a base64 32-byte
+ * key. Null when it does not decode.
+ * @returns {{ recipient: string, bytes32: string } | null}
+ */
+export function disclosureForms(key) {
+  let bytes32;
+  try {
+    bytes32 = disclosureKeyBytes32(key);
+  } catch {
+    return null;
+  }
+  return { recipient: disclosureRecipientOf(bytes32), bytes32 };
 }
 
 /** The key file, in age-keygen's format, so stock `age -d -i <file>` reads it. */

@@ -1,21 +1,20 @@
 import { useState } from 'react';
 
-import { DisclosureError, disclosureKeyBytes32, generateDisclosureKeyPair, keyFileName, keyFileText, parseDisclosureKey, saveLocally } from '../lib/disclosure.js';
+import { DisclosureError, disclosureForms, generateDisclosureKeyPair, keyFileName, keyFileText, parseDisclosureKey, saveLocally } from '../lib/disclosure.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 
 const K = STRINGS.key;
 
-/** The key as list() will store it, the form the feed shows (node P35); nothing for a key that does not decode. */
-function KeyOnChain({ recipient }) {
-  let bytes32;
-  try {
-    bytes32 = disclosureKeyBytes32(recipient);
-  } catch {
-    return null;
-  }
-  // the bytes32 is one long word: in .mono it may break anywhere, so on a phone it never widens the fieldset
-  return <p className="hint" data-testid="key-bytes32">{K.bytes32} <span className="mono">{bytes32}</span>. {STRINGS.disclosure.note}</p>;
+/**
+ * The key in both its forms (node P35): its age recipient, whatever form it was entered in, and the bytes32 list() will
+ * store, the form the feed shows. Nothing for a key that does not decode.
+ */
+function KeyForms({ recipient }) {
+  const forms = disclosureForms(recipient);
+  if (!forms) return null;
+  // each form is one long word: in .mono it may break anywhere, so on a phone it never widens the fieldset
+  return <p className="hint" data-testid="key-bytes32">{K.forms} <span className="mono">{fill(STRINGS.disclosure.line, forms)}</span>. {STRINGS.disclosure.note}</p>;
 }
 
 /**
@@ -75,7 +74,7 @@ export function DisclosureKeyPanel({ recipient, ready, onRecipient }) {
       {own !== null && <TextField label={K.ownRecipient} value={own} onChange={typeOwn} mono error={ownError} secret={/^AGE-SECRET-KEY-1/i.test(own.trim())} />}
 
       {own === null && recipient && <TextField label={K.recipient} value={recipient} readOnly mono />}
-      {recipient && <KeyOnChain recipient={recipient} />}
+      {recipient && <KeyForms recipient={recipient} />}
 
       {identity !== null && (
         <div className="once">

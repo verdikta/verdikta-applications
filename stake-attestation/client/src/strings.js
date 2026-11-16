@@ -205,8 +205,8 @@ export const STRINGS = {
     ownInvalid: 'This is not an age X25519 public key: {reason}',
     ownIsPrivate: 'That is a private key. Enter the age1… public key; the private key stays with you.',
     recipient: 'Public key (listed)',
-    // node P35: the same key as list() stores it, the form the feed shows (the bytes32 follows, then the note)
-    bytes32: 'On-chain, as the bytes32',
+    // node P35: the key in both its forms, whatever form it was entered in (disclosure.line follows, then the note)
+    forms: 'The listing\'s key in both its forms:',
     identity: 'Private key',
     shownOnce:
       'Shown once. It is never sent to the server or anywhere else, and this site keeps no copy: ' +
@@ -564,8 +564,9 @@ export const STRINGS = {
   sameRepository: {
     title: 'Other listings of this repository',
     intro:
-      'Each listing is a stake on one version, its repository at one commit, with its own terms, scope, known issues, ' +
-      'findings and record. A claim goes on one listing, and its proof must fail at that listing\'s commit.',
+      'Each listing is a stake on one version, its repository at one commit, with its own terms, scope, known issues and ' +
+      'findings. The record is the version\'s: listings at one commit share it. A claim goes on one listing, and its proof ' +
+      'must fail at that listing\'s commit.',
     none: 'none',
     line: 'Listing {id} at {commit}: {state}',
     notCounted: 'not offered by this site',

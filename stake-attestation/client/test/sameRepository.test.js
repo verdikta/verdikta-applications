@@ -56,7 +56,10 @@ test('the page shows them under a heading of their own, and says what they are',
   const S = STRINGS.sameRepository;
   for (const k of ['title', 'intro', 'none', 'line', 'notCounted', 'lapsed', 'unavailable']) assert.equal(typeof S[k], 'string', k);
   assert.match(S.intro, /repository/);
-  assert.match(S.intro, /own/);
+  assert.match(S.intro, /own terms/);
+  // R1-F1: listings at one commit share the version's record; no listing has a record of its own
+  assert.match(S.intro, /listings at one commit share it/);
+  assert.doesNotMatch(S.intro, /own [^.]*record/);
   assert.match(S.line, /\{id\}/);
   assert.match(S.line, /\{commit\}/);
   assert.match(S.line, /\{state\}/);

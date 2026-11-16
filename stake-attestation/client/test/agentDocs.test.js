@@ -408,6 +408,44 @@ test('node P32: the gaps a fresh agent met are filled: dry runs, the human\'s st
   assert.match(flat, /release[^.]*moves your reveal deadline earlier[^.]*run `verdikta-attest status/);
 });
 
+// node P33 (issue #205): an agent whose claim the keeper settled had to read the contract's events to learn who settled
+// it and what it paid. Step 8 says what `claim` and `status` report of a settle, and it is what tool/src reports.
+test('node P33: step 8 says what claim and status report of a settle: the event\'s outcome and amounts, its transaction, block and sender', () => {
+  const step8 = /\n8\. Settle and withdraw:([\s\S]*?)\n\n## 4\./.exec(agents())?.[1]?.replace(/\s+/g, ' ');
+  assert.ok(step8, 'agents.txt §3 has its step 8');
+  const settlement = toolSrc('settlement.js');
+  // who sent it: settlement.by's values and the words the tool prints for each, in the tool's order
+  const block = /export const SETTLED_BY = Object\.freeze\(\{([\s\S]*?)\}\);/.exec(settlement);
+  assert.ok(block, 'tool/src/settlement.js holds SETTLED_BY');
+  const by = [...block[1].matchAll(/^\s+(\w+): '((?:[^'\\]|\\.)*)',?$/gm)].map((m) => ({ key: m[1], words: m[2].replace(/\\'/g, '\'') }));
+  assert.deepEqual(by.map((b) => b.key), ['thisRun', 'hunter', 'other']);
+  const [run, hunter, other] = by.map((b) => b.words);
+  assert.ok(step8.includes(`who sent it: ${run}, ${hunter} in an earlier run, or ${other}`), `step 8 names the senders as the tool does: ${run}; ${hunter}; ${other}`);
+  assert.match(settlement, /, in an earlier run/, 'the tool says the hunter\'s own address sent it in an earlier run');
+  assert.ok(step8.includes(`\`settlement\`, whose \`by\` is \`${by[0].key}\`, \`${by[1].key}\` or \`${by[2].key}\``), 'the --json field and its values');
+  // the event's amounts, in ETH: read from the event, never from the claim's record
+  assert.match(step8, /from the settle's Settled event: its outcome, what it paid and what it left owed, in ETH, the settle transaction and its block, and who sent it/);
+  assert.match(settlement, /parseLog\(/);
+  assert.match(settlement, /formatEther\(/);
+  // its own settle from its receipt; any other only in the blocks of the claim's settledAt, in capped ranges
+  assert.match(toolSrc('claim.js'), /settlementFromReceipt\(/);
+  assert.match(step8, /A settle `claim` sends is read from its own receipt\./);
+  const getClaim = ABI.find((f) => f.name === 'getClaim');
+  assert.ok(getClaim.outputs[0].components.some((c) => c.name === 'settledAt'), 'getClaim returns settledAt');
+  assert.match(settlement, /\.settledAt\b/);
+  assert.match(step8, /only in the blocks whose time is `getClaim\(claimId\)`'s `settledAt`, in ranges a public RPC's `eth_getLogs` limit takes/);
+  // not found: said, and no sender named
+  assert.match(settlement, /'notInBlocks'/);
+  assert.match(settlement, /'unread'/);
+  assert.match(step8, /when it is not found there, or the RPC does not answer, they say so and name no sender/);
+  // both verbs print it, and --json carries it
+  assert.match(toolSrc('status.js'), /out\.settlement = /);
+  assert.match(/function printStatus[\s\S]*?\n\}/.exec(toolSrc('cli.js'))[0], /settlementLines\(s\.settlement\)/);
+  // a withdrawal: its transaction and its amount
+  assert.match(toolSrc('cli.js'), /Sent withdraw: \$\{s\.tx\}, \$\{eth\(s\.amountWei\)\}/);
+  assert.match(step8, /`verdikta-attest claim` withdraws it and prints the transaction and the amount/);
+});
+
 
 // tools/src/commit.js asks for --yes only before a commit is signed; a resumed one goes on without it (R1-F1).
 test('what they say commit does without --yes is what commit.js does', () => {

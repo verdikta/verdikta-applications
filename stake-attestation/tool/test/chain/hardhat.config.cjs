@@ -19,5 +19,7 @@ module.exports = {
     cache: path.join(work, 'cache'),
   },
   // A live node takes a transaction that will revert and mines it; Hardhat would throw from the send.
-  networks: { hardhat: { throwOnTransactionFailures: false } },
+  // A test file that sets SA_TOOL_TEST_SHARED_TIMESTAMPS=1 gets blocks that share a second, as Base makes five a
+  // second (node P33): the network is made in that file's own process, so no other file sees it.
+  networks: { hardhat: { throwOnTransactionFailures: false, allowBlocksWithSameTimestamp: process.env.SA_TOOL_TEST_SHARED_TIMESTAMPS === '1' } },
 };

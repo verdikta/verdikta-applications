@@ -119,11 +119,45 @@ export async function deployStakeAttestation(hre) {
 }
 
 /**
+ * What a public RPC does to eth_getLogs (node P33): it takes a range of at most `limits.maxBlocks` blocks (null: any)
+ * and refuses a wider one. Each call's range goes into `limits.calls`, refused or not, and each block read into
+ * `limits.blockReads`, so a test can say what a search asked for.
+ */
+export function logLimits() {
+  return { maxBlocks: null, calls: [], blockReads: 0 };
+}
+
+const TAGS = new Set(['latest', 'pending', 'safe', 'finalized']);
+
+/** Throws as a capped RPC does when `call` is an eth_getLogs over more than the cap; records it either way. */
+export async function enforceLogLimits(send, call, limits) {
+  if (!limits) return;
+  if (call.method === 'eth_getBlockByNumber') limits.blockReads += 1;
+  if (call.method !== 'eth_getLogs') return;
+  const filter = call.params?.[0] ?? {};
+  if (filter.blockHash) {
+    limits.calls.push({ blockHash: filter.blockHash, blocks: 1, refused: false });
+    return;
+  }
+  const at = async (tag) => {
+    if (tag === undefined || TAGS.has(tag)) return Number(await send('eth_blockNumber', []));
+    return tag === 'earliest' ? 0 : Number(tag);
+  };
+  const fromBlock = await at(filter.fromBlock);
+  const toBlock = await at(filter.toBlock);
+  const blocks = toBlock - fromBlock + 1;
+  const refused = limits.maxBlocks !== null && blocks > limits.maxBlocks;
+  limits.calls.push({ fromBlock, toBlock, blocks, topics: filter.topics ?? [], refused });
+  if (refused) throw Object.assign(new Error(`eth_getLogs is limited to a ${limits.maxBlocks} block range`), { code: -32614 });
+}
+
+/**
  * The in-process network over HTTP on a loopback port, for a CLI run as a child process. Every call is
  * recorded in `calls` for the test to read; `echoErrors` makes it answer each call with an error that
- * quotes the whole request, as a careless RPC gateway does.
+ * quotes the whole request, as a careless RPC gateway does. `limits` (logLimits) caps eth_getLogs as the
+ * world's own provider does.
  */
-export async function startRpc(hre) {
+export async function startRpc(hre, limits = null) {
   const calls = [];
   const options = { echoErrors: false, echoOnly: null, down: false };
   const server = http.createServer((req, res) => {
@@ -141,6 +175,7 @@ export async function startRpc(hre) {
         calls.push(call);
         if (options.echoErrors || options.echoOnly?.includes(call.method)) return { jsonrpc: '2.0', id: call.id, error: { code: -32000, message: `rejected: ${text}`, data: text } };
         try {
+          await enforceLogLimits((m, p) => hre.network.provider.send(m, p), call, limits);
           const result = await hre.network.provider.send(call.method, call.params ?? []);
           return { jsonrpc: '2.0', id: call.id, result };
         } catch (err) {

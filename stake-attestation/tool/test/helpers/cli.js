@@ -13,7 +13,7 @@ const rpcs = new WeakMap();
 
 /** One HTTP bridge per world. */
 export async function rpcOf(w) {
-  if (!rpcs.has(w)) rpcs.set(w, await startRpc(w.hre));
+  if (!rpcs.has(w)) rpcs.set(w, await startRpc(w.hre, w.logLimits));
   return rpcs.get(w);
 }
 

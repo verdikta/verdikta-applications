@@ -1,6 +1,7 @@
 // Smoke test: the production build serves, renders the home page and logs no errors.
 import { test, expect } from '@playwright/test';
 import { STRINGS } from '../src/strings.js';
+import { shot } from './support/fixtures.js';
 
 test('home page renders from the production build', async ({ page }) => {
   const errors = [];
@@ -12,6 +13,7 @@ test('home page renders from the production build', async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(STRINGS.appName);
   await expect(page.getByText(STRINGS.home.recordNote)).toBeVisible();
   expect(errors).toEqual([]);
+  await shot(page, 'home');
 });
 
 // Node P27: an agent that opens the site finds what to read, and following the link gets the document itself.

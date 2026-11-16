@@ -24,11 +24,13 @@ after(async () => {
   await closeRpc(w);
   await w.close();
 });
-beforeEach(() => {
-  w.logLimits.maxBlocks = null;
+/** From here on eth_getLogs takes at most `maxBlocks` blocks (null: any), and what was asked before is forgotten. */
+function capLogs(maxBlocks) {
+  w.logLimits.maxBlocks = maxBlocks;
   w.logLimits.calls.length = 0;
   w.logLimits.blockReads = 0;
-});
+}
+beforeEach(() => capLogs(null));
 
 const eth = (s) => ethers.parseEther(s);
 const script = async (claimId, outcome) => (await w.aggregator.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf(outcome), JUSTIFICATION_CID)).wait();
@@ -80,7 +82,7 @@ test('settled by the keeper: status and claim say another address sent it, with 
   await settleable(claimId);
   const rc = await (await w.sa.connect(keeper).settle(claimId)).wait();
   const ev = settledOf(rc);
-  w.logLimits.maxBlocks = 3;
+  capLogs(3);
 
   const s = await w.hunter({ signer: undefined }).status({ claimId });
   assert.equal(s.state, 'Settled');
@@ -124,7 +126,7 @@ test('settled by the keeper: status and claim say another address sent it, with 
 test('settled by this run: claim reports it from its own receipt, and later runs say the hunter\'s own address sent it', async () => {
   const { dir, claimId } = await judged('HIGH');
   await settleable(claimId);
-  w.logLimits.maxBlocks = 3;
+  capLogs(3);
   const r = await w.hunter().claim({ claimDir: dir });
   assert.deepEqual(r.sent.map((x) => x.action), ['settle']);
   const sent = r.sent[0];
@@ -199,7 +201,7 @@ test('settled with an amount owed: the event\'s paid and owed, not the claim\'s 
   const record = await w.sa.getClaim(b.claimId);
   assert.equal(record.owedWei, 0n);
   assert.equal(record.paidWei, eth('2'));
-  w.logLimits.maxBlocks = 2;
+  capLogs(2);
   const s = await w.hunter({ signer: undefined }).status({ claimId: b.claimId });
   assert.equal(s.paidWei, eth('2'), 'the claim\'s record');
   assert.equal(s.settlement.by, 'hunter');
@@ -222,7 +224,7 @@ test('an event outside a capped page: the settle\'s second is read in pages the 
   await w.increase(5); // the next block is in a later second
 
   assert.equal(await tsOf(rc.blockNumber), BigInt(second));
-  w.logLimits.maxBlocks = 2;
+  capLogs(2);
 
   const s = await w.hunter({ signer: undefined }).status({ claimId });
   assert.equal(s.settlement.found, true);
@@ -239,7 +241,7 @@ test('a long chain after the settle: the settle\'s blocks are found by their tim
   const { claimId } = await judged('DUPLICATE');
   const rc = await (await w.sa.connect(keeper).settle(claimId)).wait();
   await w.rpc('hardhat_mine', ['0x30d40', '0x1']); // 200,000 blocks, a second apart
-  w.logLimits.maxBlocks = 5;
+  capLogs(5);
   const s = await w.hunter({ signer: undefined }).status({ claimId });
   assert.equal(s.settlement.found, true);
   assert.equal(s.settlement.tx, rc.hash);

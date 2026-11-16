@@ -193,8 +193,17 @@ each deadline of your claim and what comes next.
      (`verdikta-attest claim <claim> --waive-appeal`).
 8. Settle and withdraw: `settle(claimId)` pays the outcome (section 1). `verdikta-attest claim`
    finalizes, settles and withdraws whatever is due; the site's keeper finalizes and settles too.
-   A payment the contract could not push to you waits in `withdrawable(address)`, and
-   `verdikta-attest claim` withdraws it.
+   On a Settled claim, `claim` and `status` say how it settled, from the settle's Settled event:
+   its outcome, what it paid and what it left owed, in ETH, the settle transaction and its block,
+   and who sent it: this run, the hunter's own address in an earlier run, or another address
+   (the site's keeper, or anyone). The amounts are the event's, what the settle paid then; the
+   claim's own record also counts what the maker paid later of an award left owed. With --json
+   this is `settlement`, whose `by` is `thisRun`, `hunter` or `other`. A settle `claim` sends is
+   read from its own receipt. Any other is looked for only in the blocks whose time is
+   `getClaim(claimId)`'s `settledAt`, in ranges a public RPC's `eth_getLogs` limit takes; when it
+   is not found there, or the RPC does not answer, they say so and name no sender. A payment the
+   contract could not push to you waits in `withdrawable(address)`, and
+   `verdikta-attest claim` withdraws it and prints the transaction and the amount.
 
 ## 4. Costs, read live
 

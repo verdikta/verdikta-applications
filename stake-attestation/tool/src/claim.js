@@ -6,9 +6,13 @@
 // hunter may settle a claim round's INVALID, or one whose appeal settled no verdict, and doing so waives the appeal
 // (or its re-trigger). So the hunter's settle before that time says so and needs the explicit waiveAppeal
 // (--waive-appeal); from that time anyone may settle, and nothing is waived.
+//
+// A settle reports what its Settled event says (node P33, settlement.js): one this run sends from its own receipt, as
+// sent by this run; any other, the site's keeper's or an earlier run's, from the event in the blocks of its settledAt.
 import { CLAIM_STATES, OUTCOMES } from './abi.js';
 import { fail } from './errors.js';
 import { waiverNotice } from './notices.js';
+import { settlementFromReceipt } from './settlement.js';
 import { claimIdOf, runStatus, snapshot } from './status.js';
 
 async function send(ctx, name, args) {
@@ -57,9 +61,12 @@ export async function runSettle(ctx, claimId, { waiveAppeal = false } = {}) {
     ctx.notice(waiverNotice(waiver));
     if (!waiveAppeal) throw fail('NEEDS_WAIVER', `Anyone may settle it from ${waiver.until} on the chain's clock.`);
   }
-  const { hash } = await send(ctx, 'settle', [claimId]);
+  const { hash, receipt } = await send(ctx, 'settle', [claimId]);
   const { claim, state } = await stateAfter(ctx, claimId);
-  return { action: 'settle', tx: hash, claimId: BigInt(claimId), state, outcome: OUTCOMES[Number(claim.outcome)], paidWei: claim.paidWei, owedWei: claim.owedWei };
+  // the event's figures, as the chain wrote them at this settle; the claim's record only if its receipt had none
+  const settlement = settlementFromReceipt(ctx, receipt, claimId, claim.settledAt);
+  const of = settlement ?? { outcome: OUTCOMES[Number(claim.outcome)], paidWei: claim.paidWei, owedWei: claim.owedWei };
+  return { action: 'settle', tx: hash, claimId: BigInt(claimId), state, block: receipt.blockNumber, outcome: of.outcome, paidWei: of.paidWei, owedWei: of.owedWei, settlement };
 }
 
 export async function runWithdraw(ctx) {
@@ -83,12 +90,17 @@ export async function runClaim(ctx, { claimId, claimDir, waiveAppeal = false }) 
   let s = await runStatus(ctx, { claimId: id, claimDir });
   // Anyone may call these, and the site's keeper does: losing that race is no failure.
   const unlessBeaten = async (fn) => {
+    let done = null;
     try {
-      sent.push(await fn());
+      done = await fn();
+      sent.push(done);
     } catch (err) {
       if (err.code !== 'NOT_READY') throw err;
     }
-    s = await runStatus(ctx, { claimId: id, claimDir });
+    s = await runStatus(ctx, { claimId: id, claimDir }, { settlement: done?.settlement ?? null });
+    // a settle this run sent is this run's, however it was read
+    const ours = sent.some((x) => x.action === 'settle' && String(x.tx).toLowerCase() === String(s.settlement?.tx).toLowerCase());
+    if (s.settlement?.found && ours) s = { ...s, settlement: { ...s.settlement, by: 'thisRun' } };
   };
   if (s.ready === 'finalize') await unlessBeaten(() => runFinalize(ctx, id));
   if (s.state === 'Judged' && s.times.settleableAt !== 0n && s.times.settleableAt <= s.chainTime) {

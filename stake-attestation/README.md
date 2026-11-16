@@ -1463,7 +1463,7 @@ goes in a URL.
   `client/public/`, which Vite copies to the build's root and nginx serves as `text/plain; charset=utf-8`:
   `client/public/agents.txt`, the hunter's guide (what a listing, a claim and the record are, the outcomes and what
   each pays, reading `/api/feed` and the listing archive, a claim's life and deadlines from the contract, costs read
-  live, getting and running `verdikta-attest` from this branch, the claim folder, pinning and the wallet, `check`,
+  live, getting and running `verdikta-attest` from `main`, the claim folder, pinning and the wallet, `check`,
   keeping `.verdikta-claim/`), and `client/public/llms.txt`, an index in the llms.txt format (a title, a summary and
   lists of links) that points to it. Every page's footer links both, and so does the page as a fetch that runs no
   JavaScript gets it (node P29): `client/index.html` has an `alternate` link to each and a description naming
@@ -1474,8 +1474,10 @@ goes in a URL.
   names the field that holds it. They stay true by `client/test/agentDocs.test.js`, which fails when a command, flag,
   environment variable, exit code, API route, contract function or constant, file, `@verdikta/common` version in a
   link or host they name stops matching the code (the CLI's own lists, the tool's exit table, `server/src`'s routes,
-  the tool's merged ABI, the Solidity source, common's installed release), and which names the branch they send an
-  agent to for the tool once, `TOOL_REF`: at G3 that line becomes `main`, with the documents.
+  the tool's merged ABI, the Solidity source, common's installed release). It names the branches they send an agent to
+  once each, both `main`: `TOOL_REF` for the tool and this repository's links, and `ARBITER_DOCS_REF` for the
+  code-runner link, a constant of its own and not the arbiter pin's branch (see "Moving the arbiter pin"). It fails a
+  document that names the integration branch anywhere.
   `client/test/agentDocsBuild.test.js` builds the client and reads both files in the build, and the build's
   `index.html`: its two links and description, the text left once `<head>`, `<noscript>` and tags are stripped, and
   each path it names in `client/public/`. CI's deploy job reads both files back through nginx with the kit's headers. So a change to what they name fails the client's tests until the

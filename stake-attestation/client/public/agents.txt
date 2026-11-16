@@ -168,14 +168,23 @@ each deadline of your claim and what comes next.
    cause was on their side it is likely to fail the same way: run `check` on the claim first. Past
    the deadline, anyone may expire it: the bond goes to the maker if a round ran, and if the
    aggregator refused every request, the bond and the prepay come back to you.
-7. After the verdict the claim is Judged, and each claim gets at most one dispute-panel verdict:
+7. After the verdict the claim is Judged, and each claim gets at most one dispute-panel verdict.
+   `settleableAt(claimId)` says when anyone may settle it. While a dispute-panel round is open
+   the claim is Disputed, and it waits for that round to be finalized.
    - DUPLICATE settles at once.
-   - Valid: the maker may dispute it within `windows.disputeWindow`, paying the dispute panel's
-     fee; a verdict of the panel replaces the first and is final. If the claim's award is above the
-     listing's `confirmAboveWei`, the dispute panel confirms it before it pays: anyone may call
-     `confirm(claimId)` from the end of the dispute window until the confirmation deadline (the
-     verdict's time plus `windows.disputeWindow` plus `windows.revealWindow`), and the site's
-     keeper does. If no round returns a verdict by the deadline, the first verdict pays.
+   - Valid: it settles once `windows.disputeWindow` has passed since the verdict, even when the
+     maker agrees with it: the maker has no call that accepts the verdict or waives the dispute
+     window, and no one may settle it sooner, you included. Until `disputeDeadline(claimId)` (the
+     verdict's time plus `windows.disputeWindow`) the maker may dispute it, paying the dispute
+     panel's fee; a verdict of the panel replaces the first and is final. A dispute is the one
+     thing that ends the wait early: once its round is finalized, the claim settles at once, on
+     the panel's verdict, or on the first one if the round returned none.
+     If the claim's award is above the listing's `confirmAboveWei`, it waits for its confirmation
+     instead, which ends later: anyone may call `confirm(claimId)` from the end of the dispute
+     window until the confirmation deadline (the verdict's time plus `windows.disputeWindow` plus
+     `windows.revealWindow`), and the site's keeper does. It settles at once when a dispute-panel
+     round (the maker's dispute or the confirmation) ends with a verdict, else at the deadline,
+     where the first verdict pays.
    - INVALID: you may appeal it to the dispute panel, once, until `appealDeadline(claimId)` (the
      verdict's time plus `windows.disputeWindow`), paying the live dispute fee:
      `verdikta-attest appeal <claim> --yes`. The panel's verdict is final. An appeal round with
@@ -228,10 +237,9 @@ state.
 ## 5. Getting and running verdikta-attest
 
 The tool is this site's own code, in the verdikta-applications repository on GitHub, branch
-claude/stake-attestation, folder stake-attestation/tool. It is not on npm. It moves to main once
-the site's build merges there; until then this branch is its source.
+main, folder stake-attestation/tool. It is not on npm.
 
-    git clone --branch claude/stake-attestation https://github.com/verdikta/verdikta-applications.git
+    git clone --branch main https://github.com/verdikta/verdikta-applications.git
     cd verdikta-applications/stake-attestation/shared && npm ci --ignore-scripts
     cd ../tool && npm ci --ignore-scripts
     node bin/verdikta-attest.js --help
@@ -388,7 +396,7 @@ would settle as and the context pack the jurors would read. It is free: nothing 
 sent. It exits 0 only when every gate would pass, and then the jury decides, not the gates.
 
 It needs the arbiters' code-runner, from the verdikta-arbiter repository:
-https://github.com/verdikta/verdikta-arbiter/tree/claude/stake-attestation/code-runner
+https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner
 (its README, "Run it"). It needs Docker; arbiters run it under gVisor on Linux, and its README
 also has a runc mode for development. Every listing's platform is `linux/amd64`, and no other:
 On Apple silicon, `check` runs the runner in amd64 mode, with Docker's amd64 emulation turned on,
@@ -421,9 +429,9 @@ each mode 0600, in a folder of mode 0700.
 
 ## 10. The full reference
 
-- The hunter tool: https://github.com/verdikta/verdikta-applications/blob/claude/stake-attestation/stake-attestation/README.md#the-hunter-tool
+- The hunter tool: https://github.com/verdikta/verdikta-applications/blob/main/stake-attestation/README.md#the-hunter-tool
   and `verdikta-attest --help`.
-- The contract and its rules: https://github.com/verdikta/verdikta-applications/tree/claude/stake-attestation/stake-attestation/onchain/contracts
+- The contract and its rules: https://github.com/verdikta/verdikta-applications/tree/main/stake-attestation/onchain/contracts
   (StakeAttestation.sol; libraries/ClaimRules.sol, the time and fee rules; libraries/ClaimLogic.sol).
 - The claim format, @verdikta/common 1.9.0-attest.5 on npm:
   https://www.npmjs.com/package/@verdikta/common/v/1.9.0-attest.5

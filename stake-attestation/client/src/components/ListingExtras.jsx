@@ -4,10 +4,12 @@ import { LISTING_STATES } from '../chain/abi.js';
 import { chainReader, stakeAttestation } from '../chain/wallet.js';
 import { getFeed, getRecord } from '../lib/api.js';
 import { formatEth, formatTime } from '../lib/format.js';
+import { otherListingsOfRecord } from '../lib/sameRepository.js';
 import { confirmSuccessor, successorCandidates } from '../lib/successors.js';
 import { STRINGS, fill } from '../strings.js';
 import { siteErrorText } from './Facts.jsx';
 import { SelectField } from './Field.jsx';
+import { SameRepositorySection } from './SameRepository.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const RF = STRINGS.roll;
@@ -16,8 +18,9 @@ const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 
 /**
  * What the record mirror knows of one listing: its claims (Committed and LateClaim events, ids
- * only, as the site shows every claim that is not a valid finding) and its identity (the Listed
- * event: kind, repository, commit). Null `record` while it is read; { failed } when it cannot be.
+ * only, as the site shows every claim that is not a valid finding), its identity (the Listed
+ * event: kind, repository, commit) and the other listings of its repository (node P35). Null
+ * `record` while it is read; { failed } when it cannot be.
  */
 export function useListingRecord(listingId, artifactHash, opened) {
   const [state, setState] = useState(null);
@@ -35,7 +38,13 @@ export function useListingRecord(listingId, artifactHash, opened) {
         const listed = events.find((e) => e.name === 'Listed' && e.listingId === id);
         const apart = r?.notCounted?.listings.find((l) => String(l.listingId) === id);
         const counted = Boolean(r?.record.listings.some((l) => String(l.listingId) === id));
-        setState({ claims, counted, why: apart ? apart.detail ?? apart.reason : null, identity: listed ? { kind: listed.args.kind, repo: listed.args.repo, baseCommit: listed.args.baseCommit } : null });
+        setState({
+          claims,
+          counted,
+          why: apart ? apart.detail ?? apart.reason : null,
+          identity: listed ? { kind: listed.args.kind, repo: listed.args.repo, baseCommit: listed.args.baseCommit } : null,
+          sameRepository: otherListingsOfRecord(r, id),
+        });
       })
       .catch((err) => { if (live) setState({ failed: siteErrorText(err) }); });
     return () => { live = false; };
@@ -173,7 +182,10 @@ function CommitOffer({ data }) {
   );
 }
 
-/** The parts of a listing's page that follow its opening: its claims, its record, roll forward. */
+/**
+ * The parts of a listing's page that follow its opening: its claims, its record, the other listings
+ * of its repository (node P35), roll forward. A listing that has not opened has no record yet.
+ */
 export function ListingMore({ listingId, listing }) {
   const state = LISTING_STATES[Number(listing.state)];
   const opened = state !== 'Listed';
@@ -183,6 +195,7 @@ export function ListingMore({ listingId, listing }) {
     <>
       <CommitOffer data={data} />
       <ListingClaims artifactHash={listing.artifactHash} data={data} />
+      <SameRepositorySection data={data} />
       {data && !data.failed && <RollForward listingId={listingId} listing={listing} identity={data.identity} />}
     </>
   );

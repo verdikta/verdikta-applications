@@ -4,10 +4,13 @@
 // it was:
 //
 //   GET /api/feed            each entry's sameRepository: every other listing the site indexed whose artifact.repo is
-//                            the entry's, exactly as the Listed event stored it, at any commit and in any state; and
-//                            its disclosureRecipient, the age recipient of the same 32 bytes as disclosureKey
-//   GET /api/records/:hash   sameRepository: the listings of the record's repository on other versions (its own
-//                            listings are the record's, counted or apart)
+//                            the entry's, exactly as the Listed event stored it, that opened, at any commit and in
+//                            whatever state it is in now; and its disclosureRecipient, the age recipient of the same
+//                            32 bytes as disclosureKey
+//   GET /api/records/:hash   sameRepository: the listings of the record's repository that the record does not list,
+//                            its other versions (the record's own are its listings, counted or apart)
+//
+// A listing that never opened is in neither, as it is in no feed or record: anyone can make one for the gas of list().
 //
 // Each related listing: its id, artifact hash and artifact (the commit), its state and lapsed at the answer's block, as
 // getListing has them there, whether it counts (the record's own rule), and its page on the site.
@@ -65,10 +68,13 @@ describe('related listings and the two encodings of the disclosure key', () => {
     await (await ctx.sa.connect(ctx.maker).close(l.closed.listingId)).wait();
     // the same version listed again from another wallet: the project names ctx.maker, so it does not count
     l.replayed = { ...l.a, ...(await replay(ctx, l.a, { from: ctx.other })) };
+    // and listed once more, never funded: it takes no claims and has no record, so it is in no list
+    const rc = await (await ctx.sa.connect(ctx.hunters[0]).list(l.a.params, l.a.listingCid, l.a.disputeCid, l.a.knownIssueIds)).wait();
+    l.unopened = { ...l.a, listingId: rc.logs.map((x) => ctx.sa.interface.parseLog(x)).find((e) => e?.name === 'Listed').args.listingId };
     l.otherRepo = await listing(ctx, { spec: { repo: 'https://github.com/acme/other' } });
     // grouped exactly as stored: another spelling of the URL is another repository here
     l.spelled = await listing(ctx, { spec: { repo: `${REPO}.git` } });
-    for (const x of [l.a, l.b, l.listed, l.closed, l.replayed]) assert.equal(x.spec.repo, REPO);
+    for (const x of [l.a, l.b, l.listed, l.closed, l.replayed, l.unopened]) assert.equal(x.spec.repo, REPO);
 
     site = siteFor(ctx);
     await site.sync();
@@ -83,12 +89,15 @@ describe('related listings and the two encodings of the disclosure key', () => {
   const entryOf = (body, x) => body.listings.find((e) => e.listingId === String(x.listingId));
   const ids = (list) => list.map((x) => x.listingId);
 
-  test('a feed entry names every other listing of its repository, at any commit and in any state, oldest first', async () => {
+  test('a feed entry names every other listing of its repository that opened, at any commit and in any state, oldest first', async () => {
     const body = await feed();
     const a = entryOf(body, l.a);
     assert.ok(a, 'listing a is in the feed');
-    assert.deepEqual(ids(a.sameRepository), [l.b, l.listed, l.closed, l.replayed].map((x) => String(x.listingId)).sort(byId));
-    assert.deepEqual(ids(entryOf(body, l.b).sameRepository), [l.a, l.listed, l.closed, l.replayed].map((x) => String(x.listingId)).sort(byId));
+    assert.deepEqual(ids(a.sameRepository), [l.b, l.closed, l.replayed].map((x) => String(x.listingId)).sort(byId));
+    assert.deepEqual(ids(entryOf(body, l.b).sameRepository), [l.a, l.closed, l.replayed].map((x) => String(x.listingId)).sort(byId));
+    // never opened: in no list, whatever its repository
+    for (const e of body.listings) for (const x of [l.listed, l.unopened]) assert.equal(ids(e.sameRepository).includes(String(x.listingId)), false);
+    assert.equal((await ctx.sa.getListing(l.unopened.listingId)).state, 0n, 'Listed');
     // another repository, and another spelling of this one, have none of these
     assert.deepEqual(entryOf(body, l.otherRepo).sameRepository, []);
     for (const e of body.listings) assert.equal(ids(e.sameRepository).includes(String(l.otherRepo.listingId)), false, `listing ${e.listingId}`);
@@ -116,11 +125,11 @@ describe('related listings and the two encodings of the disclosure key', () => {
       assert.equal(x.counted, Boolean(rec?.record.listings.some((r) => String(r.listingId) === x.listingId)), `listing ${x.listingId}`);
     }
     assert.equal(states[l.b.listingId], 'Open');
-    assert.equal(states[l.listed.listingId], 'Listed');
     assert.equal(states[l.closed.listingId], 'Closed');
+    assert.equal(states[l.replayed.listingId], 'Open');
     const of = (x) => a.sameRepository.find((r) => r.listingId === String(x.listingId));
     assert.equal(of(l.b).artifact.baseCommit, l.b.spec.baseCommit);
-    assert.equal(of(l.listed).artifact.baseCommit, l.listed.spec.baseCommit);
+    assert.equal(of(l.closed).artifact.baseCommit, l.closed.spec.baseCommit);
     assert.equal(of(l.replayed).artifact.baseCommit, l.a.spec.baseCommit, 'the same version, listed again');
     assert.equal(of(l.replayed).artifactHash, a.artifactHash);
     assert.deepEqual(of(l.b).artifact, entryOf(body, l.b).artifact, 'the artifact as the feed shows it');
@@ -149,14 +158,14 @@ describe('related listings and the two encodings of the disclosure key', () => {
     for (const e of body.notCounted) assert.deepEqual(Object.keys(e).sort(), ['listingId', 'artifactHash', 'artifact', 'maker', 'reason', 'detail'].sort());
   });
 
-  test('a record names the listings of its repository on other versions; its own are its listings, counted or apart', async () => {
+  test('a record names the listings of its repository that it does not list: its other versions', async () => {
     const rec = await (await api.get(`/api/records/${l.a.artifactHash}`)).json();
-    assert.deepEqual(ids(rec.sameRepository), [l.b, l.listed, l.closed].map((x) => String(x.listingId)).sort(byId));
+    assert.deepEqual(ids(rec.sameRepository), [l.b, l.closed].map((x) => String(x.listingId)).sort(byId));
     const own = [...rec.record.listings, ...rec.notCounted.listings].map((x) => String(x.listingId)).sort(byId);
     assert.deepEqual(own, [l.a, l.replayed].map((x) => String(x.listingId)).sort(byId));
     const body = await feed();
-    // the same items the feed gives for listing a's other versions
-    assert.deepEqual(rec.sameRepository, entryOf(body, l.a).sameRepository.filter((x) => x.artifactHash !== l.a.artifactHash));
+    // the same items the feed gives for listing a, but those on the record
+    assert.deepEqual(rec.sameRepository, entryOf(body, l.a).sameRepository.filter((x) => !own.includes(x.listingId)));
     const other = await (await api.get(`/api/records/${l.otherRepo.artifactHash}`)).json();
     assert.deepEqual(other.sameRepository, []);
   });

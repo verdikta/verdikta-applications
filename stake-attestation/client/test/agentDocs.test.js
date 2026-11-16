@@ -750,7 +750,7 @@ test('node P35: what the jurors read is @verdikta/common\'s context pack, every 
   assert.deepEqual(codeReview.selectDocuments(tree, { ...stake, documents: [] }, ['src/Vault.sol']).paths, []);
   assert.deepEqual(codeReview.selectDocuments(tree, { ...stake, documents: ['docs/**', 'README.md'] }, ['src/Vault.sol']).paths, ['docs/spec.md', 'README.md']);
   // the key sentence, and what a hunter does with it
-  assert.match(flat, /^ What the jurors read\. For the requirement, they read the listing's `documents` and the source files your finding names, comments included, and of the rest of the repository only call-site lines and file names\./);
+  assert.match(flat, /^ What the jurors read\. For the requirement, they read the listing's `documents` and the in-scope source files your finding names, comments included, and of the rest of the repository only call-site lines and file names\./);
   assert.match(flat, /Of the rest of the repository they see only those call-site lines and the file names: no other source file, test or document\./);
   assert.match(flat, /`## Requirement`/);
   assert.match(flat, /`check` prints the pack for your claim/);

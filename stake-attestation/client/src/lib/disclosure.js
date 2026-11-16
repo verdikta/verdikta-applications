@@ -8,6 +8,9 @@
 // download once, used for decryption in this page, and never sent, logged or stored.
 import disclosure from '@verdikta/common/src/codeReview/disclosure.js';
 
+// node P35: the age recipient of a bytes32 the chain stores, and the sentence the site shows beside the two forms
+export { DISCLOSURE_KEY_NOTE, disclosureRecipientOf } from '@verdikta/stake-attestation-shared/disclosure-key';
+
 export const {
   DisclosureError,
   decryptDisclosure,

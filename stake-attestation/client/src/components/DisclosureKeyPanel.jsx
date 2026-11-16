@@ -1,10 +1,21 @@
 import { useState } from 'react';
 
-import { DisclosureError, generateDisclosureKeyPair, keyFileName, keyFileText, parseDisclosureKey, saveLocally } from '../lib/disclosure.js';
+import { DisclosureError, disclosureKeyBytes32, generateDisclosureKeyPair, keyFileName, keyFileText, parseDisclosureKey, saveLocally } from '../lib/disclosure.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 
 const K = STRINGS.key;
+
+/** The key as list() will store it, the form the feed shows (node P35); nothing for a key that does not decode. */
+function KeyOnChain({ recipient }) {
+  let bytes32;
+  try {
+    bytes32 = disclosureKeyBytes32(recipient);
+  } catch {
+    return null;
+  }
+  return <p className="hint" data-testid="key-bytes32">{fill(K.bytes32, { bytes32 })}</p>;
+}
 
 /**
  * The maker's disclosure key (design §14). "Generate" makes an age X25519 pair here, with
@@ -63,6 +74,7 @@ export function DisclosureKeyPanel({ recipient, ready, onRecipient }) {
       {own !== null && <TextField label={K.ownRecipient} value={own} onChange={typeOwn} mono error={ownError} secret={/^AGE-SECRET-KEY-1/i.test(own.trim())} />}
 
       {own === null && recipient && <TextField label={K.recipient} value={recipient} readOnly mono />}
+      {recipient && <KeyOnChain recipient={recipient} />}
 
       {identity !== null && (
         <div className="once">

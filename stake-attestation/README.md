@@ -714,9 +714,9 @@ the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
 
 | Route | |
 |---|---|
-| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none, `null` while an archive answer the site stored before it read documents is read again, which keeps that answer as it was if the gateway fails), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15) |
+| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none, `null` while an archive answer the site stored before it read documents is read again, which keeps that answer as it was if the gateway fails), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15). Node P35 added two fields and changed none: `disclosureRecipient`, the age recipient (`age1…`) of the same 32 bytes as `disclosureKey` (`shared/src/disclosureKey.js`), and `sameRepository`, every other listing the site indexed whose `artifact.repo` is the entry's, exactly as listed, that opened (one that never opened takes no claims, and anyone can make one for the gas of `list()`), at any commit and in whatever state it is in now: each one's id, artifact hash, artifact, state and lapsed at the answer's block, whether it counts, and its page (`/#/fund/<id>`), oldest first |
 | `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
-| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of; `documents` each counted listing's document globs, from its archive), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below). 404 for a hash with no opened listing |
+| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of; `documents` each counted listing's document globs, from its archive), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below); `sameRepository` (node P35): the listings of the record's repository on its other versions that opened, each as in the feed. 404 for a hash with no opened listing |
 | `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
 | `GET /api/status` | the indexer's cursor, the keeper's address, transaction in flight and last result, and refused listing attempts by reason (`listings.refused`: no address or repository name, kept beside the state) |
 
@@ -1288,7 +1288,8 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   hold it to a pack recorded from the runner at the pin (`tool/test/fixtures/runner-answers/documents.record.cjs`). A
   listing that names no documents checks as it did, with no `documents` in the forecast.
 - **`commit`** refuses a listing the builder did not sign, or whose on-chain key or terms are not what was signed; says P9's warning
-  and the §8.6 diligence text; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
+  and the §8.6 diligence text, and the listing's disclosure key as an age recipient beside the bytes32 the chain stores, with the
+  sentence that says they are one key; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
   `<claim>/.verdikta-claim/` at 0600. **Back that folder up: without its keys a claim cannot be revealed, and the bond is lost.**
   It sends `commit` with the bond and the live fee, and only once that is mined pins the ciphertext and calls `disclose`.
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
@@ -1370,7 +1371,8 @@ goes in a URL.
 - **Listing** (`#/list`): the artifact (a repository, or a deployed contract with its chain),
   scope, documents (up to 16 globs, one per line, for where the code's requirements are written; each line checked
   in the browser with common's `documentGlobProblem` and shown by common's code, `client/src/lib/documents.js`; the
-  help says what to name and that documents never widen the scope), award table, lowest class counted, bond, windows
+  help says what to name and that documents never widen the scope, and, node P35, recommends once a document that states
+  the code's requirements, saying what the jurors judge them from without one), award table, lowest class counted, bond, windows
   (design §7.1's defaults: 14 days, 30
   for a contract, 72 h, 48 h, 7 days), invited hunters, known issues (their ids are common's
   `knownIssueId`; the fields say what a known issue settles as, as "The listing API" does, and that a behaviour meant as
@@ -1405,8 +1407,10 @@ goes in a URL.
   it is still Listed with the terms the page shows, nothing is sent, and the fee passed as
   `expectedFeeWei` makes an opening fund that lands first from elsewhere revert this one.
   Reads are checked to come from `VITE_SA_CHAIN_ID` (`chainReader`), and every transaction asks
-  the wallet whether its account and chain are still the connected ones. Once it opened, the
-  page lists its claims (from the record mirror's events) and links to its record; while it is
+  the wallet whether its account and chain are still the connected ones. Its disclosure key shows
+  in both forms. Once it opened, the page lists its claims (from the record mirror's events),
+  links to its record and lists the other listings of its repository (from the record: its
+  `sameRepository`, and its own version's other listings, counted or apart); while it is
   Open or Depleted, **roll forward** offers the maker's own open listings of the same
   repository at another commit (from the feed, each confirmed on-chain: Open, the maker's, no
   predecessor) and sends `rollForward` after reading both listings again at one block.
@@ -1429,7 +1433,9 @@ goes in a URL.
 - **The feed** (`#/feed`, design §15): `GET /api/feed`, every listing that takes claims, with
   its artifact, hash, labels, award table, lowest class counted, bond, windows, times, days
   open, claims so far, escrow remaining, value at risk, image, scope and where its requirements are said to be
-  written (its document globs), and links to its record and its page. The record page shows each stake's globs too.
+  written (its document globs), the disclosure key in both its forms, the age recipient and the bytes32, with the sentence
+  that says they are one key (`shared/src/disclosureKey.js`), the other listings of its repository (their ids, commits and
+  states, each a link to its page), and links to its record and its page. The record page shows each stake's globs too.
 - **A claim** (`#/claim/<claimId>`): its state and times from the chain (the lens's derived
   state and `claimTimes`), and the maker's actions through the wallet, each after reading the
   claim again: **release** inside the fix window of a disclosed claim, and **dispute** of a
@@ -1450,7 +1456,8 @@ goes in a URL.
   says it is saved. It is never sent, logged or stored: the client uses no browser storage at
   all (`test/noStore.test.js`), and a Playwright test records every request of a whole maker
   session and fails if any carries the key in any encoding. A maker with an age key already
-  enters its public half instead.
+  enters its public half instead. The panel also shows the bytes32 `list()` will store for it,
+  the form the feed shows, and that the two are one key.
 - **Decrypt-and-check** (`#/check/<claimId>`): reads the claim and its listing from the chain,
   fetches the disclosed ciphertext from the gateways of `VITE_IPFS_GATEWAY` (in order, the next only
   when one fails to deliver, never because its bytes are wrong), checks its SHA-256 against the

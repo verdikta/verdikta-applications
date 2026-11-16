@@ -12,6 +12,7 @@
 // the site does it, and a replay with the same key stays open as accepted for testnet (owner Q36). The notice
 // says so.
 import { didBuilderSign, readSignedListing } from '@verdikta/stake-attestation-shared/builder-signature';
+import { disclosureRecipientOf } from '@verdikta/stake-attestation-shared/disclosure-key';
 import { readZipMember, zipDirectory } from '@verdikta/stake-attestation-shared/zip-read';
 import { ZeroAddress } from 'ethers';
 
@@ -132,7 +133,10 @@ export function archiveDisclosureKeyHex(spec) {
   return `0x${Buffer.from(codeReview.parseDisclosureKey(spec.stake.disclosureKey)).toString('hex')}`;
 }
 
-/** The terms a hunter reads before paying, from the chain. */
+/**
+ * The terms a hunter reads before paying, from the chain. The disclosure key in both its forms (node P35): the bytes32
+ * the chain stores and the age recipient of the same bytes, which inspectListing held to the archive's.
+ */
 export function termsForNotice(listing, priceWei) {
   const l = listing.onChain;
   return {
@@ -150,5 +154,7 @@ export function termsForNotice(listing, priceWei) {
     revealWindow: l.revealWindow,
     disputeWindow: l.disputeWindow,
     invited: l.allowlist.length > 0,
+    disclosureKey: l.disclosureKey,
+    disclosureRecipient: disclosureRecipientOf(l.disclosureKey),
   };
 }

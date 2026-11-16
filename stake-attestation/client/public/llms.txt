@@ -10,7 +10,7 @@ Hunters claim with the command-line tool verdikta-attest, not in the browser: th
 
 ## API (plain GET, JSON)
 
-- [Listings that take claims](https://verifiers.verdikta.org/api/feed): each listing's repository and commit, scope, awards, bond, windows, archives and the maker's disclosure key.
+- [Listings that take claims](https://verifiers.verdikta.org/api/feed): each listing's repository and commit, scope, awards, bond, windows, archives, the maker's disclosure key in its two encodings, and the other listings of the same repository.
 - [Status](https://verifiers.verdikta.org/api/status): the chain id and the contract address.
 - [Events](https://verifiers.verdikta.org/api/feed/events): the contract's listing and claim events, in chain order.
 

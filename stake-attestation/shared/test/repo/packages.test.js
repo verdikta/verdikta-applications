@@ -19,9 +19,9 @@ test('the app folder holds exactly the known packages', () => {
 // (e2e/test/requestSize.test.js holds e2e's to the arbiter's), pinned exactly and locked to the registry's tarball
 // with its integrity hash. Moving it is one change to all six, with the arbiter pin (README, "Moving the arbiter pin").
 const COMMON = '@verdikta/common';
-const COMMON_RELEASE = '1.9.0-attest.5';
-// the registry's own (npm view @verdikta/common@1.9.0-attest.5 dist.integrity): it moves with the release
-const COMMON_INTEGRITY = 'sha512-AQjH2x/tr7WwaJpPdbvJB077fbUQCom2skEFgJ2L2owbaQUvy9TsMeCgLhtk47dPB0LrN/QwtRP/aT+6V66DuA==';
+const COMMON_RELEASE = '1.9.0-attest.6';
+// the registry's own (npm view @verdikta/common@1.9.0-attest.6 dist.integrity): it moves with the release
+const COMMON_INTEGRITY = 'sha512-VM/LwF+kkpX9clylCFuG+DxxqGWsk7XiawoW95aHbRtrCzSzrD/XyxWMAvjO++ClR2CdhUM3zvdr/ZtfDesorQ==';
 const COMMON_READERS = ['onchain', 'server', 'client', 'tool', 'builder', 'e2e'];
 
 test(`the packages that read ${COMMON} pin exactly ${COMMON_RELEASE}, locked to the registry with an integrity hash`, () => {

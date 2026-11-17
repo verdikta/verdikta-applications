@@ -197,7 +197,10 @@ export async function startCodeRunner({ id, registryHost, platform }) {
     }
     fs.rmSync(state, { recursive: true, force: true });
   };
-  return { url, token, commit, health, stop, log: () => log };
+  // What the checkout is, read from its own files: the version its package.json gives (what /health and every answer
+  // report) and the release of @verdikta/common it installed (whose class time floors the listing check applies).
+  const readVersion = (file) => JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')).version;
+  return { url, token, commit, version: readVersion('package.json'), common: readVersion('node_modules/@verdikta/common/package.json'), health, stop, log: () => log };
 }
 
 /**

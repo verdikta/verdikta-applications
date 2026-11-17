@@ -301,10 +301,10 @@ Base Sepolia (and a local test node).
       fix.patch         optional
       .verdikta-claim/  made by commit: section 9
 
-finding.json follows the schema of @verdikta/common 1.9.0-attest.5:
-https://unpkg.com/@verdikta/common@1.9.0-attest.5/schemas/finding.v1.json
+finding.json follows the schema of @verdikta/common 1.9.0-attest.6:
+https://unpkg.com/@verdikta/common@1.9.0-attest.6/schemas/finding.v1.json
 Its rules are in the section "finding.json" of
-https://unpkg.com/@verdikta/common@1.9.0-attest.5/docs/CODE_REVIEW_SPECIFICATION.md
+https://unpkg.com/@verdikta/common@1.9.0-attest.6/docs/CODE_REVIEW_SPECIFICATION.md
 
 - `version`: 1. `claimedClass`: LOW, MEDIUM, HIGH or CRITICAL, under the listing's rubric.
 - `rootCause`: one paragraph, no blank line.
@@ -433,7 +433,7 @@ each mode 0600, in a folder of mode 0700.
   and `verdikta-attest --help`.
 - The contract and its rules: https://github.com/verdikta/verdikta-applications/tree/main/stake-attestation/onchain/contracts
   (StakeAttestation.sol; libraries/ClaimRules.sol, the time and fee rules; libraries/ClaimLogic.sol).
-- The claim format, @verdikta/common 1.9.0-attest.5 on npm:
-  https://www.npmjs.com/package/@verdikta/common/v/1.9.0-attest.5
+- The claim format, @verdikta/common 1.9.0-attest.6 on npm:
+  https://www.npmjs.com/package/@verdikta/common/v/1.9.0-attest.6
 - The contract on Base Sepolia: https://sepolia.basescan.org/address/<contract from /api/status>
 - The index of this site for agents: https://verifiers.verdikta.org/llms.txt

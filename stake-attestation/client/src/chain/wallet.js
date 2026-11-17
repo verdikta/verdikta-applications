@@ -1,5 +1,6 @@
 // The maker's wallet (an injected EIP-1193 provider) and the chain reads. Transactions go through
-// the wallet only: list(), fund() and flagBadDisclosure(). Reads use VITE_SA_RPC_URL when the
+// the wallet only: list(), fund(), flagBadDisclosure(), release(), dispute(), rollForward(), renew(),
+// close() and withdraw(). Reads use VITE_SA_RPC_URL when the
 // site has one, so the check page works before a wallet is connected.
 import { BrowserProvider, Contract, JsonRpcProvider } from 'ethers';
 

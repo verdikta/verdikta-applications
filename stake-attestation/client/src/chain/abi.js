@@ -43,6 +43,13 @@ export const STAKE_ATTESTATION_ABI = Object.freeze([
   'function claimTimes(uint256 claimId) view returns (uint256 discloseDeadline, uint256 revealableAt, uint256 revealDeadline)',
   'function disputeFee(uint256 listingId) view returns (uint256)',
   'function disputeDeadline(uint256 claimId) view returns (uint256)',
+  // the maker's ways to keep a stake open or end it, and any wallet's way to collect what the contract holds for
+  // it (a payment it could not send, a listing fee, an award paid late from a top-up)
+  'function renew(uint256 listingId) payable',
+  'function close(uint256 listingId)',
+  'function withdraw()',
+  'function withdrawable(address) view returns (uint256)',
+  'function listingFeeWei() view returns (uint256)',
   // the settlement safeguards' lens views (errata E7-E9; node P18): read, never sent from here
   'function settleableAt(uint256 claimId) view returns (uint256)',
   'function appealDeadline(uint256 claimId) view returns (uint256)',
@@ -51,6 +58,9 @@ export const STAKE_ATTESTATION_ABI = Object.freeze([
   'function judgeVector(uint256 listingId, uint256[] vector) view returns (bool wellFormed, uint8 outcome, uint256 awardWei, bool narrow)',
   'event Listed(uint256 indexed listingId, address indexed maker, bytes32 indexed artifactHash, uint8 kind, string repo, string baseCommit, uint64 chainId, address artifactAddress, string listingCid, string disputeCid)',
   'event Opened(uint256 indexed listingId, bytes32 indexed artifactHash, uint256 escrowWei, uint64 fundedUntil)',
+  // read from close()'s receipt: what came back, and whether the contract could send it
+  'event Closed(uint256 indexed listingId, address indexed maker, uint256 amountReturned)',
+  'event PaymentDeferred(address indexed to, uint256 amount)',
 ]);
 
 /** StakeAttestation's enums, in declaration order (test/enums.test.js reads them from the source). */

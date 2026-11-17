@@ -1,12 +1,13 @@
 {
-  "note": "What the reusable builder workflow runs beside the builder, and the builder key it signs production attestations with. builderKey is the public half and key id of the key held in KMS, which @verdikta/common's trusted-builder set must hold before anything is signed: public values only (the cloud account, the key's ARN and the role are the signing environment's secrets). codeRunner is the verdikta-arbiter commit whose code-runner validates the listing (the same commit as test/docker/code-runner.pin.json and e2e/arbiter.pin.json: test/unit/pins.test.js; README, Moving the arbiter pin); registry is registry:2 2.8.3, the multi-platform index; skopeo is quay.io/skopeo/stable v1.13.3 (the multi-platform index), which moves the image between the jobs and to its registry; gvisor is @verdikta/common's GVISOR_RELEASE and the SHA-512 of its x86_64 gvisor.tar.bz2.",
+  "note": "What the reusable builder workflow runs beside the builder, and the builder key it signs production attestations with. builderKey is the public half and key id of the key held in KMS, which @verdikta/common's trusted-builder set must hold before anything is signed: public values only (the cloud account, the key's ARN and the role are the signing environment's secrets). codeRunner is the verdikta-arbiter commit, on its main, whose code-runner validates the listing and applies the class time floors to its default limits (the same commit as test/docker/code-runner.pin.json and e2e/arbiter.pin.json: test/unit/pins.test.js; README, Moving the arbiter pin); registry is registry:2 2.8.3, the multi-platform index; skopeo is quay.io/skopeo/stable v1.13.3 (the multi-platform index), which moves the image between the jobs and to its registry; gvisor is @verdikta/common's GVISOR_RELEASE and the SHA-512 of its x86_64 gvisor.tar.bz2.",
   "builderKey": {
     "publicKey": "uz7rKoXvOR8ut8NOUO5qoZHwsunMCq5yKtNRgskqAHU=",
     "keyId": "c400af59dc75cf7cb0bc2430833d29047955ae99c18a1d007700588a84b45b13"
   },
   "codeRunner": {
     "repository": "https://github.com/verdikta/verdikta-arbiter.git",
-    "commit": "fbc2febf988d25c8934e5c774d86c99e63b4d88e"
+    "branch": "main",
+    "commit": "331a605f1b1059d8984962b54d79c2edf6010a7f"
   },
   "registry": {
     "image": "registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"

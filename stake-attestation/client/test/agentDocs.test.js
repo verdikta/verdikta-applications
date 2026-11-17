@@ -408,6 +408,44 @@ test('node P32: the gaps a fresh agent met are filled: dry runs, the human\'s st
   assert.match(flat, /release[^.]*moves your reveal deadline earlier[^.]*run `verdikta-attest status/);
 });
 
+// node P33 (issue #205): an agent whose claim the keeper settled had to read the contract's events to learn who settled
+// it and what it paid. Step 8 says what `claim` and `status` report of a settle, and it is what tool/src reports.
+test('node P33: step 8 says what claim and status report of a settle: the event\'s outcome and amounts, its transaction, block and sender', () => {
+  const step8 = /\n8\. Settle and withdraw:([\s\S]*?)\n\n## 4\./.exec(agents())?.[1]?.replace(/\s+/g, ' ');
+  assert.ok(step8, 'agents.txt §3 has its step 8');
+  const settlement = toolSrc('settlement.js');
+  // who sent it: settlement.by's values and the words the tool prints for each, in the tool's order
+  const block = /export const SETTLED_BY = Object\.freeze\(\{([\s\S]*?)\}\);/.exec(settlement);
+  assert.ok(block, 'tool/src/settlement.js holds SETTLED_BY');
+  const by = [...block[1].matchAll(/^\s+(\w+): '((?:[^'\\]|\\.)*)',?$/gm)].map((m) => ({ key: m[1], words: m[2].replace(/\\'/g, '\'') }));
+  assert.deepEqual(by.map((b) => b.key), ['thisRun', 'hunter', 'other']);
+  const [run, hunter, other] = by.map((b) => b.words);
+  assert.ok(step8.includes(`who sent it: ${run}, ${hunter} in an earlier run, or ${other}`), `step 8 names the senders as the tool does: ${run}; ${hunter}; ${other}`);
+  assert.match(settlement, /, in an earlier run/, 'the tool says the hunter\'s own address sent it in an earlier run');
+  assert.ok(step8.includes(`\`settlement\`, whose \`by\` is \`${by[0].key}\`, \`${by[1].key}\` or \`${by[2].key}\``), 'the --json field and its values');
+  // the event's amounts, in ETH: read from the event, never from the claim's record
+  assert.match(step8, /from the settle's Settled event: its outcome, what it paid and what it left owed, in ETH, the settle transaction and its block, and who sent it/);
+  assert.match(settlement, /parseLog\(/);
+  assert.match(settlement, /formatEther\(/);
+  // its own settle from its receipt; any other only in the blocks of the claim's settledAt, in capped ranges
+  assert.match(toolSrc('claim.js'), /settlementFromReceipt\(/);
+  assert.match(step8, /A settle `claim` sends is read from its own receipt\./);
+  const getClaim = ABI.find((f) => f.name === 'getClaim');
+  assert.ok(getClaim.outputs[0].components.some((c) => c.name === 'settledAt'), 'getClaim returns settledAt');
+  assert.match(settlement, /\.settledAt\b/);
+  assert.match(step8, /only in the blocks whose time is `getClaim\(claimId\)`'s `settledAt`, in ranges a public RPC's `eth_getLogs` limit takes/);
+  // not found: said, and no sender named
+  assert.match(settlement, /'notInBlocks'/);
+  assert.match(settlement, /'unread'/);
+  assert.match(step8, /when it is not found there, or the RPC does not answer, they say so and name no sender/);
+  // both verbs print it, and --json carries it
+  assert.match(toolSrc('status.js'), /out\.settlement = /);
+  assert.match(/function printStatus[\s\S]*?\n\}/.exec(toolSrc('cli.js'))[0], /settlementLines\(s\.settlement\)/);
+  // a withdrawal: its transaction and its amount
+  assert.match(toolSrc('cli.js'), /Sent withdraw: \$\{s\.tx\}, \$\{eth\(s\.amountWei\)\}/);
+  assert.match(step8, /`verdikta-attest claim` withdraws it and prints the transaction and the amount/);
+});
+
 
 // tools/src/commit.js asks for --yes only before a commit is signed; a resumed one goes on without it (R1-F1).
 test('what they say commit does without --yes is what commit.js does', () => {
@@ -657,4 +695,112 @@ test('the wording rules: no banned word, no judgemental phrase, nothing that say
     assert.deepEqual(wordingProblems(text), [], name);
     assert.doesNotMatch(text, /phase 1|calibrat|accura|precision|recall/i, name);
   }
+});
+
+// ------------------------------------------------------------------------------------------------ node P35
+
+/** The names agents.txt lists, four spaces in, under the line that starts with `heading`, up to the next "- GET". */
+function listedFields(heading) {
+  const text = agents();
+  const start = text.indexOf(heading);
+  assert.ok(start >= 0, `agents.txt has "${heading}"`);
+  const rest = text.slice(start + heading.length);
+  return [...rest.slice(0, rest.search(/\n- GET /)).matchAll(/^ {4}([a-z][A-Za-z]*(?:\.[a-z][A-Za-z]*)?) {2,}\S/gm)].map((m) => m[1]);
+}
+
+/** Whether a field name is a key the server's code writes into an answer: `name:` or a shorthand `name,` / `name }`. */
+const serverWrites = (name) => {
+  const sources = ['feed.js', 'index.js', 'archives.js', 'sameRepository.js']
+    .map((f) => path.join(APP, 'server', 'src', 'site', f))
+    .filter((p) => fs.existsSync(p))
+    .map((p) => fs.readFileSync(p, 'utf8'))
+    .join('\n');
+  return new RegExp(`[{,\\s]${name}(?::|\\s*[,}])`).test(sources);
+};
+
+test('node P35: the disclosure key\'s two encodings are one key, as the site, the tool and agents.txt say it, word for word', async () => {
+  const { DISCLOSURE_KEY_NOTE } = await import('@verdikta/stake-attestation-shared/disclosure-key');
+  const flat = agents().replace(/\s+/g, ' ');
+  assert.ok(flat.includes(DISCLOSURE_KEY_NOTE), `agents.txt says it: ${DISCLOSURE_KEY_NOTE}`);
+  const fields = listedFields('Each entry of `listings`:');
+  assert.equal(fields[fields.indexOf('disclosureKey') + 1], 'disclosureRecipient', 'the new field beside the old one');
+  assert.match(flat, /`stake\.disclosureKey`[^.]*age recipient[^.]*base64/, 'the archive names it as an age recipient or in base64, as common takes it');
+  // the tool's notice and the site's pages say it with the same constant
+  assert.match(toolSrc('notices.js'), /DISCLOSURE_KEY_NOTE/);
+  assert.match(fs.readFileSync(path.join(CLIENT, 'src', 'strings.js'), 'utf8'), /DISCLOSURE_KEY_NOTE/);
+});
+
+test('node P35: every field agents.txt lists for a feed entry or a record is one the server writes, the related listings among them', () => {
+  const entry = listedFields('Each entry of `listings`:');
+  const record = listedFields('- GET https://verifiers.verdikta.org/api/records/<artifactHash>');
+  for (const name of ['disclosureRecipient', 'sameRepository']) assert.ok(entry.includes(name), `a feed entry's ${name}`);
+  assert.ok(record.includes('sameRepository'), 'a record\'s sameRepository');
+  for (const name of [...entry, ...record.map((n) => n.split('.')[0])]) assert.ok(serverWrites(name), `${name} is a field server/src/site writes`);
+  // what each related listing holds, as agents.txt names it, is what the server's helper writes
+  const flat = agents().replace(/\s+/g, ' ');
+  const m = /`sameRepository` names (?:them|the others), each with its ([^.]+)\./.exec(flat);
+  assert.ok(m, 'agents.txt says what each related listing holds');
+  const named = m[1].replace(/\([^)]*\)/g, '').split(/,| and /).map((x) => x.trim()).filter(Boolean);
+  assert.deepEqual(named, ['listingId', 'artifactHash', 'artifact', 'state', 'lapsed', 'counted', 'page']);
+  for (const name of named) assert.ok(serverWrites(name), `${name} is a field of a related listing`);
+  assert.match(flat, /artifact\.repo` exactly as/);
+  // R1-F1: the record is the version's, which listings of one artifactHash share; the contract's artifactHashOf hashes
+  // the kind, the repository, the commit, the chain and the address
+  const para = /Listings of one repository\.[^]*?not another's\./.exec(flat)?.[0];
+  assert.ok(para, 'agents.txt says how listings of one repository relate');
+  assert.match(para, /The record is the version's: listings with the same artifactHash share it, which is the same kind, repository and commit and, for a deployed contract, the same chain and address\./);
+  assert.doesNotMatch(para, /own [^.]*record\b|one commit share/);
+  const hashOf = /function artifactHashOf\([^)]*\)[^{]*\{([\s\S]*?)\n {4}\}/.exec(read('onchain', 'contracts', 'StakeAttestation.sol'));
+  assert.ok(hashOf, 'StakeAttestation.sol: artifactHashOf');
+  for (const field of ['kind', 'repo', 'baseCommit', 'chainId', 'addr']) assert.match(hashOf[1], new RegExp(`\\.${field}\\b`), `artifactHashOf hashes ${field}`);
+  assert.match(flat, /#\/fund\/<listingId>/);
+});
+
+/** The numbered list under "What the jurors read.", each item with its continuation lines. */
+function packItems() {
+  const text = agents();
+  const start = text.indexOf('\nWhat the jurors read.');
+  assert.ok(start >= 0, 'agents.txt says what the jurors read');
+  const para = text.slice(start, text.indexOf('\n\n', start + 1));
+  const items = [];
+  for (const line of lines(para)) {
+    const m = /^ {2}(\d)\. (.+)$/.exec(line);
+    if (m) items.push(m[2]);
+    else if (items.length && /^ {5}\S/.test(line) && !/^ {2}\d\. /.test(line)) items[items.length - 1] += ` ${line.trim()}`;
+  }
+  return { para, flat: para.replace(/\s+/g, ' '), items };
+}
+
+// What the jury reads is common's (CONTEXT_PACK_TIERS, selectDocuments; docs/CODE_REVIEW_SPECIFICATION.md, "Stake
+// documents"): agents.txt names each tier in common's order, and nothing of the repository besides.
+test('node P35: what the jurors read is @verdikta/common\'s context pack, every tier in its order, and nothing else of the repository', () => {
+  const { para, flat, items } = packItems();
+  const PHRASES = {
+    poc: /^poc\.patch\b/,
+    claim: /^finding\.json and report\.md\b/,
+    source: /^the source files your `affectedPaths` name that are in the listing's `scope`, whole, comments and all\b/,
+    documents: /^the files the listing's `documents` match at `baseCommit` \(none, and no such part, when it names none\)/,
+    callSites: /call what your PoC calls\b/,
+    knownIssues: /^the listing's known issues\b/,
+    priorFindings: /earlier valid findings\b/,
+    fix: /^fix\.patch\b/,
+    tree: /file names\b/,
+  };
+  const tiers = codeReview.CONTEXT_PACK_TIERS;
+  assert.deepEqual(Object.keys(PHRASES).sort(), [...tiers].sort(), 'a line for each of common\'s tiers, and none for another');
+  assert.equal(items.length, tiers.length, items.join(' | '));
+  tiers.forEach((tier, i) => assert.match(items[i], PHRASES[tier], `item ${i + 1} is common's tier ${tier}`));
+  // the documents tier is the listing's stake.documents, as common picks them: none when it names none
+  const stake = { scope: { include: ['src/**'] } };
+  const tree = ['README.md', 'docs/spec.md', 'src/Vault.sol', 'test/Vault.t.sol'];
+  assert.deepEqual(codeReview.selectDocuments(tree, stake, ['src/Vault.sol']).paths, []);
+  assert.deepEqual(codeReview.selectDocuments(tree, { ...stake, documents: [] }, ['src/Vault.sol']).paths, []);
+  assert.deepEqual(codeReview.selectDocuments(tree, { ...stake, documents: ['docs/**', 'README.md'] }, ['src/Vault.sol']).paths, ['docs/spec.md', 'README.md']);
+  // the key sentence, and what a hunter does with it
+  assert.match(flat, /^ What the jurors read\. For the requirement, they read the listing's `documents` and the in-scope source files your finding names, comments included, and of the rest of the repository only call-site lines and file names\./);
+  assert.match(flat, /Of the rest of the repository they see only those call-site lines and the file names: no other source file, test or document\./);
+  assert.match(flat, /`## Requirement`/);
+  assert.match(flat, /`check` prints the pack for your claim/);
+  assert.match(flat, /primary_query\.json/);
+  assert.doesNotMatch(para, /\bnatspec\b/i, 'the pack has no tier of its own for any one kind of comment');
 });

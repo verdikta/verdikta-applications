@@ -61,6 +61,19 @@ test.after(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * The defaults the runner's listing check derives from its timings before the class time floors: 3x the build, 3x the
+ * longest suite run, and 3x preparation, build and that run plus the repeat reserve (verdikta-arbiter
+ * code-runner/src/listing.js, deriveLimits). Its timings are milliseconds over 1000, so this is its arithmetic.
+ */
+function measuredDefaults({ prepareSeconds, buildSeconds, testSeconds }) {
+  const ms = (s) => Math.round(s * 1000);
+  const longest = Math.max(...testSeconds.map(ms));
+  const build = Math.max(1, Math.ceil((3 * ms(buildSeconds)) / 1000));
+  const test = Math.max(1, Math.ceil((3 * longest) / 1000));
+  return { buildSeconds: build, testSeconds: test, runSeconds: Math.ceil((3 * (ms(prepareSeconds) + ms(buildSeconds) + longest)) / 1000) + 2 * test };
+}
+
 function show(r) {
   return JSON.stringify({ status: r.status, refusals: r.report.refusals, error: r.report.error, steps: r.report.steps, runner: runner.log().slice(-4000) }, null, 1);
 }
@@ -68,6 +81,12 @@ function show(r) {
 test('the code-runner sidecar is verdikta-arbiter at the pinned commit', () => {
   assert.equal(runner.commit, PIN.commit);
   assert.equal(runner.health.service, 'verdikta-code-runner');
+  // Node P34: the version it reports is its checkout's, and it reads the builder's own release of @verdikta/common,
+  // the one that holds the class time floors. The version alone (0.3.0 since before the floors) cannot tell the
+  // commits apart: the checkout's commit above does, and the floored limits below show its code.
+  assert.equal(runner.health.version, runner.version);
+  assert.equal(runner.common, JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).dependencies['@verdikta/common']);
+  assert.equal(typeof codeReview.effectiveTimeLimits, 'function', 'the builder\'s common has the class time floors');
 });
 
 test('validated by the code-runner\'s listing check: code_review.json gets digest, platform and unpackedBytes; baseline.json, timings and default limits', { timeout: TIMEOUT }, async () => {
@@ -96,6 +115,21 @@ test('validated by the code-runner\'s listing check: code_review.json gets diges
   assert.equal(lc.timings.testSeconds.length, 3);
   assert.ok(lc.limits.runSeconds <= 360 && lc.limits.buildSeconds <= 90);
   assert.deepEqual(spec.limits, { ...lc.limits, cpus: 1, memoryMb: 2048 });
+  // Node P34: the defaults are at least the class time floors (owner decision Q84), as every arbiter's runner
+  // applies them. The fixture's suite is far faster than the floors allow for, so 3x its measured times is below
+  // them, and the runner at the pin answers the floor itself, not the measured default.
+  assert.equal(lc.runner.version, runner.version);
+  const floors = codeReview.CLASS_TIME_FLOORS;
+  assert.deepEqual(floors, { buildSeconds: 60, testSeconds: 30, runSeconds: 180 });
+  const measured = measuredDefaults(lc.timings);
+  // a second of slack each way: the runner rounds the times it reports to the millisecond, after deriving from them
+  const raised = Object.keys(floors).filter((k) => measured[k] + 1 < floors[k]);
+  assert.ok(raised.length > 0, `the fixture's measured defaults are below a floor: ${JSON.stringify(measured)}`);
+  for (const k of Object.keys(floors)) {
+    assert.ok(lc.limits[k] >= floors[k], `${k} ${lc.limits[k]}, below the class floor ${floors[k]}`);
+    assert.ok(lc.limits[k] >= measured[k] - 1, `${k} ${lc.limits[k]}, below the measured default ${measured[k]}`);
+  }
+  for (const k of raised) assert.equal(lc.limits[k], floors[k], `${k}: measured ${measured[k]}, raised to the floor`);
   assert.equal(lc.runner.platform, platforms.run);
   assert.ok(lc.harness.probes.some((p) => p.verdict === 'assertion'), 'the harness proof ran');
   // An official solc release: the setup's forge fetched it, and the runner read its bytes against the list.

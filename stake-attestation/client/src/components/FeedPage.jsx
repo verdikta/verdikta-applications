@@ -4,12 +4,14 @@ import { ArrowRight, FileText, RefreshCw } from 'lucide-react';
 import { CLASSES } from '../chain/abi.js';
 import { getFeed } from '../lib/api.js';
 import { formatEth, formatTime, formatWhole } from '../lib/format.js';
+import { otherListingsOfFeedEntry } from '../lib/sameRepository.js';
 import { STRINGS, fill } from '../strings.js';
 import { AwardLine, LabelPills } from './Awards.jsx';
 import { Code } from './Copy.jsx';
 import { Diligence } from './Diligence.jsx';
 import { AsOf, Facts, Pills, Tiles, siteErrorText } from './Facts.jsx';
 import { ListingWarning } from './ListingWarning.jsx';
+import { DisclosureKeyForms, SameRepositoryList } from './SameRepository.jsx';
 
 const F = STRINGS.feed;
 const R = STRINGS.record;
@@ -73,6 +75,9 @@ function Entry({ e }) {
         { id: f('documents'), label: F.documents, value: Array.isArray(e.documents) ? (e.documents.length ? <span className="mono">{e.documents.join(', ')}</span> : F.documentsNone) : e.archive?.ok ? F.documentsUnread : noArchive },
         { id: f('hash'), label: R.artifactHash, value: <Code value={hash} what={R.artifactHash} /> },
         { id: f('image'), label: F.image, value: e.image ? <Code value={e.image} what={F.image} /> : noArchive },
+        // node P35: the key in both its forms, and the other listings of the repository
+        { id: f('disclosure-key'), label: F.disclosureKey, value: <DisclosureKeyForms bytes32={e.disclosureKey} recipient={e.disclosureRecipient} /> },
+        { id: f('same-repository'), label: F.sameRepository, value: <SameRepositoryList list={otherListingsOfFeedEntry(e)} /> },
       ]} />
       <p className="actions card-foot">
         <a className="button" href={`#/record/${hash}`}><FileText size={16} aria-hidden="true" />{F.record}</a>

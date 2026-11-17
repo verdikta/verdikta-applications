@@ -10,7 +10,7 @@ import { ethers } from 'ethers';
 import { zipStored } from '@verdikta/stake-attestation-shared/zip';
 
 import { createHunter, createPinner } from '../../src/index.js';
-import { deployStakeAttestation, hardhat } from './chain.js';
+import { deployStakeAttestation, enforceLogLimits, hardhat, logLimits } from './chain.js';
 import { startIpfs } from './ipfs.js';
 
 const require = createRequire(import.meta.url);
@@ -171,7 +171,16 @@ export async function makeWorld() {
   const hre = await hardhat();
   const d = await deployStakeAttestation(hre);
   const ipfs = await startIpfs();
-  const provider = new ethers.BrowserProvider(hre.network.provider, 31337, { cacheTimeout: -1, staticNetwork: true });
+  // eth_getLogs capped as a public RPC caps it, when a test sets limits.maxBlocks (node P33), here and over HTTP
+  const limits = logLimits();
+  const send = (method, params) => hre.network.provider.send(method, params);
+  const eip1193 = {
+    request: async (call) => {
+      await enforceLogLimits(send, call, limits);
+      return hre.network.provider.request(call);
+    },
+  };
+  const provider = new ethers.BrowserProvider(eip1193, 31337, { cacheTimeout: -1, staticNetwork: true });
   const accounts = hre.network.config.accounts;
   const keyOf = (index) => ethers.HDNodeWallet.fromPhrase(accounts.mnemonic, accounts.passphrase ?? '', `${accounts.path}/${index}`).privateKey;
   const hunterKey = keyOf(HUNTER_INDEX);
@@ -184,6 +193,7 @@ export async function makeWorld() {
     ...d,
     ipfs,
     provider,
+    logLimits: limits,
     keyOf,
     hunterKey,
     hunterWallet,

@@ -52,6 +52,13 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await expect(f('scope')).toHaveText(fill(F.scopeLine, { include: entry.scope.include.join(', '), exclude: entry.scope.exclude.join(', ') }));
   // node P20: where the listing says its requirements are written; this one names none
   await expect(f('documents')).toHaveText(F.documentsNone);
+  // node P35: the disclosure key in both its forms, said to be one key, and the other listings of its repository
+  await expect(f('disclosure-key')).toContainText(key.recipient);
+  await expect(f('disclosure-key')).toContainText(listing.disclosureKey);
+  await expect(f('disclosure-key')).toContainText(STRINGS.disclosure.note);
+  for (const x of entry.sameRepository) {
+    await expect(f('same-repository').getByTestId(`same-repository-${x.listingId}`).getByRole('link')).toHaveAttribute('href', `#/fund/${x.listingId}`);
+  }
   await expect(page.getByTestId('feed-as-of')).toBeVisible();
   await expect(page.getByRole('heading', { name: STRINGS.diligence.title })).toBeVisible();
   expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
@@ -75,4 +82,7 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await page.goBack();
   await page.getByTestId(`feed-${listingId}`).getByRole('link', { name: F.listing }).click();
   await expect(page.getByTestId('listing-summary')).toContainText(fill(STRINGS.fund.summary, { id: listingId }));
+  await expect(page.getByTestId('listing-disclosure-key')).toContainText(key.recipient);
+  await expect(page.getByTestId('same-repository')).toContainText(STRINGS.sameRepository.title);
+  for (const x of entry.sameRepository) await expect(page.getByTestId(`same-repository-${x.listingId}`)).toHaveCount(1);
 });

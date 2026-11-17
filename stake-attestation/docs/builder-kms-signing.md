@@ -364,7 +364,7 @@ token can do".
   Deployments. GitHub adds read-only Metadata to every such token; nothing else is granted. The organization may require
   an owner to approve it before it works.
 
-The pin: this repository's packages pin `@verdikta/common` `1.9.0-attest.5`, which holds this key (it has since
+The pin: this repository's packages pin `@verdikta/common` `1.9.0-attest.6`, which holds this key (it has since
 `1.9.0-attest.3`), so production signing is no longer refused as `SIGNING_KEY_NOT_TRUSTED`. `<commit>` has to be at or
 after the change that first pinned `1.9.0-attest.3`. `e2e` is on the same release, the one the arbiter at
 `e2e/arbiter.pin.json` uses, since its tests hold the two to one release, and it moves with the arbiter pins.

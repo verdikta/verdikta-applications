@@ -96,6 +96,7 @@ export function ListingForm({ form, setForm, issues, keyPanel, proofPanel = null
 
       <fieldset>
         <legend>{L.sections.documents}</legend>
+        <p className="hint">{L.hints.requirementsDocument}</p>
         <TextField label={F.documents} value={form.documents} onChange={set('documents')} multiline rows={3} mono hint={L.hints.documents} error={documentsText(issues.documents)} />
       </fieldset>
 

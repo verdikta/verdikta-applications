@@ -79,6 +79,12 @@ test('a maker who already has an age key lists its public half; a private key pa
   await own.fill(identity);
   await expect(page.getByText(STRINGS.key.ownIsPrivate)).toBeVisible();
   await expect(submit).toBeDisabled();
+  // node P35 (R1-F2): a public key pasted in base64 shows as its age recipient, beside the bytes32 list() stores
+  const publicKey = Buffer.from(disclosure.parseDisclosureKey(recipient));
+  await own.fill(publicKey.toString('base64'));
+  await expect(page.getByTestId('key-bytes32')).toContainText(recipient);
+  await expect(page.getByTestId('key-bytes32')).toContainText(`0x${publicKey.toString('hex')}`);
+  await expect(page.getByTestId('key-bytes32')).toContainText(STRINGS.disclosure.note);
   await own.fill(recipient);
   await expect(page.getByText(/^This is not an age X25519 public key/)).toHaveCount(0);
   await expect(field(page, STRINGS.key.identity)).toHaveCount(0);

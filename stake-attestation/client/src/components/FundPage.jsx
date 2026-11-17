@@ -12,6 +12,7 @@ import { FundListing } from './FundListing.jsx';
 import { CloseListing, RenewListing, TopUpEscrow, Withdraw } from './ListingActions.jsx';
 import { ListingMore } from './ListingExtras.jsx';
 import { ListingWarning } from './ListingWarning.jsx';
+import { DisclosureKeyForms } from './SameRepository.jsx';
 
 const F = STRINGS.fund;
 const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
@@ -103,6 +104,7 @@ export function FundPage({ listingId }) {
           <dt>{F.maker}</dt><dd><Code value={l.maker} what={F.maker} /></dd>
           <dt>{F.state}</dt><dd><StatePill state={openedHere ? 'Open' : state} text={F.states[openedHere ? 'Open' : state] ?? state} /></dd>
           <dt>{F.listingCid}</dt><dd><Code value={l.listingCid} what={F.listingCid} /></dd>
+          <dt>{F.disclosureKey}</dt><dd><DisclosureKeyForms bytes32={l.disclosureKey} testId="listing-disclosure-key" /></dd>
         </dl>
         <ul className="terms">
           <li><AwardLine text={fill(STRINGS.chain.awards, Object.fromEntries(CLASSES.map((c, i) => [c, formatEth(l.awards[i])])))} /></li>

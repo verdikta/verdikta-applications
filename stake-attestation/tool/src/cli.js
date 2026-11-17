@@ -13,6 +13,7 @@ import { withoutProofText } from './forecast.js';
 import { createPinner } from './ipfs.js';
 import { forecastFooter } from './notices.js';
 import { plainText, scrubber } from './secrets.js';
+import { settlementLines } from './settlement.js';
 import { WATCH_MAX_MS } from './status.js';
 import { COMMANDS, USAGE } from './usage.js';
 
@@ -217,6 +218,8 @@ function printStatus(out, s) {
   if (s.times.confirmDeadline) out(`Confirmation by the dispute panel: from ${when(s.times.confirmOpensAt)}, until ${when(s.times.confirmDeadline)}`);
   if (s.narrow === true) out('A narrow INVALID: its valid mass is at least the listing\'s floor, so its bond comes back when it settles');
   if (s.bond) out(`Bond: ${s.bond === 'returned' ? 'returned to the hunter' : 'to the maker'}`);
+  // node P33: a Settled claim's settle, from its Settled event: who sent it, its transaction and block, what it paid
+  for (const line of settlementLines(s.settlement)) out(line);
   if (s.times.settleableAt) out(`Settleable at ${when(s.times.settleableAt)}`);
   if (s.times.retriggerDeadline || s.failedRound?.retriggerDeadline) out(`Re-trigger before ${when(s.times.retriggerDeadline || s.failedRound.retriggerDeadline)}`);
   printFailedRound(out, s.failedRound);
@@ -353,7 +356,7 @@ async function dispatch(verb, args, io, env, write) {
       const r = await hunter.claim({ ...target, waiveAppeal: options['--waive-appeal'] === true });
       if (json) write(io.stdout, asJson(r));
       else {
-        for (const s of r.sent) out(`Sent ${s.action}: ${s.tx}`);
+        for (const s of r.sent) out(s.action === 'withdraw' ? `Sent withdraw: ${s.tx}, ${eth(s.amountWei)}` : `Sent ${s.action}: ${s.tx}`);
         printStatus(out, r);
       }
       return 0;

@@ -26,6 +26,7 @@ import { within } from './context.js';
 import { fail } from './errors.js';
 import { gatewayGet } from './ipfs.js';
 import { ABSTAIN_COSTS, noVerdictMeans, RETRIGGER_SAME_CLAIM } from './notices.js';
+import { findSettlement, unreadSettlement } from './settlement.js';
 import { openWorkspace } from './workspace.js';
 
 const ZERO_ID = /^0x0+$/;
@@ -377,11 +378,20 @@ function boundedOr(work, ms, fallback) {
   }).catch(() => fallback);
 }
 
-async function finish(ctx, s, evidenceMs = ctx.readTimeoutMs, told = null) {
+/**
+ * A status read's answer. A Settled claim says how it settled (node P33, settlement.js): `known` when the claim verb
+ * sent the settle and read it from its own receipt, else its Settled event, read side by side with the evidence so
+ * that the two together take no longer than `evidenceMs`.
+ */
+async function finish(ctx, s, evidenceMs = ctx.readTimeoutMs, told = null, known = null) {
   const out = { ...s };
   if (out.roundFailed) out.failedRound = baseFailedRound(out);
+  out.settlement = null;
+  if (out.state === 'Settled') out.settlement = known ?? unreadSettlement(BigInt(out.raw.settledAt));
   if (evidenceMs > 0) {
+    const settle = out.state === 'Settled' && !known ? boundedOr((live) => findSettlement(ctx, out, live), evidenceMs, out.settlement) : null;
     if (out.outcome && out.state !== 'Disputed') out.evidence = await boundedOr((live) => readEvidence(ctx, out.raw, live), evidenceMs, null);
+    if (settle) out.settlement = await settle;
     if (out.roundFailed) out.failedRound = await boundedOr((live) => failedRoundOf(ctx, out, live), evidenceMs, out.failedRound);
     if (told && (out.state === 'Committed' || out.state === 'Revealable')) {
       const listing = await boundedOr((live) => (live() ? ctx.read('getListing', [out.listingId]) : null), evidenceMs, null);
@@ -418,7 +428,11 @@ export function claimIdOf({ claimId, claimDir }) {
   return BigInt(state.claimId);
 }
 
-export async function runStatus(ctx, { claimId, claimDir, wait = false, maxWaitMs }) {
+/**
+ * @param {{ claimId?: bigint, claimDir?: string, wait?: boolean, maxWaitMs?: number }} o
+ * @param {{ settlement?: object|null }} [sent] the claim verb's own settle, from its receipt: said as it is
+ */
+export async function runStatus(ctx, { claimId, claimDir, wait = false, maxWaitMs }, { settlement = null } = {}) {
   const start = ctx.now();
   const limit = Math.min(WATCH_MAX_MS, maxWaitMs ?? ctx.maxWaitMs ?? WATCH_MAX_MS);
   const left = () => start + limit - ctx.now();
@@ -433,7 +447,7 @@ export async function runStatus(ctx, { claimId, claimDir, wait = false, maxWaitM
   if (!wait) {
     await ctx.ensureChain();
     const id = claimIdOf({ claimId, claimDir });
-    return finish(ctx, await readNow(ctx, id), ctx.readTimeoutMs, toldOf(claimDir, id));
+    return finish(ctx, await readNow(ctx, id), ctx.readTimeoutMs, toldOf(claimDir, id), settlement);
   }
 
   await bounded((live) => ctx.ensureChain(live));
@@ -447,7 +461,7 @@ export async function runStatus(ctx, { claimId, claimDir, wait = false, maxWaitM
     try {
       const got = await bounded((live) => readNow(ctx, id, live));
       last = got;
-      if (!got.pending) return finish(ctx, got, left(), told);
+      if (!got.pending) return finish(ctx, got, left(), told, settlement);
     } catch (err) {
       if (err.code !== 'RPC_UNAVAILABLE') throw err;
     }
@@ -456,7 +470,7 @@ export async function runStatus(ctx, { claimId, claimDir, wait = false, maxWaitM
   }
   if (!last) throw fail('RPC_UNAVAILABLE', 'No read answered in the time given.');
   // No more reads: the time is up, and `last` is what is known.
-  const out = { ...last, pending: true, timedOut: true };
+  const out = { ...last, pending: true, timedOut: true, settlement: null };
   out.next = nextFor(out);
   delete out.raw;
   delete out.block;

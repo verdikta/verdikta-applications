@@ -44,6 +44,8 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      anyone finalizes it; the reveal deadline is the chain's, and status says when a release moved it
   claim <claim-dir|claim-id> [--waive-appeal]
                      --waive-appeal settles your own INVALID before anyone else may, which waives its appeal
+                     on a settled claim, claim and status say who sent the settle (this run, the hunter's own
+                     address or another), its transaction and block, and what its Settled event paid and left owed
   appeal <claim-dir|claim-id> [--yes]
                      pays the live dispute fee for one round of the dispute panel; prints it, and sends only with --yes
 

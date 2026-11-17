@@ -1566,8 +1566,12 @@ parts of their line, with the commas between them text of no size. A flex item o
 inside a value would put a line break in that text, so a value never holds one. A hash, an address, an image
 or a command wraps where the line ends and has a button that copies all of it. In a table a long value shows
 its two ends: the value is one piece of text cut off with an ellipsis, its last characters are drawn after it
-by the stylesheet, and its title shows it whole. `client/e2e/record.spec.js` and `feed.spec.js` hold the
-page's text to this. Every sentence about what a stake means is in
+by the stylesheet, and its title shows it whole. A line with values in it is drawn from its pieces
+(`client/src/lib/pieces.js`), which joined are the line `strings.js` says: a listing's disclosure key shows
+its two forms as chips in the one line, each with its own copy button, and another listing of the repository
+is one link whose commit is monospace and whose state is a pill, green only where that listing takes claims
+here. A copy button inside a line is an inline box, and so is its icon. `client/e2e/record.spec.js` and
+`feed.spec.js` hold the page's text to this. Every sentence about what a stake means is in
 `client/src/strings.js`, as before.
 
 ## The local round

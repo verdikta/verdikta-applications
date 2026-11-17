@@ -713,6 +713,43 @@ code {
   border-radius: 8px;
 }
 
+/* A line of text with a long value or two in it, each drawn as a chip with its copy button: a listing's
+   disclosure key in its two forms. The chips and buttons are inline boxes, so the page's text is still the one
+   line the strings say; a chip wider than its column wraps inside itself, its button beside it. */
+.code-inline {
+  display: inline-block;
+  /* room beside a chip that fills its column for its copy button and the character after it */
+  max-width: calc(100% - 3.25rem);
+  margin: 0.1875rem 0;
+  vertical-align: middle;
+  word-break: break-all;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  color: var(--fg);
+  line-height: 1.5;
+}
+
+/* In a line the copy button is an inline box and so is its icon: as a flex container its icon would be a block,
+   and a block inside a line puts a line break in the page's text. */
+.key-line button.copy {
+  display: inline-block;
+  line-height: 1;
+  vertical-align: middle;
+  margin: 0.1875rem 0.375rem 0.1875rem 0.5rem;
+}
+
+.key-line button.copy svg {
+  vertical-align: middle;
+}
+
+/* the sentence saying the two forms are one key: under them, on its own line */
+.key-note {
+  display: block;
+  margin: 0.25rem 0 0;
+}
+
 button.copy {
   flex: none;
   display: inline-flex;
@@ -1193,6 +1230,31 @@ p.error[role='alert'] {
 .inline li.mono {
   font-size: 0.8125rem;
   font-weight: 400;
+}
+
+/* The other listings of a repository. Each line is one link to that listing's page: its words read as a link,
+   its commit in monospace, its state as a pill. The words between the commit and the state are in the page's
+   text and not drawn (.sep), as the commas between two award chips are. */
+.same-line {
+  text-decoration: none;
+}
+
+.same-line .same-text {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.same-line .mono {
+  color: var(--fg);
+}
+
+.same-line .pill {
+  padding-block: 0;
+  font-size: 0.75rem;
+}
+
+.same-list li {
+  padding-block: 0.25rem;
 }
 
 /* the terms list() stored, one to a line */

@@ -15,6 +15,10 @@
 // them from its state snapshot, so a record cached per block still states the latest check, and the
 // checks themselves run beside the indexer, like the archive reads.
 //
+// Related listings (node P35): a feed entry's sameRepository and a record's (src/site/sameRepository.js) are read
+// with the rest of the answer, at its block, and cached with it; whether each counts is decided per answer, as for
+// the record's own listings.
+//
 // What counts (node P9, owner decision Q34): the record, the feed, the badge and the labels read only
 // a listing with a valid builder signature and the project's proof (src/control/counting.js), since
 // recordByHash combines every listing of a hash. Any other listing of the hash shows apart, as not
@@ -45,6 +49,7 @@ import { buildFeed } from './feed.js';
 import { createIndexer } from './indexer.js';
 import { createKeeper, keeperWallet } from './keeper.js';
 import { feedEvents, listingOf, project, publicEvent } from './projection.js';
+import { sameRepository, stateReader, withCounted } from './sameRepository.js';
 import { StateStore } from './store.js';
 
 const DAY = 86400;
@@ -151,6 +156,11 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
 
   /** Why a listing of the projection does not count, from a state snapshot; null: it counts. */
   const reasonOf = (state, l, fact) => notCountedReason({ known: state.archives[l.listingCid], dispute: state.archives[l.disputeCid], artifact: l.artifact, fact, terms: control.termsOf(state, l) });
+  /** Whether a listing of a projection counts, by id, at a state snapshot. */
+  const countsAt = (state, proj) => (id) => {
+    const l = proj.listings.get(id);
+    return Boolean(l) && reasonOf(state, l, control.factOf(state, { artifactHash: l.artifactHash, maker: l.maker, artifact: l.artifact })) === null;
+  };
 
   const status = { lastSync: null, lastFreshSync: null, syncError: null, lastKeep: null, keepError: null };
   const records = lru();
@@ -300,6 +310,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       });
     }
     const known = projectionOf(state).listings;
+    const counts = countsAt(state, projectionOf(state));
     const listings = [];
     const notCounted = [];
     for (const e of value.listings) {
@@ -307,7 +318,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       const fact = control.factOf(state, { artifactHash: e.artifactHash, maker: e.maker, artifact: l?.artifact });
       const reason = l ? reasonOf(state, l, fact) : 'NOT_CHECKED_YET';
       if (reason) notCounted.push({ listingId: e.listingId, artifactHash: e.artifactHash, artifact: e.artifact, maker: e.maker, reason, detail: CONTROL_REASONS[reason] ?? null });
-      else listings.push({ ...e, control: { subject: fact.subject, proof: fact.proof, statement: fact.statement, reason: fact.reason } });
+      else listings.push({ ...e, sameRepository: withCounted(e.sameRepository, counts), control: { subject: fact.subject, proof: fact.proof, statement: fact.statement, reason: fact.reason } });
     }
     return { block: value.block, ...freshness(value.block), listings, notCounted };
   }
@@ -348,7 +359,8 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       const key = `${hash}:${block.hash}`;
       const cached = records.get(key);
       if (cached !== undefined) return cached;
-      const rec = await readRecord(at(block), hash, { listingPage: chain.recordListingPage, itemPage: chain.recordItemPage });
+      const read = at(block);
+      const rec = await readRecord(read, hash, { listingPage: chain.recordListingPage, itemPage: chain.recordItemPage });
       if (rec.listingCount === '0') return records.set(key, null);
       const { price, priceError } = await priceAt(block);
       const ctx = labelContext(price);
@@ -358,7 +370,15 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
         priceError,
         placeholders: config.labels.placeholders,
       };
-      return records.set(key, { artifactHash: hash, block, record: rec, labels });
+      // node P35: the listings of this version's repository that the record does not list (its other versions), at this
+      // block
+      const proj = blockTag === undefined ? projectionOf(state) : project(events);
+      const mine = proj.listings.get(String(rec.listings[0]?.listingId));
+      const onRecord = new Set(rec.listings.map((l) => String(l.listingId)));
+      const others = mine
+        ? await sameRepository({ listings: proj.listings, repo: mine.artifact.repo, except: (l) => onRecord.has(l.listingId), stateOf: stateReader(read, block) })
+        : [];
+      return records.set(key, { artifactHash: hash, block, record: rec, labels, sameRepository: others });
     });
     if (!view) return view;
     return countedAnswer(view, state, hash, { events: blockTag === undefined ? state.events : state.events.filter((e) => e.blockNumber <= view.block.number) });
@@ -400,6 +420,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       artifact: first ? { kind: first.artifact.kind, repo: first.artifact.repo, baseCommit: first.artifact.baseCommit, chainId: first.artifact.chainId, address: first.artifact.address } : null,
       fork: first ? control.forkOf(state, first.artifact.repo) : null,
       control: facts,
+      sameRepository: withCounted(view.sameRepository, countsAt(state, projectionOf(state))),
       // node P20: each counted listing's document globs, from its listing archive (counted: it is that listing's)
       // (null while an archive answer stored before documents were read has not been read again)
       documents: Object.fromEntries([...counted].map((id) => {
@@ -466,10 +487,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     const all = feedEvents(proj, state.events);
     const start = from ? all.findIndex((e) => e.blockNumber > from[0] || (e.blockNumber === from[0] && e.logIndex > from[1])) : 0;
     // the chain's events, all of them; each says whether its listing counts at this answer
-    const counts = (id) => {
-      const l = proj.listings.get(id);
-      return Boolean(l) && reasonOf(state, l, control.factOf(state, { artifactHash: l.artifactHash, maker: l.maker, artifact: l.artifact })) === null;
-    };
+    const counts = countsAt(state, proj);
     const page = start === -1 ? [] : all.slice(start, start + limit).map((e) => ({ ...e, counted: counts(e.listingId) }));
     const last = page.at(-1);
     return { block, ...freshness(block), events: page, next: last ? `${last.blockNumber}:${last.logIndex}` : after };

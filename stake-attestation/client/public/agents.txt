@@ -92,15 +92,38 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
     invited               true: only the wallets the maker listed may claim
     listingCid            the listing archive, on IPFS (below)
     disputeCid            the dispute panel's archive
-    disclosureKey         the maker's key, which your proof is encrypted to (the tool does it)
+    disclosureKey         the maker's key, which your proof is encrypted to (the tool does it): its
+                          32 bytes as the contract stores them, a bytes32 in hex
+    disclosureRecipient   the same key as an age recipient (age1…), the form age writes it in
+    sameRepository        the other listings of the same `artifact.repo` that opened, at any commit
     control               whether the repository names the staker
 - GET https://verifiers.verdikta.org/api/records/<artifactHash>
     record.findings       the valid findings so far, each with its bcid: the same root cause again is DUPLICATE
     record.listings       each listing's narrowInvalidFloor and confirmAboveWei (section 3, step 7)
+    sameRepository        the listings of the same repository on its other versions that opened
 - GET https://verifiers.verdikta.org/api/listings/<id> is a maker's listing request, by the id
   POST /api/listings gave it, while it is built. It is not the on-chain listing id, and a hunter
   does not need it.
 - GET https://verifiers.verdikta.org/api/feed/events lists the contract's events in chain order.
+
+Listings of one repository. A listing covers one version, a repository at one commit (and for a
+deployed contract, its chain and address too), and has its own terms, scope, known issues and
+findings. The record is the version's: listings with the same artifactHash share it, which is
+the same kind, repository and commit and, for a deployed contract, the same chain and address.
+`sameRepository` names the others, each with its listingId, artifactHash, artifact
+(with its baseCommit), state (Open, Depleted, Rolled or Closed), lapsed (its paid period has
+ended), counted (false: this site does not offer it) and page (on this site,
+/#/fund/<listingId>). It matches `artifact.repo` exactly as listed, so another spelling of a URL
+is another repository, and it leaves out a listing that never opened, which takes no claims. A
+claim goes on one listing, and its proof must fail at that listing's baseCommit: read the feed
+entry of the listing you claim on, not another's.
+
+The disclosure key. The archive's `stake.disclosureKey` names the maker's key as an age recipient
+or as the base64 of the same 32 bytes; the feed gives it as `disclosureKey` and
+`disclosureRecipient`. The age recipient (age1…) and the bytes32 the contract stores are one key
+in two encodings: the maker's X25519 public key, the one a claim is encrypted to. The tool
+encrypts to the archive's key, refuses a listing whose archive and chain name different keys,
+and prints both forms before you commit.
 
 The listing archive. Fetch `listingCid` through an IPFS gateway and unzip it:
 
@@ -355,6 +378,31 @@ report.md: your argument, which the jury reads with the proof.
 - Add a section headed `## Requirement`: where the code is required to behave as your PoC
   asserts, a file and line or one of the listing's `documents`. If nothing states it, say so
   there. The tool warns without it and refuses nothing.
+
+What the jurors read. For the requirement, they read the listing's `documents` and the in-scope
+source files your finding names, comments included, and of the rest of the repository only
+call-site lines and file names. Their first question is whether the code is required to behave
+as your PoC asserts, and they answer it from the listing's primary_query.json (its rubric and
+outcomes), the runner's report of the gates and tests, on a dispute the maker's statement, and
+the context pack, which the arbiters build by @verdikta/common's rules. The pack holds, in this
+order:
+  1. poc.patch, with the full text of the files it adds or changes;
+  2. finding.json and report.md;
+  3. the source files your `affectedPaths` name that are in the listing's `scope`, whole, comments
+     and all, as they are at `baseCommit`;
+  4. the files the listing's `documents` match at `baseCommit` (none, and no such part, when it
+     names none), in its order;
+  5. the lines in the listing's scope that call what your PoC calls;
+  6. the listing's known issues;
+  7. summaries of its earlier valid findings;
+  8. fix.patch;
+  9. a shallow tree of the repository's file names.
+Of the rest of the repository they see only those call-site lines and the file names: no other
+source file, test or document. So when the listing names no documents, or its documents state no
+requirement, the jurors can read one only in a source file you name, its comments or its
+interface, or in your report.md's argument: name that file and line in `## Requirement`, or say
+there that nothing states it. A part too large for the pack's budget is cut, and the pack says so.
+`check` prints the pack for your claim (section 8).
 
 fix.patch is optional: it is checked and reported, never changes the outcome, and is ignored
 above the same limit. Set `fixIncluded` to true only with it.

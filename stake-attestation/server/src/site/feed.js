@@ -5,10 +5,17 @@
 // but leaves the feed, §13.1). Which of them the site offers (those that count) is decided when the
 // answer is made (site/index.js, src/control/counting.js), as the proofs change between blocks. Its identity (repo, commit) comes from its Listed event, its image
 // and scope from its listing archive (archives.js), everything else from getListing.
+//
+// Node P35 adds two fields and changes none: disclosureRecipient, the age recipient of disclosureKey's 32 bytes
+// (shared/src/disclosureKey.js), and sameRepository, the other listings of the entry's repository that opened
+// (sameRepository.js), each read at the same block.
+import { disclosureRecipientOf } from '@verdikta/stake-attestation-shared/disclosure-key';
+
 import { SEVERITY_CLASSES } from '../chain/abi.js';
 import { outputJson } from '../chain/codec.js';
 import { listingLabels } from '../record/labels.js';
 import { archiveFields } from './archives.js';
+import { sameRepository, stateAt, stateReader } from './sameRepository.js';
 
 const DAY = 86400;
 
@@ -24,10 +31,12 @@ const DAY = 86400;
 export async function buildFeed({ read, projection, block, archives, labels, discloseWindow }) {
   const candidates = [...projection.listings.values()].filter((l) => l.opened && !l.rolled && !l.closed);
   const entries = [];
+  const states = new Map();
   for (const l of candidates) {
     const onchain = outputJson('getListing', (await read('getListing', [l.listingId]))[0]);
     const fundedUntil = Number(onchain.fundedUntil);
-    const lapsed = fundedUntil !== 0 && block.timestamp >= fundedUntil;
+    states.set(l.listingId, stateAt(onchain, block));
+    const { lapsed } = states.get(l.listingId);
     if (onchain.state !== 'Open' || lapsed || BigInt(onchain.escrowWei) < BigInt(onchain.awards[3])) continue;
     const invited = onchain.allowlist.length > 0;
     const asRecord = { listingId: l.listingId, state: onchain.state, lapsed, invited, awards: onchain.awards, valueAtRiskUsd: onchain.valueAtRiskUsd };
@@ -59,7 +68,14 @@ export async function buildFeed({ read, projection, block, archives, labels, dis
       listingCid: onchain.listingCid,
       disputeCid: onchain.disputeCid,
       disclosureKey: onchain.disclosureKey,
+      disclosureRecipient: disclosureRecipientOf(onchain.disclosureKey),
+      sameRepository: [], // below, once every entry's own state is read
     });
+  }
+  // the other listings of each entry's repository, every state read at this block once
+  const stateOf = stateReader(read, block, states);
+  for (const e of entries) {
+    e.sameRepository = await sameRepository({ listings: projection.listings, repo: e.artifact.repo, except: (x) => x.listingId === e.listingId, stateOf });
   }
   entries.sort((a, b) => (BigInt(b.listingId) > BigInt(a.listingId) ? 1 : -1)); // newest first
   return entries;

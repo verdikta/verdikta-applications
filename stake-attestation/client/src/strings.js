@@ -1,5 +1,6 @@
 // Every user-facing string of the client, in one place so the wording rule can be checked.
 // Placeholders are {name}; fill() puts values in. No string here is built from parts.
+import { DISCLOSURE_KEY_NOTE } from '@verdikta/stake-attestation-shared/disclosure-key';
 import { INTEGRITY_NOTE } from '@verdikta/stake-attestation-shared/execution-evidence';
 import { LISTING_WARNING } from '@verdikta/stake-attestation-shared/listing-warning';
 import { STAKE_DOCUMENTS_NOTE } from '@verdikta/stake-attestation-shared/stake-documents';
@@ -117,6 +118,11 @@ export const STRINGS = {
         'Name the files where your code\'s requirements are written: the README, specs, interface docs, such as README.md ' +
         'or docs/**. The jurors read them, from the listed commit, right after the source a claim names, to see what the ' +
         'code is required to do. ' + STAKE_DOCUMENTS_NOTE + ' The validation report lists the files they would read.',
+      // node P35 (claim test, item 6): what the jurors have when no listing document states a requirement
+      requirementsDocument:
+        'We recommend a document that states your code\'s requirements: what each function must do, and what it must ' +
+        'never allow. Commit it at the version you list and name it here. Without one, the jurors judge what the code is ' +
+        'required to do from the source files a claim names, their comments and interfaces, and the claim\'s own argument.',
       valueAtRisk: 'A declaration the record shows beside the stake, in whole dollars.',
       control:
         'Every listing needs the project\'s proof, with no exception. Commit .verdikta/stake-control.json holding {format} ' +
@@ -199,6 +205,8 @@ export const STRINGS = {
     ownInvalid: 'This is not an age X25519 public key: {reason}',
     ownIsPrivate: 'That is a private key. Enter the age1… public key; the private key stays with you.',
     recipient: 'Public key (listed)',
+    // node P35: the key in both its forms, whatever form it was entered in (disclosure.line follows, then the note)
+    forms: 'The listing\'s key in both its forms:',
     identity: 'Private key',
     shownOnce:
       'Shown once. It is never sent to the server or anywhere else, and this site keeps no copy: ' +
@@ -301,6 +309,7 @@ export const STRINGS = {
     maker: 'Maker',
     state: 'State',
     listingCid: 'Listing archive',
+    disclosureKey: 'Disclosure key',
     notMaker: 'Only the listing\'s maker ({maker}) can fund it; your wallet is {account}.',
     alreadyOpen: 'Listing {id} is open until {until}.',
     notFundable: 'Listing {id} is {state}: there is nothing to open here.',
@@ -543,6 +552,26 @@ export const STRINGS = {
     noArchive: 'not read from the listing archive ({reason})',
     record: 'Record of this hash',
     listing: 'Listing page',
+    // node P35: the key in both forms, and the other listings of the repository
+    disclosureKey: 'Disclosure key',
+    sameRepository: 'Other listings of this repository',
+  },
+  // node P35 (claim test, items 3 and 4): wherever a listing's disclosure key or its repository's other listings show
+  disclosure: {
+    line: '{recipient} (on-chain, the bytes32 {bytes32})',
+    note: DISCLOSURE_KEY_NOTE,
+  },
+  sameRepository: {
+    title: 'Other listings of this repository',
+    intro:
+      'Each listing is a stake on one version, its repository at one commit (for a deployed contract, also its chain and ' +
+      'address), with its own terms, scope, known issues and findings. The record is the version\'s: listings with the same ' +
+      'artifact hash share it. A claim goes on one listing, and its proof must fail at that listing\'s commit.',
+    none: 'none',
+    line: 'Listing {id} at {commit}: {state}',
+    notCounted: 'not offered by this site',
+    lapsed: 'its listing fee has lapsed',
+    unavailable: 'The other listings of this repository could not be read: {reason}',
   },
   record: {
     title: 'Record',

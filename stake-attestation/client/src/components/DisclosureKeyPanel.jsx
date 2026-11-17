@@ -1,10 +1,21 @@
 import { useState } from 'react';
 
-import { DisclosureError, generateDisclosureKeyPair, keyFileName, keyFileText, parseDisclosureKey, saveLocally } from '../lib/disclosure.js';
+import { DisclosureError, disclosureForms, generateDisclosureKeyPair, keyFileName, keyFileText, parseDisclosureKey, saveLocally } from '../lib/disclosure.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 
 const K = STRINGS.key;
+
+/**
+ * The key in both its forms (node P35): its age recipient, whatever form it was entered in, and the bytes32 list() will
+ * store, the form the feed shows. Nothing for a key that does not decode.
+ */
+function KeyForms({ recipient }) {
+  const forms = disclosureForms(recipient);
+  if (!forms) return null;
+  // each form is one long word: in .mono it may break anywhere, so on a phone it never widens the fieldset
+  return <p className="hint" data-testid="key-bytes32">{K.forms} <span className="mono">{fill(STRINGS.disclosure.line, forms)}</span>. {STRINGS.disclosure.note}</p>;
+}
 
 /**
  * The maker's disclosure key (design §14). "Generate" makes an age X25519 pair here, with
@@ -63,6 +74,7 @@ export function DisclosureKeyPanel({ recipient, ready, onRecipient }) {
       {own !== null && <TextField label={K.ownRecipient} value={own} onChange={typeOwn} mono error={ownError} secret={/^AGE-SECRET-KEY-1/i.test(own.trim())} />}
 
       {own === null && recipient && <TextField label={K.recipient} value={recipient} readOnly mono />}
+      {recipient && <KeyForms recipient={recipient} />}
 
       {identity !== null && (
         <div className="once">

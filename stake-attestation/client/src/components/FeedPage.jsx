@@ -3,10 +3,12 @@ import { useEffect, useId, useState } from 'react';
 import { CLASSES } from '../chain/abi.js';
 import { getFeed } from '../lib/api.js';
 import { formatEth, formatTime, formatWhole } from '../lib/format.js';
+import { otherListingsOfFeedEntry } from '../lib/sameRepository.js';
 import { STRINGS, fill } from '../strings.js';
 import { Diligence } from './Diligence.jsx';
 import { AsOf, Facts, labelText, siteErrorText } from './Facts.jsx';
 import { ListingWarning } from './ListingWarning.jsx';
+import { DisclosureKeyForms, SameRepositoryList } from './SameRepository.jsx';
 
 const F = STRINGS.feed;
 const R = STRINGS.record;
@@ -55,6 +57,9 @@ function Entry({ e }) {
         { id: f('scope'), label: F.scope, value: e.scope ? fill(F.scopeLine, { include: e.scope.include.join(', '), exclude: e.scope.exclude.join(', ') || R.none }) : noArchive },
         // node P20: where the listing says its requirements are written
         { id: f('documents'), label: F.documents, value: Array.isArray(e.documents) ? (e.documents.length ? <span className="mono">{e.documents.join(', ')}</span> : F.documentsNone) : e.archive?.ok ? F.documentsUnread : noArchive },
+        // node P35: the key in both its forms, and the other listings of the repository
+        { id: f('disclosure-key'), label: F.disclosureKey, value: <DisclosureKeyForms bytes32={e.disclosureKey} recipient={e.disclosureRecipient} /> },
+        { id: f('same-repository'), label: F.sameRepository, value: <SameRepositoryList list={otherListingsOfFeedEntry(e)} /> },
       ]} />
       <p className="actions">
         <a href={`#/record/${e.artifactHash.toLowerCase()}`}>{F.record}</a>

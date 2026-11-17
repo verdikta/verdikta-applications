@@ -31,3 +31,4 @@ export {
   readExecutionEvidence,
 } from './executionEvidence.js';
 export { STAKE_DOCUMENTS_NOTE, STAKE_DOCUMENTS_PATH, documentGlobs, namesDocuments } from './stakeDocuments.js';
+export { DISCLOSURE_KEY_NOTE, disclosureBytes32Of, disclosureRecipientOf } from './disclosureKey.js';

@@ -1,6 +1,7 @@
 // What the tool says before anyone pays. P9's warning, word for word (shared/src/listingWarning.js), and the
 // hunter-diligence text of design §8.6, with the two things owner decision Q35 wants stated plainly: what the
 // forecast cannot catch, and what a failed integrity check costs. Design §12 adds what an abstention costs.
+import { DISCLOSURE_KEY_NOTE } from '@verdikta/stake-attestation-shared/disclosure-key';
 import { LISTING_WARNING } from '@verdikta/stake-attestation-shared/listing-warning';
 import { formatEther } from 'ethers';
 
@@ -71,6 +72,8 @@ export function commitNotice(t) {
     `Awards: ${awards}; lowest class counted: ${t.lowestClass}`,
     `This commit sends ${eth(t.priceWei)}: the bond ${eth(t.bondWei)} and the prepay ${eth(t.feeWei)}, the live maximum fee.`,
     `The fix window is ${t.fixWindow} s from your disclosure, the reveal window ${t.revealWindow} s, the dispute window ${t.disputeWindow} s.`,
+    // node P35: the key in both its forms, the archive's and the chain's, and that they are one key
+    ...(t.disclosureRecipient ? [`Disclosure key: ${t.disclosureRecipient}, on-chain the bytes32 ${t.disclosureKey}. ${DISCLOSURE_KEY_NOTE}`] : []),
   ].join('\n');
 }
 

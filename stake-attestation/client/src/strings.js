@@ -627,6 +627,8 @@ export const STRINGS = {
   disclosure: {
     line: '{recipient} (on-chain, the bytes32 {bytes32})',
     note: DISCLOSURE_KEY_NOTE,
+    // what each form's copy button copies, after copy.label
+    copy: { recipient: 'the age recipient', bytes32: 'the bytes32 the contract stores' },
   },
   sameRepository: {
     title: 'Other listings of this repository',

@@ -86,3 +86,69 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await expect(page.getByTestId('same-repository')).toContainText(STRINGS.sameRepository.title);
   for (const x of entry.sameRepository) await expect(page.getByTestId(`same-repository-${x.listingId}`)).toHaveCount(1);
 });
+
+// The site's look for node P35's two additions. Each keeps its text, one line of the page's text (what a reader
+// selects, a search of the page finds and a tool reads): the key's two forms are chips in that line, each with a
+// button that copies it whole, and the other listing's line is one link, its state a pill.
+test('the disclosure key and the other listings keep their line, drawn as chips and a pill', async ({ page, stack, chain }) => {
+  const key = disclosure.generateDisclosureKeyPair();
+  const first = await chain.openListing({ recipient: key.recipient });
+  const second = await chain.openListing({ recipient: key.recipient });
+  let other = null;
+  await chain.until(async () => {
+    const entry = await feedEntry(stack, second.listingId);
+    other = entry?.sameRepository.find((x) => x.listingId === String(first.listingId)) ?? null;
+    return Boolean(entry?.archive?.ok && other);
+  }, { what: 'the feed entry and its repository\'s other listing' });
+  const listing = await chain.sa.getListing(second.listingId);
+  const keyLine = fill(STRINGS.disclosure.line, { recipient: key.recipient, bytes32: listing.disclosureKey });
+  const otherLine = fill(STRINGS.sameRepository.line, { id: first.listingId, commit: other.artifact.baseCommit, state: STRINGS.fund.states.Open });
+  const copyName = (form) => fill(STRINGS.copy.label, { what: STRINGS.disclosure.copy[form] });
+  // what a copy button writes: the site's headers deny reading the clipboard back (Permissions-Policy, clipboard-read),
+  // so the write is recorded where it is made
+  await page.addInitScript(() => {
+    window.__copied = [];
+    navigator.clipboard.writeText = async (text) => { window.__copied.push(String(text)); };
+  });
+  const copied = () => page.evaluate(() => window.__copied.at(-1));
+
+  for (const where of ['listing', 'feed']) {
+    await page.goto(where === 'listing' ? `/#/fund/${second.listingId}` : '/#/feed');
+    const shown = page.getByTestId(where === 'listing' ? 'listing-disclosure-key' : `feed-${second.listingId}-disclosure-key`);
+    await expect(shown).toContainText(key.recipient);
+    if (where === 'listing') {
+      await expect(page.getByTestId(`same-repository-${first.listingId}`)).toBeVisible();
+      await shot(page, 'listing-disclosure-key', { target: page.getByTestId('listing-summary') });
+      await shot(page, 'listing-other-listings', { target: page.getByTestId('same-repository') });
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await shot(page, 'listing-disclosure-key-dark', { target: page.getByTestId('listing-summary') });
+      await shot(page, 'listing-other-listings-dark', { target: page.getByTestId('same-repository') });
+      await page.emulateMedia({ colorScheme: 'light' });
+      // on a phone each chip wraps inside itself: the page never scrolls sideways
+      const size = page.viewportSize();
+      await page.setViewportSize({ width: 390, height: 800 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+      await shot(page, 'listing-disclosure-key-phone', { target: page.getByTestId('listing-summary') });
+      await shot(page, 'listing-other-listings-phone', { target: page.getByTestId('same-repository') });
+      await page.setViewportSize(size);
+    }
+    // the text is the line and the note, as before; on the page the line is one line and the note the next
+    await expect(shown).toHaveText(`${keyLine} ${STRINGS.disclosure.note}`);
+    expect((await shown.innerText()).split('\n')).toEqual([keyLine, STRINGS.disclosure.note]);
+    for (const form of [key.recipient, listing.disclosureKey]) expect(await page.evaluate((t) => window.find(t, true, false, true), form)).toBe(true);
+    // each form has its own button, named for what it copies, and copies that form whole
+    await shown.getByRole('button', { name: copyName('recipient') }).click();
+    await expect(shown.getByRole('button', { name: STRINGS.copy.done })).toHaveCount(1);
+    expect(await copied()).toBe(key.recipient);
+    await shown.getByRole('button', { name: copyName('bytes32') }).click();
+    expect(await copied()).toBe(listing.disclosureKey);
+
+    const line = page.getByTestId(where === 'listing' ? 'same-repository' : `feed-${second.listingId}-same-repository`).getByTestId(`same-repository-${first.listingId}`);
+    await expect(line).toHaveText(otherLine);
+    expect(await line.innerText()).toBe(otherLine);
+    await expect(line.getByRole('link', { name: otherLine })).toHaveAttribute('href', `#/fund/${first.listingId}`);
+    await expect(line.locator('.pill')).toHaveText(STRINGS.fund.states.Open);
+    await expect(line.locator('.pill-ok')).toHaveCount(1);
+    expect(await page.evaluate((t) => window.find(t, true, false, true), other.artifact.baseCommit)).toBe(true);
+  }
+});

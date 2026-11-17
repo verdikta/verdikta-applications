@@ -890,6 +890,55 @@ export const STRINGS = {
     done: 'Rolled forward to listing {id} (transaction {tx}).',
     changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
   },
+  // A listing's later life, on its own page (design §13.2): the contract's renew(), close() and withdraw().
+  renew: {
+    title: 'Renew',
+    intro:
+      'The listing fee pays for 30 days. Renewing pays it again and adds 30 days to the paid period. Once the period ' +
+      'has lapsed the listing takes no new claims, and a renewal then runs 30 days from the moment it is sent: the gap ' +
+      'is not paid for. The escrow is not touched.',
+    until: 'The listing fee is paid until {time}.',
+    lapsed: 'The paid period ended at {time}: this listing takes no new claims until it is renewed.',
+    fee: 'Listing fee for 30 more days: {fee} ETH',
+    feeLoading: 'Reading the listing fee…',
+    button: 'Renew for 30 days, paying {fee} ETH',
+    sending: 'Sending renew()…',
+    done: 'Renewed (transaction {tx}). The listing fee is paid until {until}.',
+    feeChanged: 'Nothing was sent: the listing fee is now {fee} ETH. The figure above is updated; renew again to pay it.',
+    changed: 'Nothing was sent: listing {id} can no longer be renewed (it is {state}). It has been read again.',
+  },
+  close: {
+    title: 'Close',
+    intro:
+      'Closing ends this stake: the listing takes no new claims, and the badge no longer states it. The escrow that ' +
+      'is left comes back to your wallet. The record keeps its history, and a claim made on this version afterwards ' +
+      'is a late claim, which carries no award. A closed listing cannot be reopened: to stake on this version again, ' +
+      'list it again.',
+    escrow: 'Escrow that comes back: {eth} ETH.',
+    pending: 'This listing has claims that are neither settled nor expired ({count}). It can be closed once each of them is.',
+    owed: 'This listing still owes hunters {eth} ETH. It can be closed once that is paid.',
+    ask: 'Close listing {id}',
+    confirm: 'Close listing {id} and take back {eth} ETH',
+    keep: 'Keep it open',
+    sending: 'Sending close()…',
+    done: 'Listing {id} is closed (transaction {tx}). {eth} ETH of escrow went back to {account}.',
+    doneDeferred:
+      'Listing {id} is closed (transaction {tx}). The contract could not send the {eth} ETH of escrow to {account}, ' +
+      'so it holds the amount for that wallet: withdraw it below.',
+    changed: 'Nothing was sent: listing {id} changed on-chain since this page read it. It has been read again.',
+  },
+  withdraw: {
+    title: 'Withdraw',
+    intro:
+      'The contract holds some amounts until their wallet collects them: listing fees for the fee recipient, an award ' +
+      'that was owed and has since been paid from a top-up, a refund that arrives after its listing closed, and any ' +
+      'payment the contract could not send directly. Withdrawing sends this wallet all that is held for it.',
+    held: 'The contract holds {eth} ETH for {account}.',
+    button: 'Withdraw {eth} ETH',
+    sending: 'Sending withdraw()…',
+    done: 'Withdrawn (transaction {tx}): {eth} ETH to {account}.',
+    changed: 'Nothing was sent: the contract holds nothing for {account} now.',
+  },
   dispute: {
     title: 'Dispute',
     intro:

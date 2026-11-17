@@ -19,7 +19,7 @@ import { STRINGS, fill } from './strings.js';
 // #/check[/id]    decrypt-and-check a disclosed claim
 // #/claim[/id]    a claim: its state, a pending round watched, release and dispute
 // #/fund[/id]     a listing's own page: its terms, the opening fund() while it is Listed, its
-//                 claims and record, roll forward
+//                 claims and record, roll forward, renew, close, and withdraw for a wallet that is held something
 // Nothing private ever goes in the hash: only an artifact hash, a claim or a listing id.
 function route() {
   const h = window.location.hash.replace(/^#/, '') || '/';

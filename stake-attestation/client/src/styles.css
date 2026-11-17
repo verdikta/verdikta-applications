@@ -41,6 +41,9 @@
   --ok-line: #a7f3d0;
   --ok-fg: #065f46;
   --bad: #b91c1c;
+  /* a button's ground, with white text on it, in both themes (--bad is text, and light in the dark theme) */
+  --bad-strong: #b91c1c;
+  --bad-stronger: #991b1b;
   --bad-bg: #fef2f2;
   --bad-line: #fecaca;
   --warn: #92400e;
@@ -898,6 +901,17 @@ a.button.secondary:hover {
   background: var(--tint);
   border-color: var(--primary);
   color: var(--tint-fg);
+}
+
+/* the step that cannot be undone: closing a stake */
+button.danger {
+  background: var(--bad-strong);
+  border-color: var(--bad-strong);
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--bad-stronger);
+  border-color: var(--bad-stronger);
 }
 
 button:disabled {

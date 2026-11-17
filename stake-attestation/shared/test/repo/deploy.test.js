@@ -76,11 +76,13 @@ test('Permissions-Policy denies every feature it names, among them the ones a si
   assert.equal(new Set(features).size, features.length, 'each feature once');
 });
 
-test('the CSP: nothing by default, the site\'s own script, style and images, no frames, no base, no plugins, no form posts', () => {
+test('the CSP: nothing by default, the site\'s own script, style, font and images, no frames, no base, no plugins, no form posts', () => {
   const p = csp();
   assert.deepEqual(p.get('default-src'), ["'none'"]);
   assert.deepEqual(p.get('script-src'), ["'self'"]);
   assert.deepEqual(p.get('style-src'), ["'self'"]);
+  // the site's typeface is a file of its own build (client/src/fonts): no font service, so no other origin
+  assert.deepEqual(p.get('font-src'), ["'self'"]);
   assert.deepEqual(p.get('img-src'), ["'self'"]);
   assert.deepEqual(p.get('frame-ancestors'), ["'none'"]);
   assert.deepEqual(p.get('object-src'), ["'none'"]);

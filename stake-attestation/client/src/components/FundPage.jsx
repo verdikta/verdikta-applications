@@ -1,12 +1,15 @@
-import { useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { safeguardTerms } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
+import { AwardLine, StatePill } from './Awards.jsx';
+import { Code } from './Copy.jsx';
 import { TextField } from './Field.jsx';
 import { FundListing } from './FundListing.jsx';
+import { CloseListing, RenewListing, TopUpEscrow, Withdraw } from './ListingActions.jsx';
 import { ListingMore } from './ListingExtras.jsx';
 import { ListingWarning } from './ListingWarning.jsx';
 import { DisclosureKeyForms } from './SameRepository.jsx';
@@ -24,7 +27,9 @@ async function readListing(listingId) {
 /**
  * A listing's own page (#/fund/<id>): its stored terms and, while it is Listed, the opening
  * fund(). It is where a maker who left the listing flow between list() and fund() comes back to.
- * Once it opened: its claims, its record and, while it is Open or Depleted, roll forward.
+ * Once it opened: its claims, its record, a top-up of its escrow and, while it is Open or Depleted, roll
+ * forward and renew.
+ * Until it is closed: close. And for a connected wallet the contract holds something for: withdraw.
  */
 export function FundPage({ listingId }) {
   const headingId = useId();
@@ -32,6 +37,8 @@ export function FundPage({ listingId }) {
   const [loaded, setLoaded] = useState(null); // { listing } | { missing } | { failed }
   const [attempt, setAttempt] = useState(0);
   const [openedHere, setOpenedHere] = useState(false);
+  // how many times an action on this page changed the chain: what reads it (the withdrawable amount) reads again
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     if (listingId === null) return undefined;
@@ -42,6 +49,19 @@ export function FundPage({ listingId }) {
       .catch((err) => { if (live) setLoaded({ failed: err instanceof WalletError ? fill(STRINGS.wallet[err.code], err.vars) : errorReason(err) }); });
     return () => { live = false; };
   }, [listingId, attempt]);
+
+  // After an action on this page: the listing as the chain has it now, read without taking the page down, so
+  // the action's own line (renewed, closed) stays where it was said.
+  const refresh = useCallback(() => {
+    setVersion((v) => v + 1);
+    readListing(listingId)
+      .then((l) => {
+        if (!l) return;
+        setOpenedHere(false);
+        setLoaded({ listing: l });
+      })
+      .catch(() => {});
+  }, [listingId]);
 
   const header = (
     <>
@@ -78,16 +98,16 @@ export function FundPage({ listingId }) {
     <>
       {header}
       <ListingWarning />
-      <section className="claim" aria-labelledby={headingId} data-testid="listing-summary">
+      <section className="claim card-main" aria-labelledby={headingId} data-testid="listing-summary">
         <h3 id={headingId}>{fill(F.summary, { id: listingId })}</h3>
         <dl>
-          <dt>{F.maker}</dt><dd className="mono">{l.maker}</dd>
-          <dt>{F.state}</dt><dd>{F.states[openedHere ? 'Open' : state] ?? state}</dd>
-          <dt>{F.listingCid}</dt><dd className="mono">{l.listingCid}</dd>
+          <dt>{F.maker}</dt><dd><Code value={l.maker} what={F.maker} /></dd>
+          <dt>{F.state}</dt><dd><StatePill state={openedHere ? 'Open' : state} text={F.states[openedHere ? 'Open' : state] ?? state} /></dd>
+          <dt>{F.listingCid}</dt><dd><Code value={l.listingCid} what={F.listingCid} /></dd>
           <dt>{F.disclosureKey}</dt><dd><DisclosureKeyForms bytes32={l.disclosureKey} testId="listing-disclosure-key" /></dd>
         </dl>
-        <ul>
-          <li>{fill(STRINGS.chain.awards, Object.fromEntries(CLASSES.map((c, i) => [c, formatEth(l.awards[i])])))}</li>
+        <ul className="terms">
+          <li><AwardLine text={fill(STRINGS.chain.awards, Object.fromEntries(CLASSES.map((c, i) => [c, formatEth(l.awards[i])])))} /></li>
           <li>{fill(STRINGS.chain.bond, { bond: formatEth(l.bondWei) })}</li>
           <li>{fill(STRINGS.chain.windows, { fix: Number(l.fixWindow) / 86400, dispute: Number(l.disputeWindow) / 3600, grace: Number(l.disclosureGrace) / 3600, reveal: Number(l.revealWindow) / 86400 })}</li>
           <li>{l.allowlist.length ? fill(STRINGS.chain.allowlist, { count: l.allowlist.length }) : STRINGS.chain.open}</li>
@@ -100,6 +120,10 @@ export function FundPage({ listingId }) {
       {state === 'Open' && <p className="ok">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
       <ListingMore listingId={listingId} listing={l} />
+      <TopUpEscrow listingId={listingId} listing={l} onChanged={refresh} />
+      <RenewListing listingId={listingId} listing={l} onChanged={refresh} />
+      <CloseListing listingId={listingId} listing={l} onChanged={refresh} />
+      <Withdraw version={version} />
     </>
   );
 }

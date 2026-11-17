@@ -9,7 +9,12 @@ import { STAKE_DOCUMENTS_NOTE } from '@verdikta/stake-attestation-shared/stake-d
 export const CONTROL_FILE_FORMAT = '{"version":1,"maker":"<address>"}';
 
 export const STRINGS = {
-  appName: 'Verdikta stake attestation',
+  // the site's name, as "Verdikta Bounties" is the bounty site's (owner, 2026-11-16); what it is stays under it
+  appName: 'Verdikta Verifiers',
+  tagline: 'Stake attestation',
+  taglineOn: '{tagline} · {network}',
+  // the network the build is for, by its chain id (VITE_SA_CHAIN_ID)
+  networks: { 84532: 'Base Sepolia', 8453: 'Base', 31337: 'Local network' },
   // every listing page, and the hunter tool (node P5): shared/src/listingWarning.js
   warning: LISTING_WARNING,
   nav: {
@@ -21,6 +26,62 @@ export const STRINGS = {
     claim: 'Claims',
   },
   home: {
+    headline: 'Code with a stake behind it',
+    seeFeed: 'See the feed',
+    // under the hero's buttons: three facts of the design, none of them a promise about the code
+    points: {
+      escrow: 'Stake held in escrow on-chain',
+      judged: 'Judged by the Verdikta arbiter network',
+      record: 'A public record for every artifact hash',
+    },
+    // How it works, for each side. A step's text is a sentence this file already has wherever one fits
+    // (test/strings.test.js holds those to their source); the others say no more than those do.
+    how: {
+      title: 'How it works',
+      makers: {
+        title: 'For makers',
+        steps: [
+          {
+            title: 'List a version',
+            text: 'Name the version you stake, what is in scope, what each class of finding pays and the windows a claim runs through.',
+          },
+          {
+            title: 'Fund and open',
+            text: 'The server builds and validates the environment before anything goes on-chain; then your wallet lists the version and funds the escrow.',
+          },
+          {
+            title: 'Show the badge',
+            text: 'The badge shows the live state of the stake on this hash. It changes with the record and ends when the stake ends.',
+          },
+          {
+            title: 'Answer claims',
+            text: 'Check the disclosures hunters send you, then release, roll forward to a fixed version, or dispute, from a claim or listing page.',
+          },
+        ],
+      },
+      hunters: {
+        title: 'For hunters',
+        steps: [
+          {
+            title: 'Pick a listing',
+            text: 'The feed lists every listing that takes claims: hash, image, scope, award table, bond, windows, days open, claims so far and escrow remaining.',
+          },
+          {
+            title: 'Prove the bug',
+            text: 'Find a bug inside the listing\'s scope and prove it with a runnable test.',
+          },
+          {
+            title: 'Commit and disclose',
+            text: 'Commit two hashes on-chain, then disclose the encrypted archive. The staker named on the listing reads it first, through the fix window.',
+          },
+          {
+            title: 'Reveal and be judged',
+            text: 'A claim is judged in minutes once its fix window ends, awards are paid on-chain, and a bond, not a ban, prices invalid claims.',
+          },
+        ],
+        note: 'Hunters claim with the command-line tool verdikta-attest, not in the browser. Autonomous hunters are welcome.',
+      },
+    },
     lead:
       'A maker stakes funds behind one version of their code. A hunter who proves a bug in it ' +
       'with a runnable test is paid from the stake, once the Verdikta arbiter network has run ' +
@@ -38,6 +99,12 @@ export const STRINGS = {
     guide: '/agents.txt',
     indexLead: 'index',
     index: '/llms.txt',
+  },
+  // the button beside a hash, an address or a command: its name for a screen reader, never drawn
+  copy: {
+    label: 'Copy: {what}',
+    command: 'Copy the command',
+    done: 'Copied',
   },
   wallet: {
     connect: 'Connect wallet',
@@ -851,6 +918,82 @@ export const STRINGS = {
     sending: 'Sending rollForward()…',
     done: 'Rolled forward to listing {id} (transaction {tx}).',
     changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
+  },
+  // A listing's later life, on its own page (design §13.2): the contract's renew(), close() and withdraw().
+  topUp: {
+    title: 'Top up the escrow',
+    intro:
+      'A top-up adds to this listing\'s escrow, with no fee. What the listing owes hunters is paid first, claim by ' +
+      'claim in the order they were committed, and the rest goes to the escrow. An amount paid to a hunter this way ' +
+      'is held by the contract for that hunter to withdraw.',
+    escrow: 'Escrow now: {eth} ETH. Top award: {top} ETH.',
+    owed: 'Owed to hunters: {eth} ETH. A top-up pays this first.',
+    depleted:
+      'This listing is depleted: its escrow is below its top award, so it takes no new claims. It reopens once ' +
+      'nothing is owed and the escrow is back at the top award, which takes {eth} ETH or more.',
+    rolled:
+      'This listing rolled forward: it takes no new claims, and a top-up does not reopen it. Its escrow pays the ' +
+      'claims still settling against it.',
+    amount: 'Amount (ETH)',
+    positive: 'Enter an amount above 0.',
+    effect: 'Of this, {owed} ETH goes to hunters who are owed it and {rest} ETH to the escrow, which will then hold {after} ETH.',
+    effectPlain: 'The escrow will then hold {after} ETH.',
+    reopens: 'The listing reopens.',
+    button: 'Top up, paying {eth} ETH',
+    buttonNoAmount: 'Top up',
+    sending: 'Sending fund()…',
+    done: 'Topped up (transaction {tx}). The escrow now holds {eth} ETH.',
+    doneOwed: 'Topped up (transaction {tx}). {owed} ETH went to hunters who were owed it, and the escrow now holds {eth} ETH.',
+    reopened: 'The listing is open again.',
+    changed: 'Nothing was sent: listing {id} can no longer be topped up (it is {state}). It has been read again.',
+  },
+  renew: {
+    title: 'Renew',
+    intro:
+      'The listing fee pays for 30 days. Renewing pays it again and adds 30 days to the paid period. Once the period ' +
+      'has lapsed the listing takes no new claims, and a renewal then runs 30 days from the moment it is sent: the gap ' +
+      'is not paid for. The escrow is not touched.',
+    until: 'The listing fee is paid until {time}.',
+    lapsed: 'The paid period ended at {time}: this listing takes no new claims until it is renewed.',
+    fee: 'Listing fee for 30 more days: {fee} ETH',
+    feeLoading: 'Reading the listing fee…',
+    button: 'Renew for 30 days, paying {fee} ETH',
+    sending: 'Sending renew()…',
+    done: 'Renewed (transaction {tx}). The listing fee is paid until {until}.',
+    feeChanged: 'Nothing was sent: the listing fee is now {fee} ETH. The figure above is updated; renew again to pay it.',
+    changed: 'Nothing was sent: listing {id} can no longer be renewed (it is {state}). It has been read again.',
+  },
+  close: {
+    title: 'Close',
+    intro:
+      'Closing ends this stake: the listing takes no new claims, and the badge no longer states it. The escrow that ' +
+      'is left comes back to your wallet. The record keeps its history, and a claim made on this version afterwards ' +
+      'is a late claim, which carries no award. A closed listing cannot be reopened: to stake on this version again, ' +
+      'list it again.',
+    escrow: 'Escrow that comes back: {eth} ETH.',
+    pending: 'This listing has claims that are neither settled nor expired ({count}). It can be closed once each of them is.',
+    owed: 'This listing still owes hunters {eth} ETH. It can be closed once that is paid.',
+    ask: 'Close listing {id}',
+    confirm: 'Close listing {id} and take back {eth} ETH',
+    keep: 'Keep it open',
+    sending: 'Sending close()…',
+    done: 'Listing {id} is closed (transaction {tx}). {eth} ETH of escrow went back to {account}.',
+    doneDeferred:
+      'Listing {id} is closed (transaction {tx}). The contract could not send the {eth} ETH of escrow to {account}, ' +
+      'so it holds the amount for that wallet: withdraw it below.',
+    changed: 'Nothing was sent: listing {id} changed on-chain since this page read it. It has been read again.',
+  },
+  withdraw: {
+    title: 'Withdraw',
+    intro:
+      'The contract holds some amounts until their wallet collects them: listing fees for the fee recipient, an award ' +
+      'that was owed and has since been paid from a top-up, a refund that arrives after its listing closed, and any ' +
+      'payment the contract could not send directly. Withdrawing sends this wallet all that is held for it.',
+    held: 'The contract holds {eth} ETH for {account}.',
+    button: 'Withdraw {eth} ETH',
+    sending: 'Sending withdraw()…',
+    done: 'Withdrawn (transaction {tx}): {eth} ETH to {account}.',
+    changed: 'Nothing was sent: the contract holds nothing for {account} now.',
   },
   dispute: {
     title: 'Dispute',

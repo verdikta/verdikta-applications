@@ -36,6 +36,9 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await expect(f('hash')).toHaveText(artifactHash.toLowerCase());
   await expect(f('labels')).toHaveText([STRINGS.labels['under-staked'], STRINGS.labels.invited].join(', '));
   await expect(f('awards')).toHaveText(fill(STRINGS.record.awardsLine, { LOW: '0', MEDIUM: '0.1', HIGH: '0.4', CRITICAL: '2' }));
+  // drawn as pills and chips, read as one line each: the page's text (what a reader copies) is the value whole
+  expect(await f('labels').innerText()).toBe([STRINGS.labels['under-staked'], STRINGS.labels.invited].join(', '));
+  expect(await f('awards').innerText()).toBe(fill(STRINGS.record.awardsLine, { LOW: '0', MEDIUM: '0.1', HIGH: '0.4', CRITICAL: '2' }));
   await expect(f('lowest')).toHaveText('MEDIUM');
   await expect(f('bond')).toHaveText(fill(STRINGS.record.eth, { eth: '0.02' }));
   await expect(f('windows')).toHaveText(fill(F.windowsLine, { fix: 14, dispute: 72, grace: 48, reveal: 7, disclose: 60 }));
@@ -60,6 +63,10 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await expect(page.getByRole('heading', { name: STRINGS.diligence.title })).toBeVisible();
   expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
   await shot(page, 'feed', { target: card });
+  // the same card for a reader whose system asks for dark
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot(page, 'feed-dark', { target: card });
+  await page.emulateMedia({ colorScheme: 'light' });
 
   // a commit shows up in the count once the indexer reads it
   const commitArchive = new Uint8Array(Buffer.from(`PK\u0003\u0004 feed claim ${Math.random()}`, 'latin1'));

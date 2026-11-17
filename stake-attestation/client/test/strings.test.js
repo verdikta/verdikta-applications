@@ -11,9 +11,26 @@ function leaves(value, at = 'STRINGS') {
 }
 
 test('the UI strings name the app and describe the record honestly', () => {
-  assert.equal(STRINGS.appName, 'Verdikta stake attestation');
+  // the site's name, as "Verdikta Bounties" is the bounty site's; what it is stays under it in the header
+  assert.equal(STRINGS.appName, 'Verdikta Verifiers');
+  assert.equal(STRINGS.tagline, 'Stake attestation');
   assert.ok(STRINGS.home.lead.length > 0);
   assert.match(STRINGS.home.recordNote, /not a guarantee/);
+});
+
+// The home page's steps repeat the site's own sentences wherever one fits, so a step never says more than the
+// page it leads to. A sentence edited in one place and not the other fails here.
+test('the home page\'s steps that repeat another string are that string', () => {
+  const { makers, hunters } = STRINGS.home.how;
+  assert.equal(makers.steps.length, 4);
+  assert.equal(hunters.steps.length, 4);
+  assert.equal(makers.steps[0].title, STRINGS.nav.list);
+  assert.equal(makers.steps[1].title, STRINGS.chain.fund);
+  assert.equal(`${makers.steps[0].text} ${makers.steps[1].text}`, STRINGS.listing.intro);
+  assert.equal(makers.steps[2].text, STRINGS.badge.intro);
+  assert.ok(STRINGS.diligence.feed.startsWith(`${hunters.steps[0].text} `), 'the feed\'s own sentence');
+  assert.ok(STRINGS.diligence.hunters.endsWith(` ${hunters.steps[3].text}`), 'the diligence text\'s own sentence');
+  assert.ok(hunters.note.endsWith(STRINGS.diligence.hunters.slice(0, STRINGS.diligence.hunters.indexOf('.') + 1)), 'the diligence text\'s welcome');
 });
 
 test('no UI string holds a banned word', () => {

@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from 'react';
+import { ArrowRight, FileText } from 'lucide-react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { chainReader, stakeAttestation } from '../chain/wallet.js';
@@ -64,8 +65,8 @@ export function ListingClaims({ artifactHash, data }) {
   return (
     <section className="claim" aria-labelledby={id} data-testid="listing-claims">
       <h3 id={id}>{L.title}</h3>
-      <p><a href={`#/record/${artifactHash.toLowerCase()}`}>{L.record}</a></p>
       {body}
+      <p className="actions"><a className="button secondary" href={`#/record/${artifactHash.toLowerCase()}`}><FileText size={16} aria-hidden="true" />{L.record}</a></p>
     </section>
   );
 }
@@ -152,7 +153,7 @@ export function RollForward({ listingId, listing, identity }) {
           onChange={setPick}
           options={options.map((o) => ({ value: o.id, label: fill(RF.option, { id: o.id, commit: o.commit, escrow: formatEth(o.escrowWei), opened: formatTime(o.openedAt) }) }))}
         />
-        <button type="button" onClick={roll} disabled={busy || !pick}>{busy ? RF.sending : fill(RF.button, { id: pick })}</button>
+        <button type="button" onClick={roll} disabled={busy || !pick}>{busy ? RF.sending : fill(RF.button, { id: pick })}<ArrowRight size={16} aria-hidden="true" /></button>
       </>
     );
   }
@@ -193,8 +194,10 @@ export function ListingMore({ listingId, listing }) {
   if (!opened) return null;
   return (
     <>
-      <CommitOffer data={data} />
-      <ListingClaims artifactHash={listing.artifactHash} data={data} />
+      <div className="pair">
+        <CommitOffer data={data} />
+        <ListingClaims artifactHash={listing.artifactHash} data={data} />
+      </div>
       <SameRepositorySection data={data} />
       {data && !data.failed && <RollForward listingId={listingId} listing={listing} identity={data.identity} />}
     </>

@@ -83,7 +83,7 @@ describe('a repository listing\'s control fact', () => {
     await settled(site);
     const svg = await (await api.get(`/api/records/${l.artifactHash}/badge.svg`)).text();
     assert.ok(svg.includes('no finding at or above MEDIUM while staked · staker named by the repository: yes'), svg);
-    assert.match(svg, /fill="#2e7d32"/, 'a "yes" alone leaves the live colour');
+    assert.match(svg, /fill="#047857"/, 'a "yes" alone leaves the live colour');
     const view = await api.get(`/api/records/${l.artifactHash}`);
     assert.equal((await view.json()).badge.listingId, String(l.listingId));
   });

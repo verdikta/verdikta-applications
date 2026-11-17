@@ -12,20 +12,31 @@
 // the stake ended (closed, rolled forward, depleted, lapsed). Of several live listings the badge
 // shows the one with the highest top award (then the lowest class counted, then the oldest). Every
 // string it writes passes the shared wording check.
+//
+// How it is drawn: the site's indigo and its scales on the left, the state's colour on the right, and
+// the message on lines of its own parts: what it states, then the shown listing's proof under it (two
+// lines for a contract: the repository's, then the deployment's). A line break stands where a " · "
+// between two parts was; the words are the message's, and the title and aria-label, which a screen
+// reader and a hover read, hold the message whole. A repository's badge is about two thirds as wide as
+// one line would be.
 import { outcomeRank } from '../chain/abi.js';
 import { statementOf } from '../control/facts.js';
 import { assertWording } from '../wording.js';
 
 export const BADGE_LABEL = 'verdikta stake';
+// each with white text at 4.5:1 or better
 const COLORS = Object.freeze({
-  live: '#2e7d32',
-  qualified: '#b26a00',
-  scanned: '#546e7a',
-  finding: '#c62828',
-  ended: '#757575',
-  none: '#9e9e9e',
-  unavailable: '#9e9e9e',
+  live: '#047857',
+  qualified: '#b45309',
+  scanned: '#475569',
+  finding: '#b91c1c',
+  ended: '#64748b',
+  none: '#64748b',
+  unavailable: '#64748b',
 });
+const LABEL_COLOR = '#4c51bf';
+// the scales of the site's header and icon, on a 24 by 24 grid (Lucide's "scale", ISC licence)
+const MARK = '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>';
 const ENDED = Object.freeze({ Closed: 'stake closed', Rolled: 'stake rolled forward', Depleted: 'stake depleted', Listed: 'stake not open' });
 
 const byStrength = (a, b) => {
@@ -37,56 +48,81 @@ const byStrength = (a, b) => {
 };
 
 /**
- * What the badge says for a record response (site.record), or for no record (null).
- * @returns {{ state: string, message: string, listingId: string|null, class: string|null }}
+ * What the badge says for a record response (site.record), or for no record (null), and the lines it
+ * is drawn on: what it states, then each part of the shown listing's proof when it states one.
+ * @returns {{ badge: { state: string, message: string, listingId: string|null, class: string|null }, lines: string[] }}
  */
-export function badgeFor(view) {
-  if (!view) return { state: 'none', message: 'no stake', listingId: null, class: null };
+export function badgeDrawn(view) {
+  const plain = (state, message, listingId = null) => ({ badge: { state, message, listingId, class: null }, lines: [message] });
+  if (!view) return plain('none', 'no stake');
   const { record, labels } = view;
-  if (!record.listings.length) return { state: 'none', message: 'no counted stake', listingId: null, class: null };
+  if (!record.listings.length) return plain('none', 'no counted stake');
   const live = record.listings.filter((l) => labels.listings[l.listingId]?.live).sort(byStrength);
   if (!live.length) {
     const latest = [...record.listings].sort((a, b) => Number(BigInt(b.listingId) - BigInt(a.listingId)))[0];
     const message = latest.lapsed && latest.state === 'Open' ? 'stake lapsed' : ENDED[latest.state] ?? 'stake ended';
-    return { state: 'ended', message, listingId: latest.listingId, class: null };
+    return plain('ended', message, latest.listingId);
   }
   const l = live[0];
   const cls = l.lowestClassCounted;
   // no fact at hand reads as "no", the fact's default
   const control = view.control?.[l.listingId] ?? { proof: 'no', statement: statementOf('repository', false) };
-  const withFact = (message) => `${message} · ${control.statement}`;
+  // the proof's statement is one part, or two joined by " · " (src/control/facts.js): each on its own line
+  const withFact = (state, statement) => ({
+    badge: { state, message: `${statement} · ${control.statement}`, listingId: l.listingId, class: cls },
+    lines: [statement, ...control.statement.split(' · ')],
+  });
   const found = record.findings.filter((f) => outcomeRank(f.outcome) >= outcomeRank(cls)).length;
-  if (found) return { state: 'finding', message: withFact(`${found} valid finding${found > 1 ? 's' : ''} at or above ${cls}`), listingId: l.listingId, class: cls };
+  if (found) return withFact('finding', `${found} valid finding${found > 1 ? 's' : ''} at or above ${cls}`);
   const lab = labels.listings[l.listingId];
-  if (lab.stake === 'scanned') return { state: 'scanned', message: withFact('scanned'), listingId: l.listingId, class: cls };
-  if (lab.stake === null) return { state: 'unavailable', message: withFact('price unavailable'), listingId: l.listingId, class: cls };
+  if (lab.stake === 'scanned') return withFact('scanned', 'scanned');
+  if (lab.stake === null) return withFact('unavailable', 'price unavailable');
   const qualifiers = [lab.stake === 'under-staked' ? 'under-staked' : null, lab.invited ? 'invited' : null].filter(Boolean);
-  const message = withFact([`no finding at or above ${cls} while staked`, ...qualifiers].join(' · '));
-  return { state: qualifiers.length || control.proof !== 'yes' ? 'qualified' : 'live', message, listingId: l.listingId, class: cls };
+  return withFact(qualifiers.length || control.proof !== 'yes' ? 'qualified' : 'live', [`no finding at or above ${cls} while staked`, ...qualifiers].join(' · '));
 }
 
-const escapeXml = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
-// Verdana 11px, as shields.io lays out text: about 6.5 px a character is close enough for a badge.
-const textWidth = (s) => Math.ceil(s.length * 6.5) + 10;
+/**
+ * What the badge says for a record response (site.record), or for no record (null).
+ * @returns {{ state: string, message: string, listingId: string|null, class: string|null }}
+ */
+export const badgeFor = (view) => badgeDrawn(view).badge;
 
-/** The SVG for badgeFor's answer. */
-export function renderBadge({ state, message, label = BADGE_LABEL }) {
+const escapeXml = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
+// Verdana 11px, as shields.io lays out text: about 6.5 px a character is room enough for a line, and about
+// 6.2 is what the letters take. Each text is set to that length (textLength), so a viewer's wider fallback
+// font cannot run a line past its box.
+const textWidth = (s) => Math.ceil(s.length * 6.5);
+const textLength = (s) => Math.round(s.length * 6.2);
+// the first line's baseline and the step to the next; a badge of one or two lines is 40 px high, of three 54
+const FIRST = 17;
+const STEP = 14;
+
+/**
+ * The SVG for badgeDrawn's answer: `message` whole in the title and the aria-label, and `lines` (the
+ * message's parts, at most three; the message itself without them) drawn one under the other.
+ */
+export function renderBadge({ state, message, lines = [message], label = BADGE_LABEL }) {
   assertWording(label);
   assertWording(message);
+  for (const line of lines) assertWording(line);
+  const drawn = lines.length >= 1 && lines.length <= 3 ? lines : [message];
   const color = COLORS[state] ?? COLORS.none;
   const title = `${label}: ${message}`;
-  const lw = textWidth(label);
-  const mw = textWidth(message);
+  const h = drawn.length === 3 ? 54 : 40;
+  const middle = h / 2 + 4;
+  // the label's part: the mark (16 px, from x 8), the label from x 29, 8 px after it
+  const lw = 29 + textWidth(label) + 8;
+  const mw = 10 + Math.max(...drawn.map(textWidth)) + 12;
   const w = lw + mw;
   const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="20" role="img" aria-label="${escapeXml(title)}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${escapeXml(title)}">`,
     `<title>${escapeXml(title)}</title>`,
-    `<linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>`,
-    `<clipPath id="r"><rect width="${w}" height="20" rx="3" fill="#fff"/></clipPath>`,
-    `<g clip-path="url(#r)"><rect width="${lw}" height="20" fill="#555"/><rect x="${lw}" width="${mw}" height="20" fill="${color}"/><rect width="${w}" height="20" fill="url(#s)"/></g>`,
-    `<g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">`,
-    `<text x="${lw / 2}" y="14">${escapeXml(label)}</text>`,
-    `<text x="${lw + mw / 2}" y="14">${escapeXml(message)}</text>`,
+    `<rect width="${w}" height="${h}" rx="5" fill="${color}"/>`,
+    `<path d="M5 0h${lw - 5}v${h}H5a5 5 0 0 1-5-5V5a5 5 0 0 1 5-5z" fill="${LABEL_COLOR}"/>`,
+    `<g transform="translate(8 ${h / 2 - 8}) scale(0.6667)" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${MARK}</g>`,
+    `<g fill="#fff" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">`,
+    `<text x="29" y="${middle}" textLength="${textLength(label)}">${escapeXml(label)}</text>`,
+    ...drawn.map((line, i) => `<text x="${lw + 10}" y="${drawn.length === 1 ? middle : FIRST + STEP * i}" textLength="${textLength(line)}">${escapeXml(line)}</text>`),
     '</g></svg>',
   ].join('');
   return assertWording(svg);

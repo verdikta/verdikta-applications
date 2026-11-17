@@ -4,7 +4,8 @@
 // only "scanned" below the badge floor; a valid finding at or above the class replaces the
 // statement; each states the listing's control fact (node P8); and the statement ends when the
 // stake does (closed, rolled forward, lapsed or depleted). Every string the server writes passes
-// the shared wording helper.
+// the shared wording helper. The badge is drawn on lines of the message's own parts: what it states,
+// then the listing's proof; the title and the aria-label hold the message whole.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -34,8 +35,16 @@ async function badge(api, hash) {
   const label = /aria-label="([^"]*)"/.exec(svg)[1];
   assert.equal(/<title>([^<]*)<\/title>/.exec(svg)[1], label);
   assert.ok(label.startsWith('verdikta stake: '), label);
-  return { svg, message: label.slice('verdikta stake: '.length) };
+  const [drawnLabel, ...lines] = textsOf(svg);
+  assert.equal(drawnLabel, 'verdikta stake');
+  // what is drawn is the message, a line break where a " · " was: no word added, none left out
+  assert.equal(lines.join(' · '), label.slice('verdikta stake: '.length));
+  return { svg, lines, message: label.slice('verdikta stake: '.length) };
 }
+
+/** The texts an SVG draws, in order. */
+const textsOf = (svg) => [...svg.matchAll(/<text\b[^>]*>([^<]*)<\/text>/g)].map((m) => m[1].replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&apos;', "'"));
+const sizeOf = (svg) => /^<svg [^>]*\bwidth="(\d+)" height="(\d+)"/.exec(svg).slice(1).map(Number);
 
 describe('GET /api/records/:hash/badge.svg', () => {
   let ctx;
@@ -77,7 +86,13 @@ describe('GET /api/records/:hash/badge.svg', () => {
   });
 
   test('a live stake: "no finding at or above <class> while staked"', async () => {
-    assert.equal((await badge(api, L.staked.artifactHash)).message, `no finding at or above MEDIUM while staked · ${NO}`);
+    const b = await badge(api, L.staked.artifactHash);
+    assert.equal(b.message, `no finding at or above MEDIUM while staked · ${NO}`);
+    // drawn on two lines, what it states over the listing's proof: narrower than the message on one line would be
+    assert.deepEqual(b.lines, ['no finding at or above MEDIUM while staked', NO]);
+    const [width, height] = sizeOf(b.svg);
+    assert.equal(height, 40);
+    assert.ok(width < 450, `two lines keep it under 450 px: ${width}`);
     assert.equal((await badge(api, L.successor.artifactHash)).message, `no finding at or above MEDIUM while staked · ${NO}`, 'the badge moved to the successor');
   });
 
@@ -86,7 +101,9 @@ describe('GET /api/records/:hash/badge.svg', () => {
   });
 
   test('under-staked and invited qualify the statement', async () => {
-    assert.equal((await badge(api, L.under.artifactHash)).message, `no finding at or above MEDIUM while staked · under-staked · ${NO}`);
+    const under = await badge(api, L.under.artifactHash);
+    assert.equal(under.message, `no finding at or above MEDIUM while staked · under-staked · ${NO}`);
+    assert.deepEqual(under.lines, ['no finding at or above MEDIUM while staked · under-staked', NO], 'a qualifier stays on the statement\'s line');
     assert.equal((await badge(api, L.invited.artifactHash)).message, `no finding at or above MEDIUM while staked · invited · ${NO}`);
   });
 
@@ -106,6 +123,7 @@ describe('GET /api/records/:hash/badge.svg', () => {
     for (const [l, message] of [[L.closed, 'stake closed'], [L.rolled, 'stake rolled forward'], [L.depleted, 'stake depleted']]) {
       const b = await badge(api, l.artifactHash);
       assert.equal(b.message, message);
+      assert.deepEqual(b.lines, [message], 'an ended stake states no proof: one line');
       assert.equal(b.svg.includes('no finding'), false);
     }
     const fundedUntil = Number((await ctx.sa.getListing(L.staked.listingId)).fundedUntil);
@@ -189,6 +207,24 @@ describe('wording', () => {
     assert.throws(() => renderBadge({ state: 'live', message: `${FORBIDDEN_WORDS[0]} stake` }), WordingError);
     const svg = renderBadge({ state: 'live', message: 'no finding at or above HIGH while staked' });
     assert.deepEqual(findForbiddenWords(svg), []);
+  });
+
+  test('renderBadge draws the lines it is given, up to three, and the message on one line otherwise', () => {
+    const message = 'no finding at or above HIGH while staked · staker named by the repository: yes · staker controls the deployment: yes';
+    const parts = message.split(' · ');
+    const three = renderBadge({ state: 'live', message, lines: parts });
+    assert.deepEqual(textsOf(three), ['verdikta stake', ...parts], 'a contract: the repository\'s line, then the deployment\'s');
+    assert.equal(sizeOf(three)[1], 54);
+    assert.ok(three.includes(`aria-label="verdikta stake: ${message}"`), 'the message whole, for a screen reader');
+    const one = renderBadge({ state: 'live', message });
+    assert.deepEqual(textsOf(one), ['verdikta stake', message]);
+    assert.equal(sizeOf(one)[1], 40);
+    assert.ok(sizeOf(three)[0] < sizeOf(one)[0]);
+    assert.deepEqual(textsOf(renderBadge({ state: 'live', message, lines: ['a', 'b', 'c', 'd'] })), ['verdikta stake', message], 'more lines than it draws: the message');
+    // every colour it fills with carries white text
+    for (const state of ['live', 'qualified', 'scanned', 'finding', 'ended', 'none', 'unavailable', 'unknown']) {
+      assert.match(renderBadge({ state, message: 'stake closed' }), /<rect [^>]*fill="#[0-9a-f]{6}"/);
+    }
   });
 
   test('renderBadge escapes what it writes', () => {

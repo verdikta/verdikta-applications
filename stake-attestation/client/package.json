@@ -19,6 +19,7 @@
   "dependencies": {
     "@verdikta/common": "1.9.0-attest.6",
     "ethers": "6.15.0",
+    "lucide-react": "^0.562.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

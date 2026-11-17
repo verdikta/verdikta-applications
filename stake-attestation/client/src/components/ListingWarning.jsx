@@ -1,4 +1,5 @@
 import { useId } from 'react';
+import { TriangleAlert } from 'lucide-react';
 
 import { STRINGS } from '../strings.js';
 
@@ -12,9 +13,12 @@ export function ListingWarning() {
   const W = STRINGS.warning;
   return (
     <section className="claim warning" aria-labelledby={id} data-testid="listing-warning">
-      <h3 id={id}>{W.title}</h3>
-      <p>{W.proofFirst}</p>
-      <p>{W.elsewhere}</p>
+      <TriangleAlert className="alert-icon" size={22} aria-hidden="true" />
+      <div>
+        <h3 id={id}>{W.title}</h3>
+        <p>{W.proofFirst}</p>
+        <p>{W.elsewhere}</p>
+      </div>
     </section>
   );
 }

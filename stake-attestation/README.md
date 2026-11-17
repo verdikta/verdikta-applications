@@ -18,7 +18,7 @@ settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
 depletion and owed awards; the environment builder; the server's listing
 flow, indexer, keeper, feed, record mirror and badge; and the client: the maker
 flows (listing, the disclosure key, decrypt-and-check, the baseline scan, release,
-roll forward, dispute, renew, close, withdraw), the record page with its badge, and the feed.
+roll forward, dispute, top-up, renew, close, withdraw), the record page with its badge, and the feed.
 
 **The project decides who may stake on it.** Every listing needs the project's
 proof, with no allowlist and no exception, Verdikta included: a file in the
@@ -69,7 +69,7 @@ node stake-attestation/shared/bin/check-forbidden-words.js stake-attestation .gi
 |---|---|---|
 | `onchain/` | Hardhat (solc 0.8.23, gas reporter, solidity-coverage, contract sizer), `StakeAttestation` (listings, P2a; claims up to the request, P2b; finalize and settlement, P2c; disputes and failed rounds, P2d; late claims and the record, P2e; the narrow INVALID and the confirmation, P17; the hunter's appeal, P16) with its linked libraries `ClaimLogic` and `RecordLogic`, `StakeAttestationLens` and `EvaluationWallet`, the `IVerdiktaAggregator` interface, the mock aggregator and the deploy scripts. | `npx hardhat test`, `npm run coverage:check`, `npx hardhat size-contracts` |
 | `server/` | Express API, port 5009: the listing flow (P4a) runs the builder, builds the listing and dispute archives, pins them and returns the arguments of `list()`; the baseline scan between listing and open, its findings served to the maker's wallet only (P4b2); the indexer, keeper, listing feed, record mirror, labels and badge (P4b1) over one deployment; the project's proof, refused listing attempts counted by reason, what counts on the record, the fork label (P8, P9). | `npm test`, `npm run test:builder`, `npm run abi` |
-| `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b); renew, close and withdraw on a listing's page. | `npm test`, `npx playwright test` |
+| `client/` | Vite + React site, port 5176: the maker's listing flow, the disclosure key made in the browser, and decrypt-and-check (P6a); the record page, the badge embed, the feed, the maker's release, roll forward and dispute, pending evaluations watched, the baseline scan read (P6b); a top-up, renew, close and withdraw on a listing's page. | `npm test`, `npx playwright test` |
 | `tool/` | `verdikta-attest`, the hunter's CLI and the library it wraps (P5): `check`, `commit`, `reveal`, `status`, `claim`, and `appeal` (P18). See "The hunter tool". | `npm test` |
 | `shared/` | Code shared by the packages (the banned-words helper, the rules of the project's proof, the warning every listing page carries, "did the builder sign this listing") and the app's repository checks. | `npm test` |
 | `builder/` | `verdikta-build-env`, the environment builder (P3a): builds and pushes a listing's env image, checks a contract's verified source, validates the listing on the arbiters' code-runner and signs `attestation.json`; the baseline scan, for the maker only (P3b); `verdikta-control-check`, what git says about a listing's repository (P8); the listing's proof, refused before anything is built (P9). The reusable workflow that runs it is `.github/workflows/stake-attestation-builder.yml`. | `npm test`, `npm run test:docker` |
@@ -1417,6 +1417,14 @@ goes in a URL.
   The same page carries the rest of a listing's life, each read again through the wallet before it
   is sent (`client/src/components/ListingActions.jsx`; the rules, held to the contract's source,
   in `client/src/lib/listingActions.js`):
+  - **Top up**, while it is Open, Depleted or Rolled: what the escrow holds, the top award and
+    what the listing owes hunters, and `fund` with `expectedFeeWei` 0, which makes it a top-up and
+    nothing else (on a Listed listing the same call would be the opening fund, and the contract
+    refuses it). The contract pays what is owed first, claim by claim in commit order, into each
+    hunter's balance in the contract, and escrows the rest; the page says how an amount would split
+    before it is sent, and that a Depleted listing reopens once nothing is owed and its escrow is
+    back at the top award (its amount field starts at what that takes). The receipt's `OwedPaid`,
+    `Funded` and `Reopened` events say what happened.
   - **Renew**, while it is Open or Depleted: until when the listing fee is paid (or that the period
     has lapsed, by the chain's time), the fee for 30 more days read from `listingFeeWei()`, and
     `renew` with exactly that. A fee that moved since the page read it sends nothing.
@@ -1429,7 +1437,7 @@ goes in a URL.
     contract could not send directly (`_payOrCredit` forwards 120,000 gas, which a contract wallet
     may exceed). A wallet that is held nothing is shown nothing.
   The page reads the listing again after each without taking itself down, so what was done stays
-  said. A top-up of the escrow (`fund` on an open listing) still has no page.
+  said.
 - **Every listing page** (the feed, the record, a listing's own page) warns who reads a proof
   first and that the code may exist elsewhere (`shared/src/listingWarning.js`, which the hunter
   tool repeats). A listing's own page says whether the site offers a commit on it.

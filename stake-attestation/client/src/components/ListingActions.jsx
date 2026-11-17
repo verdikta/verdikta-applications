@@ -3,15 +3,137 @@ import { ArrowRight } from 'lucide-react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { chainReader, stakeAttestation } from '../chain/wallet.js';
+import { ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
-import { closeTerms, renewTerms } from '../lib/listingActions.js';
+import { closeTerms, renewTerms, topUpEffect, topUpTerms } from '../lib/listingActions.js';
 import { STRINGS, fill } from '../strings.js';
+import { TextField } from './Field.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 const stateWords = (l) => STRINGS.fund.states[LISTING_STATES[Number(l.state)]] ?? String(l.state);
 /** The block the wallet's node is at: a raw eth_blockNumber, since ethers' getBlockNumber() may answer from a cache. */
 const blockNow = async (provider) => Number(await provider.send('eth_blockNumber', []));
+
+/**
+ * A top-up (design §13.2): fund() on a listing that has opened, with no fee. The contract pays what the
+ * listing owes hunters first, in commit order, and escrows the rest; a Depleted listing reopens once
+ * nothing is owed and the escrow is back at the top award. The page says what the listing holds and
+ * owes, and what the amount typed would do, before anything is sent. Just before sending, the listing
+ * is read again through the wallet: one that can no longer be topped up sends nothing. fund() is sent
+ * with expectedFeeWei 0, so it can only ever be a top-up: on a listing that is still Listed, where the
+ * same call would be the opening fund, the contract refuses it ("fee changed"). The receipt says what
+ * went to hunters (OwedPaid), what the escrow holds now (Funded) and whether the listing reopened.
+ */
+export function TopUpEscrow({ listingId, listing, onChanged = () => {} }) {
+  const w = useWalletContext();
+  const id = useId();
+  const T = STRINGS.topUp;
+  const terms = topUpTerms(listing);
+  // a depleted listing: what reopens it is the amount to start from
+  const [amount, setAmount] = useState(terms.toReopenWei ? formatEth(terms.toReopenWei) : '');
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null); // { tx, toOwed, escrow, reopened }
+  const [error, setError] = useState(null);
+
+  if (!terms.can && !done) return null;
+
+  let wei = null;
+  let amountError = null;
+  if (amount.trim() !== '') {
+    try {
+      wei = BigInt(ethToWei(amount));
+      if (wei === 0n) {
+        wei = null;
+        amountError = T.positive;
+      }
+    } catch {
+      amountError = STRINGS.listing.bounds.amount;
+    }
+  }
+  const effect = wei === null ? null : topUpEffect(listing, wei);
+
+  const topUp = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { signer, provider, account } = await w.ensure();
+      if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
+      const reader = stakeAttestation(provider);
+      const mine = await reader.getListing(BigInt(listingId), { blockTag: await blockNow(provider) });
+      if (!topUpTerms(mine).can || !same(mine.maker, account)) {
+        setError(fill(T.changed, { id: listingId, state: stateWords(mine) }));
+        onChanged();
+        return undefined;
+      }
+      const tx = await stakeAttestation(signer).fund(BigInt(listingId), 0n, { value: wei });
+      const receipt = await tx.wait();
+      let toOwed = 0n;
+      let escrow = null;
+      let reopened = false;
+      for (const log of receipt.logs) {
+        let event = null;
+        try {
+          event = reader.interface.parseLog(log);
+        } catch {
+          // another contract's log
+        }
+        if (event?.name === 'OwedPaid') toOwed += event.args.amountWei;
+        if (event?.name === 'Funded') escrow = event.args.escrowWei;
+        if (event?.name === 'Reopened') reopened = true;
+      }
+      if (escrow === null) escrow = (await reader.getListing(BigInt(listingId))).escrowWei;
+      setDone({ tx: tx.hash, toOwed, escrow, reopened });
+      setAmount('');
+      onChanged();
+    } catch (err) {
+      setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
+    } finally {
+      setBusy(false);
+    }
+    return undefined;
+  };
+
+  return (
+    <section className="claim" aria-labelledby={id} data-testid="top-up">
+      <h3 id={id}>{T.title}</h3>
+      <p>{T.intro}</p>
+      {terms.can && (
+        <>
+          <p data-testid="top-up-escrow">{fill(T.escrow, { eth: formatEth(terms.escrowWei), top: formatEth(terms.topWei) })}</p>
+          {terms.owedWei > 0n && <p data-testid="top-up-owed">{fill(T.owed, { eth: formatEth(terms.owedWei) })}</p>}
+          {terms.state === 'Depleted' && <p className="warning" data-testid="top-up-depleted">{fill(T.depleted, { eth: formatEth(terms.toReopenWei) })}</p>}
+          {terms.state === 'Rolled' && <p className="hint" data-testid="top-up-rolled">{T.rolled}</p>}
+        </>
+      )}
+      {done && (
+        <p className="ok" data-testid="topped-up">
+          {done.toOwed > 0n
+            ? fill(T.doneOwed, { tx: done.tx, owed: formatEth(done.toOwed), eth: formatEth(done.escrow) })
+            : fill(T.done, { tx: done.tx, eth: formatEth(done.escrow) })}
+          {done.reopened ? ` ${T.reopened}` : ''}
+        </p>
+      )}
+      {terms.can && (
+        <>
+          <TextField label={T.amount} value={amount} onChange={setAmount} inputMode="decimal" error={amountError} testId="top-up-amount" />
+          {effect && (
+            <p className="hint" data-testid="top-up-effect">
+              {effect.toOwedWei > 0n
+                ? fill(T.effect, { owed: formatEth(effect.toOwedWei), rest: formatEth(effect.toEscrowWei), after: formatEth(effect.escrowAfterWei) })
+                : fill(T.effectPlain, { after: formatEth(effect.escrowAfterWei) })}
+              {effect.reopens ? ` ${T.reopens}` : ''}
+            </p>
+          )}
+          <button type="button" onClick={topUp} disabled={busy || wei === null}>
+            {busy ? T.sending : wei === null ? T.buttonNoAmount : fill(T.button, { eth: formatEth(wei) })}
+          </button>
+        </>
+      )}
+      {error && <p className="error" role="alert">{error}</p>}
+    </section>
+  );
+}
 
 /**
  * renew() (design §13.2): the maker pays the listing fee again for another 30 days. The fee is read from

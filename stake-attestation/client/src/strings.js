@@ -891,6 +891,33 @@ export const STRINGS = {
     changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
   },
   // A listing's later life, on its own page (design §13.2): the contract's renew(), close() and withdraw().
+  topUp: {
+    title: 'Top up the escrow',
+    intro:
+      'A top-up adds to this listing\'s escrow, with no fee. What the listing owes hunters is paid first, claim by ' +
+      'claim in the order they were committed, and the rest goes to the escrow. An amount paid to a hunter this way ' +
+      'is held by the contract for that hunter to withdraw.',
+    escrow: 'Escrow now: {eth} ETH. Top award: {top} ETH.',
+    owed: 'Owed to hunters: {eth} ETH. A top-up pays this first.',
+    depleted:
+      'This listing is depleted: its escrow is below its top award, so it takes no new claims. It reopens once ' +
+      'nothing is owed and the escrow is back at the top award, which takes {eth} ETH or more.',
+    rolled:
+      'This listing rolled forward: it takes no new claims, and a top-up does not reopen it. Its escrow pays the ' +
+      'claims still settling against it.',
+    amount: 'Amount (ETH)',
+    positive: 'Enter an amount above 0.',
+    effect: 'Of this, {owed} ETH goes to hunters who are owed it and {rest} ETH to the escrow, which will then hold {after} ETH.',
+    effectPlain: 'The escrow will then hold {after} ETH.',
+    reopens: 'The listing reopens.',
+    button: 'Top up, paying {eth} ETH',
+    buttonNoAmount: 'Top up',
+    sending: 'Sending fund()…',
+    done: 'Topped up (transaction {tx}). The escrow now holds {eth} ETH.',
+    doneOwed: 'Topped up (transaction {tx}). {owed} ETH went to hunters who were owed it, and the escrow now holds {eth} ETH.',
+    reopened: 'The listing is open again.',
+    changed: 'Nothing was sent: listing {id} can no longer be topped up (it is {state}). It has been read again.',
+  },
   renew: {
     title: 'Renew',
     intro:

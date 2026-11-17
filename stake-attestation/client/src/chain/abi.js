@@ -61,6 +61,10 @@ export const STAKE_ATTESTATION_ABI = Object.freeze([
   // read from close()'s receipt: what came back, and whether the contract could send it
   'event Closed(uint256 indexed listingId, address indexed maker, uint256 amountReturned)',
   'event PaymentDeferred(address indexed to, uint256 amount)',
+  // read from a top-up's receipt: what went to the escrow, what paid an award that was owed, whether it reopened
+  'event Funded(uint256 indexed listingId, address indexed maker, uint256 amountWei, uint256 escrowWei)',
+  'event OwedPaid(uint256 indexed claimId, uint256 indexed listingId, address indexed hunter, uint256 amountWei, uint256 stillOwedWei)',
+  'event Reopened(uint256 indexed listingId, uint256 escrowWei)',
 ]);
 
 /** StakeAttestation's enums, in declaration order (test/enums.test.js reads them from the source). */

@@ -1,5 +1,6 @@
 // What a maker can do with a listing once it is listed, from getListing's answer, as the contract decides
-// it: renew() and close(). Pure, so the rules are tested without a chain.
+// it: a top-up (fund() on a listing that has opened), renew() and close(). Pure, so the rules are tested
+// without a chain.
 import { LISTING_STATES } from '../chain/abi.js';
 
 /** The paid period one listing fee buys: StakeAttestation.LISTING_PERIOD, 30 days. */
@@ -37,4 +38,41 @@ export function closeTerms(l) {
   else if (pending > 0n) why = 'pending';
   else if (owedWei > 0n) why = 'owed';
   return { can: why === null, why, pending, owedWei, escrowWei: BigInt(l.escrowWei) };
+}
+
+/**
+ * A top-up: fund() on a listing that has opened (Open, Depleted or Rolled), with no fee. It pays what
+ * the listing owes first and escrows the rest. A Depleted listing reopens once nothing is owed and its
+ * escrow is back at the top award; a Rolled one stays Rolled.
+ * @param {object} l - getListing's answer
+ * @returns {{ can: boolean, state: string, escrowWei: bigint, owedWei: bigint, topWei: bigint, toReopenWei: bigint|null }}
+ *          `toReopenWei`: for a Depleted listing, the least that reopens it; null for any other
+ */
+export function topUpTerms(l) {
+  const state = stateOf(l);
+  const escrowWei = BigInt(l.escrowWei);
+  const owedWei = BigInt(l.owedWei);
+  const topWei = BigInt(l.awards[3]);
+  const short = topWei > escrowWei ? topWei - escrowWei : 0n;
+  return {
+    can: state === 'Open' || state === 'Depleted' || state === 'Rolled',
+    state,
+    escrowWei,
+    owedWei,
+    topWei,
+    toReopenWei: state === 'Depleted' ? owedWei + short : null,
+  };
+}
+
+/**
+ * What a top-up of `amountWei` does to the listing, as ClaimLogic.topUp does it.
+ * @returns {{ toOwedWei: bigint, toEscrowWei: bigint, escrowAfterWei: bigint, reopens: boolean }}
+ */
+export function topUpEffect(l, amountWei) {
+  const t = topUpTerms(l);
+  const amount = BigInt(amountWei);
+  const toOwedWei = amount < t.owedWei ? amount : t.owedWei;
+  const toEscrowWei = amount - toOwedWei;
+  const escrowAfterWei = t.escrowWei + toEscrowWei;
+  return { toOwedWei, toEscrowWei, escrowAfterWei, reopens: t.state === 'Depleted' && toOwedWei === t.owedWei && escrowAfterWei >= t.topWei };
 }

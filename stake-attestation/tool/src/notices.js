@@ -48,6 +48,27 @@ export const RETRIGGER_SAME_CLAIM = 'A re-trigger sends the same committed claim
 export const ABSTAIN_BY_CLAIM = `A run that ends this way decides nothing: every arbiter abstains the same way, with no commit and no verdict, unless its host differs. ${ABSTAIN_COSTS} So this check is the one place you can see it.`;
 export const ABSTAIN_BY_HOST = `No forecast: this machine's runner could not finish the run, which says nothing of your claim. Fix it and run check again. On the arbiters, an abstain costs this: ${ABSTAIN_COSTS}`;
 
+/**
+ * Claims on a listing reveal in commit order (decision D5; ClaimLogic.revealDeadline): said before anyone pays, with the
+ * listing's own count. A listing that takes commits holds no late claim, so its pendingClaims are the claims ahead.
+ * @param {{ pendingClaims?: bigint, headClaim?: bigint }} t
+ */
+export function queueNotice(t) {
+  if (t.pendingClaims === undefined || t.pendingClaims === null) return null;
+  const open = BigInt(t.pendingClaims);
+  if (open === 0n) return 'No other claim on this listing is open now, so a commit sent now would be first in commit order.';
+  return `Open claims on this listing now: ${open}, the earliest claim ${t.headClaim}. Claims reveal in commit order: yours can be revealed only once every claim committed before it is settled or expired, whatever its own fix window says and even if the maker releases it.`;
+}
+
+/**
+ * What an admission refusal for memory is on a hunter's machine, said under every admission refusal: the runner's own
+ * detail, printed above it, says which refusal it is and names the figures (it also refuses for a busy slot, a full
+ * disk or a shutdown), and no words of the runner's are matched to decide. The memory a run may use is the class's
+ * hard limit (@verdikta/common CLASS_HARD_LIMITS), which no setting lowers; a claim with a fix.patch opens two
+ * sandboxes at once (code-runner src/claim.js, sandboxesFor).
+ */
+export const ADMISSION_HINT = 'When the runner refuses for memory, as its detail says: a run\'s sandbox may use up to the class\'s memory limit, which no setting lowers, twice over for a claim with a fix.patch, and the runner holds more back for an arbiter\'s other services. Give the machine Docker runs in more memory, check the claim without its fix.patch, or lower that reserve in the runner\'s settings on a machine that runs no arbiter.';
+
 export const NO_PROOF_CHECK = 'This tool checks that the builder signed this listing. It does not check that the on-chain maker is the address the repository names: the site does that, and shows a listing that fails it apart.';
 
 /** @param {object} t - the terms (listing.js termsForNotice) */
@@ -72,6 +93,7 @@ export function commitNotice(t) {
     `Awards: ${awards}; lowest class counted: ${t.lowestClass}`,
     `This commit sends ${eth(t.priceWei)}: the bond ${eth(t.bondWei)} and the prepay ${eth(t.feeWei)}, the live maximum fee.`,
     `The fix window is ${t.fixWindow} s from your disclosure, the reveal window ${t.revealWindow} s, the dispute window ${t.disputeWindow} s.`,
+    ...(queueNotice(t) ? [queueNotice(t)] : []),
     // node P35: the key in both its forms, the archive's and the chain's, and that they are one key
     ...(t.disclosureRecipient ? [`Disclosure key: ${t.disclosureRecipient}, on-chain the bytes32 ${t.disclosureKey}. ${DISCLOSURE_KEY_NOTE}`] : []),
   ].join('\n');

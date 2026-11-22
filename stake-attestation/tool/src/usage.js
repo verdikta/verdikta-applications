@@ -33,15 +33,19 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      run it before committing: nothing leaves this machine, and it is the only place some
                      failures show. commit does not ask for it
                      --no-pack prints status and codes only: no pack, and nothing else that can quote the proof
+                     a folder with none of a claim's files is refused, with no forecast: it says nothing of a claim
                      on a listing that names documents (stake.documents), check shows the documents tier the runner
                      built: the maker's statement of what the code must do. Documents never widen the scope
   commit <claim-dir> --listing <id> [--yes] [--restart] [--accept-unread-pin]
+                     on a folder with no commit signed yet, without --yes it prints the terms, the price and how
+                     many claims on the listing are open ahead of yours, and sends nothing
   reveal <claim-dir> [--retrigger] [--yes]
                      pins the plaintext and pays any top-up the live fee needs; prints it, and sends only with --yes
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes
   status <claim-dir|claim-id> [--wait] [--max-wait-ms <n>]
                      a round with no verdict reads as one as soon as the aggregator's time for it is over, before
                      anyone finalizes it; the reveal deadline is the chain's, and status says when a release moved it
+                     claims on a listing reveal in commit order: status names the earlier claim yours waits for
   claim <claim-dir|claim-id> [--waive-appeal]
                      --waive-appeal settles your own INVALID before anyone else may, which waives its appeal
                      on a settled claim, claim and status say who sent the settle (this run, the hunter's own

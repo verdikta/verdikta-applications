@@ -571,3 +571,53 @@ test('P32: a failed round\'s cost is its own numbers in ETH (testnet: 0.00012 of
     await (await w.aggregator.setRefundAmount(0n)).wait();
   }
 });
+
+// Claims on a listing reveal in commit order (decision D5; ClaimLogic.revealDeadline). A hunter whose claim sat behind
+// another's read "in its fix window" and then a reveal deadline of 0, with nothing to say why (tester bounty 400).
+test('claims reveal in commit order: status names the earlier claim yours waits for, before and after a release, and no longer once it is settled', async () => {
+  const l = await w.listing({ stake: { fixWindowDays: 14, disclosureGraceHours: 48 } });
+  const first = makeClaimDir();
+  const second = makeClaimDir();
+  const a = await w.hunter().commit({ claimDir: first, listingId: l.listingId, acknowledge: true });
+  const b = await w.hunter().commit({ claimDir: second, listingId: l.listingId, acknowledge: true });
+  const read = (claimDir) => w.hunter({ signer: undefined }).status({ claimDir });
+  // the first claim heads the queue: it waits for none, and its text is as before
+  const head = await read(first);
+  assert.equal(head.waitsFor, null);
+  assert.doesNotMatch(head.next, /commit order/);
+  // the second, in its fix window: it waits for the first, and status says so
+  const inWindow = await read(second);
+  assert.equal(inWindow.state, 'Committed');
+  assert.equal(inWindow.waitsFor, a.claimId);
+  assert.match(inWindow.next, new RegExp(`Claim ${a.claimId} was committed on this listing before yours and is neither settled nor expired`));
+  assert.match(inWindow.next, /claims reveal in commit order/);
+  // released by the maker: past its fix window, and it still cannot be revealed. No deadline, and why
+  await (await w.sa.connect(w.maker).release(b.claimId)).wait();
+  const released = await read(second);
+  assert.equal(released.state, 'Revealable');
+  assert.equal(released.times.revealDeadline, 0n, 'the chain sets no deadline behind an earlier claim');
+  assert.equal(released.waitsFor, a.claimId);
+  assert.match(released.next, /The fix window is over, and the claim still waits\./);
+  assert.match(released.next, new RegExp(`Claim ${a.claimId} was committed on this listing before yours`));
+  assert.match(released.next, /until then it reads 0/);
+  assert.match(released.next, /If that claim is abandoned, it leaves the queue only when someone calls expire on it after its own deadline: anyone may/);
+  await assert.rejects(w.hunter().reveal({ claimDir: second, acknowledge: true }), (e) => e.code === 'OUT_OF_ORDER');
+  const cli = await runCli(w, ['status', second], { keyVia: 'none' });
+  assert.equal(cli.code, 0, cli.stderr);
+  assert.match(cli.stdout, new RegExp(`Claim ${a.claimId} was committed on this listing before yours`));
+  assert.doesNotMatch(cli.stdout, /Reveal before/, 'no deadline is printed while the chain has none');
+  const json = JSON.parse((await runCli(w, ['status', second, '--json'], { keyVia: 'none' })).stdout);
+  assert.equal(json.waitsFor, String(a.claimId));
+  assert.equal(json.times.revealDeadline, '0');
+  // the first claim settles: the second heads the queue, has its deadline, and waits for none
+  await (await w.sa.connect(w.maker).release(a.claimId)).wait();
+  await w.hunter().reveal({ claimDir: first, acknowledge: true });
+  await script((await w.sa.getClaim(a.claimId)).requestId, 'DUPLICATE');
+  await w.hunter().finalize(a.claimId);
+  await w.hunter().settle(a.claimId);
+  const freed = await read(second);
+  assert.equal(freed.waitsFor, null);
+  assert.ok(freed.times.revealDeadline > 0n);
+  assert.match(freed.next, new RegExp(`Run reveal before ${freed.times.revealDeadline}`));
+  assert.doesNotMatch(freed.next, /commit order/);
+});

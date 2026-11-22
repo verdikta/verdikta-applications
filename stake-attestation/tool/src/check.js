@@ -6,6 +6,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import path from 'node:path';
 
 import { readSignedListing } from '@verdikta/stake-attestation-shared/builder-signature';
 import { readZipMember, zipDirectory } from '@verdikta/stake-attestation-shared/zip-read';
@@ -117,6 +118,14 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
   if (ctx.runner.allowRemote) ctx.notice(REMOTE_RUNNER_NOTICE);
   else if (!isLoopback(runnerUrl)) throw fail('RUNNER_NOT_LOCAL');
 
+  // A folder with none of a claim's files is a wrong folder, not a claim that fails: nothing is forecast for it, and
+  // nothing is read from the chain or sent to the runner. One missing file among the others is the claim's own gap,
+  // and is forecast below as the arbiters' External Adapter would settle it.
+  const inputs = readClaimInputs(claimDir);
+  if (!inputs.finding && !inputs.report && !inputs.pocPatch) throw fail('NO_CLAIM_FILES');
+  // where the files were read from, as the forecast's first line says it: it holds a claim's files, so it is a folder
+  const folder = path.resolve(claimDir);
+
   let listing;
   let priorFindings = { read: 0, unread: [], total: null };
   let priors = [];
@@ -138,14 +147,13 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
     priorFindings = { read: read.findings.length, unread: read.unread, total: read.total };
   }
   // No run on a listing a commit would refuse: its image is one nobody attested, and this is the hunter's machine.
-  if (local[0].status === 'fail') return { forecast: buildForecast({ local, answer: null, spec: listing.spec, pocPatch: Buffer.alloc(0), lint: [], priorFindings, notes: [] }), pack: null, run: null };
+  if (local[0].status === 'fail') return { claimDir: folder, forecast: buildForecast({ local, answer: null, spec: listing.spec, pocPatch: Buffer.alloc(0), lint: [], priorFindings, notes: [] }), pack: null, run: null };
   // A listing that names stake.documents (node P20) is sent with its spec as signed, as the External Adapter sends it:
   // the runner reads the documents from the listed commit, and the forecast shows the tier it built (forecast.js).
   const { spec } = listing;
   if (!/@sha256:[0-9a-f]{64}$/.test(String(spec.env?.image ?? ''))) throw fail('LISTING_ARCHIVE_INVALID', 'Its image is not named by digest.');
   const files = runnerFilesOf(listing.listingBytes, spec);
 
-  const inputs = readClaimInputs(claimDir);
   // Advice only (owner, 2026-11-10, Q73 #2): no gate reads the section, so it changes no forecast.
   const reportWarnings = requirementWarnings(inputs.report);
   const parsed = parseFinding(inputs.finding);
@@ -160,7 +168,7 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
   const pocPatch = inputs.pocPatch ?? Buffer.alloc(0);
   const lint = schema?.ok ? lintObservable({ finding: parsed.value, pocPatch, baseline: files.baseline }) : [];
   const limit = maxPatchBytes(spec);
-  const stop = (extra = []) => ({ forecast: buildForecast({ local: [...local, ...extra], answer: null, spec, pocPatch, lint, priorFindings, notes, reportWarnings }), pack: null, run: null });
+  const stop = (extra = []) => ({ claimDir: folder, forecast: buildForecast({ local: [...local, ...extra], answer: null, spec, pocPatch, lint, priorFindings, notes, reportWarnings }), pack: null, run: null });
   if (!schema?.ok || !inScope) return stop();
   const badReport = reportProblem(inputs.report);
   if (badReport) return stop([gate('report', 'fail', badReport)]);
@@ -193,5 +201,5 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
   };
   const answer = await callRunner(ctx, request);
   const forecast = buildForecast({ local, answer, spec, pocPatch, lint, priorFindings, notes, reportWarnings });
-  return { forecast, pack: answer.body?.contextPack ?? null, run: { runId: answer.body?.runId ?? null } };
+  return { claimDir: folder, forecast, pack: answer.body?.contextPack ?? null, run: { runId: answer.body?.runId ?? null } };
 }

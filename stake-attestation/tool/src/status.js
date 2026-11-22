@@ -114,6 +114,13 @@ export async function snapshot(ctx, claimId, live = () => true) {
   const appealDeadline = lens === 'Judged' ? await read('appealDeadline') : 0n;
   const [confirmOpensAt, confirmDeadline] = lens === 'Judged' || lens === 'Disputed' ? await read('confirmWindow') : [0n, 0n];
   const outcome = judged ? OUTCOMES[Number(claim.outcome)] : null;
+  // Claims on a listing reveal in commit order (decision D5): while this one is still to be revealed and another
+  // heads the listing's queue, that one comes first, whatever this claim's own fix window says.
+  let waitsFor = null;
+  if ((lens === 'Committed' || lens === 'Revealable') && claim.disclosedAt !== 0n) {
+    const { headClaim } = await step(() => ctx.read('getListing', [claim.listingId], at));
+    if (headClaim !== 0n && headClaim !== BigInt(claimId)) waitsFor = headClaim;
+  }
   let narrow = null;
   if (outcome === 'INVALID') {
     const j = await step(() => ctx.read('judgeVector', [claim.listingId, [...claim.vector].map(BigInt)], at));
@@ -158,6 +165,8 @@ export async function snapshot(ctx, claimId, live = () => true) {
     // node P32: a Committed claim is either undisclosed or disclosed and in its fix window; status says which
     disclosed: claim.disclosedAt !== 0n,
     inFixWindow: lens === 'Committed' && claim.disclosedAt !== 0n && BigInt(block.timestamp) < times.revealableAt,
+    // the earliest claim on the listing neither settled nor expired, when it is another: this one reveals after it
+    waitsFor,
     pending: lens === 'Revealed' || lens === 'Disputed',
     ready: null,
     // what finalize would record for a round that is over (readNow): 'verdict', 'noVerdict', or null
@@ -260,18 +269,24 @@ function movedText(m) {
 
 /** What the chain says of an early end to the fix window, when nothing recorded says what the hunter was told. */
 function earlyEndText(s) {
-  if (s.released) return `The maker released this claim, which ended its fix window at ${s.raw.fixWindowEnd} on the chain's clock: the reveal deadline runs from then.`;
+  // behind an earlier claim the deadline does not run from the release: it is set once this claim heads the queue
+  if (s.released) return `The maker released this claim, which ended its fix window at ${s.raw.fixWindowEnd} on the chain's clock${s.waitsFor ? '.' : ': the reveal deadline runs from then.'}`;
   return '';
+}
+
+/** What a claim behind another in commit order waits for, and that its reveal deadline is not set until then. */
+function queueText(s) {
+  return `Claim ${s.waitsFor} was committed on this listing before yours and is neither settled nor expired: claims reveal in commit order, so yours can be revealed only once that claim, and any claim between the two, is settled or expired. The chain sets your reveal deadline then, and until then it reads 0. If that claim is abandoned, it leaves the queue only when someone calls expire on it after its own deadline: anyone may, and this tool has no command for it.`;
 }
 
 function nextFor(s) {
   switch (s.state) {
     case 'Committed':
       if (s.disclosedAt === 0n) return `Not disclosed yet: run commit again before ${s.times.discloseDeadline} on the chain's clock, or the bond goes to the maker.`;
-      return `Disclosed, and in the fix window until ${s.times.revealableAt} on the chain's clock. Then reveal. A release by the maker ends the fix window early, and the reveal deadline with it: status says so.`;
+      return [`Disclosed, and in the fix window until ${s.times.revealableAt} on the chain's clock. Then reveal. A release by the maker ends the fix window early, and the reveal deadline with it: status says so.`, s.waitsFor ? queueText(s) : ''].filter(Boolean).join(' ');
     case 'Revealable': {
       const early = s.revealDeadlineMoved ? movedText(s.revealDeadlineMoved) : earlyEndText(s);
-      const what = s.times.revealDeadline === 0n ? 'Revealable once every earlier claim on the listing is settled or expired: reveal then.' : `Run reveal before ${s.times.revealDeadline} on the chain's clock, or the bond goes to the maker: without --yes it says what it would send, and sends nothing.`;
+      const what = s.times.revealDeadline === 0n ? `The fix window is over, and the claim still waits. ${s.waitsFor ? queueText(s) : 'Revealable once every earlier claim on the listing is settled or expired.'} Run status again, and reveal once it prints a reveal deadline.` : `Run reveal before ${s.times.revealDeadline} on the chain's clock, or the bond goes to the maker: without --yes it says what it would send, and sends nothing.`;
       return [early, what].filter(Boolean).join(' ');
     }
     case 'Revealed':

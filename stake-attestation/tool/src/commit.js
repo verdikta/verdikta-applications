@@ -350,7 +350,7 @@ async function resultOf(ctx, state) {
   // node P32: the reveal deadline as the lens has it, or, while an earlier claim heads the queue, the earliest it can be
   // (revealWindow from the fix window's end; later if that claim is still open then). Only while it is still to come:
   // a re-run on a claim that has revealed, or ended, says none.
-  const { revealWindow } = await ctx.read('getListing', [claim.listingId]);
+  const { revealWindow, headClaim } = await ctx.read('getListing', [claim.listingId]);
   const lens = CLAIM_STATES[Number(await ctx.read('claimState', [state.claimId]))];
   const ahead = lens === 'Committed' || lens === 'Revealable';
   const earliest = ahead ? times.revealDeadline === 0n : null;
@@ -368,6 +368,8 @@ async function resultOf(ctx, state) {
     revealableAt: times.revealableAt,
     revealDeadline: !ahead ? null : earliest ? times.revealableAt + BigInt(revealWindow) : times.revealDeadline,
     revealDeadlineEarliest: earliest,
+    // the earliest open claim on the listing while it is another: this one reveals after it (commit order)
+    waitsFor: earliest && headClaim !== 0n && headClaim !== BigInt(state.claimId) ? headClaim : null,
     commitTx: state.commitTx?.hash ?? null,
     discloseTx: state.discloseTx?.hash ?? null,
   };

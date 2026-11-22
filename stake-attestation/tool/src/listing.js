@@ -154,6 +154,9 @@ export function termsForNotice(listing, priceWei) {
     revealWindow: l.revealWindow,
     disputeWindow: l.disputeWindow,
     invited: l.allowlist.length > 0,
+    // the commit-order queue: the claims on this listing neither settled nor expired, and the earliest of them
+    pendingClaims: l.pendingClaims,
+    headClaim: l.headClaim,
     disclosureKey: l.disclosureKey,
     disclosureRecipient: disclosureRecipientOf(l.disclosureKey),
   };

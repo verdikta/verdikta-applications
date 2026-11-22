@@ -1290,12 +1290,24 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   this run (its rank, status, files read and each reason a file was left out, `--no-pack` included); the pack, printed
   in full, holds the files. The tool works none of it out itself: what it shows is the runner's answer, and its tests
   hold it to a pack recorded from the runner at the pin (`tool/test/fixtures/runner-answers/documents.record.cjs`). A
-  listing that names no documents checks as it did, with no `documents` in the forecast.
+  listing that names no documents checks as it did, with no `documents` in the forecast. Its first line is the folder it
+  read, as an absolute path. A folder with none of a claim's files (`finding.json`, `report.md`, `poc.patch`) is refused
+  with `NO_CLAIM_FILES` before anything is read from the chain or sent to the runner: that is a wrong path, not a claim
+  that fails, so it gets no forecast (one missing file among the others is still forecast as the arbiters would settle
+  it). An abstain with the cause `admission_refused` carries fixed words under the runner's own detail
+  (`ADMISSION_HINT`, `src/notices.js`), for the refusal a hunter's machine meets first, too little memory: the
+  sandbox's memory is the class's hard limit, which no setting lowers, a claim with a `fix.patch` opens two sandboxes,
+  the runner holds more back for an arbiter's other services, and what to change. The runner refuses admission for a
+  busy slot, a full disk or a shutdown too; its detail says which, and the words begin "When the runner refuses for
+  memory".
 - **`commit`** refuses a listing the builder did not sign, or whose on-chain key or terms are not what was signed; says P9's warning
   and the §8.6 diligence text, and the listing's disclosure key as an age recipient beside the bytes32 the chain stores, with the
   sentence that says they are one key; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
   `<claim>/.verdikta-claim/` at 0600. **Back that folder up: without its keys a claim cannot be revealed, and the bond is lost.**
   It sends `commit` with the bond and the live fee, and only once that is mined pins the ciphertext and calls `disclose`.
+  Claims on a listing reveal in commit order, so the terms it prints before it pays say how many claims on the listing
+  are open and which is the earliest (`queueNotice`, from the listing's `pendingClaims` and `headClaim`), and its result
+  names the claim it is behind (`waitsFor`), with the reveal deadline said as the earliest it can be.
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. Then, as `commit`,
@@ -1314,7 +1326,12 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   refuses with `ROUND_NOT_RECORDED`, and `claim` records it. An open round never reads as failed: `finalize`'s dry run is
   refused until the aggregator's timeout. A Committed claim says whether it is disclosed and in its fix window. The reveal deadline is the
   lens's, and against what `commit` printed and recorded (`told` in `state.json`) `status` says when a release or a
-  roll-forward moved it earlier; by a claim id, with nothing recorded, it says only what the chain says.
+  roll-forward moved it earlier; by a claim id, with nothing recorded, it says only what the chain says. A claim behind
+  another in commit order has no reveal deadline on-chain until it heads the listing's queue: `status` names the claim it
+  waits for (`waitsFor`, the listing's `headClaim` when it is another claim), in its fix window and after a release, and
+  prints no deadline until the chain has one. It also says that an abandoned claim ahead leaves the queue only when
+  someone calls `expire` on it: the tool has no verb for that, and the site's keeper expires claims only with
+  `SA_KEEPER_EXPIRE=on`.
 - **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text
   after it can say anything, and is not read. It shows the settlement safeguards (errata E7-E9), each from the lens: the appeal
   window (`appealDeadline`), the dispute-panel round's kind and result, a confirmation's window (`confirmWindow`), an appeal's

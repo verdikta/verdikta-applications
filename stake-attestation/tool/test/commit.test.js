@@ -529,6 +529,9 @@ test('P32: commit records the reveal deadline it prints, the earliest one behind
   // behind the first claim the lens has no deadline yet: the earliest it can be, said as that
   assert.equal((await w.sa.claimTimes(b.claimId)).revealDeadline, 0n);
   assert.equal(b.revealDeadlineEarliest, true);
+  // and the result names the claim it is behind; the one at the head names none
+  assert.equal(b.waitsFor, a.claimId);
+  assert.equal(a.waitsFor, null);
   assert.equal(b.revealDeadline, b.revealableAt + BigInt((await w.sa.getListing(l.listingId)).revealWindow));
   assert.deepEqual(rj(sp(second)).told, { revealableAt: String(b.revealableAt), revealDeadline: String(b.revealDeadline), earliest: true });
   // a re-run once the claim has revealed says no deadline and keeps the record it had
@@ -538,4 +541,38 @@ test('P32: commit records the reveal deadline it prints, the earliest one behind
   const again = await w.hunter().commit({ claimDir: first, listingId: l.listingId });
   assert.equal(again.revealDeadline, null);
   assert.deepEqual(rj(sp(first)).told, told);
+});
+
+// Tester bounty 400: a hunter picked a listing that already had an open claim and learned only at reveal that theirs
+// waits behind it. The terms a commit prints before anything is paid say it, from the listing's own queue.
+test('before it pays, commit says how many claims on the listing are open ahead, and names the claim it is behind afterwards', async () => {
+  const l = await w.listing({ stake: { fixWindowDays: 14, disclosureGraceHours: 48 } });
+  const first = makeClaimDir();
+  const second = makeClaimDir();
+  const said = async (dir) => {
+    const notices = [];
+    await assert.rejects(w.hunter({ onNotice: (t) => notices.push(t) }).commit({ claimDir: dir, listingId: l.listingId }), (e) => e.code === 'NEEDS_ACKNOWLEDGEMENT');
+    return notices.join('\n');
+  };
+  assert.match(await said(first), /No other claim on this listing is open now, so a commit sent now would be first in commit order\./);
+  const a = await w.hunter().commit({ claimDir: first, listingId: l.listingId, acknowledge: true });
+  const text = await said(second);
+  assert.match(text, new RegExp(`Open claims on this listing now: 1, the earliest claim ${a.claimId}\\.`));
+  assert.match(text, /yours can be revealed only once every claim committed before it is settled or expired/);
+  assert.match(text, /even if the maker releases it/);
+  assert.doesNotMatch(text, /No other claim/);
+  // the CLI: the same line in the dry run, and after the commit the claim it is behind, with where to read the deadline
+  const dry = await runCli(w, ['commit', second, '--listing', String(l.listingId)]);
+  assert.equal(dry.code, 3);
+  assert.match(dry.stdout, new RegExp(`Open claims on this listing now: 1, the earliest claim ${a.claimId}\\.`));
+  const sent = await runCli(w, ['commit', second, '--listing', String(l.listingId), '--yes']);
+  assert.equal(sent.code, 0, sent.stderr);
+  assert.match(sent.stdout, new RegExp(`at the earliest: claim ${a.claimId} is ahead of yours in commit order\\.`));
+  assert.match(sent.stdout, /read it from status, not from this line/);
+  // a claim at the head of the queue gets the plain line
+  const alone = await w.listing();
+  const solo = await runCli(w, ['commit', makeClaimDir(), '--listing', String(alone.listingId), '--yes']);
+  assert.equal(solo.code, 0, solo.stderr);
+  assert.doesNotMatch(solo.stdout, /at the earliest/);
+  assert.doesNotMatch(solo.stdout, /ahead of yours/);
 });

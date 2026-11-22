@@ -134,7 +134,8 @@ const asJson = (value) => `${JSON.stringify(value, replacer, 2)}\n`;
 const eth = (wei) => `${formatEther(wei)} ETH`;
 const when = (s) => (s === 0n || s === undefined ? '-' : `${s} (${new Date(Number(s) * 1000).toISOString()})`);
 
-function printForecast(out, { forecast: f, pack }, { noPack }) {
+function printForecast(out, { forecast: f, pack, claimDir }, { noPack }) {
+  if (claimDir) out(`Claim folder: ${claimDir}`);
   if (noPack) out('--no-pack: nothing that can quote your proof is printed, so this says status and codes only.');
   out(`Gate forecast: ${f.verdict.toUpperCase()}`);
   if (f.runner) out(`Runner ${f.runner.version} (${f.runner.runtime}, ${f.runner.platform})${f.image?.ref ? `, image ${f.image.ref}${f.image.cache ? `, ${f.image.cache}` : ''}` : ''}`);
@@ -145,6 +146,7 @@ function printForecast(out, { forecast: f, pack }, { noPack }) {
   }
   if (f.verdict === 'abstain') {
     out(`ABSTAIN: ${f.abstain.cause}${f.abstain.step ? ` at ${f.abstain.step}` : ''}${f.abstain.detail ? `: ${f.abstain.detail}` : ''}`);
+    if (f.abstain.hint) out(f.abstain.hint);
     out(f.abstain.cost);
   }
   if (f.reportUnavailable) out(`No report on this platform, only gates${noPack ? '' : ' and the pack'}: ${f.reportUnavailable}. The class's platform is linux/amd64.`);
@@ -188,7 +190,7 @@ function printCommit(out, r) {
   out(`Revealable at ${when(r.revealableAt)}. Keep .verdikta-claim: losing its keys forfeits the bond.`);
   if (r.revealDeadline === null) return;
   out(r.revealDeadlineEarliest
-    ? `Reveal before ${when(r.revealDeadline)} at the earliest: later if an earlier claim on the listing is still open when the fix window ends. A release by the maker moves it earlier: status says so.`
+    ? `Reveal before ${when(r.revealDeadline)} at the earliest${r.waitsFor ? `: claim ${r.waitsFor} is ahead of yours in commit order` : ''}. The chain sets your reveal deadline only once every earlier claim on the listing is settled or expired, so it is later than this if one is still open when the fix window ends: read it from status, not from this line. A release by the maker moves it earlier: status says so.`
     : `Reveal before ${when(r.revealDeadline)}. A release by the maker ends the fix window early and moves this earlier: status says so.`);
 }
 
@@ -304,8 +306,8 @@ async function dispatch(verb, args, io, env, write) {
       }
       const r = await hunter.check({ claimDir, listingId, listingArchive });
       const noPack = options['--no-pack'] === true;
-      const shown = noPack ? { forecast: withoutProofText(r.forecast), pack: null } : r;
-      if (json) write(io.stdout, asJson({ forecast: shown.forecast, pack: shown.pack }));
+      const shown = noPack ? { claimDir: r.claimDir, forecast: withoutProofText(r.forecast), pack: null } : r;
+      if (json) write(io.stdout, asJson({ claimDir: shown.claimDir, forecast: shown.forecast, pack: shown.pack }));
       else printForecast(out, shown, { noPack });
       return r.forecast.verdict === 'pass' ? 0 : 1;
     }

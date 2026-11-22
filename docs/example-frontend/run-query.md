@@ -2,6 +2,9 @@
 
 The Run Query page is where you execute your AI jury evaluation. You can choose from three different methods to run your query, each suited to different use cases and workflows.
 
+!!! note "Checked against the code"
+    Revised on 2026-11-22 against `example-frontend/client/src/pages/RunQuery.js` and `utils/timeoutUtils.js` in this repository, and against the aggregator on Base mainnet at `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a`. A query is paid in ETH, in the same transaction that submits it. There is no LINK step.
+
 ## Execution Methods
 
 ### Method 1: Use Current Configuration
@@ -90,61 +93,67 @@ This method references query packages already stored on IPFS using Content IDs.
 
 ### Prerequisites
 - **Wallet Connected**: MetaMask must be connected
-- **Network**: Automatically switches to Base Sepolia if needed
-- **LINK Tokens**: Contract must have sufficient LINK for AI service fees
+- **Network**: The wallet is switched to the network selected in the header, Base or Base Sepolia
+- **ETH**: Your wallet needs ETH for the evaluation prepayment (0.0012 ETH with the application's settings, see [Cost Considerations](#cost-considerations)) and for gas. No LINK is needed
 
 ### Transaction Steps
 
 #### 1. Network Check
-- Application automatically switches to Base Sepolia network
+- Application switches the wallet to the network selected in the header (Base or Base Sepolia)
 - MetaMask will prompt for network change if needed
 
-#### 2. LINK Token Approval
-- System requests approval to spend LINK tokens
-- This is a separate transaction from the main query execution
-- Approve the maximum amount requested for seamless operation
+#### 2. ETH Prepayment
+- There is no approval transaction: the fee is ETH sent with the query itself
+- The page reads the worst-case fee from the aggregator (`maxTotalFee()`) and any prepay credit you already hold there (`ethOwed()`), and attaches the difference
+- If your wallet holds less than that amount, the page stops with an "Insufficient ETH" message before anything is sent
 
 #### 3. Query Execution
-- Main transaction submits your query to the blockchain
-- Gas fees are automatically calculated with appropriate buffers
-- Transaction includes all query data and configuration
+- One transaction submits your query to the blockchain and carries the prepayment
+- The page sets a gas limit of 4,500,000 for this transaction
+- Transaction includes the query package CID(s) and the request parameters
 
 #### 4. Evaluation Wait
 - 5-minute countdown timer shows remaining time
-- Status updates show current evaluation progress
-- System polls for results every 5 seconds
+- System polls for results every 5 seconds, 60 times
 
-#### 5. Automatic Timeout Handling
-- If no response after 5 minutes, timeout transaction is sent
-- This marks the request as failed on the blockchain
-- You're notified if timeout occurs
+#### 5. If No Result Arrives
+- After about 5 minutes without a result the page stops waiting. It normally shows a timeout error and stays on the Run Query page
+- The page does not close the round on the blockchain. A round that has passed the aggregator's timeout (300 seconds on Base mainnet, 900 seconds on Base Sepolia) stays open until someone calls `finalizeEvaluationTimeout(requestId)` on the aggregator, and anyone can make that call. The page's own attempt to make it is not sent, because it is made without your wallet
+- Until the round is closed, the unspent part of your prepayment stays reserved in it. Once it is closed, that amount appears as your prepay credit
+- On Base Sepolia the aggregator's timeout is longer than the page waits, so a query the page reports as timed out can still complete there
 
 ### Status Messages
 
 During execution, you'll see various status updates:
 - **"Processing..."**: Initial setup
-- **"Checking contract funding..."**: Verifying LINK balance
-- **"Requesting LINK approval..."**: LINK token approval step
+- **"Building archive from config..."**, **"Creating ZIP package..."**, **"Uploading ZIP to server..."**: Packaging and uploading your query (Method 1)
+- **"Uploading file to server..."**: Uploading your ZIP file (Method 2)
+- **"Applying ... ETH credit; attaching ... ETH…"**: Part of the prepayment comes from your prepay credit
+- **"Fully covered by your existing prepay credit — no ETH needed beyond gas…"**: Your credit covers the whole prepayment
 - **"Sending transaction..."**: Submitting main transaction
 - **"Waiting for confirmation..."**: Transaction mining
 - **"Waiting for evaluation results..."**: AI processing
-- **"Fetching justification..."**: Retrieving results
+- **"Fetching justification from server..."**: Retrieving results
 
 ### Error Handling
 
 Common errors and solutions:
 
-#### "Insufficient LINK tokens"
-- **Cause**: Contract doesn't have enough LINK to pay for AI services
-- **Solution**: Contact administrator to fund the contract
+#### "Insufficient ETH"
+- **Cause**: Your wallet holds less ETH than the prepayment, or the transaction was sent with too little ETH (the contract's `InsufficientPayment` error)
+- **Solution**: Add ETH to your wallet and try again. The message states the amount needed
+
+#### "No eligible arbiters"
+- **Cause**: Too few active arbiters serve the selected class, or their fee is above the application's fee limit
+- **Solution**: Try a different class or contact the administrator
 
 #### "User rejected transaction"
 - **Cause**: You declined the transaction in MetaMask
 - **Solution**: Try again and approve the transaction
 
-#### "Evaluation results not received in time"
-- **Cause**: AI services didn't respond within 5 minutes
-- **Solution**: System automatically handles timeout; you can try again
+#### "TIMEOUT ERROR: Query timed out"
+- **Cause**: No result arrived within the 5 minutes the page waits
+- **Solution**: You can try again. The earlier round is not closed by the page: see [If No Result Arrives](#5-if-no-result-arrives) for how the unspent prepayment comes back
 
 #### Network or connectivity issues
 - **Solution**: Check internet connection and try again
@@ -152,27 +161,25 @@ Common errors and solutions:
 ## Cost Considerations
 
 ### Fee Components
+- **Evaluation Fee**: Paid in ETH to the arbiters that evaluate your query, out of a prepayment sent with the query
 - **Gas Fees**: Blockchain transaction costs (paid in ETH)
-- **LINK Fees**: AI service costs (paid in LINK tokens by the contract)
-- **Processing Fees**: Based on query complexity and jury configuration
+
+### How the Prepayment Works
+- The application sets a fee limit of 0.0001 ETH per arbiter (`MAX_FEE` in `client/src/App.js`). The aggregator requires a prepayment of 12 times that limit, 0.0012 ETH, which its `maxTotalFee()` function returns. The banner at the top of the page shows the amount
+- The round then costs what the selected arbiters charge: each of the 6 arbiters polled is credited its own fee, and each of the 2 arbiters whose answers are clustered gets 3 times its fee on top
+- On 2026-11-22 all 40 arbiters registered on Base mainnet charged 0.00002 ETH, so a completed query cost 0.00024 ETH in arbiter fees and a query that timed out cost 0.00012 ETH, plus gas
+- The rest of the prepayment is returned as **prepay credit** held in the aggregator. It is applied automatically to your next query, and the **"Withdraw credit"** button on this page sends it back to your wallet
 
 ### Cost Factors
-- **Number of AI models**: More models = higher LINK costs
-- **Runs per model**: Multiple runs increase costs linearly
-- **Iterations**: Multiple iterations multiply costs
-- **Query complexity**: Longer queries and more supporting data cost more
-
-### Fee Optimization
-- Use single models for testing
-- Start with minimal configurations
-- Increase complexity gradually as needed
-
+- **Arbiter fees**: Set by the arbiters that are selected, up to the application's fee limit
+- **Outcome of the round**: A completed round pays bonuses to two arbiters; a round that times out pays base fees only
+- The number of AI models, runs per model, iterations and the size of the query do not change the on-chain fee
 ## Best Practices
 
 ### Before Running
 - **Review Configuration**: Double-check all settings in the summary
 - **Test with Simple Queries**: Start with basic queries to understand the process
-- **Check Wallet Balance**: Ensure sufficient ETH for gas fees
+- **Check Wallet Balance**: Ensure sufficient ETH for the prepayment and gas fees
 
 ### During Execution
 - **Stay Connected**: Keep browser tab active during evaluation
@@ -188,8 +195,8 @@ Common errors and solutions:
 
 ### Transaction Failures
 1. Check MetaMask connection
-2. Verify network (should be Base Sepolia)
-3. Ensure sufficient ETH balance for gas
+2. Verify network (the one selected in the header: Base or Base Sepolia)
+3. Ensure sufficient ETH balance for the prepayment and gas
 4. Try again with fresh page load
 
 ### Upload Issues

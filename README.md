@@ -17,7 +17,7 @@ the bounty payment policy: bounties are paid only for work submitted through
 
 Verdikta is a decentralized AI jury system that enables transparent, reliable, and consensus-driven evaluations. The protocol combines:
 
-- **Blockchain Technology**: Smart contracts on Base Sepolia for transparent execution
+- **Blockchain Technology**: Smart contracts on Base (mainnet) and Base Sepolia (testnet) for transparent execution
 - **AI Integration**: Multiple AI providers (OpenAI, Anthropic, open-source models) 
 - **Decentralized Storage**: IPFS for immutable query and result storage
 - **Oracle Networks**: Chainlink for secure off-chain AI computations
@@ -32,8 +32,10 @@ verdikta-applications/
 ├── example-frontend/        # React-based AI Jury System
 │   ├── client/             # React frontend application
 │   └── server/             # Node.js backend API
-├── example-bounty-program/  # AI-Powered Bounty Program (in development)
-│   └── DESIGN.md           # Design document and architecture
+├── example-bounty-program/  # AI-Powered Bounty Program (live at bounties.verdikta.org)
+│   ├── client/             # React frontend application
+│   ├── server/             # Node.js backend API
+│   └── onchain/            # BountyEscrow smart contracts
 └── README.md               # This file
 ```
 
@@ -53,7 +55,7 @@ A complete React-based web application that provides a user-friendly interface f
 **Technology Stack:**
 - **Frontend**: React 18, Ethers.js v6, Chart.js
 - **Backend**: Node.js, Express, IPFS integration
-- **Blockchain**: Base Sepolia testnet, Chainlink oracles
+- **Blockchain**: Base mainnet and Base Sepolia testnet, Chainlink oracles; evaluation fees are paid in ETH
 - **Storage**: IPFS for decentralized file storage
 
 **Status:** ✅ Production Ready
@@ -71,21 +73,20 @@ A decentralized bounty platform where work submissions are automatically evaluat
 - 🤖 **AI Evaluation**: Verdikta's multi-arbiter system grades against rubric criteria
 - 📋 **Flexible Rubrics**: Define custom evaluation criteria with weights and thresholds
 - 🏆 **First-Past-Post**: First submission that passes automatically wins the bounty
-- 🔒 **Spam Protection**: LINK fees per submission deter frivolous attempts
+- 🔒 **Spam Protection**: Each submission prepays its own evaluation fee in ETH, which deters frivolous attempts; the part that is not spent is refunded
 - 🌐 **Public Transparency**: All bounties and results are publicly accessible
 
 **Technology Stack:**
-- **Frontend**: React 18, Ethers.js v6 (planned)
-- **Backend**: Node.js, Express, @verdikta/common (planned)
-- **Smart Contracts**: BountyEscrow + Verdikta Aggregator integration (planned)
+- **Frontend**: React 19, Ethers.js v6
+- **Backend**: Node.js, Express, @verdikta/common
+- **Smart Contracts**: BountyEscrow + Verdikta Aggregator integration
 - **Blockchain**: Base Sepolia testnet, Base mainnet
 - **Storage**: IPFS for rubrics, deliverables, and evaluation reports
 
-**Status:** 🟡 MVP 85% Complete - Ready for Contract Integration
+**Status:** 🟢 Live at [bounties.verdikta.org](https://bounties.verdikta.org), with smart contracts deployed on Base (mainnet) and Base Sepolia (testnet)
 
-**[📖 View Design Document →](example-bounty-program/DESIGN.md)**  
-**[🚀 Quick Start Guide →](example-bounty-program/QUICKSTART.md)**  
-**[🧪 Test & Run Now →](example-bounty-program/TEST-AND-RUN.md)**
+**[📖 Program README →](example-bounty-program/README.md)**  
+**[👨‍💻 Developer Guide →](example-bounty-program/DEVELOPER-GUIDE.md)**
 
 **What's Working:**
 - ✅ Backend API with IPFS integration
@@ -93,9 +94,7 @@ A decentralized bounty platform where work submissions are automatically evaluat
 - ✅ Rubric upload/validation
 - ✅ File upload to IPFS
 - ✅ Content fetching from IPFS
-- ⏳ Smart contract integration (pending deployment)
-
-**Built in one day!** 42 files, 6,500+ lines of code, fully documented and tested.
+- ✅ Smart contracts: ETH escrow, evaluation through the Verdikta aggregator paid in ETH, payout to the winner
 
 ## 📚 Documentation
 
@@ -133,7 +132,7 @@ docs/
 ### Prerequisites
 - **Node.js** 18+ and npm 9+
 - **MetaMask** browser extension
-- **Base Sepolia** testnet setup with test ETH and LINK tokens
+- **ETH** on Base, or test ETH on the Base Sepolia testnet. No LINK tokens are needed: evaluations are paid in ETH
 
 ### 1. Clone and Install
 ```bash

@@ -8,8 +8,8 @@ Before you begin, make sure you have:
 
 - **Web Browser**: A modern web browser with JavaScript enabled
 - **MetaMask Wallet**: Browser extension installed and configured
-- **Network**: Access to Base Sepolia testnet
-- **LINK Tokens**: For paying AI jury evaluation fees
+- **Network**: Access to Base or to the Base Sepolia testnet (the network is chosen in the header)
+- **ETH**: For paying AI jury evaluation fees and gas. With the application's settings each query prepays 0.0012 ETH, and the part that is not spent comes back as credit (see [Run Query](run-query.md#cost-considerations)). No LINK is needed
 
 ## Initial Setup
 
@@ -52,7 +52,7 @@ Here's a simple example to get you started:
 ### Step 3: Run the Query
 - Select **"Use Current Configuration"**
 - Click **"Run Query"**
-- Approve the transaction in MetaMask
+- Approve the transaction in MetaMask. It carries the ETH prepayment; there is no separate token approval
 - Wait for the evaluation to complete
 
 ### Step 4: View Results

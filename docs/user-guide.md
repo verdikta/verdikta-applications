@@ -261,9 +261,12 @@ const ABI = [
   const value = credit >= required ? 0n : required - credit;
   console.log('worst case:', ethers.formatEther(required), 'ETH; sending:', ethers.formatEther(value), 'ETH');
 
-  /* send request */
+  /* send request. Arbiters are selected at random, so the gas the request uses differs a
+     little from the estimate made beforehand: add headroom, or it can run out of gas */
+  const args = [[CID], '', ALPHA, MAX_FEE, BASE, SCALE, CLASS];
+  const estimate = await agg.requestAIEvaluationWithApproval.estimateGas(...args, { value });
   const tx = await agg.requestAIEvaluationWithApproval(
-    [CID], '', ALPHA, MAX_FEE, BASE, SCALE, CLASS, { value }
+    ...args, { value, gasLimit: (estimate * 150n) / 100n }
   );
   console.log('tx:', tx.hash);
   const rcpt = await tx.wait();

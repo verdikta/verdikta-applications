@@ -7,7 +7,7 @@ import { documentGlobs, namesDocuments } from '@verdikta/stake-attestation-share
 import { codeReview } from './common.js';
 import { fail } from './errors.js';
 import { isCidShaped } from './ipfs.js';
-import { ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST } from './notices.js';
+import { ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST, ADMISSION_HINT, isMemoryRefusal } from './notices.js';
 import { addedPragmas, observableHelp } from './observable.js';
 import { REQUIREMENT_WARNINGS } from './report.js';
 
@@ -182,7 +182,8 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
     return {
       ...base,
       verdict: 'abstain',
-      abstain: { cause: codeOf(a.cause, 'unknown'), step: codeOf(a.step, null), detail: a.detail ?? null, claimCanCause, cost: claimCanCause ? ABSTAIN_BY_CLAIM : ABSTAIN_BY_HOST },
+      // fixed words for the refusal a hunter's machine meets first, too little memory for a run: only when the runner says so
+      abstain: { cause: codeOf(a.cause, 'unknown'), step: codeOf(a.step, null), detail: a.detail ?? null, claimCanCause, cost: claimCanCause ? ABSTAIN_BY_CLAIM : ABSTAIN_BY_HOST, hint: a.cause === 'admission_refused' && isMemoryRefusal(a.detail) ? ADMISSION_HINT : null },
     };
   }
 
@@ -224,7 +225,7 @@ export function withoutProofText(f) {
     gates: f.gates.map((g) => ({ name: g.name, status: g.status, basis: codeOf(g.basis, null), detail: g.name === 'listingSigned' ? g.detail : null })),
     settlesAs: f.settlesAs,
     refusals: f.refusals ? f.refusals.map((i) => ({ code: i.code, path: i.path, detail: '' })) : null,
-    abstain: f.abstain ? { cause: f.abstain.cause, step: f.abstain.step, detail: null, claimCanCause: f.abstain.claimCanCause, cost: f.abstain.cost } : null,
+    abstain: f.abstain ? { cause: f.abstain.cause, step: f.abstain.step, detail: null, claimCanCause: f.abstain.claimCanCause, cost: f.abstain.cost, hint: f.abstain.hint === ADMISSION_HINT ? ADMISSION_HINT : null } : null,
     reportUnavailable: f.reportUnavailable ? 'a development platform' : null,
     reportSha256: hexHash(f.reportSha256),
     runner: f.runner ? { version: codeOf(f.runner.version, 'unknown'), runtime: codeOf(f.runner.runtime, 'unknown'), platform: /^linux\/(amd64|arm64)$/.test(String(f.runner.platform)) ? f.runner.platform : 'unknown' } : null,

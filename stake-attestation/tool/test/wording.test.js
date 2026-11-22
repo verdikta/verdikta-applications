@@ -50,9 +50,11 @@ test('what the CLI itself prints across a claim\'s life passes the wording check
 });
 
 test('the notices and every error message pass the wording check', async () => {
-  const { commitNotice, forecastFooter, ERROR_TEXTS, USAGE } = await import('../src/index.js');
+  const { ADMISSION_HINT, commitNotice, forecastFooter, queueNotice, ERROR_TEXTS, USAGE } = await import('../src/index.js');
   const listing = { listingId: 7n, bondWei: 1n, priceWei: 2n, feeWei: 1n, disclosureWindowSeconds: 3600n, awards: [0n, 1n, 2n, 3n], lowestClass: 'MEDIUM', state: 'Open', invited: false, maker: `0x${'11'.repeat(20)}`, fixWindow: 0n, revealWindow: 1n, disputeWindow: 1n, repo: 'https://example.invalid/r', baseCommit: 'a'.repeat(40) };
-  for (const text of [commitNotice(listing), forecastFooter(), USAGE, ...Object.values(ERROR_TEXTS)]) {
+  const queued = { ...listing, pendingClaims: 2n, headClaim: 5n };
+  assert.ok(commitNotice(queued).includes(queueNotice(queued)), 'the terms carry the queue line');
+  for (const text of [commitNotice(listing), commitNotice(queued), queueNotice({ pendingClaims: 0n, headClaim: 0n }), ADMISSION_HINT, forecastFooter(), USAGE, ...Object.values(ERROR_TEXTS)]) {
     assert.deepEqual(wordingProblems(text), [], text);
   }
 });

@@ -626,7 +626,10 @@ function refProblems(name, text) {
 }
 
 test('every host they name is an allowed one; GitHub links go to the two public repositories, at their refs', () => {
-  const ALLOWED = new Set(['verifiers.verdikta.org', 'github.com', 'www.npmjs.com', 'unpkg.com', 'sepolia.base.org', 'sepolia.basescan.org', 'gateway.pinata.cloud', 'localhost']);
+  // The last three are other people's pages, which nothing here can read: where test ETH comes from (Base's "Get funds",
+  // which lists the faucets and the bridges) and where a pinning token is made. Each answered when it was added
+  // (2026-11-22, after tester bounty 400); a page that moves is a broken link, never a wrong amount or address.
+  const ALLOWED = new Set(['verifiers.verdikta.org', 'github.com', 'www.npmjs.com', 'unpkg.com', 'sepolia.base.org', 'sepolia.basescan.org', 'gateway.pinata.cloud', 'localhost', 'docs.base.org', 'app.pinata.cloud', 'console.filebase.com']);
   for (const [name, text] of docs()) {
     for (const m of text.matchAll(/\bhttps?:\/\/([^/\s)<>"'`]+)/g)) {
       const host = m[1].replace(/:\d+$/, '').replace(/[.,;:]+$/, '').toLowerCase();
@@ -680,6 +683,8 @@ test('no per-listing value is stated as a fact: no amount, address or hash, and 
       ...[...toolSrc('cli.js').matchAll(/st\.mode & 0o(0[0-7]{2})\)/g)].map((m) => m[1]),
       // the claim folder's and its files' modes, as tool/src/workspace.js sets them
       ...[...toolSrc('workspace.js').matchAll(/\b0o([0-7]{3})\b/g)].map((m) => `0${m[1]}`),
+      // the memory a run's sandbox asks for: the class's hard limit, which no listing and no setting changes
+      String(codeReview.CLASS_HARD_LIMITS.memoryMb),
     ]);
     for (const m of stripped.matchAll(/(?<!\w|\d\.)\d{3,}(?!\w|\.\d)/g)) assert.ok(allowed.has(m[0]), `${name}: ${m[0]} is a number nothing here checks (a listing's value?)`);
     assert.doesNotMatch(stripped, /\b\d+(?:\.\d+)?\s*(?:ETH|wei|gwei)\b/i, `${name}: an amount`);
@@ -803,4 +808,163 @@ test('node P35: what the jurors read is @verdikta/common\'s context pack, every 
   assert.match(flat, /`check` prints the pack for your claim/);
   assert.match(flat, /primary_query\.json/);
   assert.doesNotMatch(para, /\bnatspec\b/i, 'the pack has no tier of its own for any one kind of comment');
+});
+
+// ------------------------------------------------------------------------------------- tester bounty 400
+
+// An outside agent walked the site with this document (bounty 400 on Verdikta Bounties, 2026-11-21) and lost hours
+// where it was silent: what `check` needs from the machine, which platforms the tool runs on, where test ETH comes
+// from, and that claims on a listing reveal in commit order. Each statement added for it is held to the code here.
+const section = (n) => {
+  const text = agents();
+  const start = text.indexOf(`\n## ${n}. `);
+  assert.ok(start >= 0, `agents.txt has a section ${n}`);
+  const end = text.indexOf('\n## ', start + 1);
+  return text.slice(start, end < 0 ? undefined : end).replace(/\s+/g, ' ');
+};
+
+test('bounty 400: claims reveal in commit order, and the document says how to see the queue, as the contract, the tool and the feed have it', () => {
+  const flat = agents().replace(/\s+/g, ' ');
+  // the contract: a reveal needs the claim at the head of the listing's queue, and the lens gives no deadline before
+  const logic = read('onchain', 'contracts', 'libraries', 'ClaimLogic.sol');
+  assert.match(logic, /require\(l\.headClaim == claimId, "earlier claim unresolved"\);/);
+  const lens = /function claimTimes\([\s\S]*?\n {4}\}/.exec(read('onchain', 'contracts', 'StakeAttestationLens.sol'))[0];
+  assert.match(lens, /if \(l\.headClaim == claimId\) \{\s*revealDeadline = /, 'claimTimes gives a reveal deadline only to the head claim');
+  assert.match(flat, /While an earlier claim on the listing is open, yours has no reveal deadline yet: `claimTimes\(claimId\)` gives 0 for it/);
+  assert.match(flat, /A release by the maker ends your fix window, not that wait\./);
+  // the tool: status names the claim, reveal refuses with OUT_OF_ORDER, and commit's terms say how many are open
+  assert.match(toolSrc('reveal.js'), /headClaim\) !== String\(state\.claimId\)\) throw fail\('OUT_OF_ORDER'/);
+  assert.match(flat, /`status` names the claim yours waits for, and until it is settled or expired `reveal` refuses with OUT_OF_ORDER and pins nothing/);
+  const status = toolSrc('status.js');
+  for (const key of ['waitsFor', 'disclosed', 'discloseDeadline', 'revealableAt', 'revealDeadline']) {
+    assert.match(status, new RegExp(`\\b${key}\\b[:,]`), `status.js writes ${key}`);
+    assert.ok(flat.includes(`\`${key}\``), `agents.txt names status --json's ${key}`);
+  }
+  assert.match(status, /headClaim !== 0n && headClaim !== BigInt\(claimId\)\) waitsFor = headClaim/);
+  assert.match(toolSrc('notices.js'), /Open claims on this listing now: \$\{open\}, the earliest claim \$\{t\.headClaim\}/);
+  assert.match(toolSrc('listing.js'), /pendingClaims: l\.pendingClaims,\s*headClaim: l\.headClaim,/);
+  assert.match(flat, /The first run of `verdikta-attest commit`, which sends nothing \(section 4\), says how many are open and which is the earliest, before you pay\./);
+  // the feed: claimsSoFar is every claim ever committed, and the events route names what opens and what closes one
+  assert.match(read('server', 'src', 'site', 'feed.js'), /claimsSoFar: Number\(onchain\.claimsCommitted\)/);
+  assert.match(flat, /`claimsSoFar` counts every claim ever committed there, open or not\./);
+  const events = new Set(JSON.parse(read('tool', 'src', 'abi', 'StakeAttestation.json')).filter((x) => x.type === 'event').map((x) => x.name));
+  const named = /a claim of the listing with a (\w+) event and neither a (\w+) nor an (\w+) one is open/.exec(flat);
+  assert.ok(named, 'agents.txt says which events make a claim open');
+  assert.deepEqual(named.slice(1), ['Committed', 'Settled', 'Expired']);
+  for (const e of named.slice(1)) assert.ok(events.has(e), `${e} is an event of the contract`);
+  // the events come a page at a time, from a cursor the answer gives: an agent that counts open claims reads them all
+  assert.match(read('server', 'src', 'app.js'), /const after = typeof req\.query\.after === 'string' \? req\.query\.after : null;/);
+  assert.match(read('server', 'src', 'site', 'index.js'), /events: page, next: last \? `\$\{last\.blockNumber\}:\$\{last\.logIndex\}` : after/);
+  assert.match(flat, /a page at a time: ask again with `\?after=` and the page's `next`, until a page holds no events/);
+  // a claim leaves the queue exactly when it is settled or expired: the two places that resolve one
+  assert.match(logic, /if \(!c\.late\) l\.pendingClaims -= 1;/);
+});
+
+test('bounty 400: what check needs from the machine is the class\'s memory limit, and a refusal or an empty folder is no forecast', () => {
+  const memoryMb = codeReview.CLASS_HARD_LIMITS.memoryMb;
+  const text = agents();
+  const stated = [...text.matchAll(/\b(\d+) MiB\b/g)].map((m) => Number(m[1]));
+  assert.ok(stated.length >= 2, 'the prerequisites and section 8 both state it');
+  for (const n of stated) assert.equal(n, memoryMb, `${n} MiB: the class's limit is ${memoryMb}`);
+  const s8 = section(8);
+  assert.ok(s8.includes(`A run's sandbox may use up to ${memoryMb} MiB of memory, the class's limit, which no setting lowers`));
+  assert.match(section(1), new RegExp(`with ${memoryMb} MiB of memory free for a run beyond what the runner holds back \\(section 8\\)`));
+  // the tool says the same when the runner admits no run, in fixed words, and calls it no forecast
+  const notices = toolSrc('notices.js');
+  assert.match(notices, /export const ADMISSION_HINT = '[^\n]*no setting lowers[^\n]*GET \/health/);
+  assert.match(toolSrc('forecast.js'), /hint: a\.cause === 'admission_refused' && isMemoryRefusal\(a\.detail\) \? ADMISSION_HINT : null/);
+  assert.match(notices, /export const ABSTAIN_BY_HOST = `No forecast: this machine's runner could not finish the run, which says nothing of your claim\./);
+  assert.match(s8, /A run it does not admit ends `ABSTAIN: admission_refused`, with the figures: that is no forecast, and it says nothing of your claim\./);
+  assert.match(s8, /`GET \/health` on the runner, with its token, says whether a run would be admitted, and what it found\./);
+  // a folder with none of a claim's files: an error of its own, before anything is read or sent
+  assert.match(toolSrc('check.js'), /if \(!inputs\.finding && !inputs\.report && !inputs\.pocPatch\) throw fail\('NO_CLAIM_FILES'\);/);
+  assert.match(ERROR_TEXTS.NO_CLAIM_FILES, /no forecast/);
+  assert.match(s8, /`check` prints the folder it read first\. A folder that holds none of a claim's files is refused with NO_CLAIM_FILES: that is no forecast either/);
+  assert.match(toolSrc('cli.js'), /if \(claimDir\) out\(`Claim folder: \$\{claimDir\}`\);/);
+});
+
+test('bounty 400: the platforms, the key file and the name: Windows drives are refused by the mode check, and verdikta-attest is a name the package gives', () => {
+  const flat = agents().replace(/\s+/g, ' ');
+  assert.match(section(1), /Linux, macOS, or WSL2 with everything on a Linux path\. The tool does not run on native Windows, nor from a Windows drive mounted in WSL/);
+  // the check that refuses: POSIX mode bits, which a Windows drive cannot give; the errors say so
+  assert.match(toolSrc('cli.js'), /\(st\.mode & 0o077\) !== 0\) throw fail\('WALLET_KEY_FILE'\)/);
+  for (const code of ['WALLET_KEY_FILE', 'FILE_NOT_PRIVATE']) assert.match(ERROR_TEXTS[code], /Windows drive[^.]*\bWSL\b[^.]*: keep [^.]* on a Linux or macOS path\./, code);
+  assert.match(section(7), /A Windows drive gives no file that mode, so the tool refuses a key file there \(WALLET_KEY_FILE\)/);
+  assert.match(section(9), /Keep the folder and its copies on a Linux or macOS path/);
+  // the name: the package's own bin, which `npm link` installs, or a shell function over the same file
+  assert.deepEqual(pkg('tool').bin, { 'verdikta-attest': 'bin/verdikta-attest.js' });
+  assert.match(flat, /verdikta-attest\(\) \{ node "\$tool\/bin\/verdikta-attest\.js" "\$@"; \}/);
+  assert.match(flat, /or run `npm link` there, which puts the name on your PATH for every shell/);
+  // the contract's address, as a line that runs: /api/status answers `contract`
+  assert.match(read('server', 'src', 'site', 'index.js'), /\bcontract: chain\.address,/);
+  assert.match(section(5), /export VERDIKTA_CONTRACT="\$\(curl -fsS https:\/\/verifiers\.verdikta\.org\/api\/status \| node -p 'JSON\.parse\(require\("fs"\)\.readFileSync\(0\)\)\.contract'\)"/);
+  assert.doesNotMatch(section(5), /VERDIKTA_CONTRACT=</, 'no placeholder where a command goes');
+});
+
+test('bounty 400: tamper flags and integrity checks are common\'s, each kind said once; the feed\'s labels are the server\'s', () => {
+  const s1 = section(1);
+  const FLAGS = {
+    'report-path-referenced': /names the report's path/,
+    'exit-during-import': /exits while the tests load/,
+    'exit-handler-registered': /registers an exit handler/,
+    'framework-patched': /patches the test framework/,
+    'reporter-patched': /or its reporter/,
+    'write-outside-repository': /writes outside the repository/,
+  };
+  assert.deepEqual(Object.keys(FLAGS).sort(), [...codeReview.TAMPER_FLAG_KINDS].sort(), 'a phrase for each of common\'s tamper flag kinds, and none for another');
+  const flags = /A tamper flag is[^.]*\./.exec(s1)?.[0];
+  assert.ok(flags, 'section 1 says what a tamper flag is');
+  for (const [kind, phrase] of Object.entries(FLAGS)) assert.match(flags, phrase, kind);
+  const CHECKS = {
+    identityComplete: /every test ran once under its own name/,
+    summaryConsistent: /the summary/,
+    exitConsistent: /the exit status agree with the results/,
+    protectedPathsUnchanged: /the protected paths/,
+    frameworkUnchanged: /the framework/,
+    dependenciesUnchanged: /the dependencies are unchanged/,
+  };
+  assert.deepEqual(Object.keys(CHECKS).sort(), [...codeReview.INTEGRITY_CHECKS].sort(), 'a phrase for each of common\'s integrity checks');
+  const checks = /The integrity checks are[^.]*\./.exec(s1)?.[0];
+  assert.ok(checks, 'section 1 says what the integrity checks are');
+  for (const [name, phrase] of Object.entries(CHECKS)) assert.match(checks, phrase, name);
+  // the feed: what `listings` holds, and the labels the server computes
+  const feed = read('server', 'src', 'site', 'feed.js');
+  assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\| BigInt\(onchain\.escrowWei\) < BigInt\(onchain\.awards\[3\]\)\) continue;/);
+  assert.match(section(2), /every listing that takes claims now: open, its paid period not ended, its escrow at least its CRITICAL award/);
+  const labels = read('server', 'src', 'record', 'labels.js');
+  for (const key of ['stake', 'invited', 'lapsed', 'live']) {
+    assert.match(labels, new RegExp(`\\n {4}${key}[:,]`), `listingLabels returns ${key}`);
+    assert.ok(section(2).includes(`\`${key}\``), `agents.txt names labels.${key}`);
+  }
+  const stakeLabels = quoted(/export const STAKE_LABELS = Object\.freeze\(\[([^\]]+)\]/.exec(labels)[1]);
+  assert.ok(section(2).includes(`\`stake\` (${stakeLabels.slice(0, -1).join(', ')} or ${stakeLabels.at(-1)},`), `the stake labels: ${stakeLabels.join(', ')}`);
+  assert.match(labels, /live: listing\.state === 'Open' && !listing\.lapsed,/);
+});
+
+test('bounty 400: what a commit carries, who pays a confirmation, a dry run\'s needs, and an appeal round with no verdict, as the code has them', () => {
+  const s3 = section(3);
+  const s4 = section(4);
+  // a confirmation's fee is the listing's escrow's (ClaimLogic.confirm), never the hunter's
+  const confirm = /function confirm\([\s\S]*?\n {4}\}/.exec(read('onchain', 'contracts', 'libraries', 'ClaimLogic.sol'))[0];
+  assert.match(confirm, /uint256 escrow = l\.escrowWei;\s*require\(escrow >= fee, "escrow below fee"\);\s*escrow -= fee;/);
+  assert.match(s3, /The confirmation's fee comes out of the listing's escrow, never from you\./);
+  // an appeal round with no verdict: one re-trigger, and if that returns none too the INVALID stands (the tool's notice)
+  assert.match(toolSrc('notices.js'), /If this round settles no verdict too, the INVALID stands/);
+  assert.match(s3, /An appeal round with no verdict is not the panel's verdict, and may be re-triggered once: run `appeal` again\. If that round returns none either, the INVALID stands\./);
+  // commitPrice is the value the commit carries: commit.js sends exactly it
+  assert.match(toolSrc('commit.js'), /estimate = await ctx\.estimate\(\{ data, value: price \}\);/);
+  assert.match(s4, /It is the whole amount the commit carries, not a fee on top of the bond\./);
+  // a dry run: the pin target is asked for before anything starts, and the claim's files are read before the terms
+  const cli = toolSrc('cli.js');
+  assert.match(/case 'commit': \{[\s\S]*?\n {4}\}/.exec(cli)[0], /needsIpfs\(\);\s*const hunter = createHunter/);
+  const ready = /async function readyToCommit[\s\S]*?\n\}/.exec(toolSrc('commit.js'))[0];
+  assert.ok(ready.indexOf('readClaimInputs(') < ready.indexOf('ctx.notice(commitNotice('), 'the files are read before the terms are said');
+  assert.match(s4, /A `commit` dry run reads the claim folder's files before it prints the terms, so it needs them written\./);
+  // fix.patch and fixIncluded, as common's specification has them
+  const spec = fs.readFileSync(path.join(COMMON, 'docs', 'CODE_REVIEW_SPECIFICATION.md'), 'utf8');
+  assert.match(spec, /`fixIncluded` \| True when `fix\.patch` is present\. The fix is checked and reported but never changes the outcome/);
+  assert.match(section(6), /`fixIncluded` says the claim carries one: set it to true only with it\./);
+  // the observable: with no quote the whole recorded message must be there (the tool's own words for it)
+  assert.match(toolSrc('observable.js'), /Without a quote, the whole recorded message must appear in the observable as written\./);
+  assert.match(section(6), /With no quote at all, the whole recorded message must appear in the observable as written/);
 });

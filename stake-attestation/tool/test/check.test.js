@@ -4,10 +4,11 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 
-import { buildForecast, withoutProofText } from '../src/index.js';
+import { ADMISSION_HINT, buildForecast, withoutProofText } from '../src/index.js';
 import { closeRpc, runCli } from './helpers/cli.js';
-import { FINDING, FIX_PATCH, JUSTIFICATION_CID, POC_MARKER, POC_PATCH, codeReview, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
+import { FINDING, FIX_PATCH, JUSTIFICATION_CID, POC_MARKER, POC_PATCH, codeReview, makeClaimDir, makeWorld, tmpDir, vectorOf } from './helpers/world.js';
 import { GATES, IMAGE_SHA, PACK, TOKEN, abstaining, definitive, pocFacts, refused, startRunner } from './helpers/runner.js';
 
 const codeReviewKey = () => codeReview.createDevBuilderKey();
@@ -631,4 +632,87 @@ test('the requirement warning is fixed words: --no-pack and --json keep it; a ga
   assert.equal(out.forecast.verdict, 'fail');
   assert.equal(runner.requests.length, 0);
   assert.deepEqual(out.forecast.reportWarnings.map((x) => x.code), ['NO_REQUIREMENT_SECTION']);
+});
+
+// Tester bounty 400: a hunter's claim folder was emptied behind their back, and check answered "Gate forecast: FAIL",
+// "Settles as INVALID, and the bond is forfeited", which reads as a verdict on a claim it never saw. A folder with
+// none of a claim's files is a wrong folder: an error of its own, no forecast, nothing read from the chain or sent.
+test('a folder with none of a claim\'s files is refused as that, with no forecast: empty, missing, or holding other files only', async () => {
+  runner.requests.length = 0;
+  const empty = tmpDir('sa-empty-');
+  const other = tmpDir('sa-other-');
+  fs.writeFileSync(path.join(other, 'notes.txt'), 'not a claim');
+  const missing = path.join(tmpDir('sa-gone-'), 'no-such-folder');
+  for (const dir of [empty, other, missing]) {
+    await assert.rejects(check(dir), (e) => e.code === 'NO_CLAIM_FILES');
+    const cli = await runCli(w, ['check', dir, '--listing', String(l.listingId)], { runner });
+    assert.equal(cli.code, 1);
+    assert.match(cli.stderr, /^verdikta-attest: NO_CLAIM_FILES: /);
+    assert.match(cli.stderr, /nothing was checked/);
+    assert.match(cli.stderr, /no forecast/);
+    assert.doesNotMatch(`${cli.stdout}${cli.stderr}`, /Gate forecast|Settles as|forfeited/);
+    const json = await runCli(w, ['check', dir, '--listing', String(l.listingId), '--json'], { runner });
+    assert.equal(json.code, 1);
+    assert.equal(json.stdout, '', 'no result on stdout');
+  }
+  assert.equal(runner.requests.length, 0, 'nothing reached the runner');
+});
+
+test('one missing file among a claim\'s others is still the claim\'s own gap, forecast as the arbiters would settle it', async () => {
+  runner.requests.length = 0;
+  const dir = makeClaimDir();
+  fs.rmSync(path.join(dir, 'finding.json'));
+  const r = await check(dir);
+  assert.equal(r.forecast.verdict, 'fail');
+  assert.match(r.forecast.gates.find((g) => g.name === 'finding').detail, /finding\.json is not in this folder/);
+  assert.equal(r.forecast.settlesAs.outcome, 'INVALID');
+  assert.equal(runner.requests.length, 0);
+});
+
+test('check says which folder it read, as an absolute path, in the text and under --json and --no-pack', async () => {
+  const dir = makeClaimDir();
+  const r = await check(dir);
+  assert.equal(r.claimDir, path.resolve(dir));
+  const relative = path.relative(process.cwd(), dir);
+  const cli = await runCli(w, ['check', relative, '--listing', String(l.listingId)], { runner });
+  assert.equal(cli.code, 0, cli.stderr);
+  assert.equal(cli.stdout.split('\n')[0], `Claim folder: ${path.resolve(dir)}`);
+  const quiet = await runCli(w, ['check', relative, '--listing', String(l.listingId), '--no-pack'], { runner });
+  assert.equal(quiet.stdout.split('\n')[0], `Claim folder: ${path.resolve(dir)}`);
+  const json = JSON.parse((await runCli(w, ['check', relative, '--listing', String(l.listingId), '--json', '--no-pack'], { runner })).stdout);
+  assert.equal(json.claimDir, path.resolve(dir));
+});
+
+// Tester bounty 400: three refusals for too little memory, each with the runner's figures and none saying what to do.
+test('an admission refusal for memory carries what it means on a hunter\'s machine and what to change; no other abstain does', async () => {
+  const detail = 'the host has 3033 MiB available, 0 MiB held by runs in flight, and this run may use 4096 MiB; 1280 MiB stays reserved (chainlink 512, postgres 256, aiNode 512, localModel 0)';
+  runner.state.answer = (req) => abstaining(req.spec, 'admission_refused', detail, 'admission');
+  const r = await check(makeClaimDir());
+  assert.equal(r.forecast.verdict, 'abstain');
+  assert.equal(r.forecast.abstain.claimCanCause, false);
+  assert.equal(r.forecast.abstain.hint, ADMISSION_HINT);
+  assert.match(ADMISSION_HINT, /no setting lowers/);
+  assert.match(ADMISSION_HINT, /Give the machine Docker runs in more memory, or lower that reserve/);
+  assert.match(ADMISSION_HINT, /GET \/health/);
+  assert.equal(withoutProofText(r.forecast).abstain.hint, ADMISSION_HINT, '--no-pack keeps the fixed words');
+  const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
+  assert.equal(cli.code, 1);
+  const lines = cli.stdout.split('\n');
+  const at = lines.findIndex((x) => x.startsWith('ABSTAIN: admission_refused at admission: the host has 3033 MiB available'));
+  assert.ok(at >= 0, cli.stdout.slice(0, 600));
+  assert.equal(lines[at + 1], ADMISSION_HINT, 'right under the runner\'s own figures');
+  assert.match(lines[at + 2], /^No forecast: this machine's runner could not finish the run, which says nothing of your claim\./);
+  // a hint is fixed words: a runner cannot put its own there, under --no-pack or not
+  const forged = { ...r.forecast, abstain: { ...r.forecast.abstain, hint: POC_MARKER } };
+  assert.equal(withoutProofText(forged).abstain.hint, null);
+  for (const cause of ['oom', 'pull_failed', 'docker_unreachable']) {
+    runner.state.answer = (req) => abstaining(req.spec, cause, detail, 'build');
+    assert.equal((await check(makeClaimDir())).forecast.abstain.hint, null, cause);
+  }
+  // the runner refuses admission for other reasons too, and the hint is not said of them
+  for (const other of ['the execution slot is in use (CODE_RUNNER_SLOTS=1)', 'the runner is shutting down', null]) {
+    runner.state.answer = (req) => abstaining(req.spec, 'admission_refused', other, 'admission');
+    assert.equal((await check(makeClaimDir())).forecast.abstain.hint, null, String(other));
+  }
+  runner.state.answer = (req) => definitive(req.spec);
 });

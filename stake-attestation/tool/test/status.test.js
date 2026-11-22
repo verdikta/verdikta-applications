@@ -600,6 +600,7 @@ test('claims reveal in commit order: status names the earlier claim yours waits 
   assert.match(released.next, /The fix window is over, and the claim still waits\./);
   assert.match(released.next, new RegExp(`Claim ${a.claimId} was committed on this listing before yours`));
   assert.match(released.next, /until then it reads 0/);
+  assert.match(released.next, /If that claim is abandoned, it leaves the queue only when someone calls expire on it after its own deadline: anyone may/);
   await assert.rejects(w.hunter().reveal({ claimDir: second, acknowledge: true }), (e) => e.code === 'OUT_OF_ORDER');
   const cli = await runCli(w, ['status', second], { keyVia: 'none' });
   assert.equal(cli.code, 0, cli.stderr);

@@ -856,8 +856,25 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   assert.match(read('server', 'src', 'app.js'), /const after = typeof req\.query\.after === 'string' \? req\.query\.after : null;/);
   assert.match(read('server', 'src', 'site', 'index.js'), /events: page, next: last \? `\$\{last\.blockNumber\}:\$\{last\.logIndex\}` : after/);
   assert.match(flat, /a page at a time: ask again with `\?after=` and the page's `next`, until a page holds no events/);
-  // a claim leaves the queue exactly when it is settled or expired: the two places that resolve one
-  assert.match(logic, /if \(!c\.late\) l\.pendingClaims -= 1;/);
+  // a claim leaves the queue exactly when it is settled or expired: resolve() is the one place that unlinks a claim
+  // and lowers pendingClaims, and its only two callers are settle and expire, each of which emits its own event
+  const resolveBody = /function resolve\([\s\S]*?\n {4}\}/.exec(logic)[0];
+  assert.match(resolveBody, /if \(!c\.late\) l\.pendingClaims -= 1;/);
+  assert.equal(logic.split('l.pendingClaims -= 1').length - 1, 1, 'pendingClaims goes down in one place only');
+  const callers = [];
+  for (const m of logic.matchAll(/\n {4}function (\w+)\([\s\S]*?\n {4}\}/g)) if (/\bresolve\(claims, c, l\);/.test(m[0])) callers.push([m[1], m[0]]);
+  assert.deepEqual(callers.map(([name]) => name).sort(), ['expire', 'settle'], 'only settle and expire take a claim out of the queue');
+  const byName = new Map(callers);
+  assert.match(byName.get('settle'), /emit StakeAttestation\.Settled\(claimId,/);
+  assert.match(byName.get('expire'), /emit StakeAttestation\.Expired\(claimId,/);
+  // an abandoned claim ahead: anyone may expire it, the keeper only where that is turned on, and the tool has no verb
+  assert.match(flat, /A claim ahead of yours that its hunter abandons leaves the queue only when someone calls `expire\(claimId\)` on it, once its own deadline has passed \(steps 3, 5 and 6\): anyone may, the site's keeper does not unless its operator has turned that on, and `verdikta-attest` has no command for it\./);
+  assert.match(read('server', 'src', 'config.js'), /expire: onOff\(env, 'SA_KEEPER_EXPIRE', false\),/, 'the keeper expires claims only when set to');
+  assert.ok(!commands().includes('expire'), 'the tool has no expire command');
+  assert.match(toolSrc('status.js'), /If that claim is abandoned, it leaves the queue only when someone calls expire on it after its own deadline: anyone may, and this tool has no command for it\./);
+  // --json writes every bigint as a string of digits, so a deadline not yet set is "0", which is not falsy
+  assert.match(toolSrc('cli.js'), /const replacer = \(_k, v\) => \(typeof v === 'bigint' \? v\.toString\(\) : v\);/);
+  assert.match(flat, /each id and time as a string of digits:[^.]*`revealDeadline` is "0" until the chain sets it\./);
 });
 
 test('bounty 400: what check needs from the machine is the class\'s memory limit, and a refusal or an empty folder is no forecast', () => {
@@ -868,14 +885,21 @@ test('bounty 400: what check needs from the machine is the class\'s memory limit
   for (const n of stated) assert.equal(n, memoryMb, `${n} MiB: the class's limit is ${memoryMb}`);
   const s8 = section(8);
   assert.ok(s8.includes(`A run's sandbox may use up to ${memoryMb} MiB of memory, the class's limit, which no setting lowers`));
-  assert.match(section(1), new RegExp(`with ${memoryMb} MiB of memory free for a run beyond what the runner holds back \\(section 8\\)`));
+  assert.match(section(1), new RegExp(`with ${memoryMb} MiB of memory free for a run beyond what the runner holds back, and twice that for a claim with a fix\\.patch \\(section 8\\)`));
   // the tool says the same when the runner admits no run, in fixed words, and calls it no forecast
   const notices = toolSrc('notices.js');
-  assert.match(notices, /export const ADMISSION_HINT = '[^\n]*no setting lowers[^\n]*GET \/health/);
-  assert.match(toolSrc('forecast.js'), /hint: a\.cause === 'admission_refused' && isMemoryRefusal\(a\.detail\) \? ADMISSION_HINT : null/);
+  assert.match(notices, /export const ADMISSION_HINT = 'When the runner refuses for memory, as its detail says: [^\n]*no setting lowers, twice over for a claim with a fix\.patch/);
+  assert.match(toolSrc('forecast.js'), /hint: a\.cause === 'admission_refused' \? ADMISSION_HINT : null/);
   assert.match(notices, /export const ABSTAIN_BY_HOST = `No forecast: this machine's runner could not finish the run, which says nothing of your claim\./);
   assert.match(s8, /A run it does not admit ends `ABSTAIN: admission_refused`, with the figures: that is no forecast, and it says nothing of your claim\./);
-  assert.match(s8, /`GET \/health` on the runner, with its token, says whether a run would be admitted, and what it found\./);
+  // The runner is another repository's (verdikta-arbiter, code-runner), and nothing here can read it: what section 8
+  // says of it was read against its main (79d7f51: src/admission.js, health.js, claim.js) and is held to these words,
+  // so that a change of them is a decision. Its /health reports what it measured and never does the sum; a claim with
+  // a fix.patch opens two sandboxes (sandboxesFor); without a memory reading under runc it admits the run unchecked.
+  assert.match(s8, /a claim with a fix\.patch runs two sandboxes at once, so it needs twice that\./);
+  assert.match(toolSrc('check.js'), /fixPatch: fixPatch \? fixPatch\.toString\('base64'\) : null,/, 'check sends the fix.patch the folder holds');
+  assert.match(s8, /`GET \/health` on the runner, with its token, says what it measured, the free memory and its reserve, and not whether your run would fit: do that sum yourself\./);
+  assert.match(s8, /Where the runner cannot measure memory, as on macOS, it admits a run unchecked/);
   // a folder with none of a claim's files: an error of its own, before anything is read or sent
   assert.match(toolSrc('check.js'), /if \(!inputs\.finding && !inputs\.report && !inputs\.pocPatch\) throw fail\('NO_CLAIM_FILES'\);/);
   assert.match(ERROR_TEXTS.NO_CLAIM_FILES, /no forecast/);
@@ -886,6 +910,9 @@ test('bounty 400: what check needs from the machine is the class\'s memory limit
 test('bounty 400: the platforms, the key file and the name: Windows drives are refused by the mode check, and verdikta-attest is a name the package gives', () => {
   const flat = agents().replace(/\s+/g, ' ');
   const text5 = agents().slice(agents().indexOf('\n## 5. '), agents().indexOf('\n## 6. '));
+  // where test ETH comes from: Base's page lists faucets for Base Sepolia, and no bridge for it, so none is promised
+  assert.match(section(1), /Take it from a Base Sepolia faucet: https:\/\/docs\.base\.org\/get-started\/get-funds lists them\./);
+  assert.doesNotMatch(section(1), /lists both/);
   assert.match(section(1), /Linux, macOS, or WSL2 with everything on a Linux path\. The tool does not run on native Windows, nor from a Windows drive mounted in WSL/);
   // the check that refuses: POSIX mode bits, which a Windows drive cannot give; the errors say so
   assert.match(toolSrc('cli.js'), /\(st\.mode & 0o077\) !== 0\) throw fail\('WALLET_KEY_FILE'\)/);
@@ -953,7 +980,9 @@ test('bounty 400: what a commit carries, who pays a confirmation, a dry run\'s n
   // a confirmation's fee is the listing's escrow's (ClaimLogic.confirm), never the hunter's
   const confirm = /function confirm\([\s\S]*?\n {4}\}/.exec(read('onchain', 'contracts', 'libraries', 'ClaimLogic.sol'))[0];
   assert.match(confirm, /uint256 escrow = l\.escrowWei;\s*require\(escrow >= fee, "escrow below fee"\);\s*escrow -= fee;/);
-  assert.match(s3, /The confirmation's fee comes out of the listing's escrow, never from you\./);
+  assert.match(s3, /The confirmation's fee comes out of the listing's escrow, not out of your wallet; if that leaves the escrow below your award, the rest is owed to you \(section 1\)\./);
+  // and an award is paid from what the escrow then holds, the rest owed (ClaimLogic.settle)
+  assert.match(read('onchain', 'contracts', 'libraries', 'ClaimLogic.sol'), /paid = award < escrow \? award : escrow;\s*owed = award - paid;/);
   // an appeal round with no verdict: one re-trigger, and if that returns none too the INVALID stands (the tool's notice)
   assert.match(toolSrc('notices.js'), /If this round settles no verdict too, the INVALID stands/);
   assert.match(s3, /An appeal round with no verdict is not the panel's verdict, and may be re-triggered once: run `appeal` again\. If that round returns none either, the INVALID stands\./);
@@ -972,5 +1001,5 @@ test('bounty 400: what a commit carries, who pays a confirmation, a dry run\'s n
   assert.match(section(6), /`fixIncluded` says the claim carries one: set it to true only with it\./);
   // the observable: with no quote the whole recorded message must be there (the tool's own words for it)
   assert.match(toolSrc('observable.js'), /Without a quote, the whole recorded message must appear in the observable as written\./);
-  assert.match(section(6), /With no quote at all, the whole recorded message must appear in the observable as written/);
+  assert.match(section(6), /a quoted fragment that is not in the recorded failure on every run fails `claimedObservable`, and so does an observable with no quote at all unless the whole recorded message appears in it as written\. The claim then settles INVALID\./);
 });

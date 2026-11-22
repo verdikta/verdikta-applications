@@ -1294,10 +1294,12 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   read, as an absolute path. A folder with none of a claim's files (`finding.json`, `report.md`, `poc.patch`) is refused
   with `NO_CLAIM_FILES` before anything is read from the chain or sent to the runner: that is a wrong path, not a claim
   that fails, so it gets no forecast (one missing file among the others is still forecast as the arbiters would settle
-  it). An abstain with the cause `admission_refused` whose detail names memory carries fixed words under the runner's
-  own figures (`ADMISSION_HINT`, `src/notices.js`): the sandbox's memory is the class's hard limit, which no setting
-  lowers, the runner holds more back for an arbiter's other services, and what to change on a machine that runs no
-  arbiter. The runner refuses admission for a busy slot, a full disk or a shutdown too, and the words are not said of those.
+  it). An abstain with the cause `admission_refused` carries fixed words under the runner's own detail
+  (`ADMISSION_HINT`, `src/notices.js`), for the refusal a hunter's machine meets first, too little memory: the
+  sandbox's memory is the class's hard limit, which no setting lowers, a claim with a `fix.patch` opens two sandboxes,
+  the runner holds more back for an arbiter's other services, and what to change. The runner refuses admission for a
+  busy slot, a full disk or a shutdown too; its detail says which, and the words begin "When the runner refuses for
+  memory".
 - **`commit`** refuses a listing the builder did not sign, or whose on-chain key or terms are not what was signed; says P9's warning
   and the §8.6 diligence text, and the listing's disclosure key as an age recipient beside the bytes32 the chain stores, with the
   sentence that says they are one key; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
@@ -1327,7 +1329,9 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   roll-forward moved it earlier; by a claim id, with nothing recorded, it says only what the chain says. A claim behind
   another in commit order has no reveal deadline on-chain until it heads the listing's queue: `status` names the claim it
   waits for (`waitsFor`, the listing's `headClaim` when it is another claim), in its fix window and after a release, and
-  prints no deadline until the chain has one.
+  prints no deadline until the chain has one. It also says that an abandoned claim ahead leaves the queue only when
+  someone calls `expire` on it: the tool has no verb for that, and the site's keeper expires claims only with
+  `SA_KEEPER_EXPIRE=on`.
 - **`status`** reads a judged claim's reason from the first block of its justification only (`Execution evidence v1`); jury text
   after it can say anything, and is not read. It shows the settlement safeguards (errata E7-E9), each from the lens: the appeal
   window (`appealDeadline`), the dispute-panel round's kind and result, a confirmation's window (`confirmWindow`), an appeal's

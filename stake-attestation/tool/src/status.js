@@ -276,7 +276,7 @@ function earlyEndText(s) {
 
 /** What a claim behind another in commit order waits for, and that its reveal deadline is not set until then. */
 function queueText(s) {
-  return `Claim ${s.waitsFor} was committed on this listing before yours and is neither settled nor expired: claims reveal in commit order, so yours can be revealed only once that claim, and any claim between the two, is settled or expired. The chain sets your reveal deadline then, and until then it reads 0.`;
+  return `Claim ${s.waitsFor} was committed on this listing before yours and is neither settled nor expired: claims reveal in commit order, so yours can be revealed only once that claim, and any claim between the two, is settled or expired. The chain sets your reveal deadline then, and until then it reads 0. If that claim is abandoned, it leaves the queue only when someone calls expire on it after its own deadline: anyone may, and this tool has no command for it.`;
 }
 
 function nextFor(s) {

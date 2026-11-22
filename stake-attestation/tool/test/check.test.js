@@ -6,6 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { BrowserProvider } from 'ethers';
+
 import { ADMISSION_HINT, buildForecast, withoutProofText } from '../src/index.js';
 import { closeRpc, runCli } from './helpers/cli.js';
 import { FINDING, FIX_PATCH, JUSTIFICATION_CID, POC_MARKER, POC_PATCH, codeReview, makeClaimDir, makeWorld, tmpDir, vectorOf } from './helpers/world.js';
@@ -656,6 +658,14 @@ test('a folder with none of a claim\'s files is refused as that, with no forecas
     assert.equal(json.stdout, '', 'no result on stdout');
   }
   assert.equal(runner.requests.length, 0, 'nothing reached the runner');
+  // and nothing was read from the chain: a provider that counts its requests, which a real claim folder does use
+  let calls = 0;
+  const counting = new BrowserProvider({ request: async (call) => { calls += 1; return w.hre.network.provider.request(call); } }, 31337, { cacheTimeout: -1, staticNetwork: true });
+  const counted = (claimDir) => w.hunter({ runner: runnerOpt(), signer: undefined, provider: counting }).check({ claimDir, listingId: l.listingId });
+  for (const dir of [empty, other, missing]) await assert.rejects(counted(dir), (e) => e.code === 'NO_CLAIM_FILES');
+  assert.equal(calls, 0, 'no request went to the chain for a folder with none of a claim\'s files');
+  assert.equal((await counted(makeClaimDir())).forecast.verdict, 'pass');
+  assert.ok(calls > 0, 'the counter counts: a claim\'s check reads the listing from the chain');
 });
 
 test('one missing file among a claim\'s others is still the claim\'s own gap, forecast as the arbiters would settle it', async () => {
@@ -684,16 +694,16 @@ test('check says which folder it read, as an absolute path, in the text and unde
 });
 
 // Tester bounty 400: three refusals for too little memory, each with the runner's figures and none saying what to do.
-test('an admission refusal for memory carries what it means on a hunter\'s machine and what to change; no other abstain does', async () => {
+test('an admission refusal carries what a refusal for memory means on a hunter\'s machine and what to change; no other abstain does', async () => {
   const detail = 'the host has 3033 MiB available, 0 MiB held by runs in flight, and this run may use 4096 MiB; 1280 MiB stays reserved (chainlink 512, postgres 256, aiNode 512, localModel 0)';
   runner.state.answer = (req) => abstaining(req.spec, 'admission_refused', detail, 'admission');
   const r = await check(makeClaimDir());
   assert.equal(r.forecast.verdict, 'abstain');
   assert.equal(r.forecast.abstain.claimCanCause, false);
   assert.equal(r.forecast.abstain.hint, ADMISSION_HINT);
-  assert.match(ADMISSION_HINT, /no setting lowers/);
-  assert.match(ADMISSION_HINT, /Give the machine Docker runs in more memory, or lower that reserve/);
-  assert.match(ADMISSION_HINT, /GET \/health/);
+  assert.match(ADMISSION_HINT, /^When the runner refuses for memory, as its detail says: /);
+  assert.match(ADMISSION_HINT, /no setting lowers, twice over for a claim with a fix\.patch/);
+  assert.match(ADMISSION_HINT, /Give the machine Docker runs in more memory, check the claim without its fix\.patch, or lower that reserve/);
   assert.equal(withoutProofText(r.forecast).abstain.hint, ADMISSION_HINT, '--no-pack keeps the fixed words');
   const cli = await runCli(w, ['check', makeClaimDir(), '--listing', String(l.listingId)], { runner });
   assert.equal(cli.code, 1);
@@ -709,10 +719,12 @@ test('an admission refusal for memory carries what it means on a hunter\'s machi
     runner.state.answer = (req) => abstaining(req.spec, cause, detail, 'build');
     assert.equal((await check(makeClaimDir())).forecast.abstain.hint, null, cause);
   }
-  // the runner refuses admission for other reasons too, and the hint is not said of them
-  for (const other of ['the execution slot is in use (CODE_RUNNER_SLOTS=1)', 'the runner is shutting down', null]) {
+  // The runner refuses admission for other reasons too (a busy slot, a shutdown), and for a claim with a fix.patch
+  // its memory detail reads otherwise ("8192 MiB (2 sandboxes of 4096 MiB)"). No word of the runner's decides whether
+  // the hint is said: it is said under every admission refusal, and its own first words say which one it is about.
+  for (const other of ['the execution slot is in use (CODE_RUNNER_SLOTS=1)', 'the runner is shutting down', 'some wording a later runner uses', null]) {
     runner.state.answer = (req) => abstaining(req.spec, 'admission_refused', other, 'admission');
-    assert.equal((await check(makeClaimDir())).forecast.abstain.hint, null, String(other));
+    assert.equal((await check(makeClaimDir())).forecast.abstain.hint, ADMISSION_HINT, String(other));
   }
   runner.state.answer = (req) => definitive(req.spec);
 });

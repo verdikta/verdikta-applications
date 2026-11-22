@@ -61,14 +61,13 @@ export function queueNotice(t) {
 }
 
 /**
- * What a refusal for memory is on a hunter's machine (the runner's own detail, printed above it, names the figures).
- * The memory a run may use is the class's hard limit (@verdikta/common CLASS_HARD_LIMITS), which no setting lowers.
- * Said only when the runner's detail names memory: it also refuses for a busy slot, a full disk or a shutdown.
+ * What an admission refusal for memory is on a hunter's machine, said under every admission refusal: the runner's own
+ * detail, printed above it, says which refusal it is and names the figures (it also refuses for a busy slot, a full
+ * disk or a shutdown), and no words of the runner's are matched to decide. The memory a run may use is the class's
+ * hard limit (@verdikta/common CLASS_HARD_LIMITS), which no setting lowers; a claim with a fix.patch opens two
+ * sandboxes at once (code-runner src/claim.js, sandboxesFor).
  */
-export const ADMISSION_HINT = 'The runner found too little free memory to admit a run. A run\'s sandbox may use up to the class\'s memory limit, which no setting lowers, and the runner holds more back for an arbiter\'s other services. Give the machine Docker runs in more memory, or lower that reserve in the runner\'s settings on a machine that runs no arbiter; the runner\'s GET /health says what it finds.';
-
-/** Whether a runner's admission detail is its memory refusal: the two things it always says of one. */
-export const isMemoryRefusal = (detail) => /\bMiB available\b/.test(String(detail ?? '')) && /\bstays reserved\b/.test(String(detail ?? ''));
+export const ADMISSION_HINT = 'When the runner refuses for memory, as its detail says: a run\'s sandbox may use up to the class\'s memory limit, which no setting lowers, twice over for a claim with a fix.patch, and the runner holds more back for an arbiter\'s other services. Give the machine Docker runs in more memory, check the claim without its fix.patch, or lower that reserve in the runner\'s settings on a machine that runs no arbiter.';
 
 export const NO_PROOF_CHECK = 'This tool checks that the builder signed this listing. It does not check that the on-chain maker is the address the repository names: the site does that, and shows a listing that fails it apart.';
 

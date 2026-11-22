@@ -7,7 +7,7 @@ import { documentGlobs, namesDocuments } from '@verdikta/stake-attestation-share
 import { codeReview } from './common.js';
 import { fail } from './errors.js';
 import { isCidShaped } from './ipfs.js';
-import { ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST, ADMISSION_HINT, isMemoryRefusal } from './notices.js';
+import { ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST, ADMISSION_HINT } from './notices.js';
 import { addedPragmas, observableHelp } from './observable.js';
 import { REQUIREMENT_WARNINGS } from './report.js';
 
@@ -182,8 +182,8 @@ export function buildForecast({ local, answer, spec, pocPatch, lint, priorFindin
     return {
       ...base,
       verdict: 'abstain',
-      // fixed words for the refusal a hunter's machine meets first, too little memory for a run: only when the runner says so
-      abstain: { cause: codeOf(a.cause, 'unknown'), step: codeOf(a.step, null), detail: a.detail ?? null, claimCanCause, cost: claimCanCause ? ABSTAIN_BY_CLAIM : ABSTAIN_BY_HOST, hint: a.cause === 'admission_refused' && isMemoryRefusal(a.detail) ? ADMISSION_HINT : null },
+      // fixed words under every admission refusal, for the one a hunter's machine meets first: too little memory for a run
+      abstain: { cause: codeOf(a.cause, 'unknown'), step: codeOf(a.step, null), detail: a.detail ?? null, claimCanCause, cost: claimCanCause ? ABSTAIN_BY_CLAIM : ABSTAIN_BY_HOST, hint: a.cause === 'admission_refused' ? ADMISSION_HINT : null },
     };
   }
 

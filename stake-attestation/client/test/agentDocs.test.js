@@ -897,6 +897,8 @@ test('bounty 400: what check needs from the machine is the class\'s memory limit
   // so that a change of them is a decision. Its /health reports what it measured and never does the sum; a claim with
   // a fix.patch opens two sandboxes (sandboxesFor); without a memory reading under runc it admits the run unchecked.
   assert.match(s8, /a claim with a fix\.patch runs two sandboxes at once, so it needs twice that\./);
+  // the reserve's settings are in the runner's README, in its "Configuration" table (there on arbiter main)
+  assert.match(s8, /that reserve can be lowered in the runner's settings \(its README, "Configuration"\)\./);
   assert.match(toolSrc('check.js'), /fixPatch: fixPatch \? fixPatch\.toString\('base64'\) : null,/, 'check sends the fix.patch the folder holds');
   assert.match(s8, /`GET \/health` on the runner, with its token, says what it measured, the free memory and its reserve, and not whether your run would fit: do that sum yourself\./);
   assert.match(s8, /Where the runner cannot measure memory, as on macOS, it admits a run unchecked/);

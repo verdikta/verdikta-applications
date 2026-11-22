@@ -545,7 +545,7 @@ What the machine needs. A run's sandbox may use up to 4096 MiB of memory, the cl
 which no setting lowers, and a claim with a fix.patch runs two sandboxes at once, so it needs
 twice that. The runner refuses a run when it finds less than that free beyond what it holds back
 for an arbiter's other services. On a machine that runs no arbiter, that reserve can be lowered
-in the runner's settings. `GET /health` on the runner, with its token, says what it measured,
+in the runner's settings (its README, "Configuration"). `GET /health` on the runner, with its token, says what it measured,
 the free memory and its reserve, and not whether your run would fit: do that sum yourself. Where
 the runner cannot measure memory, as on macOS, it admits a run unchecked, so give Docker that
 much there too. A run it does not admit ends `ABSTAIN: admission_refused`, with the figures: that

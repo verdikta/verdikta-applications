@@ -261,10 +261,11 @@ const ABI = [
   const value = credit >= required ? 0n : required - credit;
   console.log('worst case:', ethers.formatEther(required), 'ETH; sending:', ethers.formatEther(value), 'ETH');
 
-  /* send request */
-  const tx = await agg.requestAIEvaluationWithApproval(
-    [CID], '', ALPHA, MAX_FEE, BASE, SCALE, CLASS, { value }
-  );
+  /* send request: the gas it needs depends on which arbiters are drawn,
+     so give it half as much again as the estimate */
+  const args = [[CID], '', ALPHA, MAX_FEE, BASE, SCALE, CLASS];
+  const gas = await agg.requestAIEvaluationWithApproval.estimateGas(...args, { value });
+  const tx = await agg.requestAIEvaluationWithApproval(...args, { value, gasLimit: (gas * 3n) / 2n });
   console.log('tx:', tx.hash);
   const rcpt = await tx.wait();
   const aggId = rcpt.logs
@@ -302,7 +303,7 @@ const ABI = [
 })();
 ```
 
-This script initiates the Verdikta process analyzing your query. It takes a few minutes to return with the scores for the two options presented (True or False) and the CIDs that can be used to look up the justifications for them. With the ceiling of 0.00015 ETH used here the script sends 0.0018 ETH; at the fees quoted above a completed round uses 0.00024 ETH of it and the last line of the output shows the remaining 0.00156 ETH as your credit. Using a Web browser, you can see the content of a justification CID using a publicly available IPFS node like `https://ipfs.io/ipfs/CID`, `https://dweb.link/ipfs/CID`, or `https://gateway.pinata.cloud/ipfs/CID`. If you want to get the content without a Web browser, you can use curl: `curl "https://ipfs.io/ipfs/CID"`, or ipfs, if installed: `ipfs get CID`. In all these cases, swap in your actual CID to replace the "CID" placeholder.
+This script initiates the Verdikta process analyzing your query. Note the gas limit: a request draws its arbiters at random when it executes, and the gas it uses depends on the draw (about 3.2 to 3.3 million on Base mainnet in November 2026). A wallet's own estimate is made for one draw and can be slightly too low for the next, in which case the transaction runs out of gas and reverts. The script therefore sets the limit to one and a half times the estimate; do the same in your own code. It takes a few minutes to return with the scores for the two options presented (True or False) and the CIDs that can be used to look up the justifications for them. With the ceiling of 0.00015 ETH used here the script sends 0.0018 ETH; at the fees quoted above a completed round uses 0.00024 ETH of it and the last line of the output shows the remaining 0.00156 ETH as your credit. Using a Web browser, you can see the content of a justification CID using a publicly available IPFS node like `https://ipfs.io/ipfs/CID`, `https://dweb.link/ipfs/CID`, or `https://gateway.pinata.cloud/ipfs/CID`. If you want to get the content without a Web browser, you can use curl: `curl "https://ipfs.io/ipfs/CID"`, or ipfs, if installed: `ipfs get CID`. In all these cases, swap in your actual CID to replace the "CID" placeholder.
 
 ### Funding and Submitting a Request from a Smart Contract – Solidity Example
 
@@ -385,7 +386,7 @@ contract DemoClient {
 }
 ```
 
-After deploying this contract (using a tool like Hardhat or Foundry) with the aggregator's address, read `quote()` and call `request()` with that amount of ETH. The contract function it uses is `requestAIEvaluationWithApproval()`, which is payable: the ETH travels with the call and no token approval is involved. When the result is on chain, `publish()` emits it. Because the aggregator sees this contract as the requester, the unspent part of each prepayment is credited to the contract, not to you: `reclaim()` collects it and passes it to the address that deployed the contract. If no result arrives, call the aggregator's `finalizeEvaluationTimeout()` with the request ID once the timeout has passed, then `publish()` to clear the request, as described in step 12 above.
+After deploying this contract (using a tool like Hardhat or Foundry) with the aggregator's address, read `quote()` and call `request()` with that amount of ETH and, for the reason given above, a gas limit about half as much again as your wallet's estimate. The contract function it uses is `requestAIEvaluationWithApproval()`, which is payable: the ETH travels with the call and no token approval is involved. When the result is on chain, `publish()` emits it. Because the aggregator sees this contract as the requester, the unspent part of each prepayment is credited to the contract, not to you: `reclaim()` collects it and passes it to the address that deployed the contract. If no result arrives, call the aggregator's `finalizeEvaluationTimeout()` with the request ID once the timeout has passed, then `publish()` to clear the request, as described in step 12 above.
 
 ## Operation Details
 

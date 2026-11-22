@@ -19,7 +19,7 @@ The application integrates with four main service categories:
 
 #### MetaMask Integration
 - **Provider**: Uses `ethers.BrowserProvider` to connect with MetaMask
-- **Network**: Automatically switches to Base Sepolia testnet
+- **Network**: Automatically switches the wallet to the network selected in the header, Base or Base Sepolia
 - **Accounts**: Manages wallet connection and account switching
 - **Transactions**: Handles signing and broadcasting
 
@@ -34,29 +34,42 @@ const tx = await contract.requestAIEvaluationWithApproval(
   maxFee,
   estimatedBaseCost,
   maxFeeBasedScalingFactor,
-  selectedContractClass
+  selectedContractClass,
+  { value: ethValue, gasLimit: 4500000 } // ethValue: the ETH prepayment, see "ETH Payment" below
 );
 ```
+
+The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `estimatedBaseCost` = 1% of `maxFee`, `maxFeeBasedScalingFactor` = 10 and class 128 by default (`client/src/App.js`).
 
 #### Key Contract Methods
 - `requestAIEvaluationWithApproval()`: Submit evaluation request
 - `getEvaluation()`: Retrieve evaluation results
 - `getContractConfig()`: Get contract configuration
-- `maxTotalFee()`: Calculate required LINK approval amount
+- `maxTotalFee()`: Worst-case fee in ETH (wei) that must be prepaid with a request
+- `ethOwed()`: ETH credit an address holds in the aggregator (unspent prepayments)
+- `withdrawEth()`: Send the caller's credit back to the caller
+- `responseTimeoutSeconds()`: The aggregator's timeout for a round
+- `finalizeEvaluationTimeout()`: Close a round that has passed the timeout
 
-### LINK Token Integration
+### ETH Payment
 
-#### Token Approval Process
+There is no token approval. `requestAIEvaluationWithApproval()` keeps its historical name but is `payable`: the fee travels with the call as ETH.
+
+#### Prepayment and Credit
 ```javascript
-// LINK token approval
-const linkContract = new ethers.Contract(linkTokenAddress, LINK_TOKEN_ABI, signer);
-const tx = await linkContract.approve(aggregatorAddress, requiredAmount);
+// Worst-case fee for this request, and the credit already held
+const required = await contract.maxTotalFee(maxFee);   // maxFee × 12 with the aggregator's current settings
+const credit = await contract.ethOwed(walletAddress);
+const ethValue = required > credit ? required - credit : 0n;  // sent as the transaction's value
+
+// Later: take unused credit back
+await contract.withdrawEth();
 ```
 
 #### Fee Management
 - **Gas Fees**: Paid by user in ETH for blockchain transactions
-- **LINK Fees**: Paid by contract for AI evaluation services
-- **Fee Calculation**: Dynamic based on query complexity and jury size
+- **Evaluation Fees**: Paid by the user in ETH, out of the prepayment. Each of the 6 arbiters polled is credited its registered fee and each of the 2 clustered arbiters 3 times its fee on top; the rest of the prepayment is credited back to the user in the aggregator
+- **Fee Calculation**: Set by the fees of the selected arbiters, not by query complexity or jury size. On 2026-11-22 all 40 arbiters on Base mainnet charged 0.00002 ETH: 0.00024 ETH for a completed round, 0.00012 ETH for one that timed out
 
 ## AI Provider APIs
 
@@ -258,7 +271,7 @@ const fetchWithRetry = async (cid, maxRetries = 3) => {
 
 #### User Errors
 - **Invalid Input**: Malformed queries or data
-- **Insufficient Funds**: Inadequate ETH or LINK balances
+- **Insufficient Funds**: Inadequate ETH balance for the prepayment and gas
 - **Permission Denied**: Unauthorized access attempts
 
 ### Recovery Strategies

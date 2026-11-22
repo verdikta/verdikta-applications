@@ -142,16 +142,16 @@ App.js (Root Component)
 
 ### Blockchain Integration
 
-#### Network: Base Sepolia Testnet
-- **Chain ID**: 84532
+#### Networks: Base and Base Sepolia Testnet
+- **Chain ID**: 8453 (Base), 84532 (Base Sepolia). The network is chosen in the header; `REACT_APP_NETWORK` sets the default
 - **RPC URL**: Provided by Ethereum node providers
 - **Block Time**: ~2 seconds
 - **Gas Token**: ETH
 
-#### Token Integration
-- **LINK Token**: Payment for AI services
-- **Contract Address**: 0x779877A7B0D9E8603169DdbD7836e478b4624789
-- **Approval Pattern**: ERC-20 allowance mechanism
+#### Payment
+- **ETH**: Payment for AI services, sent with the request (`requestAIEvaluationWithApproval()` is `payable`)
+- **Aggregator Address**: `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a` on Base, `0xe8a385E473EA710c5a88Cc72681a16a26fe380e4` on Base Sepolia (`client/.env.example`)
+- **Prepayment Pattern**: The request prepays `maxTotalFee()`; what is not spent is credited back in the aggregator (`ethOwed()`) and can be withdrawn (`withdrawEth()`). There is no token and no allowance
 
 ### AI Provider Integration
 

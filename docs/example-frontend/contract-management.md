@@ -23,7 +23,7 @@ Each contract requires the following details:
 - **Format**: Ethereum address (0x followed by 40 hexadecimal characters)
 - **Example**: `0x1234567890123456789012345678901234567890`
 - **Validation**: Address format is automatically verified
-- **Network**: Must be deployed on Base Sepolia testnet
+- **Network**: Must be deployed on Base or on the Base Sepolia testnet (the server accepts the network values `base` and `base_sepolia`)
 
 #### Contract Name
 - **Purpose**: Human-readable identifier for the contract
@@ -83,7 +83,7 @@ Each configured contract displays:
 - **Name**: Display name for easy identification
 - **Class**: Numerical classification
 - **Status**: Whether the contract is accessible
-- **Network**: Blockchain network (should be Base Sepolia)
+- **Network**: Blockchain network (Base or Base Sepolia)
 
 ### Contract Validation
 
@@ -91,7 +91,7 @@ Each configured contract displays:
 - **Accessibility**: Verifies contract responds to basic queries
 - **Interface**: Confirms contract implements required methods
 - **Network**: Validates deployment on correct blockchain
-- **Funding**: Checks if contract has sufficient LINK tokens
+- **Funding**: The contract does not need funding. It is paid in ETH by each request, and before a request the Run Query page checks that your wallet holds enough ETH for the prepayment
 
 #### Status Indicators
 - **✅ Active**: Contract is working properly
@@ -108,9 +108,9 @@ Contracts must implement the AI Jury interface:
 - Other required interface methods
 
 #### Funding Requirements
-- **LINK Tokens**: Sufficient balance to pay for AI evaluations
+- **Evaluation Fees**: Users pay in ETH, sent with each request. The contract itself holds no LINK and needs no balance
 - **Gas Fees**: Users need ETH for transaction costs
-- **Allowances**: Proper token approvals for operation
+- **Allowances**: None. There is no token approval
 
 ## Best Practices
 
@@ -154,7 +154,7 @@ Contracts must implement the AI Jury interface:
 
 #### Troubleshooting
 - **Connection Issues**: Verify network and address
-- **Funding Problems**: Check LINK token balance
+- **Funding Problems**: Check the ETH balance of the wallet that sends the request
 - **Interface Errors**: Confirm contract version compatibility
 - **Permission Issues**: Verify user has management privileges
 
@@ -205,7 +205,7 @@ Different classes may provide:
 
 #### "Contract not found"
 - **Cause**: Invalid address or network mismatch
-- **Solution**: Verify address and ensure Base Sepolia network
+- **Solution**: Verify the address and that it belongs to the network selected for the contract (Base or Base Sepolia)
 
 #### "Insufficient permissions"
 - **Cause**: User lacks contract management privileges

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
-import { CLAIM_STATES, DISPUTE_KINDS, DISPUTE_RESULTS, OUTCOMES } from '../chain/abi.js';
+import { CLAIM_STATES, DISPUTE_KINDS, DISPUTE_RESULTS, LISTING_STATES, OUTCOMES } from '../chain/abi.js';
 import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { ApiError, disputeStatementChallenge, pinDisputeStatement } from '../lib/api.js';
-import { disputeOffer, pendingRound, releaseOffer, roundOver, safeguardView } from '../lib/claimActions.js';
+import { disputeOffer, pendingRound, queueRows, queueView, releaseOffer, retriggerRow, roundOver, safeguardView } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime } from '../lib/format.js';
 import { POLL_MS, READ_TIMEOUT_MS, WATCH_MS, watchUntil, withTimeout } from '../lib/poll.js';
 import { MAX_STATEMENT_BYTES, checkStatement, cidMatches, statementSha256 } from '../lib/statement.js';
@@ -70,6 +70,20 @@ const safeguardsOf = (d) => safeguardView({
 });
 
 const releaseArgs = (d) => ({ disclosedAt: d.claim.disclosedAt, state: d.state, revealableAt: d.times.revealableAt, now: d.now });
+/** Where this read puts the claim in its listing's commit order (lib/claimActions.js queueView). */
+const queueOf = (claimId, d) => queueView({
+  claimId: BigInt(claimId),
+  state: d.state,
+  disclosedAt: d.claim.disclosedAt,
+  headClaim: d.listing.headClaim,
+  discloseDeadline: d.times.discloseDeadline,
+  revealDeadline: d.times.revealDeadline,
+  now: d.now,
+});
+/** The claim an unrevealed claim waits for in this read, or null: none, or the claim has moved on. */
+const waitsForOf = (claimId, d) => queueOf(claimId, d)?.waitsFor ?? null;
+// StakeAttestation.rollForward takes an Open or Depleted listing only
+const ROLLABLE = new Set(['Open', 'Depleted']);
 const disputeArgs = (d) => ({ state: d.state, outcome: OUTCOMES[Number(d.claim.outcome)], dispute: DISPUTE_RESULTS[Number(d.claim.dispute)], deadline: d.deadline, now: d.now });
 
 /** The maker's account from the wallet, or an error line when it is not the listing's maker. */
@@ -134,6 +148,8 @@ function ReleasePanel({ claimId, data, onData, onSent }) {
   const [error, setError] = useState(null);
   const offer = releaseOffer(releaseArgs(data));
   if (!offer.offer) return null;
+  // a release ends the fix window, not the wait behind an earlier claim: the panel says which claim comes first
+  const waitsFor = waitsForOf(claimId, data);
 
   const release = async () => {
     setBusy(true);
@@ -144,7 +160,9 @@ function ReleasePanel({ claimId, data, onData, onSent }) {
       const { signer, provider } = m.wallet;
       // the window may have ended, or the claim moved on, since the page read it
       const fresh = await readClaim(claimId, provider);
-      if (!releaseOffer(releaseArgs(fresh)).offer) {
+      // nor is it sent under words that no longer hold: the claim it waits for may have been settled or expired
+      // since, and then a release lets the hunter reveal at once
+      if (!releaseOffer(releaseArgs(fresh)).offer || waitsForOf(claimId, fresh) !== waitsFor) {
         onData(fresh);
         return setError(C.changed);
       }
@@ -162,7 +180,10 @@ function ReleasePanel({ claimId, data, onData, onSent }) {
   return (
     <section className="claim" aria-labelledby={id} data-testid="release-panel">
       <h3 id={id}>{STRINGS.release.title}</h3>
-      <p>{STRINGS.release.intro}</p>
+      <p data-testid="release-intro">
+        {waitsFor === null ? STRINGS.release.intro : fill(STRINGS.release.introWaits, { head: waitsFor })}
+        {data.claim.late ? null : ` ${STRINGS.release.counted}`}
+      </p>
       <p>{fill(STRINGS.release.until, { time: formatTime(offer.until) })}</p>
       <button type="button" onClick={release} disabled={busy}>{busy ? STRINGS.release.sending : STRINGS.release.button}</button>
       {error && <p className="error" role="alert">{error}</p>}
@@ -361,9 +382,17 @@ export function ClaimPage({ claimId }) {
       <p className="lead">{C.intro}</p>
     </>
   );
+  // what a release this page sent means for the hunter: with a read of the claim, whether it still waits for another
+  const releasedText = () => {
+    const q = loaded?.data ? queueOf(claimId, loaded.data) : null;
+    // no read yet, or the claim is revealed or beyond: neither sentence about its reveal is this page's to say
+    if (!q) return fill(STRINGS.release.doneBare, { tx: sent.release.tx });
+    const head = q.waitsFor;
+    return head === null ? fill(STRINGS.release.done, { tx: sent.release.tx }) : fill(STRINGS.release.doneWaits, { tx: sent.release.tx, head });
+  };
   const notices = (
     <>
-      {sent.release && <p data-testid="released" className="ok">{fill(STRINGS.release.done, { tx: sent.release.tx })}</p>}
+      {sent.release && <p data-testid="released" className="ok">{releasedText()}</p>}
       {sent.dispute && (
         <section className="claim" data-testid="dispute-done">
           <p data-testid="statement-cid" className="mono">{fill(STRINGS.dispute.pinned, { cid: sent.dispute.cid })}</p>
@@ -399,7 +428,19 @@ export function ClaimPage({ claimId }) {
   const dispute = DISPUTE_RESULTS[Number(c.dispute)];
   const kind = DISPUTE_KINDS[Number(c.disputeKind)];
   const g = safeguardsOf(d);
+  const q = queueOf(claimId, d);
   const at = (t) => (t === null ? C.notYet : formatTime(t));
+  // its place in commit order and its reveal deadline as the lens has it (lib/claimActions.js queueRows), and, for a
+  // claim whose round ended with no verdict, until when it holds its place
+  const rows = queueRows(q, { rollable: ROLLABLE.has(LISTING_STATES[Number(d.listing.state)]) });
+  const said = (row) => {
+    if (!row) return null;
+    const vars = {};
+    if (row.head !== undefined) vars.head = row.head;
+    if (row.at !== undefined) vars.time = formatTime(row.at);
+    return fill(C[row.key], vars);
+  };
+  const retrigger = retriggerRow({ state: d.state, retriggerDeadline: d.safeguards.retriggerDeadline, now: d.now });
   // a dispute this page sent is watched even while the page's last read predates it
   const pending = pendingRound(d.state) ?? (sent.dispute && dispute === 'None' ? 'dispute' : null);
   return (
@@ -415,6 +456,9 @@ export function ClaimPage({ claimId }) {
           { id: 'claim-disclosed', label: C.disclosedAt, value: when(c.disclosedAt) },
           c.disclosedAt !== 0n ? { id: 'claim-fix-window-end', label: C.fixWindowEnd, value: formatTime(d.times.revealableAt) } : null,
           { id: 'claim-released', label: C.released, value: c.released ? C.yes : C.no },
+          rows.order ? { id: 'claim-queue', label: C.queue, value: said(rows.order) } : null,
+          rows.reveal ? { id: 'claim-reveal-before', label: C.revealBefore, value: said(rows.reveal) } : null,
+          retrigger ? { id: 'claim-retrigger', label: C.retrigger, value: said(retrigger) } : null,
           { id: 'claim-revealed', label: C.revealedAt, value: when(c.revealedAt) },
           { id: 'claim-judged', label: C.judgedAt, value: when(c.judgedAt) },
           judged ? { id: 'claim-outcome', label: C.outcome, value: OUTCOMES[Number(c.outcome)] } : null,
@@ -433,6 +477,7 @@ export function ClaimPage({ claimId }) {
         <p className="actions">
           <a href={`#/fund/${listingId}`}>{fill(C.listingPage, { id: listingId })}</a>
           {c.disclosedAt !== 0n && <a href={`#/check/${claimId}`}>{C.checkPage}</a>}
+          {rows.order?.head !== undefined && <a data-testid="claim-queue-head" href={`#/claim/${rows.order.head}`}>{fill(C.queueLink, { id: rows.order.head })}</a>}
         </p>
       </section>
       {notices}

@@ -30,6 +30,7 @@ export function ListAndFund({ view, sent }) {
   const mismatches = listMismatches(sent, view.list, disclosureKeyBytes32);
   const [listed, setListed] = useState(null); // { listingId, tx, maker }
   const [existing, setExisting] = useState(null); // { listingId, state }
+  const [opened, setOpened] = useState(false); // this page saw its fund() mined
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -99,8 +100,9 @@ export function ListAndFund({ view, sent }) {
           <p data-testid="listed" data-listing-id={String(listed.listingId)}>
             {fill(C.listed, { id: String(listed.listingId), tx: listed.tx })}
           </p>
-          <p className="hint">{C.fundLater} {fundLink(listed.listingId)}</p>
-          <FundListing listingId={listed.listingId} top={BigInt(params.awards[3])} maker={listed.maker} artifactHash={view.artifactHash} />
+          {!opened && <p className="hint">{C.fundLater} {fundLink(listed.listingId)}</p>}
+          <FundListing listingId={listed.listingId} top={BigInt(params.awards[3])} maker={listed.maker} artifactHash={view.artifactHash} onOpened={() => setOpened(true)} />
+          {opened && <p data-testid="manage-listing">{C.managePage} {fundLink(listed.listingId)}</p>}
         </>
       )}
     </section>

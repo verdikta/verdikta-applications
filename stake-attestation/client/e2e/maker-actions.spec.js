@@ -59,6 +59,85 @@ test.describe('maker actions', () => {
     await expect(page.getByRole('button', { name: STRINGS.release.button })).toHaveCount(0);
   });
 
+  // Tester bounty 400 (2026-11): a claim behind an earlier one cannot be revealed until that one is settled or
+  // expired (decision D5), released or not, and the lens gives it no reveal deadline. The page said "the hunter may
+  // reveal it now" of every release.
+  test('release behind an earlier claim: the page names the claim that comes first, before and after the release', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    const first = await chain.claim({ listingId, archive: archiveBytes('first in order'), recipient: key.recipient });
+    const second = await chain.claim({ listingId, archive: archiveBytes('second in order'), recipient: key.recipient });
+    expect((await chain.sa.getListing(listingId)).headClaim).toBe(first.claimId);
+    expect((await chain.sa.claimTimes(second.claimId)).revealDeadline).toBe(0n);
+
+    // the first claim: first on its listing, its deadline the latest it can be while its fix window is open
+    await openClaim(page, stack, first.claimId);
+    await expect(page.getByTestId('claim-queue')).toHaveText(C.queueFirst);
+    await expect(page.getByTestId('claim-reveal-before')).toHaveText(fill(C.revealLatest, { time: at((await chain.sa.claimTimes(first.claimId)).revealDeadline) }));
+    await expect(page.getByTestId('release-intro')).toHaveText(`${STRINGS.release.intro} ${STRINGS.release.counted}`);
+    await expect(page.getByTestId('claim-queue-head')).toHaveCount(0);
+
+    // the second: it waits for the first and has no deadline, and the panel says a release changes neither
+    await page.goto(`/#/claim/${second.claimId}`);
+    await expect(page.getByTestId('claim-queue')).toHaveText(fill(C.queueWaits, { head: first.claimId }));
+    await expect(page.getByTestId('claim-reveal-before')).toHaveText(C.revealUnset);
+    await expect(page.getByTestId('release-intro')).toHaveText(`${fill(STRINGS.release.introWaits, { head: first.claimId })} ${STRINGS.release.counted}`);
+    await expect(page.getByTestId('claim-queue-head')).toHaveAttribute('href', `#/claim/${first.claimId}`);
+    expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
+    await shot(page, 'claim-release-waits');
+    await page.getByRole('button', { name: STRINGS.release.button }).click();
+    const released = page.getByTestId('released');
+    await expect(released).toBeVisible({ timeout: 30_000 });
+    const tx = /0x[0-9a-f]{64}/.exec(await released.innerText())[0];
+    await expect(released).toHaveText(fill(STRINGS.release.doneWaits, { tx, head: first.claimId }));
+    await expect(released).not.toContainText('revealable now');
+
+    // the chain agrees: released, its fix window over, and still no reveal deadline; a reveal is refused for the order
+    expect((await chain.sa.getClaim(second.claimId)).released).toBe(true);
+    expect(Number(await chain.sa.claimState(second.claimId))).toBe(1); // Revealable
+    expect((await chain.sa.claimTimes(second.claimId)).revealDeadline).toBe(0n);
+    await expect(chain.reveal(second)).rejects.toThrow(/earlier claim unresolved/);
+    await expect(page.getByTestId('claim-state')).toHaveText(STRINGS.enums.claimStates.Revealable);
+    await expect(page.getByTestId('claim-queue')).toHaveText(fill(C.queueWaits, { head: first.claimId }));
+    await expect(page.getByTestId('claim-reveal-before')).toHaveText(C.revealUnset);
+
+    // the listing's page says how many are open and which is first
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-queue')).toHaveText(`${fill(STRINGS.claims.open, { count: 2 })} ${fill(STRINGS.claims.order, { head: first.claimId })}`);
+  });
+
+  // The independent review of that change: the page does not poll an unrevealed claim, so the claim it waits for can
+  // be settled or expired while the page is open. A release sent then would let the hunter reveal at once, under an
+  // intro that says the opposite, so the page reads the claim again and stops.
+  test('release: not sent under words that stopped being true while the page was open', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    const first = await chain.claim({ listingId, archive: archiveBytes('never disclosed'), recipient: key.recipient, disclose: false });
+    const second = await chain.claim({ listingId, archive: archiveBytes('waits, then first'), recipient: key.recipient });
+    await openClaim(page, stack, second.claimId);
+    await expect(page.getByTestId('release-intro')).toHaveText(`${fill(STRINGS.release.introWaits, { head: first.claimId })} ${STRINGS.release.counted}`);
+
+    // the first claim's time to disclose passes, and someone expires it: no place in the order holds that back
+    await chain.increaseTime(Number(await chain.sa.DISCLOSE_WINDOW()) + 1);
+    await (await (await chain.as(stack.accounts.other)).expire(first.claimId)).wait();
+    expect((await chain.sa.getListing(listingId)).headClaim).toBe(second.claimId);
+
+    await page.getByRole('button', { name: STRINGS.release.button }).click();
+    await expect(page.getByRole('alert')).toHaveText(C.changed);
+    expect((await chain.sa.getClaim(second.claimId)).released).toBe(false);
+    // read again: it is first now, and the panel says what a release does for the first claim
+    await expect(page.getByTestId('claim-queue')).toHaveText(C.queueFirst);
+    await expect(page.getByTestId('release-intro')).toHaveText(`${STRINGS.release.intro} ${STRINGS.release.counted}`);
+    await page.getByRole('button', { name: STRINGS.release.button }).click();
+    const released = page.getByTestId('released');
+    await expect(released).toBeVisible({ timeout: 30_000 });
+    const tx = /0x[0-9a-f]{64}/.exec(await released.innerText())[0];
+    await expect(released).toHaveText(fill(STRINGS.release.done, { tx }));
+    expect((await chain.sa.getClaim(second.claimId)).released).toBe(true);
+
+    // the expired claim's page, and the listing's: one claim open, and it is first
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-queue')).toHaveText(`${fill(STRINGS.claims.open, { count: 1 })} ${fill(STRINGS.claims.order, { head: second.claimId })}`);
+  });
+
   test('roll forward: the maker picks a funded listing of the same repository', async ({ page, stack, chain }) => {
     const first = await chain.openListing({ recipient: key.recipient });
     const { claimId } = await chain.claim({ listingId: first.listingId, archive: archiveBytes('roll'), recipient: key.recipient });

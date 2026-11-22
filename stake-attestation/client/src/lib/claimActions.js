@@ -32,6 +32,72 @@ export function disputeOffer({ state, outcome, dispute, deadline, now }) {
   return { offer: true, why: null, until: deadline };
 }
 
+/**
+ * Where a claim that is still to be revealed stands in its listing's commit order (decision D5;
+ * ClaimLogic.revealDeadline). Claims on a listing reveal in the order they were committed: one behind
+ * the listing's headClaim cannot be revealed, and has no reveal deadline, until every earlier claim is
+ * settled or expired, whatever its own fix window says and whether or not the maker releases it.
+ * Null once the claim is revealed, settled or expired: the page then has nothing to say of its reveal
+ * (a revealed claim keeps the head until it is settled or expired, and a later claim's own page says so).
+ *
+ * The lens gives a reveal deadline only to a disclosed claim at the head (claimTimes): the later of
+ * its fix window's end and the moment it became first, plus the reveal window. While its fix window
+ * is open that is the latest it can be (`firm` false): a release or a roll-forward ends the window
+ * sooner, and the deadline moves with it. From the deadline on anyone may expire the claim (`over`).
+ *
+ * An undisclosed claim past its disclose window (`undisclosedOver`) can never be revealed: disclose()
+ * refuses it, and anyone may expire it whatever its place in the order (erratum E5).
+ * @param {{ claimId: bigint, state: string, disclosedAt: bigint, headClaim: bigint, discloseDeadline: bigint, revealDeadline: bigint, now: bigint }} o
+ *   state is the lens's claimState name, headClaim getListing's, the two deadlines claimTimes' (revealDeadline 0 while unknown)
+ * @returns {null | { waitsFor: bigint|null, disclosed: boolean, undisclosedOver: boolean, deadline: null|{ at: bigint, firm: boolean, over: boolean } }}
+ */
+export function queueView({ claimId, state, disclosedAt, headClaim, discloseDeadline, revealDeadline, now }) {
+  if (state !== 'Committed' && state !== 'Revealable') return null;
+  const disclosed = disclosedAt !== 0n;
+  const waitsFor = headClaim !== 0n && headClaim !== claimId ? headClaim : null;
+  const known = disclosed && revealDeadline !== 0n;
+  return {
+    waitsFor,
+    disclosed,
+    undisclosedOver: !disclosed && now >= discloseDeadline,
+    deadline: known ? { at: revealDeadline, firm: state === 'Revealable', over: now >= revealDeadline } : null,
+  };
+}
+
+/**
+ * The claim page's two rows for queueView's answer, each a key of STRINGS.claim with what fills it:
+ * `order`, the claim's place, and `reveal`, its reveal deadline (none for an undisclosed claim).
+ * `rollable`: the listing can still roll forward (Open or Depleted; StakeAttestation.rollForward), the
+ * one thing besides a release that ends a fix window early.
+ * @param {ReturnType<typeof queueView>} q
+ * @param {{ rollable: boolean }} o
+ * @returns {{ order: null|{ key: string, head?: bigint }, reveal: null|{ key: string, at?: bigint } }}
+ */
+export function queueRows(q, { rollable }) {
+  if (!q) return { order: null, reveal: null };
+  if (q.undisclosedOver) return { order: { key: 'queueUndisclosedOver' }, reveal: null };
+  const order = q.waitsFor === null ? { key: 'queueFirst' } : { key: 'queueWaits', head: q.waitsFor };
+  if (!q.disclosed) return { order, reveal: null };
+  if (q.deadline === null) return { order, reveal: { key: 'revealUnset' } };
+  const { at, firm, over } = q.deadline;
+  let key = 'revealFirm';
+  if (over) key = 'revealOver';
+  else if (!firm) key = rollable ? 'revealLatest' : 'revealLatestRelease';
+  return { order, reveal: { key, at } };
+}
+
+/**
+ * A claim whose round ended with no verdict (RoundFailed; erratum E6): the hunter may send the round
+ * again before the lens's retriggerDeadline, and from it on anyone may expire the claim, which is what
+ * takes it out of the commit order a later claim waits in.
+ * @param {{ state: string, retriggerDeadline: bigint, now: bigint }} o
+ * @returns {null | { key: 'retriggerUntil'|'retriggerOver', at: bigint }}
+ */
+export function retriggerRow({ state, retriggerDeadline, now }) {
+  if (state !== 'RoundFailed' || retriggerDeadline === 0n) return null;
+  return { key: now < retriggerDeadline ? 'retriggerUntil' : 'retriggerOver', at: retriggerDeadline };
+}
+
 /** The round a claim in `state` waits for: its own ('claim'), a dispute's ('dispute'), or none. */
 export function pendingRound(state) {
   if (state === 'Revealed') return 'claim';

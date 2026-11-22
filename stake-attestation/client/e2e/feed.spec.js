@@ -46,6 +46,9 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await expect(f('funded-until')).toHaveText(at(listing.fundedUntil));
   await expect(f('days-open')).toHaveText(String(entry.daysOpen));
   await expect(f('claims')).toHaveText('0');
+  // tester bounty 400: the claims a new one would wait behind, since claims on a listing reveal in commit order
+  await expect(f('open-claims')).toHaveText('0');
+  await expect(f('commit-order')).toHaveText(F.orderNone);
   await expect(f('escrow')).toHaveText(fill(STRINGS.record.eth, { eth: '2' }));
   await expect(f('value-at-risk')).toHaveText(fill(STRINGS.record.usd, { usd: '1,250,000' }));
   await expect(f('image')).toHaveText(entry.image);
@@ -75,6 +78,8 @@ test('the feed lists an open listing with its terms, labels and links', async ({
   await chain.until(async () => (await feedEntry(stack, listingId))?.claimsSoFar === 1, { what: 'the claim count' });
   await page.getByRole('button', { name: STRINGS.site.retry }).click();
   await expect(f('claims')).toHaveText('1');
+  await expect(f('open-claims')).toHaveText('1');
+  await expect(f('commit-order')).toHaveText(fill(F.orderHead, { head: (await chain.sa.getListing(listingId)).headClaim }));
 
   // the record and the listing are a click away
   await card.getByRole('link', { name: F.record }).click();

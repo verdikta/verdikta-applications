@@ -9,6 +9,12 @@
 // Node P35 adds two fields and changes none: disclosureRecipient, the age recipient of disclosureKey's 32 bytes
 // (shared/src/disclosureKey.js), and sameRepository, the other listings of the entry's repository that opened
 // (sameRepository.js), each read at the same block.
+//
+// Tester bounty 400 (2026-11) adds two more, and changes none: pendingClaims, how many claims on the listing are
+// neither settled nor expired, and headClaim, the earliest of them (null when there is none). Claims on a listing
+// reveal in commit order (decision D5; ClaimLogic.revealDeadline), so these are the claims a new one would wait
+// behind, and a hunter had no way to see them before paying. A listing in the feed is Open, and a late claim is only
+// taken on a Rolled or Closed one, so here every claim in the queue is one of pendingClaims.
 import { disclosureRecipientOf } from '@verdikta/stake-attestation-shared/disclosure-key';
 
 import { SEVERITY_CLASSES } from '../chain/abi.js';
@@ -60,6 +66,8 @@ export async function buildFeed({ read, projection, block, archives, labels, dis
       fundedUntil,
       daysOpen: Math.floor((block.timestamp - Number(onchain.openedAt)) / DAY),
       claimsSoFar: Number(onchain.claimsCommitted),
+      pendingClaims: Number(onchain.pendingClaims),
+      headClaim: onchain.headClaim === '0' ? null : onchain.headClaim,
       escrowRemainingWei: onchain.escrowWei,
       owedWei: onchain.owedWei,
       valueAtRiskUsd: onchain.valueAtRiskUsd,

@@ -116,6 +116,15 @@ test('the documents field: a line common refuses shows its code and holds the fo
 
 test('a maker lists and funds a repository version: server validation, report, list() and fund()', async ({ page, stack, chain }) => {
   const { recipient } = await generateAndSaveKey(page);
+  // tester bounty 400, the maker review: what the form says at the field. A public repository; what each window
+  // controls, a line each; and that a class below the lowest counted pays nothing (a fresh form counts from MEDIUM)
+  await expect(page.getByText(STRINGS.listing.hints.repo)).toBeVisible();
+  await expect(page.getByTestId('window-hints').getByRole('listitem')).toHaveText(Object.values(STRINGS.listing.hints.windowLines));
+  await expect(page.getByText(STRINGS.listing.hints.awardNotCounted)).toHaveCount(1);
+  await field(page, F.lowestClassCounted).selectOption('HIGH');
+  await expect(page.getByText(STRINGS.listing.hints.awardNotCounted)).toHaveCount(2);
+  await field(page, F.lowestClassCounted).selectOption('MEDIUM');
+  await expect(page.getByText(STRINGS.listing.hints.awardNotCounted)).toHaveCount(1);
   // HIGH below MEDIUM: the client leaves the award rules to the server, which refuses them
   const terms = await repoTerms(stack);
   await fillListing(page, {
@@ -148,6 +157,10 @@ test('a maker lists and funds a repository version: server validation, report, l
 
   const listingId = await listAndFund(page);
   await expect(page.getByTestId('wallet')).toHaveText(fill(STRINGS.wallet.connected, { account: stack.accounts.maker }));
+  // once it is open the page points to the listing's own page, where it is managed, and no longer to "before funding"
+  await expect(page.getByTestId('manage-listing')).toContainText(STRINGS.chain.managePage);
+  await expect(page.getByTestId('manage-listing').getByRole('link', { name: fill(STRINGS.chain.fundPage, { id: listingId }) })).toHaveAttribute('href', `#/fund/${listingId}`);
+  await expect(page.getByText(STRINGS.chain.fundLater)).toHaveCount(0);
   await shot(page, 'listing-open');
 
   const l = await chain.sa.getListing(listingId);

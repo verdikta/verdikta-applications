@@ -343,6 +343,15 @@ h4 {
   margin: 0.25rem 0 0.5rem;
 }
 
+/* a hint that is a list: one line per field it explains */
+ul.hint {
+  padding-left: 1.25rem;
+}
+
+ul.hint li + li {
+  margin-top: 0.25rem;
+}
+
 .small {
   font-size: 0.875rem;
   font-weight: 500;

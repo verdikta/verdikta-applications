@@ -125,6 +125,14 @@ describe('GET /api/feed', () => {
     assert.equal(entry.daysOpen, 3);
     assert.equal(entry.claimsSoFar, 2, 'one settled, one pending');
     assert.equal(entry.claimsSoFar, Number(onchain.claimsCommitted));
+    // the claims a new one would wait behind (tester bounty 400): the settled one is out, the pending one is first
+    assert.equal(entry.pendingClaims, 1, 'the settled claim left the queue');
+    assert.equal(entry.pendingClaims, Number(onchain.pendingClaims));
+    assert.equal(entry.headClaim, String(pendingClaim));
+    assert.equal(entry.headClaim, onchain.headClaim.toString());
+    const quiet = body.listings.find((l) => l.listingId === String(renewed.listingId));
+    assert.equal(quiet.pendingClaims, 0);
+    assert.equal(quiet.headClaim, null, 'no open claim: null, never the "0" a script would read as a claim');
     assert.equal(entry.escrowRemainingWei, onchain.escrowWei.toString());
     assert.equal(entry.escrowRemainingWei, wei.CRITICAL.toString(), 'an INVALID claim pays nothing from the escrow');
     assert.equal(entry.owedWei, '0');
@@ -194,6 +202,47 @@ describe('GET /api/feed', () => {
     assert.ok(ids.includes(String(renewed.listingId)), 'renewed for another 30 days');
     const record = await (await api.get(`/api/records/${open.artifactHash}`)).json();
     assert.equal(record.record.listings[0].lapsed, true, 'the record keeps it, labelled lapsed');
+  });
+});
+
+// Tester bounty 400 (2026-11): claims on a listing reveal in commit order (decision D5), and nothing showed a hunter
+// that a listing already held an open claim before they paid. The feed now says how many are open and which is first,
+// from the contract's own queue at the indexed block.
+describe('the commit-order queue in a feed entry', () => {
+  test('pendingClaims and headClaim follow the contract\'s queue: commits join it in order, and only a settled or expired claim leaves', async () => {
+    const ctx = await chainContext();
+    const l = await listing(ctx);
+    const site = siteFor(ctx);
+    const entry = async () => {
+      await site.sync();
+      const body = await site.feed();
+      const e = body.listings.find((x) => x.listingId === String(l.listingId));
+      const onchain = await ctx.sa.getListing(l.listingId, { blockTag: body.block.number });
+      assert.equal(e.pendingClaims, Number(onchain.pendingClaims), 'the contract\'s count at the feed\'s block');
+      assert.equal(e.headClaim, onchain.headClaim === 0n ? null : onchain.headClaim.toString(), 'the contract\'s head at the feed\'s block');
+      return e;
+    };
+    try {
+      assert.deepEqual([(await entry()).pendingClaims, (await entry()).headClaim], [0, null]);
+
+      const first = await commit(ctx, ctx.hunters[0], l.listingId);
+      const second = await commit(ctx, ctx.hunters[1], l.listingId);
+      let e = await entry();
+      assert.deepEqual([e.pendingClaims, e.headClaim, e.claimsSoFar], [2, String(first), 2]);
+
+      // the earlier claim is never disclosed: once its disclose window is over anyone may expire it, and the next is first
+      await increaseTime(ctx, Number(await ctx.sa.DISCLOSE_WINDOW()) + 1);
+      assert.equal((await entry()).headClaim, String(first), 'time alone takes no claim out of the queue');
+      await (await ctx.sa.connect(ctx.other).expire(first)).wait();
+      e = await entry();
+      assert.deepEqual([e.pendingClaims, e.headClaim, e.claimsSoFar], [1, String(second), 2], 'claimsSoFar still counts both');
+
+      await (await ctx.sa.connect(ctx.other).expire(second)).wait();
+      e = await entry();
+      assert.deepEqual([e.pendingClaims, e.headClaim, e.claimsSoFar], [0, null, 2]);
+    } finally {
+      site.close();
+    }
   });
 });
 

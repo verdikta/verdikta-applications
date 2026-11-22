@@ -885,19 +885,25 @@ test('bounty 400: what check needs from the machine is the class\'s memory limit
 
 test('bounty 400: the platforms, the key file and the name: Windows drives are refused by the mode check, and verdikta-attest is a name the package gives', () => {
   const flat = agents().replace(/\s+/g, ' ');
+  const text5 = agents().slice(agents().indexOf('\n## 5. '), agents().indexOf('\n## 6. '));
   assert.match(section(1), /Linux, macOS, or WSL2 with everything on a Linux path\. The tool does not run on native Windows, nor from a Windows drive mounted in WSL/);
   // the check that refuses: POSIX mode bits, which a Windows drive cannot give; the errors say so
   assert.match(toolSrc('cli.js'), /\(st\.mode & 0o077\) !== 0\) throw fail\('WALLET_KEY_FILE'\)/);
   for (const code of ['WALLET_KEY_FILE', 'FILE_NOT_PRIVATE']) assert.match(ERROR_TEXTS[code], /Windows drive[^.]*\bWSL\b[^.]*: keep [^.]* on a Linux or macOS path\./, code);
   assert.match(section(7), /A Windows drive gives no file that mode, so the tool refuses a key file there \(WALLET_KEY_FILE\)/);
   assert.match(section(9), /Keep the folder and its copies on a Linux or macOS path/);
-  // the name: the package's own bin, which `npm link` installs, or a shell function over the same file
+  // the name: a link beside the package's own bin file, which is executable, or `npm link`, which installs that bin. Not
+  // a shell function: POSIX sh refuses a hyphen in a function's name, and many harnesses run commands through sh -c
   assert.deepEqual(pkg('tool').bin, { 'verdikta-attest': 'bin/verdikta-attest.js' });
-  assert.match(flat, /verdikta-attest\(\) \{ node "\$tool\/bin\/verdikta-attest\.js" "\$@"; \}/);
-  assert.match(flat, /or run `npm link` there, which puts the name on your PATH for every shell/);
+  assert.match(read('tool', 'bin', 'verdikta-attest.js'), /^#!\/usr\/bin\/env node\n/, 'the bin file runs by its own name');
+  assert.ok((fs.statSync(path.join(APP, 'tool', 'bin', 'verdikta-attest.js')).mode & 0o111) !== 0, 'and is executable');
+  assert.ok(text5.includes('    ln -sf verdikta-attest.js bin/verdikta-attest && export PATH="$PWD/bin:$PATH"\n'), 'the line that gives the name');
+  assert.doesNotMatch(agents(), /^\s*verdikta-attest\(\)/m, 'no shell function of that name: sh refuses it');
+  assert.match(flat, /`npm link` in the tool folder, once, puts the name on your PATH for every shell/);
+  assert.match(flat, /The PATH change lasts for that shell only, as every export below does/);
   // the contract's address, as a line that runs: /api/status answers `contract`
   assert.match(read('server', 'src', 'site', 'index.js'), /\bcontract: chain\.address,/);
-  assert.match(section(5), /export VERDIKTA_CONTRACT="\$\(curl -fsS https:\/\/verifiers\.verdikta\.org\/api\/status \| node -p 'JSON\.parse\(require\("fs"\)\.readFileSync\(0\)\)\.contract'\)"/);
+  assert.ok(text5.includes('    export VERDIKTA_CONTRACT="$(curl -fsS https://verifiers.verdikta.org/api/status | jq -r .contract)"\n'), 'the contract line');
   assert.doesNotMatch(section(5), /VERDIKTA_CONTRACT=</, 'no placeholder where a command goes');
 });
 

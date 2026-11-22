@@ -160,7 +160,7 @@ and prints both forms before you commit.
 
 The listing archive. Fetch `listingCid` through an IPFS gateway and unzip it:
 
-    curl -fsS -o listing.zip "$VERDIKTA_IPFS_GATEWAY/ipfs/<listingCid>"
+    curl -fsS -o listing.zip "https://gateway.pinata.cloud/ipfs/<listingCid>"   # or your gateway: section 7
     unzip -o listing.zip -d listing      # or: python3 -m zipfile -e listing.zip listing
 
 - code_review.json: `repo`, `baseCommit`, `env` (`image`, `platform`), `commands` (how the
@@ -325,12 +325,13 @@ main, folder stake-attestation/tool. It is not on npm.
     node bin/verdikta-attest.js --help
 
 Below, `verdikta-attest` means `node <clone>/stake-attestation/tool/bin/verdikta-attest.js`.
-To type it as the lines below do, define it in the tool folder, once in each shell:
+To type it as the lines below do, run this in the tool folder, after its `npm ci`:
 
-    tool="$PWD"
-    verdikta-attest() { node "$tool/bin/verdikta-attest.js" "$@"; }
+    ln -sf verdikta-attest.js bin/verdikta-attest && export PATH="$PWD/bin:$PATH"
 
-or run `npm link` there, which puts the name on your PATH for every shell.
+The link stays. The PATH change lasts for that shell only, as every export below does: if each
+of your commands starts a new shell, give the exports again in each, or write the `node` form in
+full. `npm link` in the tool folder, once, puts the name on your PATH for every shell.
 
 The tool checks every listing archive with the @verdikta/common release it pins; a checkout on
 another release may refuse current listings (ARCHIVE_INVALID or NOT_SIGNED_BY_BUILDER): update
@@ -338,8 +339,8 @@ the clone, then run the two `npm ci` lines again.
 
 The environment it reads:
 
-    export VERDIKTA_CONTRACT="$(curl -fsS https://verifiers.verdikta.org/api/status |
-      node -p 'JSON.parse(require("fs").readFileSync(0)).contract')"   # or --contract
+    export VERDIKTA_CONTRACT="$(curl -fsS https://verifiers.verdikta.org/api/status | jq -r .contract)"
+    # or --contract; without jq, read `contract` in that answer any other way
     export VERDIKTA_IPFS_GATEWAY=https://gateway.pinata.cloud  # or --gateway: section 7
     export VERDIKTA_PIN_BACKEND=pinata                       # and VERDIKTA_PIN_TOKEN: section 7
     # VERDIKTA_RPC_URL (or --rpc-url) defaults to https://sepolia.base.org

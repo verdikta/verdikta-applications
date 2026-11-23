@@ -15,7 +15,8 @@ import {
   ensureCorrectNetwork,
 } from '../utils/contractUtils';
 import { modelProviderService } from '../services/modelProviderService';
-import { waitForFulfilOrTimeout } from '../utils/timeoutUtils';
+import { waitForFulfilOrTimeout, closeTimedOutRound } from '../utils/timeoutUtils';
+import TimeoutNotice from '../components/TimeoutNotice';
 import { ContractDebugger } from '../utils/contractDebugger';
 
 // Default query package CID for example/testing
@@ -45,54 +46,43 @@ function getReadOnlyProvider(networkKey = 'base_sepolia') {
 
 }
 
-// Helper function to poll for evaluation results
-async function pollForEvaluationResults(
+/**
+ * A signer-bound aggregator, on the selected network, for transactions the user's wallet
+ * must send. Built when it is needed: the wallet may have changed network or account
+ * during the minutes a query runs.
+ */
+async function getSignerContract(networkKey, address) {
+  const ethereum = selectInjectedProvider();
+  if (!ethereum) throw new Error('No Ethereum wallet detected. Please install MetaMask.');
+  let provider = new ethers.BrowserProvider(ethereum);
+  provider = await ensureCorrectNetwork(provider, networkKey);
+  const signer = await provider.getSigner();
+  return new ethers.Contract(address, CONTRACT_ABI, signer);
+}
+
+/**
+ * Read the round once. When it holds a result, push it into the page state, load the
+ * justification and return true; otherwise return false. How long and how often this is
+ * called is decided by waitForFulfilOrTimeout() from the aggregator's own timeout.
+ */
+async function loadEvaluationIfReady(
   contract,
   requestId,
-  setTransactionStatus,
-  setOutcomes,
-  setJustification,
-  setResultCid,
-  setResultTimestamp,
-  setOutcomeLabels
+  { setTransactionStatus, setOutcomes, setJustification, setResultCid, setResultTimestamp, setOutcomeLabels }
 ) {
-  setTransactionStatus?.('Waiting for evaluation results...');
-  let attempts = 0;
-  const maxAttempts = 60; // 5 min. Should timeout at exactly 5 minutes (60 * 5s = 300s)
-  let foundEvaluation = null;
-  while (!foundEvaluation && attempts < maxAttempts) {
-    attempts++;
-    console.log(`🔄 Polling attempt ${attempts}/${maxAttempts} (${attempts * 5}s elapsed)`);
-    try {
-      const result = await contract.getEvaluation(requestId);
-      const [likelihoods, justificationCid, exists] = result;
-      console.log(`📊 Poll result - exists: ${exists}, likelihoods: ${likelihoods?.length || 0}, justificationCid: ${justificationCid}`);
-      if (exists && likelihoods?.length > 0) {
-        console.log('✅ Found evaluation results!');
-        foundEvaluation = result;
-        break;
-      }
-    } catch (err) {
-      console.error('Polling error:', err);
-    }
-    if (attempts < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    }
-  }
-  if (!foundEvaluation) {
-    console.log('🕐 Polling timeout reached - returning timed-out status');
-    return { status: 'timed-out' };
-  }
-  const [likelihoods, justificationCid] = foundEvaluation;
+  const [likelihoods, justificationCid, exists] = await contract.getEvaluation(requestId);
+  if (!exists || !likelihoods?.length) return false;
+
+  console.log('✅ Found evaluation results!');
   setOutcomes?.(likelihoods.map(Number));
-  setJustification?.('Loading justification...');
   setResultCid?.(justificationCid);
+  if (!justificationCid) {
+    setJustification?.('The round completed without a justification.');
+    return true;
+  }
+  setJustification?.('Loading justification...');
   setTransactionStatus?.('Fetching justification from server...');
   try {
-    if (!justificationCid) {
-      // Still in commit stage – keep polling
-      return { status: 'pending' };
-    }
     const response = await fetchWithRetry(justificationCid);
     const justificationText = await tryParseJustification(
       response,
@@ -106,7 +96,7 @@ async function pollForEvaluationResults(
     console.error('Justification fetch error:', error);
     setJustification?.(`Error loading justification: ${error.message}`);
   }
-  return { status: 'fulfilled' };
+  return true;
 }
 
 /**
@@ -155,6 +145,9 @@ function RunQuery({
   contractAddress,
   transactionStatus,
   setTransactionStatus,
+  // What happened to a round that got no result in time (see TimeoutNotice). App state.
+  timeoutInfo,
+  setTimeoutInfo,
   loadingResults,
   setLoadingResults,
   uploadProgress,
@@ -190,15 +183,24 @@ function RunQuery({
   const [hasError, setHasError] = useState(false);
   const [lastError, setLastError] = useState(null);
 
-  // Timer
-  const [secondsLeft, setSecondsLeft] = useState(null);   // null = countdown not active
+  // Countdown to the aggregator's timeout. It is computed from a deadline, not counted
+  // down tick by tick, so it stays right when the browser slows timers in a hidden tab.
+  const [waitDeadline, setWaitDeadline] = useState(null); // ms since epoch; null = inactive
+  const [secondsLeft, setSecondsLeft] = useState(null);
   useEffect(() => {
-    if (secondsLeft === null) return;          // countdown inactive
-    const id = setInterval(() => {
-      setSecondsLeft(s => (s > 0 ? s - 1 : 0));
-    }, 1000);
+    if (waitDeadline === null) {
+      setSecondsLeft(null);
+      return undefined;
+    }
+    const tick = () => setSecondsLeft(Math.max(0, Math.ceil((waitDeadline - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [secondsLeft]);
+  }, [waitDeadline]);
+
+  // Second attempt to close a round that got no result (see TimeoutNotice).
+  const [closingRound, setClosingRound] = useState(false);
+  const [closeStatus, setCloseStatus] = useState('');
 
   // Update showingDefaultCid when selectedMethod changes to 'ipfs'
   useEffect(() => {
@@ -331,6 +333,56 @@ const debugContractIssues = async () => {
   }
 };
 
+// Second chance to close a round that got no result: the user declined the wallet
+// prompt, or the transaction could not be sent.
+const handleCloseRound = async () => {
+  if (!timeoutInfo || closingRound) return;
+  const { requestId, contractAddress: roundContract, networkKey } = timeoutInfo;
+  setClosingRound(true);
+  setCloseStatus('Checking the round...');
+  try {
+    const readContract = new ethers.Contract(roundContract, CONTRACT_ABI, getReadOnlyProvider(networkKey));
+    const result = await closeTimedOutRound({
+      readContract,
+      getWriteContract: () => getSignerContract(networkKey, roundContract),
+      requestId,
+      checkForResult: () => loadEvaluationIfReady(readContract, requestId, {
+        setOutcomes,
+        setJustification,
+        setResultCid,
+        setResultTimestamp,
+        setOutcomeLabels
+      }),
+      setTransactionStatus: setCloseStatus
+    });
+    if (result.status === 'fulfilled') {
+      // The round completed after all: show its result.
+      setTimeoutInfo(null);
+      setCurrentPage(PAGES.RESULTS);
+      return;
+    }
+    setTimeoutInfo((info) => (info ? { ...info, outcome: result } : info));
+    if (result.round === 'closed') {
+      setJustification?.('No result: the arbiters did not answer in time, and the round was closed.');
+    }
+  } catch (err) {
+    console.error('Close round error:', err);
+    setTimeoutInfo((info) => (info ? {
+      ...info,
+      outcome: {
+        status: 'timed-out',
+        round: 'open',
+        reason: 'check-failed',
+        errorMessage: err?.shortMessage || err?.message || String(err)
+      }
+    } : info));
+  } finally {
+    setClosingRound(false);
+    setCloseStatus('');
+    refreshEthCredit();
+  }
+};
+
 const handleRunQuery = async () => {
   console.log('🚀 handleRunQuery called - isConnected:', isConnected, 'walletAddress:', walletAddress);
   
@@ -347,6 +399,9 @@ const handleRunQuery = async () => {
     // Clear any previous errors when starting a new query
     setHasError(false);
     setLastError(null);
+    // Drop the notice about an earlier round that is closed; keep one about a round
+    // that is still open, so the way to close it stays on the page.
+    setTimeoutInfo((info) => (info?.outcome?.round === 'open' ? info : null));
 
     console.log('🌐 Creating provider and ensuring correct network...');
     console.log('📍 Selected network:', selectedNetwork);
@@ -592,71 +647,74 @@ const handleRunQuery = async () => {
       }
       const requestId = event.args.requestId;
 
-/* ----- Start a five-minute countdown in the UI ----- */
-setSecondsLeft(300);          // match responseTimeoutSeconds
+      /* ----- Count down the aggregator's own timeout (300 s on Base, 900 s on Base Sepolia) ----- */
+      setWaitDeadline(Date.now() + responseTimeoutSeconds * 1000);
 
-/* ----- Build fee overrides once, reuse for timeout tx ----- */
-const feeOverrides = {
-  gasLimit: 900_000,          // plentiful; the function is cheap
-  maxFeePerGas: adjustedMaxFee,
-  maxPriorityFeePerGas: adjustedPriorityFee
-};
+      const resultSetters = {
+        setTransactionStatus,
+        setOutcomes,
+        setJustification,
+        setResultCid,
+        setResultTimestamp,
+        setOutcomeLabels
+      };
 
-/* ----- Consolidate the callback setters so we can pass them as one object ----- */
-const pollCallbacks = {
-  pollForEvaluationResults,
-  setTransactionStatus,
-  setOutcomes,
-  setJustification,
-  setResultCid,
-  setResultTimestamp,
-  setOutcomeLabels
-};
+      // Poll for as long as the aggregator's timeout. If no result arrives, the user's
+      // wallet is asked to send finalizeEvaluationTimeout(), which closes the round and
+      // returns the unspent prepayment as prepay credit.
+      const result = await waitForFulfilOrTimeout({
+        readContract,
+        getWriteContract: () => getSignerContract(networkToUse, contractAddress),
+        requestId,
+        checkForResult: () => loadEvaluationIfReady(readContract, requestId, resultSetters),
+        responseTimeoutSeconds,
+        setTransactionStatus
+      });
+      setWaitDeadline(null);
 
-const result = await waitForFulfilOrTimeout({
-  contract: readContract,
-  requestId,
-  pollCallbacks,
-  feeOverrides,
-  setTransactionStatus,
-  responseTimeoutSeconds
-});
+      if (result.status === 'timed-out') {
+        console.warn('No result within the timeout:', { requestId, responseTimeoutSeconds, ...result });
 
-console.log('🔍 Timeout check - result status:', result.status);
-if (result.status === 'timed-out') {
-  console.log('⏰ TIMEOUT DETECTED - handling timeout case');
-  console.error('TIMEOUT ERROR: Query timed out after waiting for oracle response');
-  
-  // Clear all result state to prevent showing stale data
-  setJustification?.('⚠️  The oracle did not respond in time. Request marked as FAILED.');
-  setOutcomes?.([]);
-  setResultCid?.('');
-  setResultTimestamp?.('');
-  setOutcomeLabels?.([]);
-  
-  // Stay on RunQuery page to show timeout error, don't navigate to Results
-  setTransactionStatus('❌ TIMEOUT ERROR: Query timed out - no response received from the oracle.');
-  
-  // Show multiple forms of user feedback
-  alert('⚠️ Query Timeout\n\nThe oracle did not respond within the timeout period. The request has been marked as FAILED.\n\nPlease check the browser console for detailed logs.');
-  
-  // Also log to server if possible
-  try {
-    fetch('/api/log-timeout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        message: 'Client-side timeout detected',
-        timestamp: new Date().toISOString(),
-        walletAddress: walletAddress
-      })
-    }).catch(e => console.log('Could not log to server:', e.message));
-  } catch (e) {
-    console.log('Could not send timeout log to server:', e.message);
-  }
-  
-  return; // Don't navigate to Results page
-}
+        // Clear result state so the Results page cannot show data from an earlier query.
+        // The outcome labels are left alone: they are the query's own definition.
+        setJustification?.(
+          result.round === 'closed'
+            ? 'No result: the arbiters did not answer in time, and the round was closed.'
+            : 'No result: the arbiters did not answer in time. The round is still open: see the Run Query page.'
+        );
+        setOutcomes?.([]);
+        setResultCid?.('');
+        setResultTimestamp?.('');
+
+        // Stay on the Run Query page and say what happened to the round.
+        setTimeoutInfo({
+          requestId,
+          contractAddress,
+          networkKey: networkToUse,
+          explorerUrl: getNetworkConfig(networkToUse).explorer,
+          timeoutSeconds: responseTimeoutSeconds,
+          outcome: result
+        });
+        setTransactionStatus('');
+
+        // Also log to server if possible
+        try {
+          fetch('/api/log-timeout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: `Client-side timeout: round ${result.round}` +
+                (result.round === 'open' ? ` (${result.reason})` : ` (closed by ${result.closedBy})`),
+              timestamp: new Date().toISOString(),
+              walletAddress: walletAddress
+            })
+          }).catch(e => console.log('Could not log to server:', e.message));
+        } catch (e) {
+          console.log('Could not send timeout log to server:', e.message);
+        }
+
+        return; // Don't navigate to Results page
+      }
 
       // 6) Navigate to the RESULTS page on success
       setTransactionStatus('');
@@ -701,6 +759,7 @@ This usually means too few active oracles serve the selected class, or the per-o
       }
     } finally {
       setLoadingResults(false);
+      setWaitDeadline(null);
       // A settled (or failed/timed-out) round may have refunded unspent prepay as an
       // ethOwed credit — refresh the widget so the user sees their reclaimable balance.
       refreshEthCredit();
@@ -711,25 +770,15 @@ This usually means too few active oracles serve the selected class, or the per-o
     <div className="page run">
       <h2>Run Query</h2>
       
-      {/* Timeout Error Display */}
-      {transactionStatus && transactionStatus.includes('TIMEOUT ERROR') && (
-        <div style={{
-          backgroundColor: '#fee',
-          border: '2px solid #f88',
-          borderRadius: '8px',
-          padding: '20px',
-          margin: '20px 0',
-          textAlign: 'center'
-        }}>
-          <h3 style={{ color: '#d44', margin: '0 0 10px 0' }}>⚠️ Query Timeout</h3>
-          <p style={{ color: '#d44', fontSize: '16px', margin: '0' }}>
-            {transactionStatus}
-          </p>
-          <p style={{ color: '#666', fontSize: '14px', margin: '10px 0 0 0' }}>
-            The oracle did not respond within the timeout period. Please try again or contact support if this persists.
-          </p>
-        </div>
-      )}
+      {/* What happened to a round that got no result in time */}
+      <TimeoutNotice
+        info={timeoutInfo}
+        ethCredit={ethCredit}
+        onCloseRound={handleCloseRound}
+        closing={closingRound}
+        closeStatus={closeStatus}
+        disabled={loadingResults}
+      />
 
       {/* ETH payment notice + prepay credit */}
       {isConnected && (
@@ -909,7 +958,7 @@ This usually means too few active oracles serve the selected class, or the per-o
             <>
               <span className="spinner"></span>
               {transactionStatus || 'Processing…'}
-              {secondsLeft !== null && secondsLeft >= 0 && (
+              {secondsLeft !== null && secondsLeft > 0 && (
                 <>  ({secondsLeft}s)</>
               )}
             </>

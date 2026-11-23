@@ -182,6 +182,9 @@ function App() {
     setOverrideClassInfo(overrideInfo);
   };
   const [transactionStatus, setTransactionStatus] = useState('');
+  // What happened to a Run Query round that got no result in time. Kept here, like the
+  // status above, so the notice survives a visit to another tab while a query runs.
+  const [runTimeoutInfo, setRunTimeoutInfo] = useState(null);
   const [resultTimestamp, setResultTimestamp] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [packageDetails, setPackageDetails] = useState(null);
@@ -781,6 +784,8 @@ function App() {
             contractAddress={contractAddress}
             transactionStatus={transactionStatus}
             setTransactionStatus={setTransactionStatus}
+            timeoutInfo={runTimeoutInfo}
+            setTimeoutInfo={setRunTimeoutInfo}
             loadingResults={loadingResults}
             setLoadingResults={setLoadingResults}
             uploadProgress={uploadProgress}

@@ -4,11 +4,15 @@
  * Lets an arbiter owner manage the arbiters their connected wallet controls on
  * the header-selected network:
  *  - Claim ETH (per wallet → ReputationAggregator.withdrawEth, from the ethOwed
- *    pull-payment ledger): arbiter earnings and/or requester fee refunds. Shown even
- *    when the wallet owns no arbiters. A secondary per-operator "legacy LINK" claim
- *    (ArbiterOperator.withdraw) appears only when LINK lingers from the old aggregator.
- *  - Close out an arbiter and reclaim the 100 wVDKA stake (per oracle+jobId →
- *    ReputationKeeper.deregisterOracle)
+ *    pull-payment ledger): arbiter earnings, draw / promote rewards and requester
+ *    fee refunds. Shown even when the wallet owns no arbiters. A secondary
+ *    per-operator "legacy LINK" claim (ArbiterOperator.withdraw) appears only when
+ *    LINK lingers from the old aggregator.
+ *  - Manage each arbiter (v2 ReputationKeeper, keyed by keyOf(oracle, jobId)):
+ *    pause / resume, change the fee, top up the stake, ask for a health call, and
+ *    exit in two steps (requestExit, then completeExit after the unbonding period,
+ *    which refunds the stake) — optionally registering again later with new
+ *    classes (components/ResetArbiterModal)
  *  - Authorize a reporting key so nodes running under a separate ops wallet can
  *    post watchdog health events (signature only, no transaction — see
  *    components/ReportingKeysSection)
@@ -32,29 +36,48 @@ import {
   Fuel,
   RotateCcw,
   Download,
+  Pause,
+  Play,
+  Pencil,
+  LogOut,
+  Activity,
+  Clock,
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import { useNetwork } from '../context/NetworkContext';
 import { useWallet } from '../context/WalletContext';
 import { chainForNetwork } from '../config/chains';
 import { apiService } from '../services/api';
-import { withdrawEth, claimLink, deregisterArbiter, sendEth } from '../services/arbiterContracts';
-import { getPendingResets, clearPendingReset } from '../services/resetRegistry';
+import {
+  withdrawEth, claimLink, sendEth, completeExit, setPaused, requestHealthCall,
+} from '../services/arbiterContracts';
+import { getPendingResets, clearPendingReset, markExitCompleted } from '../services/resetRegistry';
 import ResetArbiterModal from '../components/ResetArbiterModal';
+import ArbiterActionModal from '../components/ArbiterActionModal';
 import RegisterArbiterSection from '../components/RegisterArbiterSection';
 import ReportingKeysSection from '../components/ReportingKeysSection';
-import { buildDescriptor, downloadJson } from '../utils/arbiterRegistration';
+import {
+  buildDescriptor, downloadJson, exitView, formatDuration, reasonLines, STATUS_LABELS, FLAG_PAUSED,
+} from '../utils/arbiterRegistration';
 import { estQueriesFor, fmtQueries } from '../utils/funding';
 import '../styles/funding.css';
 import './MyArbiters.css';
 
-const STATUS_LABELS = {
-  active: 'Active',
-  new: 'New',
-  unresponsive: 'Unresponsive',
-  blocked: 'Blocked',
-  inactive: 'Inactive',
+// A more specific label for the badge, from the first status reason.
+const DETAIL_LABELS = {
+  banned: 'Banned',
+  exiting: 'Exiting',
+  paused: 'Paused',
+  understaked: 'Under-staked',
+  feeAboveMax: 'Fee above max',
+  resyncing: 'Frozen (re-syncing)',
 };
+const badgeLabel = (job) => {
+  const first = (job.statusReasons || []).find((r) => DETAIL_LABELS[r]);
+  return first ? DETAIL_LABELS[first] : (STATUS_LABELS[job.status] || job.status);
+};
+const fmtDate = (sec) => (sec ? new Date(sec * 1000).toLocaleString() : '—');
+const nowSec = () => Math.floor(Date.now() / 1000);
 
 const shortHash = (h) => (h ? `${h.slice(0, 10)}…${h.slice(-6)}` : '');
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
@@ -79,12 +102,14 @@ function MyArbiters() {
   const [error, setError] = useState(null);
   const [pending, setPending] = useState(() => new Set());
   const [switching, setSwitching] = useState(false);
-  // The arbiter awaiting close-out confirmation ({ operator, job }), or null.
-  const [confirmTarget, setConfirmTarget] = useState(null);
-  // The arbiter being reset ({ oracle, job, resume }), or null.
+  // In-place action modal: { kind: 'fee'|'topup'|'exit', operator, job }, or null.
+  const [actionTarget, setActionTarget] = useState(null);
+  // The arbiter in the exit-and-register-again flow ({ oracle, job, keeperAddress? }), or null.
   const [resetTarget, setResetTarget] = useState(null);
-  // Reset flows interrupted after deregister (from localStorage), for resume.
+  // Planned re-registrations (from localStorage): exit requested or completed, not yet registered again.
   const [pendingResets, setPendingResets] = useState([]);
+  // Clock for the unbonding countdowns.
+  const [now, setNow] = useState(nowSec);
   // Fund inputs: per-key amount (keyed by sender address) and per-operator
   // "top up all to" target (keyed by operator address).
   const [keyAmounts, setKeyAmounts] = useState({});
@@ -138,17 +163,10 @@ function MyArbiters() {
     refreshPendingResets();
   }, [refreshPendingResets, data]);
 
-  // Dismiss the close-out confirmation on Escape (unless a tx is in flight).
   useEffect(() => {
-    if (!confirmTarget) return undefined;
-    const onKey = (e) => {
-      if (e.key === 'Escape' && !pending.has(`close:${confirmTarget.job.jobId}`)) {
-        setConfirmTarget(null);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [confirmTarget, pending]);
+    const t = setInterval(() => setNow(nowSec()), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   const setKeyPending = (key, on) => {
     setPending((prev) => {
@@ -220,35 +238,50 @@ function MyArbiters() {
     }
   };
 
-  const handleClose = async (operator, job) => {
-    const key = `close:${job.jobId}`;
-    setKeyPending(key, true);
+  // A keeper write for one arbiter, with pending state + toast + reload.
+  const arbiterTx = async (pendingKey, fn, okText, failText) => {
+    setKeyPending(pendingKey, true);
     try {
       const signer = getSigner();
       if (!signer) throw new Error('Wallet signer unavailable. Reconnect your wallet.');
-      const { txHash } = await deregisterArbiter({
-        signer,
-        keeperAddress: data.keeperAddress,
-        oracle: operator.operator,
-        jobId: job.jobId,
-      });
-      toast.success(`Arbiter closed · 100 wVDKA refunded · tx ${shortHash(txHash)}`);
+      const { txHash } = await fn(signer);
+      toast.success(`${okText} · tx ${shortHash(txHash)}`);
       await load();
     } catch (err) {
-      toast.error(err.message || 'Failed to close out arbiter');
+      toast.error(err.message || failText);
     } finally {
-      setKeyPending(key, false);
+      setKeyPending(pendingKey, false);
     }
   };
 
-  // Run the close-out for the arbiter awaiting confirmation, then dismiss the
-  // modal (handleClose surfaces success/failure via toast).
-  const confirmClose = async () => {
-    if (!confirmTarget) return;
-    const { operator, job } = confirmTarget;
-    await handleClose(operator, job);
-    if (isMountedRef.current) setConfirmTarget(null);
-  };
+  const handlePause = (operator, job, paused) => arbiterTx(
+    `pause:${job.key}`,
+    (signer) => setPaused({ signer, keeperAddress: data.keeperAddress, key: job.key, paused }),
+    paused ? 'Arbiter paused' : 'Arbiter resumed',
+    paused ? 'Failed to pause' : 'Failed to resume',
+  );
+
+  const handleHealthCall = (operator, job) => arbiterTx(
+    `health:${job.key}`,
+    (signer) => requestHealthCall({ signer, keeperAddress: data.keeperAddress, key: job.key }),
+    'Health call sent · the node answers it within a minute if it is running',
+    'Failed to request a health call',
+  );
+
+  // Second exit step: refund the stake. Keeps any planned re-registration entry
+  // (marked as exited) so the banner can offer to register again.
+  const handleCompleteExit = (operator, job) => arbiterTx(
+    `complete:${job.key}`,
+    async (signer) => {
+      const r = await completeExit({ signer, keeperAddress: data.keeperAddress, key: job.key });
+      const planned = pendingResets.find((e) => e.oracle.toLowerCase() === operator.operator.toLowerCase()
+        && e.jobId.toLowerCase() === job.jobId.toLowerCase());
+      if (planned) markExitCompleted({ ...planned });
+      return r;
+    },
+    `Exit completed · ${job.stake} wVDKA refunded`,
+    'Failed to complete the exit',
+  );
 
   // Send a per-key ETH amount to one sending key, then refresh balances.
   const fundKey = async (address) => {
@@ -317,7 +350,7 @@ function MyArbiters() {
     <div className="page-header">
       <div className="header-content">
         <h1><Wallet size={28} className="inline-icon" /> My Arbiters</h1>
-        <p>Claim earned or refunded ETH and close out arbiters on {chain.name}</p>
+        <p>Claim ETH, manage, and exit your arbiters on {chain.name}</p>
       </div>
       {isConnected && (
         <div className="header-actions">
@@ -359,8 +392,9 @@ function MyArbiters() {
             <Wallet size={40} />
             <h2>Connect your wallet</h2>
             <p>
-              Connect the wallet that owns your arbiters to claim earned ETH and reclaim stake, or
-              the wallet you requested evaluations from to withdraw refunded fees.
+              Connect the wallet that owns your arbiters to claim earned ETH and manage them, or
+              the wallet you requested evaluations from (or drew juries / promoted rounds with) to
+              withdraw refunds and rewards.
             </p>
             <button className="btn btn-primary btn-with-icon" onClick={handleConnect} disabled={connecting}>
               <Wallet size={16} />
@@ -382,7 +416,7 @@ function MyArbiters() {
       <AlertTriangle size={16} className="warn-icon" />
       <span>
         Your wallet is on a different network. Switch to <strong>{chain.name}</strong> to claim
-        ETH, fund keys, or close out arbiters — you can still view them below.
+        ETH, fund keys, or manage arbiters — you can still view them below.
       </span>
       <button className="btn btn-primary btn-with-icon" onClick={handleSwitch} disabled={switching}>
         <Server size={16} />
@@ -391,11 +425,12 @@ function MyArbiters() {
     </div>
   ) : null;
 
-  // Primary, per-wallet ETH claim from the aggregator's ethOwed ledger. Two things credit
-  // it: arbiter earnings (base + bonus, aggregated across ALL the owner's operators) and
-  // requester refunds (the unspent part of a request's up-front worst-case fee, credited at
-  // settlement or timeout). Both drain through the same withdrawEth(), so this is a single
-  // claim — not per operator — and works for wallets that own no arbiters.
+  // Primary, per-wallet ETH claim from the aggregator's ethOwed ledger. Three things credit
+  // it: arbiter earnings (base fees + bonuses, aggregated across ALL the owner's operators),
+  // draw / promote rewards (paid to whoever calls drawJury or promote on a round), and
+  // requester refunds (the unspent part of a request's up-front worst-case fee). All drain
+  // through the same withdrawEth(), so this is a single claim — not per operator — and
+  // works for wallets that own no arbiters.
   const claimableEth = parseFloat(data?.claimableEth || '0');
   const withdrawingEth = pending.has('withdrawEth');
   const canWithdrawEth = claimableEth > 0 && !withdrawingEth && onCorrectChain;
@@ -420,9 +455,10 @@ function MyArbiters() {
       </div>
       {hasArbiters ? (
         <p className="claim-note muted">
-          Includes your arbiter earnings, which accrue per owner across all your operators, plus
-          any refunds of unused fees from evaluations this wallet requested. Unwithdrawn ETH stays
-          credited on the aggregator and can be claimed any time.
+          Includes your arbiter earnings (base fees and bonuses, which accrue per owner across all
+          your operators), any draw or promote rewards this wallet earned by calling drawJury or
+          promote on a round, and refunds of unused fees from evaluations it requested. Unwithdrawn
+          ETH stays credited on the aggregator and can be claimed any time.
         </p>
       ) : (
         <div className="claim-note muted">
@@ -431,8 +467,9 @@ function MyArbiters() {
             evaluation (for example from the Verdikta Playground), it prepays the most the request
             could cost: every polled arbiter&rsquo;s maximum fee plus the largest possible bonus.
             Arbiters usually charge less, and bonuses only go to the arbiters whose answers agree,
-            so once the request settles or times out the unspent ETH is credited back to this
-            wallet on the Verdikta aggregator.
+            so once the request finishes the unspent ETH is credited back to this wallet on the
+            Verdikta aggregator. Calling drawJury or promote on a round (anyone may, after a short
+            priority window for the requester) also earns a reward that is credited here.
           </p>
           <p>
             That credit is not sent back automatically. Withdraw it here to move it to your wallet,
@@ -451,37 +488,41 @@ function MyArbiters() {
     </section>
   );
 
-  // Resets that stopped after close-out leave the arbiter delisted and offline.
-  // Surface them so the owner can finish re-registering (note: when the reset
-  // emptied the listing, this is the only on-page trace of the arbiter).
+  // Planned re-registrations (exit requested, or completed, but not registered
+  // again). An arbiter whose exit completed has left the listing, so this banner is
+  // the only on-page trace of it. Entries whose arbiter is still listed (still
+  // unbonding) are handled on its row instead.
   const dismissReset = (entry) => {
     clearPendingReset({ network: selectedNetwork, oracle: entry.oracle, jobId: entry.jobId });
     refreshPendingResets();
   };
+  const listedIds = new Set((data?.operators || []).flatMap((op) =>
+    op.jobs.map((j) => `${op.operator.toLowerCase()}|${j.jobId.toLowerCase()}`)));
+  const exitedResets = pendingResets.filter((e) => !listedIds.has(`${e.oracle.toLowerCase()}|${e.jobId.toLowerCase()}`));
 
-  const resumeBanner = pendingResets.length > 0 ? (
+  const resumeBanner = exitedResets.length > 0 ? (
     <div className="resume-resets">
-      {pendingResets.map((entry) => (
+      {exitedResets.map((entry) => (
         <div className="resume-reset-banner" key={`${entry.oracle}:${entry.jobId}`}>
           <AlertTriangle size={16} className="warn-icon" />
           <span>
             Arbiter <code>{shortHash(entry.jobId)}</code> on operator{' '}
-            <code>{shortAddr(entry.oracle)}</code> was closed out but{' '}
-            <strong>not yet re-registered</strong> — it is offline. Finish the restart to bring it
-            back with a fresh reputation.
+            <code>{shortAddr(entry.oracle)}</code> has exited but is{' '}
+            <strong>not registered again</strong> (planned classes{' '}
+            {(entry.classes || []).join(', ') || '—'}). Register it to bring it back with its
+            previous scores.
           </span>
           <button
-            className="btn btn-danger btn-with-icon"
+            className="btn btn-warning btn-with-icon"
             onClick={() => setResetTarget({
               oracle: entry.oracle,
               keeperAddress: entry.keeperAddress,
               job: { jobId: entry.jobId, fee: entry.fee, classes: entry.classes },
-              resume: true,
             })}
             disabled={!onCorrectChain}
-            title={!onCorrectChain ? `Switch to ${chain.name} to re-register` : undefined}
+            title={!onCorrectChain ? `Switch to ${chain.name} to register` : undefined}
           >
-            <RefreshCw size={14} /> Finish restart
+            <RefreshCw size={14} /> Register again
           </button>
           <button className="btn btn-secondary" onClick={() => dismissReset(entry)}>
             Dismiss
@@ -494,6 +535,7 @@ function MyArbiters() {
   const registerSection = data?.keeperAddress ? (
     <RegisterArbiterSection
       keeperAddress={data.keeperAddress}
+      stakeRequirement={data.stakeRequirement}
       network={selectedNetwork}
       owner={address}
       chain={chain}
@@ -703,17 +745,22 @@ function MyArbiters() {
                     <th>Status</th>
                     <th>Sending key</th>
                     <th>Stake</th>
-                    <th>Stats</th>
+                    <th>Reputation</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {operator.jobs.map((job) => {
-                    const closeKey = `close:${job.jobId}`;
-                    const closing = pending.has(closeKey);
-                    const lockedDate = job.lockedUntil
-                      ? new Date(job.lockedUntil * 1000).toLocaleString()
-                      : null;
+                    const ex = exitView(job, now);
+                    const exiting = ex.state !== 'none';
+                    const banned = (job.statusReasons || []).includes('banned');
+                    const paused = (job.flags & FLAG_PAUSED) !== 0;
+                    const frozen = (job.statusReasons || []).some((r) => r === 'frozen' || r === 'resyncing');
+                    const busy = ['pause', 'health', 'complete'].some((k) => pending.has(`${k}:${job.key}`));
+                    const planned = pendingResets.find((e) => e.oracle.toLowerCase() === operator.operator.toLowerCase()
+                      && e.jobId.toLowerCase() === job.jobId.toLowerCase());
+                    const noChain = !onCorrectChain ? `Switch to ${chain.name} first` : undefined;
+                    const why = reasonLines(job.statusReasons);
                     // The per-arbiter sending key isn't on-chain (it lives in
                     // the node's job spec). The server derives it by scanning
                     // OracleResponse fulfillment txs for this jobId via the
@@ -732,9 +779,15 @@ function MyArbiters() {
                         </td>
                         <td className="nowrap">{job.fee != null ? job.fee : '—'}</td>
                         <td>
-                          <span className={`status-badge status-${job.status}`}>
-                            {STATUS_LABELS[job.status] || job.status}
+                          <span className={`status-badge status-${job.status}`} title={why.join('\n')}>
+                            {badgeLabel(job)}
                           </span>
+                          {(job.statusReasons || []).includes('resyncing') && (
+                            <div className="status-note">Not selectable until its node&rsquo;s health job re-syncs (automatic once the node runs).</div>
+                          )}
+                          {(job.statusReasons || []).includes('blocked') && job.blockedUntil > now && (
+                            <div className="status-note">Blocked until {fmtDate(job.blockedUntil)}</div>
+                          )}
                         </td>
                         <td>
                           {job.sender ? (
@@ -754,48 +807,128 @@ function MyArbiters() {
                             >—</span>
                           )}
                         </td>
-                        <td>{job.stakeAmount} wVDKA</td>
+                        <td className="nowrap">
+                          {job.stake} wVDKA
+                          {job.understakedBy && <div className="status-note">{job.understakedBy} short</div>}
+                        </td>
                         <td>
                           <div className="job-stats">
-                            <span><span className="job-stat-label">Calls</span> {job.callCount ?? '—'}</span>
                             <span><span className="job-stat-label">Quality</span> {job.qualityScore ?? '—'}</span>
                             <span><span className="job-stat-label">Timeliness</span> {job.timelinessScore ?? '—'}</span>
+                            <span><span className="job-stat-label">Offenses</span> {job.offenses ?? '—'}</span>
                           </div>
                         </td>
                         <td className="job-action">
                           <div className="job-action-buttons">
-                            {job.locked ? (
-                              <span className="locked-note" title={`Locked until ${lockedDate}`}>
-                                <Lock size={13} /> Locked until {lockedDate}
-                              </span>
-                            ) : (
+                            {exiting ? (
+                              <>
+                                {ex.state === 'unbonding' && (
+                                  <span className="locked-note" title={`Complete the exit after ${fmtDate(job.exitAt)}`}>
+                                    <Clock size={13} /> Unbonding · {formatDuration(ex.waitSeconds)} left
+                                  </span>
+                                )}
+                                {ex.state === 'blocked' && (
+                                  <span className="locked-note" title={`Blocked until ${fmtDate(job.blockedUntil)}`}>
+                                    <Lock size={13} /> Blocked · exit in {formatDuration(ex.waitSeconds)}
+                                  </span>
+                                )}
+                                {ex.state === 'ready' && (planned ? (
+                                  <button
+                                    className="btn btn-warning btn-with-icon"
+                                    onClick={() => setResetTarget({ oracle: operator.operator, job: { ...job, fee: planned.fee, classes: planned.classes } })}
+                                    disabled={!onCorrectChain}
+                                    title={noChain || 'Complete the exit (refunds the stake), then register again with the planned fee and classes'}
+                                  >
+                                    <RotateCcw size={14} /> Complete exit &amp; register again
+                                  </button>
+                                ) : (
+                                  <button
+                                    className="btn btn-danger btn-with-icon"
+                                    onClick={() => handleCompleteExit(operator, job)}
+                                    disabled={busy || !onCorrectChain}
+                                    title={noChain || 'Finish the exit and refund the stake to your wallet'}
+                                  >
+                                    <LogOut size={14} />
+                                    {pending.has(`complete:${job.key}`) ? 'Completing…' : `Complete exit & reclaim ${job.stake} wVDKA`}
+                                  </button>
+                                ))}
+                                {planned && ex.state !== 'ready' && (
+                                  <span className="muted" title="Planned in this browser when the exit was requested">
+                                    Then register again with classes {(planned.classes || []).join(', ')}
+                                  </span>
+                                )}
+                              </>
+                            ) : !banned && (
                               <>
                                 <button
-                                  className="btn btn-danger btn-with-icon"
-                                  onClick={() => setConfirmTarget({ operator, job })}
-                                  disabled={closing || !onCorrectChain}
-                                  title={!onCorrectChain
-                                    ? `Switch to ${chain.name} to close out`
-                                    : 'Deregister this arbiter and reclaim its 100 wVDKA stake'}
+                                  className="btn btn-secondary btn-with-icon"
+                                  onClick={() => handlePause(operator, job, !paused)}
+                                  disabled={busy || !onCorrectChain}
+                                  title={noChain || (paused ? 'Make the arbiter selectable again' : 'Stop the arbiter being selected (keeps it registered)')}
                                 >
-                                  {closing ? 'Closing…' : 'Close out & reclaim 100 wVDKA'}
+                                  {paused ? <Play size={13} /> : <Pause size={13} />}
+                                  {pending.has(`pause:${job.key}`) ? '…' : paused ? 'Resume' : 'Pause'}
                                 </button>
                                 <button
-                                  className="btn btn-warning btn-with-icon"
-                                  onClick={() => setResetTarget({ oracle: operator.operator, job, resume: false })}
-                                  disabled={closing || !onCorrectChain}
-                                  title={!onCorrectChain
-                                    ? `Switch to ${chain.name} to restart`
-                                    : 'Re-register this arbiter (optionally with a new fee/classes); resets reputation to zero'}
+                                  className="btn btn-secondary btn-with-icon"
+                                  onClick={() => setActionTarget({ kind: 'fee', operator, job })}
+                                  disabled={busy || !onCorrectChain}
+                                  title={noChain || 'Change the posted fee (no exit needed)'}
                                 >
-                                  <RotateCcw size={14} /> Restart
+                                  <Pencil size={13} /> Change fee
+                                </button>
+                                {job.understakedBy && (
+                                  <button
+                                    className="btn btn-primary btn-with-icon"
+                                    onClick={() => setActionTarget({ kind: 'topup', operator, job })}
+                                    disabled={busy || !onCorrectChain}
+                                    title={noChain || 'Bring the stake back up to the requirement'}
+                                  >
+                                    <Coins size={13} /> Top up stake
+                                  </button>
+                                )}
+                                {frozen && (
+                                  <button
+                                    className="btn btn-secondary btn-with-icon"
+                                    onClick={() => handleHealthCall(operator, job)}
+                                    disabled={busy || !onCorrectChain}
+                                    title={noChain || 'Ask the keeper for a health call; a running node answers it and is unfrozen'}
+                                  >
+                                    <Activity size={13} /> {pending.has(`health:${job.key}`) ? '…' : 'Send health call'}
+                                  </button>
+                                )}
+                                <button
+                                  className="btn btn-warning btn-with-icon"
+                                  onClick={() => setResetTarget({ oracle: operator.operator, job })}
+                                  disabled={busy || !onCorrectChain}
+                                  title={noChain || 'Exit now and register again after the unbonding period, e.g. with new classes; scores carry over'}
+                                >
+                                  <RotateCcw size={14} /> Exit &amp; register again
+                                </button>
+                                <button
+                                  className="btn btn-danger btn-with-icon"
+                                  onClick={() => setActionTarget({ kind: 'exit', operator, job })}
+                                  disabled={busy || !onCorrectChain}
+                                  title={noChain || `Request the exit; the ${job.stake} wVDKA stake is refunded when you complete it after the unbonding period`}
+                                >
+                                  <LogOut size={14} /> Exit
                                 </button>
                               </>
+                            )}
+                            {banned && !exiting && (
+                              <button
+                                className="btn btn-danger btn-with-icon"
+                                onClick={() => setActionTarget({ kind: 'exit', operator, job })}
+                                disabled={busy || !onCorrectChain}
+                                title={noChain || 'A banned arbiter can only exit (recovering what is left of its stake)'}
+                              >
+                                <LogOut size={14} /> Exit
+                              </button>
                             )}
                             <button
                               className="btn btn-secondary btn-with-icon"
                               onClick={() => downloadArbiterJson(operator, job)}
-                              title="Download a JSON backup with everything needed to re-register this arbiter"
+                              title="Download a JSON backup with everything needed to register this arbiter again"
                             >
                               <Download size={13} /> Backup JSON
                             </button>
@@ -814,39 +947,21 @@ function MyArbiters() {
       {reportingKeysSection}
       {registerSection}
 
-      {confirmTarget && (() => {
-        const busy = pending.has(`close:${confirmTarget.job.jobId}`);
-        return (
-          <div
-            className="modal-overlay"
-            onClick={() => { if (!busy) setConfirmTarget(null); }}
-          >
-            <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-              <h3 className="modal-title">
-                <AlertTriangle size={18} className="warn-icon" /> Close out this arbiter?
-              </h3>
-              <p className="modal-body">
-                This deregisters the arbiter on-chain and refunds its{' '}
-                <strong>{confirmTarget.job.stakeAmount} wVDKA</strong> stake to your wallet. To list
-                it again you would have to re-register and re-stake. You will still confirm the
-                transaction in your wallet.
-              </p>
-              <div className="modal-detail">
-                <div><span>Operator</span><code>{shortAddr(confirmTarget.operator.operator)}</code></div>
-                <div><span>Job ID</span><code>{shortHash(confirmTarget.job.jobId)}</code></div>
-              </div>
-              <div className="modal-actions">
-                <button className="btn btn-secondary" onClick={() => setConfirmTarget(null)} disabled={busy}>
-                  Cancel
-                </button>
-                <button className="btn btn-danger btn-with-icon" onClick={confirmClose} disabled={busy}>
-                  {busy ? 'Closing…' : 'Close out & reclaim wVDKA'}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {actionTarget && (
+        <ArbiterActionModal
+          kind={actionTarget.kind}
+          operator={actionTarget.operator}
+          job={actionTarget.job}
+          keeperAddress={data?.keeperAddress}
+          owner={address}
+          maxOracleFee={data?.maxOracleFee}
+          unbondingPeriodSeconds={data?.unbondingPeriodSeconds}
+          getSigner={getSigner}
+          toast={toast}
+          onClose={() => setActionTarget(null)}
+          onDone={() => { setActionTarget(null); load(); }}
+        />
+      )}
 
       {resetTarget && (
         <ResetArbiterModal
@@ -854,14 +969,10 @@ function MyArbiters() {
           jobId={resetTarget.job.jobId}
           fee={resetTarget.job.fee}
           classes={resetTarget.job.classes}
-          qualityScore={resetTarget.job.qualityScore}
-          timelinessScore={resetTarget.job.timelinessScore}
-          callCount={resetTarget.job.callCount}
           keeperAddress={resetTarget.keeperAddress || data?.keeperAddress}
           network={selectedNetwork}
           owner={address}
           chain={chain}
-          resume={resetTarget.resume}
           getSigner={getSigner}
           toast={toast}
           onClose={() => { setResetTarget(null); refreshPendingResets(); }}

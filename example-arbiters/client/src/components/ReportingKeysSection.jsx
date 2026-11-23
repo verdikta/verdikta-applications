@@ -9,7 +9,7 @@
  * indication why.
  *
  * Copying the owner key onto the node is the wrong fix: that key controls the
- * wVDKA stake, deregisterOracle, and ETH earnings. Instead, the owner signs a
+ * wVDKA stake, the keeper's exit and fee controls, and ETH earnings. Instead, the owner signs a
  * delegation here — an EIP-191 personal message, no transaction and no gas —
  * naming an address allowed to report on its behalf until an expiry it picks.
  * The site stores the attestation and ingest then accepts owner *or* delegate.

@@ -2,19 +2,22 @@
  * Arbiter contract write helpers (client-side, via the user's wallet signer).
  *
  * Owner-gated actions:
- *  - withdrawEth: claim earned ETH from the ReputationAggregator's pull-payment
- *    ledger (ethOwed) to the connected owner. Earnings are credited PER OWNER
- *    (aggregated across all of that owner's operators on this aggregator), so this
- *    is a single per-owner claim — not per operator.
+ *  - withdrawEth: claim ETH from the ReputationAggregator's pull-payment ledger
+ *    (ethOwed) to the connected wallet. It holds arbiter earnings (base fees and
+ *    bonuses, aggregated across all of the owner's operators), draw / promote
+ *    rewards earned by calling drawJury or promote, and requester refunds — so
+ *    this is a single per-wallet claim, not per operator.
  *  - claimLink: LEGACY — withdraw any LINK still sitting in an ArbiterOperator
  *    (Chainlink Operator) contract from the old LINK aggregator. Per operator.
- *    Vestigial under the ETH aggregator (0-juel dispatch accrues no new LINK);
- *    retained only to drain leftover balances.
- *  - deregisterArbiter: deregister an (oracle, jobId) on the ReputationKeeper,
- *    which refunds the 100 wVDKA stake to the operator's owner.
+ *  - v2 ReputationKeeper writes, all keyed by keyOf(oracle, jobId) and allowed to
+ *    the operator contract's owner(): registerArbiter (stakes stakeRequirement
+ *    wVDKA, pulled with transferFrom), requestExit then completeExit after the
+ *    unbonding period (refunds the stake), setPaused, setFee, topUpStake,
+ *    requestHealthCall.
  *
- * Each write does a staticCall dry-run first so on-chain require() reasons
- * ("Oracle is locked…", "Not authorized…", "NothingOwed") surface before we spend gas.
+ * Each write does a staticCall dry-run first so on-chain revert reasons
+ * (NotArbiterOwner, StillBonded, AlreadyRegistered, NothingOwed, …) surface before
+ * we spend gas.
  */
 
 import { ethers } from 'ethers';
@@ -22,6 +25,7 @@ import { ethers } from 'ethers';
 const AGGREGATOR_ABI = [
   'function ethOwed(address) view returns (uint256)',
   'function withdrawEth()',
+  'error NothingOwed()',
 ];
 
 const OPERATOR_ABI = [
@@ -29,15 +33,47 @@ const OPERATOR_ABI = [
   'function withdraw(address recipient, uint256 amount)',
 ];
 
+// v2 ReputationKeeper. Custom errors are listed so ethers can name a revert.
 const KEEPER_ABI = [
-  'function deregisterOracle(address _oracle, bytes32 _jobId)',
-  'function registerOracle(address _oracle, bytes32 _jobId, uint256 fee, uint64[] _classes)',
+  'function registerArbiter(address oracle, bytes32 jobId, uint64 fee, uint64[] classes, bytes32 chainHead)',
+  'function requestExit(bytes32 key)',
+  'function completeExit(bytes32 key)',
+  'function setPaused(bytes32 key, bool paused)',
+  'function setFee(bytes32 key, uint64 fee)',
+  'function topUpStake(bytes32 key, uint96 amount)',
+  'function requestHealthCall(bytes32 key)',
   'function verdiktaToken() view returns (address)',
-  'function STAKE_REQUIREMENT() view returns (uint256)',
-  'function getOracleInfo(address _oracle, bytes32 _jobId) view returns (bool isActive, int256 qualityScore, int256 timelinessScore, uint256 callCount, bytes32 jobId, uint256 fee, uint256 stakeAmount, uint256 lockedUntil, bool blocked)',
+  'function stakeRequirement() view returns (uint256)',
+  'function unbondingPeriod() view returns (uint40)',
+  'function getArbiter(bytes32 key) view returns (tuple(address oracle, uint256 quality, uint256 timeliness, uint256 offenses, uint256 flags, uint256 blockedUntil, uint256 fee, uint256 callSentAt, uint256 callAnsweredAt, uint256 stake, uint256 checkpoints, uint256 exitAt))',
+  'error NotArbiterOwner()',
+  'error AlreadyRegistered()',
+  'error AlreadyExiting()',
+  'error NotRegistered()',
+  'error BadClasses()',
+  'error BadParams()',
+  'error NotAuthorizedResponder()',
+  'error StillBonded()',
+  'error Blocked()',
+  'error TransferFailed()',
 ];
 
-// wVDKA (stake token) — only the bits the re-register flow needs.
+/** Plain-language text for the contracts' custom errors. */
+const CUSTOM_ERRORS = {
+  NothingOwed: 'No ETH is currently available to claim.',
+  NotArbiterOwner: 'The connected wallet does not own this operator contract (only its owner() may manage the arbiter).',
+  AlreadyRegistered: 'This arbiter (operator + Job ID) is already registered. An exiting arbiter stays registered until its exit is completed.',
+  AlreadyExiting: 'An exit is already in progress for this arbiter.',
+  NotRegistered: 'This arbiter is not registered.',
+  BadClasses: 'Give between 1 and 5 classes.',
+  BadParams: 'Invalid parameters: the operator must be a contract and the fee must be above 0.',
+  NotAuthorizedResponder: 'Only the operator owner or one of its node keys can ask for a health call.',
+  StillBonded: 'The unbonding period has not ended yet.',
+  Blocked: 'The arbiter is blocked; the exit can be completed once the block ends.',
+  TransferFailed: 'The wVDKA transfer failed. Check your balance and the approval.',
+};
+
+// wVDKA (stake token) — only the bits the registration and top-up flows need.
 const ERC20_ABI = [
   'function allowance(address owner, address spender) view returns (uint256)',
   'function approve(address spender, uint256 amount) returns (bool)',
@@ -52,6 +88,8 @@ function friendlyError(error) {
   if (error?.code === 'INSUFFICIENT_FUNDS') {
     return new Error('Connected wallet has insufficient ETH to cover this transfer plus gas.');
   }
+  const errName = error?.revert?.name;
+  if (errName && CUSTOM_ERRORS[errName]) return new Error(CUSTOM_ERRORS[errName]);
   const reason =
     error?.reason ||
     error?.revert?.args?.[0] ||
@@ -68,7 +106,7 @@ function friendlyError(error) {
 }
 
 /**
- * Withdraw the connected owner's earned ETH from the aggregator's pull-payment ledger
+ * Withdraw the connected wallet's ETH from the aggregator's pull-payment ledger
  * (ethOwed). withdrawEth() always pays msg.sender its entire ethOwed balance — there is no
  * recipient/amount to pass. Reverts with NothingOwed if the balance is zero (surfaced by
  * the staticCall dry-run before spending gas).
@@ -121,16 +159,12 @@ export async function claimLink({ signer, operatorAddress, recipient }) {
   }
 }
 
-/**
- * Deregister an arbiter (oracle, jobId), refunding the 100 wVDKA stake to the
- * owner. Reverts on-chain if the oracle is locked.
- * @returns {Promise<{txHash: string}>}
- */
-export async function deregisterArbiter({ signer, keeperAddress, oracle, jobId }) {
+/** A keeper write with a staticCall dry-run first. */
+async function keeperWrite({ signer, keeperAddress }, method, args) {
   const keeper = new ethers.Contract(keeperAddress, KEEPER_ABI, signer);
   try {
-    await keeper.deregisterOracle.staticCall(oracle, jobId);
-    const tx = await keeper.deregisterOracle(oracle, jobId);
+    await keeper[method].staticCall(...args);
+    const tx = await keeper[method](...args);
     const receipt = await tx.wait();
     return { txHash: receipt.hash };
   } catch (error) {
@@ -138,25 +172,68 @@ export async function deregisterArbiter({ signer, keeperAddress, oracle, jobId }
   }
 }
 
+/** The keeper's key for (oracle, jobId): keccak256(abi.encodePacked(oracle, jobId)). */
+export function arbiterKey(oracle, jobId) {
+  return ethers.solidityPackedKeccak256(['address', 'bytes32'], [oracle, jobId]);
+}
+
 /**
- * Read what the re-register step needs to decide whether a wVDKA approval is
- * required and whether the owner can cover the stake:
+ * Start unbonding: the arbiter stops being selected at once, but blocks and bans
+ * still apply until completeExit, allowed from exitAt = now + unbondingPeriod.
+ * @returns {Promise<{txHash: string}>}
+ */
+export function requestExit({ signer, keeperAddress, key }) {
+  return keeperWrite({ signer, keeperAddress }, 'requestExit', [key]);
+}
+
+/**
+ * Finish unbonding: refunds the remaining stake to the operator's owner and frees
+ * the arbiter's class slots. Reverts (StillBonded) before exitAt, or (Blocked)
+ * while the arbiter is blocked.
+ * @returns {Promise<{txHash: string}>}
+ */
+export function completeExit({ signer, keeperAddress, key }) {
+  return keeperWrite({ signer, keeperAddress }, 'completeExit', [key]);
+}
+
+/** Pause (never selected while paused) or resume an arbiter. */
+export function setPaused({ signer, keeperAddress, key, paused }) {
+  return keeperWrite({ signer, keeperAddress }, 'setPaused', [key, paused]);
+}
+
+/** Change the posted fee (wei, bigint; uint64 on-chain). */
+export function setFee({ signer, keeperAddress, key, fee }) {
+  return keeperWrite({ signer, keeperAddress }, 'setFee', [key, fee]);
+}
+
+/** Add wVDKA to the stake (wei, bigint). Needs an allowance first (see approveStake). */
+export function topUpStake({ signer, keeperAddress, key, amount }) {
+  return keeperWrite({ signer, keeperAddress }, 'topUpStake', [key, amount]);
+}
+
+/**
+ * Ask the keeper to send this arbiter a health call (the self-service call), e.g.
+ * to end a freeze after a node restart; the node's health job answers it.
+ * @returns {Promise<{txHash: string}>}
+ */
+export function requestHealthCall({ signer, keeperAddress, key }) {
+  return keeperWrite({ signer, keeperAddress }, 'requestHealthCall', [key]);
+}
+
+/**
+ * Read what a stake-pulling step (registerArbiter, topUpStake) needs to decide
+ * whether a wVDKA approval is required and whether the owner can cover it:
  *  - tokenAddress: the wVDKA stake token the keeper pulls from (transferFrom)
- *  - stakeRequired: STAKE_REQUIREMENT (bigint, normally 100e18)
- *  - currentStake: the (oracle, jobId)'s on-chain stake, i.e. the amount that
- *    will be refunded on deregister. Normally == stakeRequired, but a future
- *    slashing path could leave it lower. Reads 0 when the record no longer
- *    exists (already deregistered) — callers treat that as "refund already
- *    received". Defaults to stakeRequired if the read throws (RPC hiccup) so a
- *    transient failure never false-blocks the flow. 0n when oracle/jobId absent.
+ *  - stakeRequired: stakeRequirement (bigint, 100e18 by default)
+ *  - unbondingPeriod: seconds between requestExit and completeExit (number|null)
+ *  - arbiter: getArbiter(keyOf(oracle, jobId)) when both are given, else null.
+ *    Its flags say whether it is still registered (an exiting arbiter is, until
+ *    completeExit), its stake is what completeExit will refund, and a key that
+ *    registered before keeps its scores and offenses.
  *  - allowance: current owner→keeper allowance (bigint)
  *  - balance: owner's wVDKA balance (bigint)
- *  - ethBalance: owner's native ETH balance (bigint) — for the gas-sufficiency
- *    warning; 0n if it can't be read.
- *  - gasPrice: current gas price in wei (bigint, maxFeePerGas ?? gasPrice), or
- *    null if unavailable. The caller turns these two into a "may not have enough
- *    ETH for gas" warning.
- * @returns {Promise<{tokenAddress: string, stakeRequired: bigint, currentStake: bigint, allowance: bigint, balance: bigint, ethBalance: bigint, gasPrice: (bigint|null)}>}
+ *  - ethBalance / gasPrice: for the best-effort "enough ETH for gas?" warning
+ * @returns {Promise<object>}
  */
 export async function getStakeContext({ signer, keeperAddress, owner, oracle, jobId }) {
   const keeper = new ethers.Contract(keeperAddress, KEEPER_ABI, signer);
@@ -165,19 +242,27 @@ export async function getStakeContext({ signer, keeperAddress, owner, oracle, jo
   try {
     [tokenAddress, stakeRequired] = await Promise.all([
       keeper.verdiktaToken(),
-      keeper.STAKE_REQUIREMENT(),
+      keeper.stakeRequirement(),
     ]);
   } catch (error) {
     throw friendlyError(error);
   }
-  let currentStake = 0n;
+  const unbondingPeriod = await keeper.unbondingPeriod().then(Number).catch(() => null);
+  let arbiter = null;
   if (oracle && jobId) {
-    // Index 6 is stakeAmount; default to stakeRequired only on read error so a
-    // transient RPC failure preserves the historical (no-slash) behaviour.
-    currentStake = await keeper
-      .getOracleInfo(oracle, jobId)
-      .then((info) => info.stakeAmount)
-      .catch(() => stakeRequired);
+    arbiter = await keeper
+      .getArbiter(arbiterKey(oracle, jobId))
+      .then((a) => ({
+        flags: Number(a.flags),
+        stake: a.stake,
+        exitAt: Number(a.exitAt),
+        blockedUntil: Number(a.blockedUntil),
+        quality: Number(a.quality),
+        timeliness: Number(a.timeliness),
+        offenses: Number(a.offenses),
+        checkpoints: Number(a.checkpoints),
+      }))
+      .catch(() => null);
   }
   const token = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
   const provider = signer?.provider ?? null;
@@ -190,12 +275,12 @@ export async function getStakeContext({ signer, keeperAddress, owner, oracle, jo
     provider ? provider.getFeeData().catch(() => null) : Promise.resolve(null),
   ]);
   const gasPrice = feeData ? (feeData.maxFeePerGas ?? feeData.gasPrice ?? null) : null;
-  return { tokenAddress, stakeRequired, currentStake, allowance, balance, ethBalance, gasPrice };
+  return { tokenAddress, stakeRequired, unbondingPeriod, arbiter, allowance, balance, ethBalance, gasPrice };
 }
 
 /**
  * Approve the keeper to pull `amount` wVDKA from the connected owner. Required
- * before registerOracle, which stakes via transferFrom.
+ * before registerArbiter and topUpStake, which stake via transferFrom.
  * @returns {Promise<{txHash: string}>}
  */
 export async function approveStake({ signer, tokenAddress, keeperAddress, amount }) {
@@ -210,43 +295,48 @@ export async function approveStake({ signer, tokenAddress, keeperAddress, amount
 }
 
 /**
- * Register an (oracle, jobId) on the keeper, staking 100 wVDKA. Re-registering
- * a previously-deregistered pair starts its reputation fresh at zero (the
- * contract deletes the old record on deregister). `fee` is a bigint in wei;
- * `classes` an array of numbers. Reverts if already registered, fee is 0, or
- * the stake allowance/balance is insufficient — surfaced via the staticCall.
- * @returns {Promise<{txHash: string}>}
+ * Register an (oracle, jobId) on the keeper, staking stakeRequirement wVDKA.
+ *
+ * Always registers with chainHead = 0x00…00. The hash chain behind the health
+ * calls lives on the arbiter's node, which a browser cannot hold. The keeper
+ * accepts head 0 by starting the arbiter frozen in re-sync (flag 64): it is not
+ * selectable until its node's health job re-syncs onto a fresh chain and answers
+ * a health call, which it does on its own within a minute or so of the job
+ * running. A key that registered before keeps its scores and offenses.
+ *
+ * `fee` is a bigint in wei (uint64 on-chain); `classes` an array of 1–5 numbers.
+ * Reverts (surfaced by the staticCall) if already registered, the fee is 0, the
+ * wallet does not own the operator, or the stake allowance/balance is short.
+ * Pass `afterExit` when completeExit was sent just before (see the retry below).
+ * @returns {Promise<{txHash: string, key: string}>}
  */
-export async function registerArbiter({ signer, keeperAddress, oracle, jobId, fee, classes }) {
+export async function registerArbiter({ signer, keeperAddress, oracle, jobId, fee, classes, afterExit = false }) {
   const keeper = new ethers.Contract(keeperAddress, KEEPER_ABI, signer);
+  const args = [oracle, jobId, fee, classes, ethers.ZeroHash];
 
-  // Dry-run first so on-chain require() reasons surface before we spend gas.
-  // BUT: right after a deregister in the restart flow, a load-balanced public
-  // RPC (sepolia.base.org / mainnet.base.org) can still serve state a block or
-  // two behind — the deregister's `delete oracles[key]` hasn't propagated to the
-  // node this eth_call lands on, so registerOracle reverts "Oracle is already
-  // registered" even though the record is gone. That is transient: retry the
-  // dry-run over a bounded window until the reading node catches up. Any other
-  // revert (bad fee, not authorized, insufficient stake) is surfaced immediately.
-  const deadline = Date.now() + 45000; // ~20 Base blocks of catch-up headroom
+  // Dry-run first so revert reasons surface before we spend gas. Right after a
+  // completeExit in the re-register flow, a load-balanced public RPC can still
+  // serve state a block or two behind, so the dry-run reverts AlreadyRegistered
+  // although the exit has landed. That is transient: retry it over a bounded
+  // window until the reading node catches up. Any other revert is surfaced at once.
+  const deadline = Date.now() + 45000;
   for (;;) {
     try {
-      await keeper.registerOracle.staticCall(oracle, jobId, fee, classes);
+      await keeper.registerArbiter.staticCall(...args);
       break;
     } catch (error) {
-      const friendly = friendlyError(error);
-      if (/already registered/i.test(friendly.message) && Date.now() < deadline) {
+      if (afterExit && error?.revert?.name === 'AlreadyRegistered' && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 3000));
         continue;
       }
-      throw friendly;
+      throw friendlyError(error);
     }
   }
 
   try {
-    const tx = await keeper.registerOracle(oracle, jobId, fee, classes);
+    const tx = await keeper.registerArbiter(...args);
     const receipt = await tx.wait();
-    return { txHash: receipt.hash };
+    return { txHash: receipt.hash, key: arbiterKey(oracle, jobId) };
   } catch (error) {
     throw friendlyError(error);
   }

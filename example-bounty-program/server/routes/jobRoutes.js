@@ -306,7 +306,9 @@ function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null, j
   const minOracleFeeWei = body.oracleMinOracleFee != null && body.oracleMinOracleFee !== ''
     ? null   // resolveOracleSettings reads the creator's own value
     : priced(preset.feeFloorUsd, 'fee floor').toString();
-  return { bountyClass: preset.key, jury, quota, forfeitLine, bond: bond.toString(), minOracleFeeWei, withBeacons: preset.withBeacons };
+  // The same flag resolveOracleSettings encodes: the creator's override, else the preset's.
+  const withBeacons = parseBool(body.oracleWithBeacons, preset.withBeacons);
+  return { bountyClass: preset.key, jury, quota, forfeitLine, bond: bond.toString(), minOracleFeeWei, withBeacons };
 }
 
 // A bond is an amount, not a per-juror fee: allow far more than the fee parser's 0.01 ETH, but still
@@ -3448,6 +3450,9 @@ router.get('/', async (req, res) => {
  * - EVALUATED_FAILED: Evaluation complete, failed threshold
  * - WINNER: Passed threshold and received payout
  * - TIMED_OUT: Oracle timeout, no evaluation result
+ * - NO_RESULT: the round produced no result (failed or cancelled), or its re-run window expired (v2)
+ * - EVALUATED_SOFT_FAIL: some arbiters passed it but fewer than the bounty's quota; a re-run may follow (v2)
+ * - AWAITING_RERUN: in its 2-hour re-run window; the hunter or bond funder may start another round (v2)
  *
  * Note: PREPARED submissions (not yet started on-chain) are excluded.
  */
@@ -3475,8 +3480,15 @@ router.get('/:jobId/submissions', async (req, res) => {
         return 'WINNER';
       }
 
-      // Check for timeout (Failed with zero scores and no justification)
+      // v2 (item 12): awaiting a re-run, or evaluated but not yet finalized as a soft fail / no result
+      if (status === 'awaiting_rerun' || onChainStatus === 'awaitingrerun') return 'AWAITING_RERUN';
+      if (status === 'soft_fail_pending_finalization') return 'EVALUATED_SOFT_FAIL';
+      if (status === 'no_result_pending_close') return 'NO_RESULT';
+
+      // Failed: the escrow's marker says why (v2); older records fall back to zero scores and no justification
       if (status === 'failed' || status === 'rejected') {
+        if (sub.failureReason === 'NO_RESULT' || sub.failureReason === 'RERUN_EXPIRED') return 'NO_RESULT';
+        if (sub.failureReason === 'ORACLE_TIMEOUT') return 'TIMED_OUT';
         const hasZeroScores = (sub.acceptance === 0 || sub.acceptance == null) &&
                              (sub.rejection === 0 || sub.rejection == null);
         const hasNoJustification = !sub.justificationCids || sub.justificationCids === '';
@@ -3538,7 +3550,7 @@ router.get('/:jobId/submissions', async (req, res) => {
         // to 0 on-chain, which is misleading (looks like 0% instead of "not yet scored")
         const rawAcceptance = sub.acceptance ?? sub.score ?? null;
         const rawRejection = sub.rejection ?? null;
-        const suppressScore = mappedStatus === 'PENDING_EVALUATION' || mappedStatus === 'TIMED_OUT' || mappedStatus === 'PENDING_CREATOR_APPROVAL';
+        const suppressScore = mappedStatus === 'PENDING_EVALUATION' || mappedStatus === 'TIMED_OUT' || mappedStatus === 'NO_RESULT' || mappedStatus === 'PENDING_CREATOR_APPROVAL';
         const score = suppressScore ? null : rawAcceptance;
         const rejection = suppressScore ? null : rawRejection;
 

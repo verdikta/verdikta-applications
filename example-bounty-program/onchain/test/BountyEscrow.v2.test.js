@@ -348,7 +348,12 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       const s = await f.escrow.getSubmission(bountyId, submissionId);
       expect(s.rerunDeadline).to.equal(BigInt(deadline) - 1n);
       await time.increaseTo(deadline);
+      // a submission awaiting a re-run holds the bounty open: the lens agrees with closeExpiredBounty
+      expect(await f.escrow.activeEvaluations(bountyId)).to.equal(0);
+      expect(await f.escrow.canBeClosed(bountyId)).to.equal(false);
+      await expect(f.escrow.closeExpiredBounty(bountyId)).to.be.revertedWith("active evaluation - finalize first");
       await f.escrow.expireRerun(bountyId, submissionId);
+      expect(await f.escrow.canBeClosed(bountyId)).to.equal(true);
       await expect(f.escrow.closeExpiredBounty(bountyId)).to.emit(f.escrow, "BountyClosed");
     });
 

@@ -111,8 +111,9 @@ contract BountyEscrowLens {
         if (b.status != BountyEscrow.BountyStatus.Open) return false;
         if (block.timestamp < b.submissionDeadline) return false;
 
-        // No active evaluations (O(1) — see BountyEscrow.activeEvaluations).
-        return escrow.activeEvaluations(bountyId) == 0;
+        // Nothing in evaluation or awaiting a re-run: closeExpiredBounty requires the pending
+        // list to be empty (activeEvaluations alone misses AwaitingRerun submissions).
+        return escrow.pendingSubmissionIds(bountyId).length == 0;
     }
 
     /// @notice The last timestamp at which prepareSubmission can succeed for this bounty:

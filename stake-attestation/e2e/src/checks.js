@@ -11,8 +11,9 @@ const sameVector = (a, b) => a != null && b != null && eq(a.map(String), b.map(S
 const distinctSlots = (jobs) => new Set(jobs.map((j) => j.slot)).size;
 
 /**
- * A round the real rules finished: K polled, the first M commits, the first N reveals, P clustered. Counted
- * job by job: M commits and N reveals can still come with a job in six gone wrong, and that must show.
+ * A round the real v2 rules finished: K polled, the window closed with M to K commits (M+ = K at the defaults, or
+ * M after T+), the M promote() drew asked to reveal, the first N counted, P clustered. Counted job by job: M
+ * commits and N reveals can still come with a job in six gone wrong, and that must show.
  */
 export function servedRoundChecks(prefix, round, { vector, config = REAL_CONFIG }) {
   const cids = String(round?.justifications ?? '').split(',').filter(Boolean);
@@ -22,15 +23,15 @@ export function servedRoundChecks(prefix, round, { vector, config = REAL_CONFIG 
     check(`${prefix}.round.fulfilled`, round?.status === 'fulfilled', `status ${round?.status}, ${round?.abstained} job(s) with no transaction`),
     check(`${prefix}.round.polled`, commitJobs.length === config.k && distinctSlots(commitJobs) === config.k, `${commitJobs.length} commit jobs on ${distinctSlots(commitJobs)} slots, K = ${config.k}`),
     check(`${prefix}.round.noAbstain`, round?.abstained === 0, `${round?.abstained} job(s) with no transaction`),
-    check(`${prefix}.round.commits`, round?.commits === config.m, `${round?.commits} commits recorded, M = ${config.m}`),
-    check(`${prefix}.round.revealJobs`, revealJobs.length === config.m && distinctSlots(revealJobs) === config.m, `${revealJobs.length} reveal jobs on ${distinctSlots(revealJobs)} slots: only the first M commits are asked`),
+    check(`${prefix}.round.commits`, round?.commits >= config.m && round?.commits <= config.k, `${round?.commits} commits recorded, M = ${config.m}, K = ${config.k}`),
+    check(`${prefix}.round.revealJobs`, revealJobs.length === config.m && distinctSlots(revealJobs) === config.m, `${revealJobs.length} reveal jobs on ${distinctSlots(revealJobs)} slots: only the M commits promote() drew are asked`),
     check(`${prefix}.round.reveals`, round?.reveals === config.n, `${round?.reveals} reveals before it finalized, N = ${config.n}`),
     check(`${prefix}.round.clustered`, round?.clustered === config.p && cids.length === config.p, `${round?.clustered} clustered, ${cids.length} justification CIDs, P = ${config.p}`),
-    // Only the jobs that lose the race revert, on the real contract too: the K - M late commits and the
-    // M - N late reveals that land after the N-th reveal finalized it (AggregationComplete comes first there).
-    check(`${prefix}.round.noRevert`, (round?.reverted ?? []).length <= config.k - config.n && (round?.reverted ?? []).every((r) => r.reason === 'AggregationComplete'), JSON.stringify(round?.reverted ?? [])),
-    // And what is ignored is only a commit that came after the reveal phase began: never a bad reveal or a zero commit.
-    check(`${prefix}.round.noBadReveal`, (round?.ignored ?? []).every((i) => i.reason === 'commit after the reveal phase began'), JSON.stringify(round?.ignored ?? [])),
+    // Nothing reverts on v2: the real fulfill returns early on what it does not take. The M - N reveals that land
+    // after the N-th finalized it are taken as late (classified, not counted).
+    check(`${prefix}.round.noRevert`, (round?.reverted ?? []).length === 0 && (round?.late ?? 0) <= config.m - config.n, `${JSON.stringify(round?.reverted ?? [])}, ${round?.late ?? 0} late reveal(s)`),
+    // And what is ignored is only a commit that came after the window closed: never a bad reveal or a zero commit.
+    check(`${prefix}.round.noBadReveal`, (round?.ignored ?? []).every((i) => i.reason === 'commit after the window closed'), JSON.stringify(round?.ignored ?? [])),
     check(`${prefix}.round.vector`, sameVector(round?.likelihoods, vector), `the mock was given ${JSON.stringify(round?.likelihoods ?? null, big)}`),
     // Every reveal, the one that lost the race too: the mean of a cluster shows only two of them.
     check(`${prefix}.round.everyRevealSame`, revealJobs.length > 0 && revealJobs.every((j) => sameVector(j.scores, vector)), JSON.stringify(revealJobs.map((j) => j.scores), big)),
@@ -80,7 +81,9 @@ export function requestChecks(prefix, round, { listingCid, bcid, priorBcids = []
     check(`${prefix}.request.cids`, eq(round?.cids, [listingCid, bcid, ...priorBcids]), JSON.stringify(round?.cids)),
     check(`${prefix}.request.class`, BigInt(round?.requestedClass ?? -1) === BigInt(requestedClass), String(round?.requestedClass)),
     check(`${prefix}.request.disclosureLine`, Boolean(line) && line.archiveSha256 === disclosure.archiveSha256 && line.ciphertextSha256 === disclosure.ciphertextSha256 && line.ciphertextCid === disclosure.ciphertextCid, round?.addendum ? `${round.addendum.split(' ')[0]} ...` : 'no addendum'),
-    check(`${prefix}.request.oracle`, Boolean(asked) && BigInt(asked.alpha) === BigInt(oracle.alpha) && BigInt(asked.maxFee) === BigInt(oracle.maxOracleFee) && BigInt(asked.estimatedBaseCost) === BigInt(oracle.estimatedBaseCost) && BigInt(asked.maxFeeBasedScaling) === BigInt(oracle.maxFeeBasedScaling), JSON.stringify(asked ?? null, big)),
+    check(`${prefix}.request.oracle`, Boolean(asked) && BigInt(asked.alpha) === BigInt(oracle.alpha) && BigInt(asked.maxFee) === BigInt(oracle.maxOracleFee) && BigInt(asked.estimatedBaseCost) === BigInt(oracle.estimatedBaseCost) && BigInt(asked.maxFeeBasedScaling) === BigInt(oracle.maxFeeBasedScaling)
+      // the v2 terms: the listing's fee floor and beacon flag go out as they are
+      && BigInt(asked.minFee ?? 0) === BigInt(oracle.minOracleFee ?? 0) && Boolean(asked.withBeacons) === Boolean(oracle.withBeacons), JSON.stringify(asked ?? null, big)),
   ];
 }
 
@@ -206,12 +209,15 @@ export function moneyChecks(prefix, entries) {
   ));
 }
 
-/** An abstaining claim's end: E6. No verdict, the bond to the maker, nothing published. */
+/**
+ * An abstaining claim's end: E6 as the v2 aggregator lets it be applied. No verdict, nothing published, and since
+ * no round's jury answered (no commit, the round failed at the aggregator) the bond comes back: RoundsUnanswered.
+ */
 export function abstainEndChecks(prefix, { state, expiry, judgedEvents, settledEvents, record, uploads }) {
   return [
     check(`${prefix}.never.judged`, judgedEvents === 0, `${judgedEvents} Judged event(s)`),
     check(`${prefix}.never.settled`, settledEvents === 0, `${settledEvents} Settled event(s)`),
-    check(`${prefix}.ended.expired`, state === 'Expired' && expiry === 'RoundsFailed', `${state}, ${expiry}`),
+    check(`${prefix}.ended.expired`, state === 'Expired' && expiry === 'RoundsUnanswered', `${state}, ${expiry}`),
     check(`${prefix}.record.noVerdict`, record?.history?.noVerdict === '1', `noVerdict ${record?.history?.noVerdict}`),
     check(`${prefix}.nothingUploaded`, uploads?.length === 0, `${uploads?.length} upload(s) during the rounds`),
   ];

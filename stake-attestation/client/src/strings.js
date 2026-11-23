@@ -985,10 +985,29 @@ export const STRINGS = {
       'Roll the stake forward to a fixed version: your own listing of the same repository at another commit, ' +
       'already open. This listing then takes no new claims, the fix window of every claim disclosed on it ends at once ' +
       '(each can then be revealed in commit order), and the record links the two versions.',
+    // Node P38: what a maker does before publishing a fix. A version is validated from its public repository, so a
+    // fixed commit is public before it can be listed, and commit() is taken on an Open listing until close() or
+    // rollForward(). close() is refused while a claim is pending or an award is owed; rollForward() needs a successor
+    // that is already Open. Each is one line of the page's text (test/rollGuidance.test.js).
+    fix: {
+      keep:
+        'Keep a fix private until the stake has left this commit, by a close or a roll forward. The site validates a ' +
+        'version from its public repository, so a fixed commit is public before it can be listed, and a hunter who ' +
+        'reads the fix can claim the bug here for as long as this listing takes claims.',
+      noClaim:
+        'If no claim on this listing is pending (each is settled or expired), close it first, then push the fix and ' +
+        'list the fixed commit. A close is refused while an award is owed: a top-up pays what is owed first.',
+      claimPending:
+        'If a claim is pending, this listing cannot be closed, so the fix is public before the roll: push it, then ' +
+        'validate, list and fund the fixed commit, and roll forward, all in one sitting. Until the roll, this listing ' +
+        'takes claims as before.',
+    },
     loading: 'Looking for your open listings of this repository…',
     pick: 'Successor listing',
     option: 'Listing {id}: {commit}, escrow {escrow} ETH, open since {opened}',
-    none: 'You have no open listing of this repository to roll to. List and fund the fixed version first, then come back here.',
+    none:
+      'You have no open listing of this repository to roll to. A roll needs the fixed version listed and funded ' +
+      'first: read the order above before you push it.',
     noIdentity: 'This listing\'s repository is not in the site\'s record yet, so its successors cannot be found here.',
     feedFailed: 'The open listings could not be read: {reason}',
     button: 'Roll forward to listing {id}',

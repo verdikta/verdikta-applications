@@ -1,7 +1,7 @@
 // Node P38: what a maker does before publishing a fix. A fix in the public repository is read by everyone, and a
 // listing takes commits until it is closed or rolled forward, so the roll-forward panel and the README state an order:
 // keep the fix private until the stake has left the commit; with no claim pending, close first; with one pending,
-// push, validate, list, fund and roll forward in one sitting. Each sentence is held here to the contract's source
+// push, validate, list, fund and roll forward in one sitting. Each sentence is checked here against the contract's source
 // (close() and rollForward()), and nothing on the panel may say that a roll makes a public push harmless.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -70,7 +70,7 @@ test('line 2: with no claim pending, close first, then push the fix and list the
 
 test('line 3: with a claim pending, push, validate, list, fund and roll forward in one sitting, and the listing takes claims until the roll', () => {
   const text = R.fix.claimPending;
-  assert.match(text, /^If a claim is pending/);
+  assert.match(text, /^If a claim is pending, this listing cannot be closed, so the fix is public before the roll:/);
   inOrder(text, ['push', 'validate', 'list', 'fund', 'roll forward', 'in one sitting']);
   assert.match(text, /[Uu]ntil the roll, this listing takes claims/);
   // rollForward() as the contract has it: the successor is the same maker's own listing, already Open
@@ -120,7 +120,7 @@ test('the guard catches what it names', () => {
   for (const s of samples) assert.ok(REASSURING.some((re) => re.test(s)), s);
 });
 
-// No network, faucet, host or account: the lines hold on any deployment.
+// No network, faucet, host or account: the lines are true on any deployment.
 const NAMED = Object.freeze([/sepolia/i, /mainnet/i, /testnet/i, /\bbase\b/i, /faucet/i, /https?:/i, /\b0x[0-9a-f]{4,}/i, /github/i, /\.(org|com|io)\b/i, /@/]);
 
 test('the three lines name no network, faucet, host or account', () => {
@@ -142,7 +142,8 @@ test('the README says the same, and why: the builder fetches the fixed commit fr
   inOrder(bullet, ['with no claim pending', '`close` the old listing first', 'push the fix', 'list the fixed commit']);
   assert.match(bullet, /`close` is refused while a claim is pending or an award is owed/);
   inOrder(bullet, ['with a claim pending', 'push', 'validate', 'list', 'fund', 'roll forward', 'in one sitting']);
-  assert.match(bullet, /the old listing takes commits until the roll/);
+  assert.match(bullet, /Until the roll, the old listing takes commits as before/);
+  assert.match(bullet, /expect the old listing to take commits until the roll/);
   for (const re of [...REASSURING, ...NAMED]) assert.equal(re.test(bullet), false, `the README's bullet says ${re}`);
   assert.deepEqual(wordingProblems(bullet), []);
   // the panel's own description in "The client" points at it

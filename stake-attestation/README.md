@@ -133,6 +133,29 @@ escrow once no claim is pending and nothing is owed.
   part of the escrow.
 - **Payments** go through a gas-capped send that falls back to the pull
   ledger, as in `BountyEscrow`.
+- **A fix stays private until the stake has left the old commit.** A fix in
+  the public repository tells its readers where the bug was. `rollForward`
+  needs a successor that is the same maker's own listing, already Open, so the
+  fixed commit is listed and funded before the roll. The site counts a listing
+  only with a builder's signature ("The environment builder"), and the
+  builder fetches a listed commit from the public repository, with no
+  credentials, so the fix is public before the roll. Until the roll, the old
+  listing takes commits as before (`acceptsCommits`: Open, its paid period not
+  over, its escrow at the top award), and a hunter who reads the fix can claim
+  the bug on it. The known issues of a listing are fixed when it is listed
+  (design §8.4), so the bug cannot be added to the old listing's instead. The
+  order is the maker's to keep, and the roll-forward panel states it ("The
+  client"):
+  - with no claim pending, `close` the old listing first, then push the fix
+    and list the fixed commit. `close` is refused while a claim is pending or
+    an award is owed (a top-up pays what is owed first). A closed listing
+    takes no commit, and a claim on it afterwards is a late claim, with no
+    award. Only a roll sets `successor` and `predecessor`, so the record
+    holds the two versions without that link;
+  - with a claim pending, `close` is refused and the stake leaves only by a
+    roll, so the fix is public before it: push the fix, then validate, list
+    and fund the fixed commit, and roll forward, all in one sitting, and
+    expect the old listing to take commits until the roll.
 
 ## The contract: claims
 
@@ -1440,7 +1463,13 @@ goes in a URL.
   `sameRepository`, and its own version's other listings, counted or apart); while it is
   Open or Depleted, **roll forward** offers the maker's own open listings of the same
   repository at another commit (from the feed, each confirmed on-chain: Open, the maker's, no
-  predecessor) and sends `rollForward` after reading both listings again at one block.
+  predecessor) and sends `rollForward` after reading both listings again at one block. Above
+  the picker, whatever it holds, the panel says what a maker does before publishing a fix
+  (`STRINGS.roll.fix`; "The contract: listings"): keep it private until the stake has left the
+  commit; with no claim pending, close first; with one pending, push, validate, list, fund and roll
+  forward in one sitting, the listing taking claims until the roll. `test/rollGuidance.test.js`
+  checks the three lines against `close` and `rollForward` in the contract's source and refuses
+  any wording that would call a roll harmless after a public push.
   The same page carries the rest of a listing's life, each read again through the wallet before it
   is sent (`client/src/components/ListingActions.jsx`; the rules, held to the contract's source,
   in `client/src/lib/listingActions.js`):

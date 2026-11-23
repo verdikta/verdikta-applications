@@ -83,7 +83,10 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
 /**
  * rollForward() (design §7.1, §13.2): the maker picks a successor among their own open listings
  * of the same repository, from the feed, each confirmed on-chain as the contract requires. Just
- * before sending, both listings are read again at one block through the wallet.
+ * before sending, both listings are read again at one block through the wallet. Above the picker,
+ * whatever it holds, the panel says what a maker does before publishing a fix (node P38): a fixed
+ * commit is public before it can be listed, and this listing takes commits until it is closed or
+ * rolled forward.
  */
 export function RollForward({ listingId, listing, identity }) {
   const w = useWalletContext();
@@ -170,6 +173,11 @@ export function RollForward({ listingId, listing, identity }) {
     <section className="claim" aria-labelledby={id} data-testid="roll-forward">
       <h3 id={id}>{RF.title}</h3>
       <p>{RF.intro}</p>
+      <p className="warning" data-testid="roll-fix-keep">{RF.fix.keep}</p>
+      <ul data-testid="roll-fix-order">
+        <li>{RF.fix.noClaim}</li>
+        <li>{RF.fix.claimPending}</li>
+      </ul>
       {body}
       {error && <p className="error" role="alert">{error}</p>}
     </section>

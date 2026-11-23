@@ -25,11 +25,17 @@
  *   node scripts/createBounties.js --count 1 --amount 0.01 --creator-pay 0.005 --window 3600
  *   node scripts/createBounties.js --count 1 --amount 0.01 --creator-pay 0.008 --arbiter-pay 0.01 --window 7200 --target 0x...
  *
+ * Size class (v2 BountyEscrow: jury, pass quota Q, forfeit line R, hunter bond, fee floor, beacons;
+ * presets in shared/classPresets.js). Default: the smallest class offered for the bounty's USD value.
+ *   node scripts/createBounties.js --count 1 --amount 0.02 --bounty-class medium --eth-usd 2300
+ *   node scripts/createBounties.js --count 1 --bounty-class small --bond 0.001 --quota 2
+ *
  * Environment Variables Required:
  *   PRIVATE_KEY - Private key for signing transactions (without 0x prefix)
- *   RPC_URL - RPC endpoint (defaults to https://sepolia.base.org)
- *   BOUNTY_ESCROW_ADDRESS - Contract address
- *   API_URL - Backend API URL (defaults to http://localhost:5005)
+ *   NETWORK - base | base-sepolia (selects RPC and contract address from server config)
+ *   BOUNTY_ESCROW_ADDRESS_BASE / BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA - Contract address
+ *   API_URL - Backend API URL (defaults to http://localhost:5005 / 5006)
+ *   ETH_USD - optional ETH price for the size-class presets (else --eth-usd or the price feed)
  */
 
 const path = require('path');
@@ -72,19 +78,31 @@ const CONFIG = {
   botApiKey: process.env.BOT_API_KEY,
 };
 
-// September 2026 BountyEscrow revision: createBounty takes ONE CreateParams struct
-// (no overloads). msg.value == max(creatorDeterminationPayment, arbiterDeterminationPayment);
-// a non-windowed bounty passes both payments equal to the amount and window 0.
-const BOUNTY_ESCROW_ABI = [
-  'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)',
-  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)',
-  'function bountyCount() view returns (uint256)',
-];
+// v2 BountyEscrow (merged escrow + lens ABI). createBounty takes ONE CreateParams struct
+// (no overloads), with the v2 fields: oracle.minOracleFee (fee floor) and oracle.withBeacons,
+// jury (approved aggregator index), quota (Q), forfeitLine (R) and the hunter bond.
+// msg.value == max(creatorDeterminationPayment, arbiterDeterminationPayment); a non-windowed
+// bounty passes both payments equal to the amount and window 0.
+const BOUNTY_ESCROW_ABI = require('../../onchain/abi/BountyEscrow.json');
+
+// Size-class presets (jury, Q, R, bond, fee floor, beacons): the same ones the API and the
+// website use (GET /api/classes/presets).
+const { CLASS_PRESETS, presetByKey, presetForBounty, toBountyParams } = require('../../shared/classPresets');
+const { getEthPriceUsd } = require('../utils/ethPrice');
+
+/** Decimal ETH ("0.002") or integer wei ("2000000000000000"), as a wei BigInt. */
+function parseEthOrWei(value, name) {
+  const s = String(value ?? '').trim();
+  if (/^\d+$/.test(s)) return BigInt(s);
+  if (/^\d*\.\d+$/.test(s)) return ethers.parseEther(s);
+  throw new Error(`${name} must be decimal ETH (e.g. 0.002) or integer wei`);
+}
 
 // Creator-chosen oracle request settings. Prefer the values the API persisted on the
 // job (job.oracleSettings, returned by POST /api/jobs/create) so the on-chain bounty
-// and the backend record agree; fall back to the server defaults.
-function oracleParamsFromJob(job) {
+// and the backend record agree; fall back to the server defaults and `cls` (the
+// resolved size class).
+function oracleParamsFromJob(job, cls = null) {
   const o = job?.oracleSettings;
   const d = serverConfig.submissionDefaults;
   return {
@@ -92,7 +110,69 @@ function oracleParamsFromJob(job) {
     alpha: BigInt(String(o?.alpha ?? d.alpha)),
     estimatedBaseCost: BigInt(String(o?.estimatedBaseCost ?? d.estimatedBaseCostWei)),
     maxFeeBasedScaling: BigInt(String(o?.maxFeeBasedScaling ?? d.maxFeeBasedScaling)),
+    minOracleFee: BigInt(String(o?.minOracleFee ?? cls?.minOracleFee ?? '0')),
+    withBeacons: Boolean(o?.withBeacons ?? cls?.withBeacons ?? false),
   };
+}
+
+// The v2 decision settings the API persisted (job.decisionSettings), else `cls`.
+function decisionParamsFromJob(job, cls = null) {
+  const s = job?.decisionSettings || cls || {};
+  return {
+    jury: BigInt(s.jury ?? 0),
+    quota: BigInt(s.quota ?? 1),
+    forfeitLine: BigInt(s.forfeitLine ?? 0),
+    bond: BigInt(String(s.bond ?? '0')),
+  };
+}
+
+/**
+ * Resolve the size class and its overrides from the CLI: { key, ethUsd, jury, quota, forfeitLine,
+ * bond, minOracleFee, withBeacons } (wei as strings). The class defaults to the smallest one offered
+ * for the bounty's USD value; USD amounts convert at --eth-usd, ETH_USD, or the server's price feed.
+ */
+async function resolveClassSettings(options, amountEth) {
+  let ethUsd = options.ethUsd || Number(process.env.ETH_USD) || null;
+  if (!ethUsd) {
+    try {
+      const p = await getEthPriceUsd();
+      if (p.usd > 0) ethUsd = p.usd;
+    } catch {}
+  }
+  const key = options.bountyClass || (ethUsd ? presetForBounty(amountEth * ethUsd).key : 'small');
+  const preset = presetByKey(key);
+  if (!preset) throw new Error(`--bounty-class must be one of ${CLASS_PRESETS.map((c) => c.key).join(', ')}`);
+  const needsPrice = (preset.bondUsd > 0 && options.bond == null) || (preset.feeFloorUsd > 0 && options.feeFloor == null);
+  if (needsPrice && !ethUsd) {
+    throw new Error(`the ETH price is unavailable, so the ${preset.name} preset's USD amounts can't be converted: pass --eth-usd <price>, or --bond and --fee-floor`);
+  }
+  const overrides = {
+    jury: options.jury, quota: options.quota, forfeitLine: options.forfeitLine,
+    bond: options.bond, minOracleFee: options.feeFloor, withBeacons: options.beacons,
+  };
+  return { key, ethUsd, ...toBountyParams(key, ethUsd || 1, overrides) };
+}
+
+/** The API's create-body fields for a resolved class: the class, plus only the creator's overrides. */
+function classBodyFields(cls, options, amountEth) {
+  return {
+    bountyClass: cls.key,
+    // The API prices the preset itself at bountyAmountUSD / bountyAmount (the same ETH price as here).
+    ...(cls.ethUsd ? { bountyAmountUSD: Number((amountEth * cls.ethUsd).toFixed(2)) } : {}),
+    ...(options.jury != null ? { jury: options.jury } : {}),
+    ...(options.quota != null ? { quota: options.quota } : {}),
+    ...(options.forfeitLine != null ? { forfeitLine: options.forfeitLine } : {}),
+    ...(options.bond != null ? { bond: options.bond } : {}),
+    ...(options.feeFloor != null ? { oracleMinOracleFee: options.feeFloor } : {}),
+    ...(options.beacons != null ? { oracleWithBeacons: options.beacons } : {}),
+  };
+}
+
+function describeClass(cls) {
+  const p = presetByKey(cls.key);
+  return `${p.name} (jury ${cls.jury}, Q=${cls.quota}, R=${cls.forfeitLine}, bond ${ethers.formatEther(cls.bond)} ETH, ` +
+    `fee floor ${ethers.formatEther(cls.minOracleFee)} ETH, beacons ${cls.withBeacons ? 'on' : 'off'}` +
+    `${cls.ethUsd ? `, at $${cls.ethUsd}/ETH` : ''})`;
 }
 
 // =============================================================================
@@ -228,6 +308,15 @@ function parseArgs() {
     creatorPay: null,  // null = same as amount (no window)
     arbiterPay: null,  // null = same as amount (no window)
     window: 0,         // creator approval window in seconds (0 = no window)
+    // v2 size class (shared/classPresets.js) and overrides; null = preset value
+    bountyClass: null, // null = smallest class offered for the bounty's USD value
+    jury: null,
+    quota: null,
+    forfeitLine: null,
+    bond: null,        // wei string
+    feeFloor: null,    // wei string
+    beacons: null,
+    ethUsd: null,
     dryRun: false,
     help: false,
   };
@@ -289,6 +378,50 @@ function parseArgs() {
           process.exit(1);
         }
         break;
+      case '--bounty-class':
+        options.bountyClass = args[++i];
+        if (!presetByKey(options.bountyClass)) {
+          console.error(`Error: --bounty-class must be one of ${CLASS_PRESETS.map((c) => c.key).join(', ')}`);
+          process.exit(1);
+        }
+        break;
+      case '--jury':
+      case '--quota':
+      case '--forfeit-line': {
+        const name = args[i];
+        const v = Number(args[++i]);
+        if (!Number.isInteger(v) || v < 0 || v > 255) {
+          console.error(`Error: ${name} must be an integer between 0 and 255`);
+          process.exit(1);
+        }
+        options[{ '--jury': 'jury', '--quota': 'quota', '--forfeit-line': 'forfeitLine' }[name]] = v;
+        break;
+      }
+      case '--bond':
+      case '--fee-floor': {
+        const name = args[i];
+        try {
+          const wei = parseEthOrWei(args[++i], name).toString();
+          if (name === '--bond') options.bond = wei; else options.feeFloor = wei;
+        } catch (e) {
+          console.error(`Error: ${e.message}`);
+          process.exit(1);
+        }
+        break;
+      }
+      case '--beacons':
+        options.beacons = true;
+        break;
+      case '--no-beacons':
+        options.beacons = false;
+        break;
+      case '--eth-usd':
+        options.ethUsd = Number(args[++i]);
+        if (!(options.ethUsd > 0)) {
+          console.error('Error: --eth-usd must be a positive number (USD per ETH)');
+          process.exit(1);
+        }
+        break;
       case '--dry-run':
       case '-d':
         options.dryRun = true;
@@ -297,6 +430,11 @@ function parseArgs() {
         options.help = true;
         break;
     }
+  }
+
+  if (options.quota != null && options.forfeitLine != null && (options.quota < 1 || options.forfeitLine > options.quota)) {
+    console.error('Error: --quota must be at least 1 and --forfeit-line at most --quota');
+    process.exit(1);
   }
 
   // Resolve payment amounts
@@ -349,11 +487,24 @@ Options:
   --dry-run, -d            Simulate without creating bounties
   --help                   Show this help message
 
+Size class (v2; presets in shared/classPresets.js, GET /api/classes/presets):
+  --bounty-class <key>     ${CLASS_PRESETS.map((c) => c.key).join(' | ')}
+                           (default: the smallest class offered for the bounty's USD value)
+  --jury <index>           Approved aggregator (jury size) index, overrides the preset
+  --quota <Q>              Pass quota: a round passes with >= Q juror scores at the threshold
+  --forfeit-line <R>       R <= Q: fewer than R passing scores forfeits the hunter bond
+  --bond <eth|wei>         Hunter bond posted at start (decimal ETH or integer wei)
+  --fee-floor <eth|wei>    Fee floor (minOracleFee) every juror is paid at least
+  --beacons / --no-beacons Beacon-drawn jury (the Jumbo preset sets it)
+  --eth-usd <price>        ETH price for the preset's USD amounts (default: ETH_USD env,
+                           else the server's price feed)
+
 Environment Variables:
   PRIVATE_KEY              Private key for signing transactions (required)
-  RPC_URL                  RPC endpoint (default: https://sepolia.base.org)
-  BOUNTY_ESCROW_ADDRESS    Contract address (required)
-  API_URL                  Backend API URL (default: http://localhost:5005)
+  NETWORK                  base | base-sepolia (selects RPC and contract from server config)
+  BOUNTY_ESCROW_ADDRESS_BASE / BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA  Contract address (required)
+  API_URL                  Backend API URL (default: http://localhost:5005 / 5006)
+  ETH_USD                  ETH price for the size-class presets (optional)
 
 Examples:
   node scripts/createBounties.js --count 5
@@ -364,6 +515,8 @@ Examples:
   node scripts/createBounties.js --count 1 --target 0xF6DD9256D0091c6E773EBfDFC79783f9663e65Fc
   node scripts/createBounties.js --count 1 --amount 0.01 --creator-pay 0.005 --window 3600
   node scripts/createBounties.js --count 1 --amount 0.01 --creator-pay 0.008 --arbiter-pay 0.01 --window 7200 --target 0x...
+  node scripts/createBounties.js --count 1 --amount 0.02 --bounty-class medium --eth-usd 2300
+  node scripts/createBounties.js --count 1 --bounty-class bondless-small --quota 2 --forfeit-line 0
 `);
 }
 
@@ -425,6 +578,8 @@ async function createJobBackend(bountyData, creatorAddress, amount, hours, extra
       arbiterDeterminationPayment: extras.arbiterPay,
       creatorAssessmentWindowSeconds: extras.windowSeconds,
     } : {}),
+    // v2 size class + the creator's overrides (the API resolves and persists them)
+    ...(extras.classFields || {}),
   };
 
   const headers = { 'Content-Type': 'application/json', ...getAuthHeaders() };
@@ -469,6 +624,7 @@ async function createBountyOnChain(contract, evaluationCid, classId, threshold, 
   const value = ethers.parseEther(amountEth.toString());
   const targetHunter = options.target || ethers.ZeroAddress;
   const oracle = options.oracle || oracleParamsFromJob(null);
+  const decision = options.decision || decisionParamsFromJob(null);
 
   console.log(`    Sending transaction...`);
 
@@ -492,7 +648,13 @@ async function createBountyOnChain(contract, evaluationCid, classId, threshold, 
       alpha: oracle.alpha,
       estimatedBaseCost: oracle.estimatedBaseCost,
       maxFeeBasedScaling: oracle.maxFeeBasedScaling,
+      minOracleFee: oracle.minOracleFee,
+      withBeacons: oracle.withBeacons,
     },
+    jury: decision.jury,
+    quota: decision.quota,
+    forfeitLine: decision.forfeitLine,
+    bond: decision.bond,
   };
   const tx = await contract.createBounty(params, { value: msgValue });
 
@@ -578,6 +740,14 @@ async function main() {
     console.log(`Arbiter Pay:  ${options.arbiterPay} ETH`);
     console.log(`Window:       ${options.window}s (${(options.window / 3600).toFixed(1)}h)`);
   }
+  let cls;
+  try {
+    cls = await resolveClassSettings(options, options.amount);
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
+    process.exit(1);
+  }
+  console.log(`Size class: ${describeClass(cls)}`);
   console.log(`Dry Run:   ${options.dryRun ? 'Yes' : 'No'}`);
   console.log('='.repeat(60));
 
@@ -634,6 +804,7 @@ async function main() {
           creatorPay: options.creatorPay,
           arbiterPay: options.arbiterPay,
           windowSeconds: options.window,
+          classFields: classBodyFields(cls, options, options.amount),
         }
       );
 
@@ -643,6 +814,10 @@ async function main() {
 
       const job = jobResult.job;
       console.log(`  Job created: ID=${job.jobId}, CID=${job.evaluationCid?.substring(0, 20)}...`);
+      if (job.decisionSettings) {
+        const d = job.decisionSettings;
+        console.log(`  Decision:  class ${d.bountyClass || '?'}, jury ${d.jury}, Q=${d.quota}, R=${d.forfeitLine}, bond ${ethers.formatEther(String(d.bond ?? '0'))} ETH`);
+      }
 
       // Step 2: Create bounty on-chain
       console.log(`  Creating on-chain bounty...`);
@@ -658,8 +833,9 @@ async function main() {
           creatorPay: options.creatorPay,
           arbiterPay: options.arbiterPay,
           window: options.window,
-          // Same oracle settings the API persisted on the job record.
-          oracle: oracleParamsFromJob(job),
+          // Same oracle and decision settings the API persisted on the job record.
+          oracle: oracleParamsFromJob(job, cls),
+          decision: decisionParamsFromJob(job, cls),
         }
       );
 

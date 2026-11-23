@@ -113,14 +113,18 @@ This method references query packages already stored on IPFS using Content IDs.
 - Transaction includes the query package CID(s) and the request parameters
 
 #### 4. Evaluation Wait
-- 5-minute countdown timer shows remaining time
-- System polls for results every 5 seconds, 60 times
+- The page waits for as long as the aggregator's own timeout, which it reads from the contract (`responseTimeoutSeconds()`): 300 seconds on Base mainnet, 900 seconds on Base Sepolia
+- A countdown timer shows the time left
+- System polls for results every 5 seconds until the timeout has passed. A result that arrives at any point in that time opens the Results page
 
 #### 5. If No Result Arrives
-- After about 5 minutes without a result the page stops waiting. It normally shows a timeout error and stays on the Run Query page
-- The page does not close the round on the blockchain. A round that has passed the aggregator's timeout (300 seconds on Base mainnet, 900 seconds on Base Sepolia) stays open until someone calls `finalizeEvaluationTimeout(requestId)` on the aggregator, and anyone can make that call. The page's own attempt to make it is not sent, because it is made without your wallet
-- Until the round is closed, the unspent part of your prepayment stays reserved in it. Once it is closed, that amount appears as your prepay credit
-- On Base Sepolia the aggregator's timeout is longer than the page waits, so a query the page reports as timed out can still complete there
+A round that gets too few answers does not end by itself. It stays open, with the unspent part of your prepayment reserved in it, until someone calls `finalizeEvaluationTimeout(requestId)` on the aggregator after the timeout. Anyone can make that call. The page asks your wallet to make it:
+
+- When the timeout has passed without a result, the page first checks, without a transaction, that the call would succeed. If the round completed at the last moment, the page shows the result instead. If another account has already closed the round, the page says so and your wallet is not asked for anything
+- Otherwise your wallet asks you to confirm one more transaction. The page sets its gas limit to the network's estimate plus 50%, and to at least 3,000,000. On local copies of Base mainnet and Base Sepolia on 2026-11-22 the call used between 1.45 and 1.89 million gas when none of the six arbiters had answered
+- **If you confirm**, the page waits for the transaction and then shows **"No result arrived. The round is closed."**, with a link to the transaction, the amount that came back as prepay credit and your prepay credit after it
+- **If you decline**, or the transaction cannot be sent, the page shows **"No result arrived. The round is still open."** It states why nothing was sent, the request ID and the aggregator's address, and offers a **"Close the round now"** button that asks your wallet again. You can also make the call from any other wallet or tool. The notice is lost when you reload the page, so keep the request ID if you plan to close the round later
+- In each of these cases the page stays on the Run Query page. The fees already credited to the arbiters that were polled are not returned (see [Cost Considerations](#cost-considerations))
 
 ### Status Messages
 
@@ -134,6 +138,9 @@ During execution, you'll see various status updates:
 - **"Waiting for confirmation..."**: Transaction mining
 - **"Waiting for evaluation results..."**: AI processing
 - **"Fetching justification from server..."**: Retrieving results
+- **"Waiting for the network to reach the timeout..."**: The page's timer has run out a few seconds before the blockchain's
+- **"No result arrived in time. Confirm the transaction in your wallet to close the round and release your prepayment..."**: Your wallet is waiting for you (see [If No Result Arrives](#5-if-no-result-arrives))
+- **"Closing the round on the blockchain..."**: The closing transaction is being mined
 
 ### Error Handling
 
@@ -151,9 +158,13 @@ Common errors and solutions:
 - **Cause**: You declined the transaction in MetaMask
 - **Solution**: Try again and approve the transaction
 
-#### "TIMEOUT ERROR: Query timed out"
-- **Cause**: No result arrived within the 5 minutes the page waits
-- **Solution**: You can try again. The earlier round is not closed by the page: see [If No Result Arrives](#5-if-no-result-arrives) for how the unspent prepayment comes back
+#### "No result arrived. The round is closed."
+- **Cause**: No result arrived within the aggregator's timeout, and the round was closed, by your wallet or by another account
+- **Solution**: You can try again. The unspent part of the prepayment is back as prepay credit and is applied to your next query
+
+#### "No result arrived. The round is still open."
+- **Cause**: No result arrived within the aggregator's timeout, and the transaction that closes the round was not sent or did not succeed. The notice gives the reason, for example that you declined it
+- **Solution**: Use the **"Close the round now"** button in the notice, or call `finalizeEvaluationTimeout(requestId)` on the aggregator yourself. Until then the unspent part of the prepayment stays reserved in the round. See [If No Result Arrives](#5-if-no-result-arrives)
 
 #### Network or connectivity issues
 - **Solution**: Check internet connection and try again
@@ -167,7 +178,7 @@ Common errors and solutions:
 ### How the Prepayment Works
 - The application sets a fee limit of 0.0001 ETH per arbiter (`MAX_FEE` in `client/src/App.js`). The aggregator requires a prepayment of 12 times that limit, 0.0012 ETH, which its `maxTotalFee()` function returns. The banner at the top of the page shows the amount
 - The round then costs what the selected arbiters charge: each of the 6 arbiters polled is credited its own fee, and each of the 2 arbiters whose answers are clustered gets 3 times its fee on top
-- On 2026-11-22 all 40 arbiters registered on Base mainnet charged 0.00002 ETH, so a completed query cost 0.00024 ETH in arbiter fees and a query that timed out cost 0.00012 ETH, plus gas
+- On 2026-11-22 all 40 arbiters registered on Base mainnet charged 0.00002 ETH, so a completed query cost 0.00024 ETH in arbiter fees and a query that timed out cost 0.00012 ETH, plus gas. A query that times out needs gas twice: for the query and for the transaction that closes the round
 - The rest of the prepayment is returned as **prepay credit** held in the aggregator. It is applied automatically to your next query, and the **"Withdraw credit"** button on this page sends it back to your wallet
 
 ### Cost Factors

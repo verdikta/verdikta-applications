@@ -49,7 +49,7 @@ The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `estimatedBa
 - `ethOwed()`: ETH credit an address holds in the aggregator (unspent prepayments)
 - `withdrawEth()`: Send the caller's credit back to the caller
 - `responseTimeoutSeconds()`: The aggregator's timeout for a round
-- `finalizeEvaluationTimeout()`: Close a round that has passed the timeout
+- `finalizeEvaluationTimeout()`: Close a round that has passed the timeout. The Run Query page sends it from the user's wallet when no result arrives
 
 ### ETH Payment
 

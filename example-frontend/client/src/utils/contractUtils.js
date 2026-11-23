@@ -73,7 +73,14 @@ export const CONTRACT_ABI = [
   'function withdrawEth() external',
   'function isFailed(bytes32 aggId) external view returns (bool)',
   'function responseTimeoutSeconds() external view returns (uint256)',
-  'function finalizeEvaluationTimeout(bytes32 aggId) external'
+  'function finalizeEvaluationTimeout(bytes32 aggId) external',
+  // Timeout path: what finalizeEvaluationTimeout() emits and how it reverts.
+  'event EvaluationTimedOut(bytes32 indexed aggRequestId)',
+  'event EvaluationFailed(bytes32 indexed aggRequestId, string phase)',
+  'event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount)',
+  'error AggregationComplete()',
+  'error NotTimedOut()',
+  'error UnknownRequest()'
 ];
 
 // ------------------

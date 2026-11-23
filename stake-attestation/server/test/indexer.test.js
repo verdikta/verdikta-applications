@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { expectedJson, solidityEnums } from './helpers/abiJson.js';
 import { mergedAbi } from './helpers/chain.js';
 import {
-  chainContext, commit, disclose, dispute, finalize, HOUR, increaseTime, judgeAndSettle, listing, mine,
+  chainContext, commit, deadRound, disclose, dispute, finalize, HOUR, increaseTime, judgeAndSettle, listing, mine,
   reveal, revealedClaim, settle, siteFor, tmpDir, verdict,
 } from './helpers/scenario.js';
 
@@ -36,7 +36,7 @@ describe('the indexer stores every event the contract emitted, field for field',
     await increaseTime(ctx, HOUR + 1);
     await (await ctx.sa.connect(ctx.other).expire(undisclosed)).wait();
     const failed = await revealedClaim(ctx, h1, a.listingId);
-    await increaseTime(ctx, 301);
+    await deadRound(ctx, failed); // drawn, and its deadline passed with too few commits
     await finalize(ctx, failed);
     await (await ctx.sa.connect(h1).retrigger(failed, { value: await ctx.sa.retriggerTopUp(failed), gasLimit: 12_000_000 })).wait();
     await verdict(ctx, failed, 'INVALID');

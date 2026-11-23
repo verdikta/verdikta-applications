@@ -58,9 +58,11 @@
 //   SA_DATA_DIR                    holds the limits' counts (build-budget.json)
 //
 //   SA_ORACLE_MAX_FEE_WEI, SA_ORACLE_DISPUTE_MAX_FEE_WEI, SA_ORACLE_BASE_COST_WEI,
-//   SA_ORACLE_ALPHA, SA_ORACLE_MAX_FEE_SCALING
+//   SA_ORACLE_ALPHA, SA_ORACLE_MAX_FEE_SCALING, SA_ORACLE_MIN_FEE_WEI, SA_ORACLE_BEACONS
 //                                  the oracle parameters list() takes (design §10.8; the class is
-//                                  common's code-standard, build plan A8)
+//                                  common's code-standard, build plan A8). The last two are the v2
+//                                  aggregator's: the fee floor every juror is paid at least (0, none)
+//                                  and the beacon flag (off)
 //
 // The chain side (node P4b1: indexer, keeper, feed, record mirror, badge) is on when a deployment
 // is named; without SA_CONTRACT_ADDRESS the listing flow runs alone.
@@ -103,6 +105,12 @@
 //   SA_KEEPER_EXPIRE               off (default) | on: also expire claims nobody can advance
 //   SA_KEEPER_CONFIRM              on (default) | off: call confirm on a claim that awaits the dispute
 //                                  panel's confirmation (erratum E9; the listing's escrow pays it)
+//   SA_KEEPER_ROUNDS               on (default) | off: drive the v2 aggregator's rounds in flight:
+//                                  drawJury (through the contract, so the round's wallet earns the
+//                                  reward), closeCommits, promote and settle at the aggregator
+//   SA_KEEPER_WITHDRAW_MIN_WEI     withdraw the keeper's own rewards from the aggregator (ethOwed:
+//                                  promote rewards, draw rewards) once they reach this (100000000000000,
+//                                  0.0001 ETH; 0 = whenever there is any)
 //
 // The control facts (node P8; src/control/, docs/control-proof.md):
 //
@@ -146,6 +154,7 @@ const DEFAULT_ORACLE = Object.freeze({
   estimatedBaseCost: '10000000000000', // 0.00001 ETH, as the bounty program's default
   alpha: '500',
   maxFeeBasedScaling: '3',
+  minOracleFee: '0', // the v2 aggregator's fee floor: none
 });
 
 export class ConfigError extends Error {
@@ -361,6 +370,8 @@ function keeperConfig(env) {
     maxFeePerGasWei: wei(env, 'SA_KEEPER_MAX_FEE_PER_GAS_WEI', '10000000000'),
     expire: onOff(env, 'SA_KEEPER_EXPIRE', false),
     confirm: onOff(env, 'SA_KEEPER_CONFIRM', true),
+    rounds: onOff(env, 'SA_KEEPER_ROUNDS', true),
+    withdrawMinWei: wei(env, 'SA_KEEPER_WITHDRAW_MIN_WEI', '100000000000000'),
   });
 }
 
@@ -418,7 +429,11 @@ export function loadConfig(env = process.env) {
     estimatedBaseCost: wei(env, 'SA_ORACLE_BASE_COST_WEI', DEFAULT_ORACLE.estimatedBaseCost),
     alpha: String(integer(env, 'SA_ORACLE_ALPHA', Number(DEFAULT_ORACLE.alpha), { max: 1000 })),
     maxFeeBasedScaling: String(integer(env, 'SA_ORACLE_MAX_FEE_SCALING', Number(DEFAULT_ORACLE.maxFeeBasedScaling), { min: 1, max: 1000 })),
+    minOracleFee: wei(env, 'SA_ORACLE_MIN_FEE_WEI', DEFAULT_ORACLE.minOracleFee),
+    withBeacons: onOff(env, 'SA_ORACLE_BEACONS', false),
   };
+  // the contract's check of the floor: it fits a uint96 (the quote's uint88 bound needs the chain)
+  if (BigInt(oracle.minOracleFee) >= 2n ** 96n) fail('SA_ORACLE_MIN_FEE_WEI must fit a uint96');
   // the contract's _checkOracle, the parts that need no chain read
   if (BigInt(oracle.maxOracleFee) === 0n || BigInt(oracle.disputeMaxOracleFee) === 0n) fail('the oracle fees must be above 0');
   if (BigInt(oracle.estimatedBaseCost) >= BigInt(oracle.maxOracleFee) || BigInt(oracle.estimatedBaseCost) >= BigInt(oracle.disputeMaxOracleFee)) {

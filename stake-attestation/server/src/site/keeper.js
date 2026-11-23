@@ -7,6 +7,23 @@
 // (SA_KEEPER_CONFIRM=off turns that off; the escrow pays the round).
 // All four are permissionless and move funds by the claim's record, never by the caller.
 //
+// The v2 aggregator's rounds (SA_KEEPER_ROUNDS=off turns this off). A request only escrows the
+// prepay; the round then needs permissionless steps nobody is paid to take on time unless someone
+// takes them, so for every claim with a round open (Revealed: its claim round; Disputed: its
+// dispute-panel round) the keeper also sends, when the lens's openRound and the aggregator's
+// getRoundInfo say it is due and a simulation passes:
+//   - drawJury(claimId) on StakeAttestation, from block B+2 (phase 1, or 2 once the beacon quorum
+//     is in): through the round's wallet, which is the requester, so the draw reward goes back to
+//     the round's funder, never to the keeper;
+//   - closeCommits(aggId) on the aggregator, after T+ with at least M commits (phase 3);
+//   - promote(aggId) on the aggregator, from the close block + 2 (phase 4). The aggregator pays
+//     its caller 1 x the clamped fee: this is the keeper's own reward;
+//   - settle(aggId) on the aggregator, after the round's deadline (phases 3-5). finalize settles a
+//     dead round itself and comes first, so this is sent only when finalize is not due.
+// The claim's own actions come first. Rewards credited to the keeper (promote's) are withdrawn at
+// the end of a cycle with nothing else to send, once they reach SA_KEEPER_WITHDRAW_MIN_WEI. The
+// aggregator is the contract's verdikta(), read once.
+//
 // finalize serves every round, the dispute panel's three kinds (the maker's dispute, a
 // confirmation, the hunter's appeal) included. settle is sent only from the lens's settleableAt,
 // the time anyone may settle: never earlier, though a keeper whose key is the claim's hunter could,
@@ -29,7 +46,7 @@
 // one would revert; run one keeper per deployment, or give them one key.
 import { Transaction, Wallet } from 'ethers';
 
-import { ENUMS, stakeAttestation } from '../chain/abi.js';
+import { aggregatorInterface, ENUMS, stakeAttestation } from '../chain/abi.js';
 
 const POLL_MS = 100;
 const BUMP_NUM = 9n; // fees x 9/8 (+1 wei) for a replacement: above the 10% nodes require
@@ -52,7 +69,17 @@ export function confirmMargins(cfg) {
   const cancel = CONFIRM_MARGIN_SECONDS + cycle;
   return Object.freeze({ cancel, send: cancel + cycle });
 }
-const ACTION_STATES = Object.freeze({ finalize: ['Revealed', 'Disputed'], confirm: ['Judged'], settle: ['Judged'], expire: ['Committed', 'RoundFailed'] });
+const OPEN = Object.freeze(['Revealed', 'Disputed']);
+const ACTION_STATES = Object.freeze({
+  finalize: OPEN, confirm: ['Judged'], settle: ['Judged'], expire: ['Committed', 'RoundFailed'],
+  // the v2 aggregator's round in flight (ROUND_ACTIONS)
+  drawJury: OPEN, closeCommits: OPEN, promote: OPEN, settleRound: OPEN,
+});
+/** The round actions sent to the aggregator, and the aggregator function each calls with the round's aggId. */
+const AGGREGATOR_CALLS = Object.freeze({ closeCommits: 'closeCommits', promote: 'promote', settleRound: 'settle' });
+const ROUND_ACTIONS = Object.freeze(['drawJury', ...Object.keys(AGGREGATOR_CALLS)]);
+/** The round phases (getRoundInfo) in which each round action can be due. */
+const DUE_PHASES = Object.freeze({ drawJury: [1, 2], closeCommits: [3], promote: [4], settleRound: [3, 4, 5] });
 
 export class KeeperError extends Error {
   constructor(code, detail) {
@@ -105,14 +132,37 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
   let running = false;
 
   const tx = (to, data) => ({ from: address, to, data, blockTag: 'latest' });
-  const callData = (action, claimId) => stakeAttestation.encodeFunctionData(action, [claimId]);
   const lens = async (fn, claimId) => stakeAttestation.decodeFunctionResult(fn, await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData(fn, [claimId]))));
-  /** Whether this keeper sends `action` at all: expire and confirm each have their switch. */
-  const allowed = (action) => (action !== 'expire' || cfg.expire) && (action !== 'confirm' || cfg.confirm);
-  // the order a Judged claim's actions are tried in; confirm and settle are never due together
-  // (settleableAt is the confirmation deadline while one is awaited, and confirm closes at it)
-  const ORDER = ['finalize', 'confirm', 'settle', 'expire'];
+  /** Whether this keeper sends `action` at all: expire, confirm and the round actions each have their switch. */
+  const allowed = (action) => (action !== 'expire' || cfg.expire) && (action !== 'confirm' || cfg.confirm)
+    && (!ROUND_ACTIONS.includes(action) || cfg.rounds !== false);
+  // the order a claim's actions are tried in; confirm and settle are never due together
+  // (settleableAt is the confirmation deadline while one is awaited, and confirm closes at it).
+  // The round actions come last: finalize reads (and settles) a round that is over by itself.
+  const ORDER = ['finalize', 'confirm', 'settle', 'expire', ...ROUND_ACTIONS];
   const margins = confirmMargins(cfg);
+
+  let aggregatorAddress = null;
+  /** The aggregator, the contract's verdikta(), read once. */
+  async function aggregator() {
+    if (!aggregatorAddress) {
+      const [a] = stakeAttestation.decodeFunctionResult('verdikta', await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData('verdikta', []))));
+      aggregatorAddress = a;
+    }
+    return aggregatorAddress;
+  }
+  const aggRead = async (fn, args = []) => aggregatorInterface.decodeFunctionResult(fn, await provider.call(tx(await aggregator(), aggregatorInterface.encodeFunctionData(fn, args))));
+
+  /**
+   * The call an action makes: { to, data }. StakeAttestation's actions take the claim; the
+   * aggregator's take the round's aggId (recorded with the call, so a re-send targets the same
+   * round); withdraw takes nothing. A record from before the round actions has no `to`: the contract.
+   */
+  async function callOf(action, claimId, aggId = null) {
+    if (action === 'withdraw') return { to: await aggregator(), data: aggregatorInterface.encodeFunctionData('withdrawEth', []) };
+    if (AGGREGATOR_CALLS[action]) return { to: await aggregator(), data: aggregatorInterface.encodeFunctionData(AGGREGATOR_CALLS[action], [aggId]) };
+    return { to: chain.address, data: stakeAttestation.encodeFunctionData(action, [claimId]) };
+  }
 
   async function claimState(claimId) {
     const c = await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData('getClaim', [claimId])));
@@ -124,9 +174,11 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
    * Whether `action` on the claim would succeed now: the stored state allows it, the lens's time
    * for it has come (settle: settleableAt; confirm: inside confirmWindow), and a simulation passes.
    */
-  async function isDue(action, claimId, known = null, margin = margins.send) {
+  async function isDue(action, claimId, known = null, margin = margins.send, aggId = null) {
+    if (action === 'withdraw') return withdrawDue();
     const state = known ?? await claimState(claimId);
     if (!ACTION_STATES[action].includes(state)) return false;
+    if (ROUND_ACTIONS.includes(action)) return Boolean(await roundDue(action, claimId, aggId));
     if (action === 'settle') {
       const [at] = await lens('settleableAt', claimId);
       const latest = await provider.getBlock('latest');
@@ -138,19 +190,60 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
       if (deadline === 0n || now < opensAt || now + margin >= deadline) return false;
     }
     try {
-      await provider.call(tx(chain.address, callData(action, claimId)));
+      await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData(action, [claimId])));
       return true;
     } catch {
       return false; // "evaluation not ready", a window still open, or done by someone else
     }
   }
 
-  /** The action due for a claim now, by its on-chain state, or null. */
+  /**
+   * A round action's aggId when it is due now, else null: the claim's open round (the lens's
+   * openRound) is the one `aggId` names (when one is recorded), it is in a phase where the action
+   * applies (DUE_PHASES; settleRound only past the deadline), and the call simulates.
+   */
+  async function roundDue(action, claimId, aggId = null) {
+    const [requestId, , phase, deadline] = await lens('openRound', claimId);
+    if (/^0x0+$/.test(requestId) || (aggId && requestId !== aggId)) return null;
+    if (!DUE_PHASES[action].includes(Number(phase))) return null;
+    if (action === 'settleRound') {
+      const now = BigInt((await provider.getBlock('latest')).timestamp);
+      if (deadline === 0n || now <= deadline) return null;
+    }
+    const call = await callOf(action, claimId, requestId);
+    try {
+      await provider.call(tx(call.to, call.data));
+      return requestId;
+    } catch {
+      return null; // too early (B+2, T+, C+2), wrong phase, or done by someone else
+    }
+  }
+
+  /** Whether the keeper's own credit at the aggregator is worth withdrawing now, and the call passes. */
+  async function withdrawDue() {
+    const [owed] = await aggRead('ethOwed', [address]);
+    const min = BigInt(cfg.withdrawMinWei ?? 0);
+    if (owed === 0n || owed < min) return false;
+    const call = await callOf('withdraw');
+    try {
+      await provider.call(tx(call.to, call.data));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The action due for a claim now, by its on-chain state, or null: { action, aggId }. */
   async function dueAction(claimId) {
     const state = await claimState(claimId);
     for (const action of ORDER) {
       if (!allowed(action) || !ACTION_STATES[action].includes(state)) continue;
-      if (await isDue(action, claimId, state)) return action;
+      if (ROUND_ACTIONS.includes(action)) {
+        const aggId = await roundDue(action, claimId);
+        if (aggId) return { action, aggId: AGGREGATOR_CALLS[action] ? aggId : null };
+      } else if (await isDue(action, claimId, state)) {
+        return { action, aggId: null };
+      }
     }
     return null;
   }
@@ -170,11 +263,11 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     return { maxFeePerGas: maxFee, maxPriorityFeePerGas: tip };
   }
 
-  async function sign({ kind, action, claimId, nonce, gasLimit, previous }) {
+  async function sign({ kind, action, claimId, aggId = null, nonce, gasLimit, previous }) {
     const f = await fees(previous);
     const request = kind === 'cancel'
       ? { to: address, data: '0x', value: 0n, gasLimit: 21000n }
-      : { to: chain.address, data: callData(action, claimId), value: 0n, gasLimit: BigInt(gasLimit) };
+      : { ...(await callOf(action, claimId, aggId)), value: 0n, gasLimit: BigInt(gasLimit) };
     const raw = await wallet.signTransaction({ type: 2, chainId: chain.chainId, nonce, ...request, ...f });
     return { kind, hash: Transaction.from(raw).hash, raw, gasLimit: request.gasLimit.toString(), maxFeePerGas: f.maxFeePerGas.toString(), maxPriorityFeePerGas: f.maxPriorityFeePerGas.toString(), sentAt: now() };
   }
@@ -216,6 +309,8 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     const last = {
       action: attempt?.kind === 'cancel' ? 'cancel' : inflight.action,
       claimId: inflight.claimId,
+      ...(inflight.to ? { to: inflight.to } : {}),
+      ...(inflight.aggId ? { aggId: inflight.aggId } : {}),
       nonce: inflight.nonce,
       status,
       txHash: receipt?.hash ?? null,
@@ -226,7 +321,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
       s.keeper.inflight = null;
       s.keeper.last = last;
     });
-    if (status === 'reverted') logger.warn(`keeper: ${last.action}(${last.claimId}) reverted in ${last.txHash}`);
+    if (status === 'reverted') logger.warn(`keeper: ${last.action}(${last.aggId ?? last.claimId ?? ''}) reverted in ${last.txHash}`);
     return last;
   }
 
@@ -271,7 +366,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     }
     for (const f of store.state.keeper.foreign ?? []) {
       const used = (await provider.getTransactionCount(f.from, 'latest')) > f.nonce;
-      if (!used && !FINAL.has(await claimState(f.claimId))) {
+      if (!used && (f.claimId === null || !FINAL.has(await claimState(f.claimId)))) {
         blocked.add(`${f.claimId}:${f.action}`);
         continue;
       }
@@ -303,7 +398,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
    */
   async function fillGap(inflight, accountNonce, sent) {
     logger.warn(`keeper: the account's nonce is ${accountNonce}, below the ${inflight.action}(${inflight.claimId}) at ${inflight.nonce}: a reorg dropped an earlier transaction`);
-    const due = allowed(inflight.action) && await isDue(inflight.action, inflight.claimId);
+    const due = allowed(inflight.action) && await isDue(inflight.action, inflight.claimId, null, margins.send, inflight.aggId ?? null);
     if (!due) {
       const calls = inflight.attempts.filter((a) => a.kind !== 'cancel');
       const cancels = inflight.attempts.filter((a) => a.kind === 'cancel');
@@ -343,7 +438,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     // to be mined after its deadline: within the cancel margin it is replaced now, below
     const closing = inflight.action === 'confirm' && !(await isDue('confirm', inflight.claimId, null, margins.cancel));
     if (known && now() - newest.sentAt < cfg.replaceAfterMs && !closing) return settleInflight(inflight, cfg.txTimeoutMs);
-    const due = allowed(inflight.action) && await isDue(inflight.action, inflight.claimId);
+    const due = allowed(inflight.action) && await isDue(inflight.action, inflight.claimId, null, margins.send, inflight.aggId ?? null);
     if (!due && !known) {
       finish(inflight, 'dropped', null); // nothing of ours is pending, and nothing is due
       return 'done';
@@ -352,25 +447,27 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     // replacement outbids the highest fees recorded at this nonce
     const lastCall = inflight.attempts.filter((a) => a.kind !== 'cancel').at(-1);
     const highest = inflight.attempts.reduce((a, b) => (BigInt(b.maxFeePerGas) > BigInt(a.maxFeePerGas) ? b : a));
-    const attempt = await sign({ kind: due ? 'call' : 'cancel', action: inflight.action, claimId: inflight.claimId, nonce: inflight.nonce, gasLimit: lastCall.gasLimit, previous: highest });
+    const attempt = await sign({ kind: due ? 'call' : 'cancel', action: inflight.action, claimId: inflight.claimId, aggId: inflight.aggId ?? null, nonce: inflight.nonce, gasLimit: lastCall.gasLimit, previous: highest });
     const result = await broadcast(attempt, inflight);
     if (result !== 'sent') return 'pending'; // the nonce moved, or the node keeps the earlier attempt: next cycle
     sent.push({ action: due ? inflight.action : 'cancel', claimId: inflight.claimId, nonce: inflight.nonce, txHash: attempt.hash, replaced: true });
     return settleInflight(store.state.keeper.inflight, cfg.txTimeoutMs);
   }
 
-  async function sendNew(action, claimId, sent) {
-    const data = callData(action, claimId);
+  async function sendNew(action, claimId, sent, aggId = null) {
+    const call = await callOf(action, claimId, aggId);
     const nonce = await provider.getTransactionCount(address, 'latest');
     let estimate;
     try {
-      estimate = await provider.estimateGas(tx(chain.address, data));
+      estimate = await provider.estimateGas(tx(call.to, call.data));
     } catch {
       return 'skipped'; // the call stopped passing since it was checked (another sender's is pending, say)
     }
     const gasLimit = (estimate * 5n) / 4n + 10000n;
-    const inflight = { action, claimId, from: address, nonce, recordedAt: now(), attempts: [] };
-    const attempt = await sign({ kind: 'call', action, claimId, nonce, gasLimit });
+    // the target and the round are recorded with the call, so a re-send or a cancellation in a
+    // later cycle or process makes the same call
+    const inflight = { action, claimId, to: call.to, ...(aggId ? { aggId } : {}), from: address, nonce, recordedAt: now(), attempts: [] };
+    const attempt = await sign({ kind: 'call', action, claimId, aggId, nonce, gasLimit });
     const result = await broadcast(attempt, inflight);
     if (result !== 'sent') {
       // another transaction of this key holds the nonce: forget ours and look again next cycle
@@ -379,7 +476,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
       });
       return 'busy';
     }
-    sent.push({ action, claimId, nonce, txHash: attempt.hash, replaced: false });
+    sent.push({ action, claimId, ...(aggId ? { aggId } : {}), nonce, txHash: attempt.hash, replaced: false });
     return settleInflight(store.state.keeper.inflight, cfg.txTimeoutMs);
   }
 
@@ -410,12 +507,17 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
       }
       for (const claimId of candidates()) {
         if (acted.has(claimId)) continue;
-        const action = await dueAction(claimId);
-        if (!action || blocked.has(`${claimId}:${action}`)) continue;
+        const due = await dueAction(claimId);
+        if (!due || blocked.has(`${claimId}:${due.action}`)) continue;
         acted.add(claimId);
-        const result = await sendNew(action, claimId, sent);
+        const result = await sendNew(due.action, claimId, sent, due.aggId);
         if (result === 'skipped') continue;
         if (result !== 'done') return { sent, pending: store.state.keeper.inflight };
+      }
+      // the keeper's own rewards (promote's), once nothing else is in flight
+      if (cfg.rounds !== false && !acted.has(null) && !blocked.has('null:withdraw') && await withdrawDue()) {
+        const result = await sendNew('withdraw', null, sent);
+        if (result !== 'done' && result !== 'skipped') return { sent, pending: store.state.keeper.inflight };
       }
       return { sent, pending: null };
     } finally {

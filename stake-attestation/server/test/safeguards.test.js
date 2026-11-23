@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { CONFIRM_MARGIN_SECONDS } from '../src/site/keeper.js';
 import { project } from '../src/site/projection.js';
 import {
-  automine, chainContext, commit, disclose, dispute, finalize, HOUR, increaseTime, JUSTIFICATION, keeperTransactions, latestTimestamp, listing,
+  automine, chainContext, commit, deadRound, disclose, dispute, draw, finalize, HOUR, increaseTime, JUSTIFICATION, keeperTransactions, latestTimestamp, listing,
   mine, pendingKeeperTransactions, reveal, revealedClaim, rpc, settle, siteFor, tmpDir, verdict,
 } from './helpers/scenario.js';
 
@@ -54,8 +54,8 @@ async function confirmedListing(ctx, opts = {}) {
 
 /** The (mock) aggregator's answer for the claim's open round: any vector. */
 async function scriptVector(ctx, claimId, v, { dispute: panel = false } = {}) {
-  const c = await ctx.sa.getClaim(claimId);
-  await (await ctx.aggregator.scriptResult(panel ? c.disputeRequestId : c.requestId, v, JUSTIFICATION)).wait();
+  const requestId = await draw(ctx, claimId, { dispute: panel });
+  await (await ctx.aggregator.scriptResult(requestId, v, JUSTIFICATION)).wait();
 }
 
 async function appeal(ctx, claimId, hunter) {
@@ -119,21 +119,21 @@ describe('the keeper calls confirm (erratum E9)', () => {
       const [opensAt, deadline] = await ctx.sa.confirmWindow(claimId);
       await untilAt(ctx, opensAt);
       assert.deepEqual(actions(await cycle(site)), [['confirm', String(claimId)]]);
-      await increaseTime(ctx, 301); // the mock aggregator's responseTimeoutSeconds is 300
+      await deadRound(ctx, claimId, { dispute: true }); // the confirmation's round, past its deadline
       assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
       const failed = await ctx.sa.getClaim(claimId);
       assert.equal(DisputeResult[Number(failed.dispute)], 'NoVerdict');
       assert.equal(ClaimState[Number(failed.state)], 'Judged');
       assert.deepEqual(actions(await cycle(site)), [['confirm', String(claimId)]], 'again, while the window is open');
       assert.equal((await ctx.sa.getListing(listingId)).confirmationRounds, 2n);
-      await increaseTime(ctx, 301);
+      await deadRound(ctx, claimId, { dispute: true });
       assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
 
       // a round may still start shortly before the deadline, and runs to its finalize after it
       await untilAt(ctx, deadline - site.keeper.confirmMargins.send - 60n);
       const r = await cycle(site);
       assert.deepEqual(actions(r), [['confirm', String(claimId)]], 'a round may still start before the deadline');
-      await increaseTime(ctx, 301);
+      await deadRound(ctx, claimId, { dispute: true });
       assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
       assert.deepEqual((await cycle(site)).sent, [], 'too close to the deadline for another round, and not yet settleable');
       await untilAt(ctx, deadline);
@@ -295,7 +295,7 @@ describe('the keeper and the hunter\'s appeal (erratum E7)', () => {
       await verdict(ctx, claimId, 'INVALID');
       await cycle(site);
       await appeal(ctx, claimId, h);
-      await increaseTime(ctx, 301);
+      await deadRound(ctx, claimId, { dispute: true });
       assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
       const deadline = await ctx.sa.retriggerDeadline(claimId);
       assert.ok(deadline > 0n);
@@ -465,7 +465,7 @@ describe('the indexer and the projection', () => {
       assert.deepEqual(awaiting.confirmation, { status: 'Awaiting', rounds: 0, opensAt: Number(opensAt), deadline: Number(deadline) });
       assert.equal(awaiting.appealDeadline, null, 'a valid outcome has no appeal window');
       await untilAt(ctx, opensAt);
-      await (await ctx.aggregator.setRefundAmount(10n ** 12n)).wait(); // some prepay unspent: it goes back to the escrow
+      // some prepay is unspent (the draw reward, and what the round did not spend): it goes back to the escrow
       await (await ctx.sa.connect(ctx.other).confirm(confirmed, { gasLimit: APPEAL_GAS })).wait();
       await verdict(ctx, confirmed, 'HIGH', { dispute: true });
       await finalize(ctx, confirmed);
@@ -482,7 +482,7 @@ describe('the indexer and the projection', () => {
       assert.equal(p.claims.get(String(narrow)).appealDeadline, Number(await ctx.sa.appealDeadline(narrow)), 'the lens\'s appeal window');
       assert.equal(p.claims.get(String(narrow)).confirmation, null);
       await appeal(ctx, narrow, h2);
-      await increaseTime(ctx, 301);
+      await deadRound(ctx, narrow, { dispute: true });
       await finalize(ctx, narrow); // no verdict: the appeal's one re-trigger
       await site.sync();
       p = project(site.store.state.events);

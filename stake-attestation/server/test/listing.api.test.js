@@ -55,7 +55,7 @@ describe('POST /api/listings, then GET /api/listings/:id', () => {
     const recipientBytes = Buffer.from(codeReview.parseDisclosureKey(body.spec.stake.disclosureKey)).toString('hex');
     assert.equal(view.list.params.disclosureKey, `0x${recipientBytes}`);
     assert.deepEqual(view.disclosureKey, { recipient: body.spec.stake.disclosureKey, bytes32: `0x${recipientBytes}` });
-    assert.deepEqual(Object.keys(view.list.params.oracle).sort(), ['alpha', 'disputeMaxOracleFee', 'estimatedBaseCost', 'maxFeeBasedScaling', 'maxOracleFee', 'requestedClass']);
+    assert.deepEqual(Object.keys(view.list.params.oracle).sort(), ['alpha', 'disputeMaxOracleFee', 'estimatedBaseCost', 'maxFeeBasedScaling', 'maxOracleFee', 'minOracleFee', 'requestedClass', 'withBeacons']);
     assert.equal(view.list.params.oracle.requestedClass, String(codeReview.CODE_CLASSES['code-standard'].classId));
     assert.match(view.artifactHash, /^0x[0-9a-f]{64}$/);
     assert.equal(view.trust, 'dev');

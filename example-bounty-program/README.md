@@ -1,13 +1,15 @@
 # Verdikta AI-Powered Bounty Program
 
-**Status:** 🟢 Production Ready (Smart Contracts Deployed)  
-**Version:** 0.3.0 (MVP + Receipts)
+**Status:** 🟡 v2 release in preparation (contracts not deployed yet)  
+**Version:** 0.6.0 (v2 aggregator: size classes, drawn juries, Q-of-N decisions with re-runs)
+
+> This branch describes the **v2** escrow, built on the v2 Verdikta aggregator (verdikta-dispatcher, `beacon` branch). Neither is deployed yet: the addresses below are placeholders. Until the v2 cutover, the live site runs the previous escrow (v0.5.0) on the v1 aggregator; its address is on the site's Analytics page.
 
 ## Overview
 
 The Verdikta AI-Powered Bounty Program is a fully decentralized platform that enables trustless, automated evaluation and payment of work submissions using AI arbiters. Bounty owners create jobs with ETH payouts and IPFS-hosted evaluation rubrics, hunters submit deliverables, and Verdikta's AI jury automatically grades submissions. The first passing submission wins the bounty—no appeals, no manual review needed.
 
-**Current Status:** Fully functional end-to-end system with deployed smart contracts on Base Sepolia (testnet) and Base (mainnet). Create bounties with ETH escrow, submit work with a small ETH prepay for oracle fees, get AI evaluation in under 2 minutes, and — once a one-transaction settlement step (handled for you by the app or your agent) finalizes the verdict — automatic on-chain payment to the winner. Winners get shareable receipt pages with social media unfurling.
+**How it works:** Create bounties with ETH escrow and pick a size class that sets the jury and the decision rule; hunters submit work with an ETH prepay for oracle fees plus a refundable bond; a randomly drawn jury of AI arbiters evaluates it in a few minutes; and — once a one-transaction settlement step (handled for you by the app or your agent) finalizes the verdict — the winner is paid on-chain. Winners get shareable receipt pages with social media unfurling.
 
 ## Quick Links
 
@@ -19,7 +21,7 @@ The Verdikta AI-Powered Bounty Program is a fully decentralized platform that en
 ## Key Concepts
 
 ### For Bounty Owners
-1. **Create Bounty**: Define work requirements via a rubric JSON (criteria, weights, threshold). Optionally enable a creator approval window with split payments.
+1. **Create Bounty**: Define work requirements via a rubric JSON (criteria, weights, threshold) and pick a size class (jury, quota, bond; see [Size Classes](#size-classes)). Optionally enable a creator approval window with split payments.
 2. **Lock ETH**: Deposit payout amount on-chain in escrow
 3. **Wait**: Hunters submit work. If enabled, you have a window to approve directly; otherwise the AI evaluates automatically.
 4. **Winner Paid**: The first passing submission is paid as soon as its result is finalized on-chain — a single settlement call the app or agent makes for you, not a transaction you have to think about.
@@ -27,9 +29,9 @@ The Verdikta AI-Powered Bounty Program is a fully decentralized platform that en
 ### For Hunters
 1. **Browse Bounties**: Find open bounties that match your skills
 2. **Submit Work**: Upload deliverable (text, image, PDF, etc.) to IPFS
-3. **Attach ETH Prepay**: Each submission needs a small ETH prepay (~0.00024 ETH) for oracle fees, which deters spam — most of it is refunded after evaluation
-4. **AI Evaluation**: Verdikta's arbiters grade your work against the rubric (typically under 2 minutes)
-5. **Get Paid**: Pass the threshold and a finalizing transaction — made for you by the app, a script, or your agent — triggers the contract to send ETH straight to your wallet. No appeals, no manual review.
+3. **Attach ETH Prepay + Bond**: Starting an evaluation attaches the oracle prepay (most of it is refunded after evaluation) plus the bounty's hunter bond (returned unless your work clearly fails; zero on Bondless Small bounties)
+4. **AI Evaluation**: A randomly drawn jury of Verdikta arbiters grades your work against the rubric (typically 5–10 minutes, longer for large juries)
+5. **Get Paid**: If at least the bounty's quota of jurors score your work at or above the threshold, a finalizing transaction — made for you by the app, a script, or your agent — triggers the contract to send ETH straight to your wallet. A narrow miss can be re-run. No appeals, no manual review.
 6. **Share Receipt**: Get a shareable receipt page with proof of payment for social media
 
 ## Receipts-as-Memes
@@ -80,14 +82,16 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - ✅ **AI-powered evaluation** using multi-model consensus (Class 128+)
 - ✅ **Automatic payout** to first passing submission
 - ✅ **Flexible criteria** with weighted rubrics and custom thresholds
+- ✅ **Size classes** (Bondless Small to Jumbo) that scale the jury, the pass quota and the hunter bond with the bounty's value
 - ✅ **Time-limited submissions** with configurable deadlines
 - ✅ **Optional creator approval window** — review and approve submissions directly before AI evaluation, with split payment amounts (creator vs oracle approval)
 
 ### For Hunters
 - ✅ **Browse opportunities** with search and filter by payout, status, deadline
 - ✅ **Multi-file submissions** with descriptions and custom narratives
-- ✅ **Fast evaluation** results in under 2 minutes
-- ✅ **Instant payment** when passing threshold
+- ✅ **Fast evaluation** results in minutes
+- ✅ **Instant payment** when the jury's pass quota is met
+- ✅ **Re-runs** after a narrow miss or a round with no result, keeping your place and bond
 - ✅ **Shareable receipts** with social media OG tags
 
 ### For AI Agents (Bot API)
@@ -104,7 +108,7 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - **Backend**: Node.js 18+, Express, @verdikta/common
 - **Storage**: IPFS (Pinata) for rubrics, deliverables, evaluation packages
 - **Blockchain**: Base Sepolia (testnet), Base (mainnet)
-- **Oracles**: Verdikta Aggregator + Chainlink Functions
+- **Oracles**: Verdikta v2 aggregators (one per jury size) + Chainlink
 - **Images**: Sharp (for OG image generation)
 - **Sync**: Automated blockchain sync service (2-minute intervals)
 
@@ -128,30 +132,65 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 - **Threshold**: 82/100
 - **Payout**: 0.2 ETH
 
-## Two-Step Submission Flow (+ finalize)
+## Submission Flow (prepare, start, draw, finalize)
 
-The submission process is split into two on-chain transactions for better UX, followed by a finalize call:
+A submission takes two hunter transactions, then the oracle round is drawn and run, then a finalize call settles the result:
 
 1. **Prepare Submission** (`prepareSubmission(bountyId, evaluationCid, hunterCid)`)
    - Deploys EvaluationWallet contract
-   - Records the submission. The hunter supplies only their work CID (plus the bounty's evaluation CID as a guard that they are submitting against the package they think they are). Everything in the oracle request comes from the **bounty**: the evaluation package, the class, and the creator's oracle settings (`maxOracleFee`, `alpha`, `estimatedBaseCost`, `maxFeeBasedScaling`, chosen at `createBounty` and visible on the bounty), plus an always-empty addendum. The judged party cannot append text to the arbiters' query, steer arbiter selection, or shrink the eligible-arbiter pool by lowering the fee ceiling.
-   - `ethMaxBudget` is `maxTotalFee(bounty.oracle.maxOracleFee)` at prepare time — an estimate of the prepay; `requiredPrepay(bountyId)` gives the live value to attach at start. It is identical for every submission to a bounty at any given moment.
+   - Records the submission. The hunter supplies only their work CID (plus the bounty's evaluation CID as a guard that they are submitting against the package they think they are). Everything in the oracle request comes from the **bounty**: the evaluation package, the class, the jury (which approved aggregator), and the creator's oracle settings (`maxOracleFee`, `alpha`, `estimatedBaseCost`, `maxFeeBasedScaling`, `minOracleFee`, `withBeacons`, chosen at `createBounty` and visible on the bounty), plus an always-empty addendum. The judged party cannot append text to the arbiters' query, steer arbiter selection, or shrink the eligible-arbiter pool by lowering the fee ceiling.
+   - `ethMaxBudget` is the aggregator's `maxTotalFee(maxOracleFee, minOracleFee, withBeacons)` for the bounty at prepare time — an estimate of one round's prepay; `requiredPrepay(bountyId)` gives the live value. It is identical for every submission to a bounty at any given moment.
    - `hunterCid` must be a bare CID (46–100 alphanumeric characters: CIDv0 `Qm…` or base32 CIDv1 `b…`); anything containing delimiters, a path prefix, or whitespace reverts with `bad hunterCid`. The same rule applies to `evaluationCid` at bounty creation (`bad evaluationCid`). The aggregator serializes the request as `1:<evaluationCid>,<hunterCid>:<addendum>` for the oracle nodes, so a stray comma or colon would smuggle an extra archive or an addendum into the evaluation.
-   - Emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, ethMaxBudget, evaluationCid)` — `ethMaxBudget` is the worst-case ETH prepay (wei); it comes **before** the dynamic `string evaluationCid`, so even a naive `(address,uint256)` decode of the data reads it correctly. Simplest: use the `transaction.value` returned by the `/start` calldata endpoint, or `parsed.ethMaxBudget` from `/submit/bundle/complete`.
+   - Emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, ethMaxBudget, evaluationCid)` — `ethMaxBudget` is the estimated prepay (wei); it comes **before** the dynamic `string evaluationCid`, so even a naive `(address,uint256)` decode of the data reads it correctly. Simplest: use the `transaction.value` returned by the `/start` calldata endpoint, or `parsed.ethMaxBudget` from `/submit/bundle/complete`.
    - Its `topic0` is `0x147341637c0b8d941e61a743cd410afff8526bec154904bb54f857b8f59cd6ca` = `keccak256("SubmissionPrepared(uint256,uint256,address,address,uint256,string)")`. Don't hand-write it: `/submit/prepare` and `/submit/bundle` both return an `event` descriptor with the signature, topic0 and full ABI.
 
 2. **Start Evaluation** (`startPreparedSubmission`, **payable**)
-   - The funder attaches `requiredPrepay(bountyId)` as `msg.value` — the aggregator's current maximum total fee for the bounty's oracle fee, read live from the escrow. The `ethMaxBudget` in the step-1 event is that same figure at prepare time and is only an estimate: aggregator parameters can change in between, and the contract checks against the live value so a prepared submission can never be stranded by such a change. The `/start` calldata endpoint and the website read the live value for you.
-   - Funds the EvaluationWallet with ETH for the oracle fees
-   - Prepays the Verdikta aggregator (no approval step — the oracle is ETH-funded)
-   - Triggers AI evaluation
+   - The funder attaches `startValue(bountyId)` as `msg.value`: `requiredPrepay(bountyId)` (one round's oracle prepay, read live from the bounty's aggregator) plus the bounty's hunter bond. The `ethMaxBudget` in the step-1 event is only an estimate of the prepay: aggregator parameters can change in between, and the contract checks against the live value so a prepared submission can never be stranded by such a change. The `/start` calldata endpoint and the website read the live value for you.
+   - Funds the EvaluationWallet, which prepays the bounty's Verdikta aggregator (no approval step — the oracle is ETH-funded) and requests the round
+   - Holds the bond until the submission resolves
    - Returns immediately (evaluation continues async)
 
-There is no LINK token, ERC-20 approval, or allowance step — the prepay is plain ETH attached to `startPreparedSubmission`.
+3. **Draw and run the round** (`drawJury(bountyId, submissionId)`, then the aggregator's `closeCommits` / `promote`)
+   - A v2 round has no jury when it starts. From two blocks after the start, anyone may call `drawJury(bountyId, submissionId)`; it draws through the submission's wallet, so the draw reward goes back to the round's funder with the leftover prepay. A beacon bounty (Jumbo) draws twice: the first call starts the beacon stage.
+   - The drawn arbiters commit; if the commit window needs closing, anyone may call `closeCommits(aggId)` on the bounty's aggregator (`aggregatorOf(bountyId)`), and then `promote(aggId)` (its caller earns a reward). The promoted arbiters reveal, and the round has a result.
+   - **The server's round keeper normally sends all of these** (see DEVELOPER-GUIDE → "Round keeper"). Anyone else may: the API returns calldata for each (`/draw`, `/round-step`).
 
-After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. Finalizing reads the result (it settles the round on the aggregator only if the round timed out) and automatically returns any unspent ETH prepay to whoever funded the start — the hunter in the common case (the per-submission EvaluationWallet pulls the `ethOwed` credit via `withdrawEth()` — you never claim it yourself). Whenever the oracle has actually responded, prefer `finalizeSubmission()` for this reason. If the oracle never responds, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) fails the submission as a last resort — it has no timer of its own; it succeeds only once the aggregator reports the oracle round as timed out with no result (its response timeout, currently 5 minutes, after the start transaction — `nextAction` says `FORCE_FAIL` when it is callable). See [Submission timing rules](#submission-timing-rules).
+4. **Finalize** (`finalizeSubmission`) — **not automatic**; the hunter, the app, or anyone may call it once the round has a result. It applies the bounty's Q-of-N rule (see [Decision Rule](#decision-rule-q-of-n-bond-and-re-runs)): a pass pays the bounty and returns the bond; a soft fail moves the submission to `AwaitingRerun`; a hard fail forfeits the bond to the creator. In every case the unspent oracle prepay is returned to whoever funded the round (the per-submission EvaluationWallet pulls the `ethOwed` credit via `withdrawEth()` — you never claim it yourself).
+
+If the round ends with no result (too few commits or reveals, a missed beacon quorum, or nobody drew it within a day), anyone may call `closeFailedRound(bountyId, submissionId)` (API: `/close-failed`, alias `/timeout`). There is no fixed timeout: the call is gated on the aggregator's own state and reverts `round still open` until the round has failed, is past its deadline (counted from the draw) or can only be cancelled, and `result available - use finalizeSubmission` if a result exists. No result is not the hunter's fault, so the submission then awaits a re-run with its place and bond. See [Submission timing rules](#submission-timing-rules).
+
+There is no LINK token, ERC-20 approval, or allowance step — the prepay and bond are plain ETH attached to `startPreparedSubmission`.
 
 Agent API entry points for each step are documented at `/agents.txt` and `/api/docs` on a running server.
+
+## Size Classes
+
+A bounty's creator picks its jury and decision rule. The website and API offer five presets (`shared/classPresets.js`, served at `GET /api/classes/presets[?usd=<bounty USD>]`, which also suggests the smallest class offered for a bounty's value); the escrow stores whatever the creator sets, and every value can be overridden:
+
+| Class | Jury (aggregator index) | Arbiters drawn / promoted / counted / clustered (K/M/N/P) | Pass quota Q | Forfeit line R | Beacons | Fee floor per juror | Hunter bond | Offered for bounties up to |
+|---|---|---|---|---|---|---|---|---|
+| Bondless Small | 0 (small) | 6 / 5 / 4 / 3 | 3 | 1 | no | none | none | $25 |
+| Small | 0 (small) | 6 / 5 / 4 / 3 | 3 | 1 | no | none | $5 | $100 |
+| Medium | 1 (medium) | 8 / 5 / 4 / 3 | 3 | 2 | no | $0.25 | $50 | $1,000 |
+| Large | 2 (large) | 21 / 16 / 13 / 10 | 10 | 8 | no | $0.25 | $100 | $10,000 |
+| Jumbo | 3 (jumbo) | 50 / 38 / 27 / 17 | 17 | 12 | yes | $0.25 | $200 | $100,000 |
+
+USD amounts are converted to wei at the ETH price when the bounty is created. K/M/N/P belong to each aggregator deployment and are shown for information; the escrow has one approved aggregator per jury size, fixed when the escrow is deployed (`aggregators(i)`, `aggregatorOf(bountyId)`). The fee floor (`minOracleFee`) is what every juror (and beacon) is paid at least, so an attempt costs at least K × the floor (K + 2 with beacons).
+
+## Decision Rule (Q-of-N), Bond and Re-runs
+
+Each of the N counted jurors gives the submission an acceptance score. The contract (`BountyRules.sol`) counts the jurors whose score is at or above the bounty's threshold, and compares that count with the bounty's quota Q and forfeit line R (R ≤ Q ≤ N):
+
+| Outcome | Count at the threshold | Effect of `finalizeSubmission` |
+|---|---|---|
+| Pass | ≥ Q | Paid (subject to payout priority), bond returned |
+| Soft fail | R to Q − 1 | `AwaitingRerun`: may re-run, keeping its place and bond |
+| Hard fail | < R | `Failed`, the bond goes to the bounty's creator |
+| No result | — | `closeFailedRound`, then `AwaitingRerun` as for a soft fail |
+
+**Bond.** Whoever starts the submission posts the bond with the prepay (`startValue = requiredPrepay + bond`). It is returned when the submission passes, or fails without a hard fail (including an expired re-run), and goes to the creator on a hard fail. Bondless Small sets it to zero.
+
+**Re-runs.** A submission in `AwaitingRerun` (status 6) may be re-run with `rerunSubmission(bountyId, submissionId)`, payable `requiredPrepay(bountyId)` (no new bond), by the hunter or the bond's funder: within 2 hours of the previous round resolving (`rerunDeadline`, `RERUN_WINDOW`), before the submission deadline, while the bounty is open, up to 6 rounds in all (`MAX_ROUNDS`). Each re-run gets a fresh jury and is drawn like the first round. If no re-run comes in time, anyone may call `expireRerun(bountyId, submissionId)`: the submission fails and the bond is returned. API: `/rerun`, `/expire-rerun`.
 
 ## Bounty Lifecycle
 
@@ -167,26 +206,28 @@ The escrowed ETH is locked until someone calls `closeExpiredBounty(bountyId)`. T
 
 ### If there are submissions still being evaluated
 
-`closeExpiredBounty` reverts if any submission is in `PendingVerdikta` status. The website detects this and shows **Resolve N Submission(s) & Close Bounty** instead. Behind the scenes:
+`closeExpiredBounty` reverts (`active evaluation - finalize first`) if any submission is in `PendingVerdikta` or `AwaitingRerun` status. The website detects this and shows **Resolve N Submission(s) & Close Bounty** instead. Behind the scenes, for each such submission:
 
-1. For each pending submission, call `finalizeSubmission(bountyId, submissionId)` if the oracle has responded. If it never responded, call `failTimedOutSubmission(bountyId, submissionId)` instead — it works once the aggregator's oracle round has timed out (about 5 minutes after the start transaction) and refunds the unspent ETH prepay to whoever funded the start. It reverts with `result available - use finalizeSubmission` if a result exists, and `evaluation not settled` if the round is still open.
-2. Once no submissions are pending, call `closeExpiredBounty(bountyId)`.
+1. If its round has a result, call `finalizeSubmission(bountyId, submissionId)`.
+2. If its round ended with no result, call `closeFailedRound(bountyId, submissionId)`. It settles or cancels the round on the aggregator and returns what is left of the prepay to the round's funder. It reverts with `result available - use finalizeSubmission` if a result exists, and `round still open` while the round can still get one (its deadline is counted from the draw; an undrawn round can be closed a day after its start). The round keeper usually draws and promotes in-flight rounds so they finish.
+3. If it is `AwaitingRerun` (after either of the above, or a soft fail), call `expireRerun(bountyId, submissionId)`: once the deadline has passed nobody can re-run, so anyone may expire it; the bond is returned.
+4. Once none is left, call `closeExpiredBounty(bountyId)`.
 
-The UI does these in sequence inside one button. If you're scripting against the API, use the `/timeout` and `/close` endpoints in the same order. See [DEVELOPER-GUIDE.md → Reclaiming funds from an expired bounty](DEVELOPER-GUIDE.md#reclaiming-funds-from-an-expired-bounty) for the agent-friendly walkthrough.
+`nextAction(bountyId, submissionId)` names the right call for each. The UI does these in sequence inside one button. If you're scripting against the API, use the `/finalize`, `/close-failed`, `/expire-rerun` and `/close` endpoints in the same order. See [DEVELOPER-GUIDE.md → Reclaiming funds from an expired bounty](DEVELOPER-GUIDE.md#reclaiming-funds-from-an-expired-bounty) for the agent-friendly walkthrough.
 
 ### Submission timing rules
 
-- **Everything a hunter must do happens before the deadline.** Both `prepareSubmission` and `startPreparedSubmission` require the current time to be before `submissionDeadline` (start reverts with `deadline passed`). Finalizing after the deadline is fine. At the deadline every submission is therefore paid, in oracle evaluation, or dead, which is what makes `closeExpiredBounty` safe to call as soon as the deadline passes.
+- **Everything a hunter must do happens before the deadline.** `prepareSubmission`, `startPreparedSubmission` and `rerunSubmission` require the current time to be before `submissionDeadline` (start reverts with `deadline passed`). Drawing, finalizing, closing a failed round and expiring a re-run after the deadline are fine. At the deadline every submission is therefore paid, in oracle evaluation, awaiting a re-run that can no longer happen, or dead, which is what makes `closeExpiredBounty` safe to call once those are resolved.
 - **Windowed bounties have an earlier effective cutoff.** The creator approval window is a per-submission timer that starts at `prepareSubmission`. It must end before the deadline with at least one second to spare, so a windowed submission can only be prepared up to `submissionDeadline − creatorAssessmentWindowSize − 2` — read `prepareCutoff(bountyId)` rather than computing it (later attempts revert with `window would end after deadline`). The hunter waits out the window, then starts arbitration before the deadline if the creator did not approve.
-- **Payout priority on every bounty.** Payout priority is by submission index among submissions in evaluation: a passing submission is paid only once every earlier-submitted (lower-index) submission by another hunter has left evaluation — until then `finalizeSubmission` reverts `earlier submission pending - retry after it resolves` (a retry, not a failure; the result is kept). If an earlier one passes, it takes the bounty. This protects an original against a copy of its public work CID submitted later, whatever order the oracle rounds complete in. Only submissions in evaluation hold priority (a prepared-but-unstarted one holds none — start promptly after preparing), and a hunter's own earlier submission never blocks them.
+- **Payout priority on every bounty.** Payout priority is by submission index among submissions in evaluation or awaiting a re-run: a passing submission is paid only once every earlier-submitted (lower-index) submission by another hunter has resolved — until then `finalizeSubmission` reverts `earlier submission pending - retry after it resolves` (a retry, not a failure; the result is kept). If an earlier one passes, it takes the bounty. This protects an original against a copy of its public work CID submitted later, whatever order the oracle rounds complete in. Only started submissions hold priority (a prepared-but-unstarted one holds none — start promptly after preparing; a re-run keeps its place), and a hunter's own earlier submission never blocks them.
 - **Creator-approval priority on windowed bounties.** An earlier submission blocks creator approval of a later one only while it can still win: it is in oracle evaluation, or its approval window is still open. A hunter's own earlier version sitting in its window never blocks their newer one (a resubmission supersedes it — the creator can approve the revision immediately, and nobody has to pay to arbitrate the stale one). But a hunter's own earlier version that is already in oracle evaluation does block **creator approval** of a newer one: that earlier version is the hunter's live, paid-for claim to the arbiter-approval amount, and approving a revision for the (possibly smaller) creator-approval amount would extinguish it. The creator can approve the revision once the earlier evaluation has failed. An earlier submission also stops blocking once its window expires without arbitration being started. If a passing `finalizeSubmission` is blocked by another hunter's in-flight evaluation it reverts with `earlier submission pending - retry after it resolves`; the submission stays `PendingVerdikta` and the call is simply retried after the earlier one resolves.
-- **Force-fail is gated on the oracle, not a clock.** `failTimedOutSubmission` first tries to settle the round on the aggregator, then succeeds only if the round is settled with no valid result. It can never discard a passing score.
-- **The creator owns the oracle settings.** `createBounty` takes one struct that includes `oracle: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling }`, validated on-chain at creation (fee > 0 and ≤ the aggregator ceiling of that moment, base cost < fee, scaling 1–1000, alpha 0–1000). They are used for every evaluation of that bounty, clamped at start to the aggregator's live fee ceiling if it has since dropped (`effectiveOracleParams(bountyId)` shows what is forwarded; the stored settings never change). A hunter can inspect them before committing work and the website's validate check warns when they look rigged (few eligible arbiters at that fee, one operator dominating the eligible pool, price boost enabled); the creator cannot inspect a hunter, which is why these settings are not the hunter's.
-- **Leftover prepay goes to whoever funded the start.** After a creator window expires anyone may fund `startPreparedSubmission`; the unspent oracle prepay is refunded to that funder (recorded as `funder` on the submission), not necessarily to the hunter.
+- **Closing a failed round is gated on the oracle, not a clock.** `closeFailedRound` first tries to settle or cancel the round on the aggregator, then succeeds only if the round has failed or been cancelled with no result. It can never discard a passing score.
+- **The creator owns the oracle and decision settings.** `createBounty` takes one struct that includes `oracle: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling, minOracleFee, withBeacons }` and the decision settings `jury`, `quota`, `forfeitLine` and `bond`, validated on-chain at creation (fee > 0 and ≤ the jury's aggregator ceiling of that moment, base cost < fee, scaling 1–1000, alpha 0–1000, a jury index the escrow knows, 1 ≤ Q ≤ N and R ≤ Q). They are used for every evaluation of that bounty, clamped at start to the aggregator's live fee ceiling if it has since dropped (`effectiveOracleParams(bountyId)` shows what is forwarded; the stored settings never change). A hunter can inspect them before committing work and the website's validate check warns when they look rigged (few eligible arbiters at that fee, one operator dominating the eligible pool, price boost enabled); the creator cannot inspect a hunter, which is why these settings are not the hunter's.
+- **Leftover prepay goes to whoever funded the round.** After a creator window expires anyone may fund `startPreparedSubmission`; the unspent oracle prepay is refunded to that funder (recorded as `funder` on the submission), not necessarily to the hunter, and the bond goes back to whoever posted it (`bondFunder`). For a re-run, the re-run's sender is the funder. Some rounds that end with no result send their unspent prepay to the aggregator's treasury rather than back (a refund would be a free re-roll of the jury); see the aggregator's [user guide](../docs/user-guide.md#failure-and-refund-paths).
 - **Resolution never depends on the oracle refund.** Recovering the unspent prepay is attempted inline, wrapped and gas-capped (200k), so it cannot block or inflate a finalize or force-fail; if it fails, `RefundDeferred` is emitted and anyone can retry with `recoverLeftoverEth(bountyId, submissionId)` once the submission is resolved.
-- **Ask the contract what to do.** `nextAction(bountyId, submissionId)` answers START, AWAIT_SLOT, AWAIT_CREATOR, AWAIT_ORACLE, AWAIT_EARLIER, FINALIZE, FORCE_FAIL, RECOVER_REFUND, DONE or DEAD from live state — always the call that will succeed now (AWAIT_SLOT: the 256 concurrency cap is reached; AWAIT_EARLIER: a passing result waiting for an earlier in-flight submission) (the API's `/diagnose` returns the same value as `nextAction`); `getOracleResult` reports the oracle round without the aggregator's ABI; `getSubmissions` / `getBounties` batch-read; `prepareCutoff` and `requiredPrepay` give the two numbers a hunter needs. See DEVELOPER-GUIDE → "Driving the contract without the API".
+- **Ask the contract what to do.** `nextAction(bountyId, submissionId)` answers START, AWAIT_SLOT, AWAIT_CREATOR, DRAW, CLOSE_COMMITS, PROMOTE, AWAIT_ORACLE, AWAIT_EARLIER, FINALIZE, CLOSE_FAILED, RERUN, AWAIT_EXPIRY, EXPIRE_RERUN, RECOVER_REFUND, DONE or DEAD from live state — always the call that will succeed now (AWAIT_SLOT: the 64-round concurrency cap is reached; AWAIT_EARLIER: a passing result waiting for an earlier submission) (the API's `/diagnose` returns the same value as `nextAction`); `getOracleResult` reports the round's phase, outcome, pass count and deadline without the aggregator's ABI; `getSubmissions` / `getBounties` batch-read; `prepareCutoff` and `startValue` give the two numbers a hunter needs. See DEVELOPER-GUIDE → "Driving the contract without the API".
 - **Payouts never depend on the recipient.** ETH is sent directly with a 120k gas cap; a recipient that rejects it, needs more gas, or burns what it is given is credited on the contract's pull ledger instead and collects with `withdraw()`. Settlement cannot be blocked or made expensive by a hostile recipient.
-- **Malformed oracle results fail safely.** A score vector is valid only if it is the expected two-entry `[DONT_FUND, FUND]` with each entry at most 1,000,000. Anything else finalizes the submission as `Failed` with zero scores and refunds the prepay; it never pays out (out-of-range values are rejected, not clamped up to a pass) and never reverts, so the bounty stays open for other submissions and can still be closed. The same interpreter is used when checking whether another submission already passed, so start-time and payout-time decisions always agree.
+- **Malformed oracle results fail safely.** A result is valid only if it is the expected two-entry `[DONT_FUND, FUND]` or a one-number `[FUND]`, with each entry at most 1,000,000. Anything else counts as no result: finalize moves the submission to `AwaitingRerun` (keeping place and bond) and refunds the prepay; it never pays out (out-of-range values are rejected, not clamped up to a pass) and never reverts, so the bounty stays open for other submissions and can still be closed. The same interpreter (`BountyRules`) is used when checking whether another submission already passed, so start-time and payout-time decisions always agree.
 
 ### Discoverability for agents and integrators
 
@@ -195,13 +236,13 @@ The UI does these in sequence inside one button. If you're scripting against the
 ## MVP Scope
 
 ### ✅ Currently Supported
-- Binary outcomes (Pass/Fail based on threshold). How the score meets the threshold: each juror sets FUND to the rubric's weighted average (one decimal; 0 if any must criterion fails), and the contract rounds the aggregated score DOWN to a whole percent before comparing it to the threshold, so 79.9 fails a threshold of 80. Jurors are told to ignore any pass mark written in the description. (Evaluation packages created before 2026-10-18 used a looser rule, under which jurors often scored their confidence of passing instead.)
+- Pass/fail decided by the jury's individual scores (Q-of-N). Each juror sets FUND to the rubric's weighted average (one decimal; 0 if any must criterion fails), and the contract counts the jurors whose score is at or above the threshold (score ≥ threshold × 10,000 on the 0–1,000,000 scale) against the bounty's quota. The aggregated score, rounded down to a whole percent, is stored as the submission's `acceptance` for display. Jurors are told to ignore any pass mark written in the description. (Evaluation packages created before 2026-10-18 used a looser rule, under which jurors often scored their confidence of passing instead.)
 - ETH payouts only (automatic on-chain transfer)
 - First-past-the-post (single winner per bounty)
 - Public submissions (stored on IPFS)
 - Multi-file submissions with descriptions
 - Text, images, PDFs, DOCX (≤20 MB per file, 10 files max)
-- ETH oracle prepay per submission (dynamic based on class)
+- ETH oracle prepay per round (dynamic: the jury size, the creator's fee ceiling and floor, beacons) plus a refundable hunter bond
 - Shareable receipts with social OG tags
 - Bot API for autonomous agents
 - Multi-network support (Sepolia + Mainnet)
@@ -219,14 +260,16 @@ The UI does these in sequence inside one button. If you're scripting against the
 
 > **Authoritative source:** the running website's **Analytics page** (`/analytics` → System Health → Contract Addresses) displays the live BountyEscrow address pulled from the backend's runtime config. If the address below ever disagrees with the Analytics page, trust the Analytics page — these docs are a snapshot and may be stale after a redeployment.
 
+The v2 escrow and the v2 aggregators are **not deployed yet**. The entries below are placeholders, to be filled in at the v2 cutover. Each escrow is bound at deployment to four aggregators, one per jury size, readable with `aggregators(i)`.
+
 ### Base Sepolia (Testnet)
-- **BountyEscrow**: `0xAA67686Bb09F569C2C3b663BB3679dD9f9F60BDC`
-- **Verdikta Aggregator**: `0xe8a385E473EA710c5a88Cc72681a16a26fe380e4`
+- **BountyEscrow (v2)**: `<V2_BOUNTY_ESCROW_BASE_SEPOLIA>` (not deployed yet)
+- **Verdikta Aggregators (v2), jury 0–3 (small, medium, large, jumbo)**: `<V2_AGGREGATOR_SMALL>`, `<V2_AGGREGATOR_MEDIUM>`, `<V2_AGGREGATOR_LARGE>`, `<V2_AGGREGATOR_JUMBO>` (not deployed yet)
 - **Explorer**: [Base Sepolia Scan](https://sepolia.basescan.org)
 
 ### Base (Mainnet)
-- **BountyEscrow**: `0x2Ae271f5E86bee449a36B943414b7C1a7b39772D`
-- **Verdikta Aggregator**: `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a`
+- **BountyEscrow (v2)**: `<V2_BOUNTY_ESCROW_BASE>` (not deployed yet)
+- **Verdikta Aggregators (v2), jury 0–3 (small, medium, large, jumbo)**: `<V2_AGGREGATOR_SMALL>`, `<V2_AGGREGATOR_MEDIUM>`, `<V2_AGGREGATOR_LARGE>`, `<V2_AGGREGATOR_JUMBO>` (not deployed yet)
 - **Explorer**: [BaseScan](https://basescan.org)
 
 ## Getting Started
@@ -280,13 +323,13 @@ npm update @verdikta/common
 ```
 
 ### Current Status
-This project is **production ready** with complete end-to-end functionality including deployed smart contracts, blockchain sync, bot API, and social sharing features.
+The v0.5.0 release (v1 aggregator) is live on both networks. This branch is the v2 release: contracts, server, client and agent docs are ported to the v2 aggregator, and the contracts are not deployed yet.
 
 **What's Working:**
-- ✅ Create bounties with on-chain ETH escrow and custom rubrics
+- ✅ Create bounties with on-chain ETH escrow, custom rubrics and size classes
 - ✅ Browse and search bounties with real-time blockchain sync
-- ✅ Submit work with multi-file support and a small ETH oracle prepay (mostly refunded)
-- ✅ Automated AI evaluation in under 2 minutes
+- ✅ Submit work with multi-file support, an ETH oracle prepay (mostly refunded) and a refundable bond
+- ✅ Automated AI evaluation by a randomly drawn jury, moved along by the server's round keeper
 - ✅ Instant on-chain payment to winners
 - ✅ Shareable receipt pages with OG tags for social media
 - ✅ Bot API for autonomous agent submissions
@@ -305,10 +348,10 @@ This project is **production ready** with complete end-to-end functionality incl
 A: The BountyEscrow contract is deployed on Base Sepolia (testnet) and Base (mainnet). It holds ETH in escrow, coordinates with Verdikta for AI evaluation, and pays winners the moment a submission is finalized. There's no human review or discretion — evaluation and payout are deterministic — but, as with anything on-chain, a finalizing transaction must be sent to settle the result and release escrow. That call is permissionless and is normally made for you by the app or your agent; see [Bounty Lifecycle](#bounty-lifecycle).
 
 **Q: How much does it cost to submit work?**  
-A: Each submission attaches a small ETH prepay for oracle fees. The per-oracle fee is ~0.00002 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget`) is ~0.00024 ETH. Most of the prepay is automatically refunded to whoever funded the start (normally the hunter) when the submission finalizes — you only pay for the oracle work actually performed. The exact amount depends on the bounty's class ID and jury configuration.
+A: Starting a submission attaches `startValue(bountyId)`: one round's oracle prepay (`requiredPrepay`) plus the bounty's hunter bond. The prepay is the aggregator's worst case for the bounty's jury, `max(fee ceiling, fee floor) × (K + 3 × P [+ 2 beacons]) + fee ceiling × 3`; for a Small bounty at the API's default ceiling of 0.00002 ETH and no floor that is 18 × 0.00002 = 0.00036 ETH. Most of the prepay is automatically refunded to whoever funded the round (normally the hunter) when it resolves — you only pay for the oracle work actually performed. The bond comes back too unless the jury hard-fails the work. A re-run costs another prepay, without a new bond. Read the exact amounts from `startValue` / `requiredPrepay`, or from the `/start` endpoint's `transaction.value`.
 
-**Q: What happens if Verdikta times out?**  
-A: The aggregator's oracle round times out after its response timeout (currently 5 minutes, owner-settable) following `startPreparedSubmission` if not enough oracles respond. Once that has happened, anyone can call `failTimedOutSubmission()` to mark the submission as failed and refund the unspent ETH prepay to whoever funded the start. The call is gated on the aggregator's state rather than a fixed delay: it reverts with `evaluation not settled` while the round is still open, and with `result available - use finalizeSubmission` if the oracle did respond (in which case finalize instead).
+**Q: What happens if the oracle round gets no result?**  
+A: A v2 round has phases (draw, commits, reveals) and a deadline counted from the draw; an undrawn round can be cancelled a day after its start. If it ends without a result, anyone can call `closeFailedRound()` (API: `/close-failed`). It settles or cancels the round on the aggregator, returns what is left of the prepay to whoever funded the round, and moves the submission to `AwaitingRerun` with its place and bond: no result is not the hunter's fault. The call reverts with `round still open` while the round can still get a result, and with `result available - use finalizeSubmission` if it has one (finalize instead). Then re-run within 2 hours, or let it expire (bond returned).
 
 **Q: Can I cancel a bounty after creating it?**  
 A: No cancellation is allowed. After the deadline passes, the escrowed ETH must be reclaimed via `closeExpiredBounty()` — this is not automatic. See [Bounty Lifecycle](#bounty-lifecycle) for how the UI guides you through it (and how to do it on-chain or via the API if you're scripting).
@@ -317,7 +360,7 @@ A: No cancellation is allowed. After the deadline passes, the escrowed ETH must 
 A: No. All submissions are stored on IPFS and can be viewed by anyone with the CID. The blockchain also records submission metadata publicly.
 
 **Q: Can a hunter submit multiple times?**  
-A: Yes! Hunters can submit multiple attempts for the same bounty, without any cap on non-windowed bounties (windowed bounties cap prepared submissions at 128 across all hunters). What every bounty caps is concurrent oracle evaluations: at most 256 in flight at once, and a start that finds the slots full reverts `evaluation slots full - retry later` until any in-flight round resolves. Each submission requires a separate ETH prepay (mostly refunded). The earliest-submitted submission whose evaluation passes wins: a later passing submission waits (its finalize reverts `earlier submission pending - retry after it resolves`) until every earlier in-flight submission by another hunter has resolved, and if one of those passes it takes the bounty. So copying someone's public work CID after they have started their evaluation cannot beat them; only submissions already in evaluation hold priority, so start yours promptly after preparing.
+A: Yes! Hunters can submit multiple attempts for the same bounty, without any cap on non-windowed bounties (windowed bounties cap prepared submissions at 128 across all hunters). What every bounty caps is concurrent oracle rounds: at most 64 in flight at once (`MAX_ACTIVE_EVALUATIONS`), and a start or re-run that finds the slots full reverts `evaluation slots full - retry later` until any in-flight round resolves. Each submission requires a separate ETH prepay (mostly refunded) and bond. The earliest-submitted submission whose evaluation passes wins: a later passing submission waits (its finalize reverts `earlier submission pending - retry after it resolves`) until every earlier submission by another hunter that is in evaluation or awaiting a re-run has resolved, and if one of those passes it takes the bounty. So copying someone's public work CID after they have started their evaluation cannot beat them; only submissions already in evaluation hold priority, so start yours promptly after preparing.
 
 **Q: What are receipt pages?**  
 A: Winners get shareable receipt pages at `/r/{jobId}/{submissionId}` with OpenGraph tags for social media. Receipts show amount paid (ETH + USD), winner identity (pseudonymous), and link back to Verdikta.
@@ -340,6 +383,8 @@ Copy `server/.env.example` → `server/.env` and `client/.env.example` → `clie
 **Key variables:**
 - `NETWORK` / `VITE_NETWORK` — `base-sepolia` or `base`
 - `BOUNTY_ESCROW_ADDRESS_*` / `VITE_BOUNTY_ESCROW_ADDRESS_*` — BountyEscrow address per network (from Analytics page)
+- `KEEPER_PRIVATE_KEY` — optional funded hot wallet for the round keeper, which draws, closes, promotes and expires rounds (server only; without it those steps are left to hunters and others)
+- `VERDIKTA_AGGREGATORS_*` — optional override of the v2 aggregator list (comma-separated, jury order); normally read from the escrow
 - `IPFS_PINNING_KEY` — Pinata JWT (server only)
 - `RECEIPT_SALT` — random string for pseudonymous receipt IDs (server only)
 - `FRONTEND_CLIENT_KEY` / `VITE_CLIENT_KEY` — must match between server and client
@@ -371,6 +416,20 @@ paid only for work submitted through [bounties.verdikta.org](https://bounties.ve
 See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Changelog
+
+### v0.6.0 (November 2026) — v2 aggregator (breaking contract revision, redeploy; not deployed yet)
+
+- Built on the v2 Verdikta aggregator: the escrow is deployed with one approved aggregator per jury size (`VERDIKTA_AGGREGATORS_<NETWORK>`, jury order small, medium, large, jumbo), and each bounty names one (`jury`, `aggregatorOf`)
+- `createBounty`'s struct gains `jury`, `quota` (Q), `forfeitLine` (R), `bond`, and `oracle.minOracleFee` / `oracle.withBeacons`; size-class presets in `shared/classPresets.js` and `GET /api/classes/presets`
+- Q-of-N decision (`BountyRules`): pass at ≥ Q juror scores at the threshold, soft fail (R..Q−1) awaits a re-run, hard fail (< R) forfeits the bond; one-number results accepted
+- Hunter bond: `startValue = requiredPrepay + bond`; new status `AwaitingRerun` (6); `rerunSubmission` (within 2 hours, up to 6 rounds), `expireRerun`; events `RerunAwaited`, `BondReturned`, `BondForfeited`
+- Two-phase rounds: `drawJury(bountyId, submissionId)` from two blocks after the start (twice with beacons), then `closeCommits` / `promote` on the aggregator; the server's round keeper (`KEEPER_PRIVATE_KEY`) sends them
+- `closeFailedRound` replaces v1's force-fail call: it settles or cancels the round, and the submission awaits a re-run instead of failing; there is no fixed timeout
+- `MAX_ACTIVE_EVALUATIONS` lowered from 256 to 64 (judging a round now reads every juror's score)
+- `nextAction` adds DRAW, CLOSE_COMMITS, PROMOTE, CLOSE_FAILED, RERUN, AWAIT_EXPIRY, EXPIRE_RERUN (v1's FORCE_FAIL is gone); `getOracleResult` reports phase, outcome, passCount, rounds and deadline
+- API: `/draw`, `/round-step`, `/rerun`, `/expire-rerun`, `/close-failed` (`/timeout` kept as an alias); `/start` returns `startValue`
+
+The v0.5.0 entry below describes that release; v0.6.0 replaced its force-fail call, its 256-evaluation cap and its FORCE_FAIL action.
 
 ### v0.5.0 (September 2026) — BountyEscrow hardening (breaking contract revision, redeploy + ABI cutover; procedure in `deploy/CUTOVER-2026-09-12.md`)
 
@@ -431,5 +490,5 @@ MIT License — see [LICENSE](../LICENSE) for details.
 
 ---
 
-**Production Status**: Smart contracts deployed on Base Sepolia (testnet) and Base (mainnet). Fully functional end-to-end workflow with AI evaluation, automatic payment, and social sharing.
+**Production Status**: v0.5.0 (v1 aggregator) is deployed on Base Sepolia (testnet) and Base (mainnet). The v2 release described here is not deployed yet.
 

@@ -24,6 +24,8 @@ The application integrates with four main service categories:
 - **Transactions**: Handles signing and broadcasting
 
 #### Smart Contract Interface
+The application talks to Verdikta's v2 `ReputationAggregator` (the ABI is in `client/src/utils/contractUtils.js`). The v1 aggregators are not compatible.
+
 ```javascript
 // Contract interaction example
 const contract = new ethers.Contract(contractAddress, CONTRACT_ABI, signer);
@@ -32,24 +34,47 @@ const tx = await contract.requestAIEvaluationWithApproval(
   textAddendum,
   alpha,
   maxFee,
+  minFee,                // fee floor per juror, 0 = none
   estimatedBaseCost,
   maxFeeBasedScalingFactor,
   selectedContractClass,
+  withBeacons,           // beacon stage before the draw
   { value: ethValue, gasLimit: 4500000 } // ethValue: the ETH prepayment, see "ETH Payment" below
 );
+const receipt = await tx.wait();
+const aggId = receipt.logs
+  .map((log) => { try { return contract.interface.parseLog(log); } catch { return null; } })
+  .find((e) => e?.name === 'RequestAIEvaluation').args.aggRequestId;
 ```
 
-The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `estimatedBaseCost` = 1% of `maxFee`, `maxFeeBasedScalingFactor` = 10 and class 128 by default (`client/src/App.js`).
+The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `minFee` = 0, `estimatedBaseCost` = 1% of `maxFee`, `maxFeeBasedScalingFactor` = 10, class 128 and `withBeacons` = false by default (`client/src/App.js`).
+
+#### Moving the Round On
+A v2 request only prepays the round. The requester then moves it from phase to phase; the Run Query page does this with the user's wallet (`client/src/utils/timeoutUtils.js`, `driveRound()`), dry-running each call with `estimateGas` from the user's address and sending only a call that will succeed:
+
+```javascript
+// phase 1 (draw): from block B+2 of the request. Within 30 s only the requester earns 2 x fee.
+await contract.drawJury(aggId);          // with beacons: once to start the stage, again once the values are in
+// phase 3 (commit): only when T+ is over with >= M commits and the window did not close by itself
+await contract.closeCommits(aggId);
+// phase 4 (closing): from the close block + 2. The caller earns 1 x fee.
+await contract.promote(aggId);
+// phase 6 (final): the result
+const [aggregated, justifications, valid] = await contract.getEvaluation(aggId);
+// past the deadline without a result: fail the round and credit the unspent prepay
+await contract.settle(aggId);
+```
 
 #### Key Contract Methods
-- `requestAIEvaluationWithApproval()`: Submit evaluation request
-- `getEvaluation()`: Retrieve evaluation results
-- `getContractConfig()`: Get contract configuration
-- `maxTotalFee()`: Worst-case fee in ETH (wei) that must be prepaid with a request
-- `ethOwed()`: ETH credit an address holds in the aggregator (unspent prepayments)
+- `requestAIEvaluationWithApproval()`: Submit evaluation request (9 arguments, `payable`)
+- `maxTotalFee(maxFee, minFee, withBeacons)`: Worst-case fee in ETH (wei) that must be prepaid with a request
+- `drawJury()`, `closeCommits()`, `promote()`: Move a round on (anyone may call them)
+- `settle()`: Fail a round that passed its deadline without a result, and refund it
+- `getRoundInfo()`: The round's phase (1 draw, 2 beacons, 3 commit, 4 closing, 5 reveal, 6 final, 7 settled, 8 failed, 9 cancelled), blocks, escrow, deadline, commit window end, commits and request time
+- `getEvaluation()`: Retrieve evaluation results, valid from phase 6
+- `K()`, `M()`, `N()`, `P()`, `tPlus()`, `responseTimeoutSeconds()`, `maxOracleFee()`: Round size, commit window, deadline after the draw, fee ceiling (v2 has no `getContractConfig()`)
+- `ethOwed()`: ETH credit an address holds in the aggregator (refunds and rewards)
 - `withdrawEth()`: Send the caller's credit back to the caller
-- `responseTimeoutSeconds()`: The aggregator's timeout for a round
-- `finalizeEvaluationTimeout()`: Close a round that has passed the timeout. The Run Query page sends it from the user's wallet when no result arrives
 
 ### ETH Payment
 
@@ -58,18 +83,20 @@ There is no token approval. `requestAIEvaluationWithApproval()` keeps its histor
 #### Prepayment and Credit
 ```javascript
 // Worst-case fee for this request, and the credit already held
-const required = await contract.maxTotalFee(maxFee);   // maxFee × 12 with the aggregator's current settings
+const required = await contract.maxTotalFee(maxFee, minFee, withBeacons);
+// = max(fee, minFee) x (K + B x P [+ beacon quorum]) + fee x (2 + 1); 0.0018 ETH with the defaults
 const credit = await contract.ethOwed(walletAddress);
-const ethValue = required > credit ? required - credit : 0n;  // sent as the transaction's value
+const ethValue = required > credit ? required - credit : 0n;  // sent as the transaction's value; credit covers the rest
 
 // Later: take unused credit back
 await contract.withdrawEth();
 ```
 
 #### Fee Management
-- **Gas Fees**: Paid by user in ETH for blockchain transactions
-- **Evaluation Fees**: Paid by the user in ETH, out of the prepayment. Each of the 6 arbiters polled is credited its registered fee and each of the 2 clustered arbiters 3 times its fee on top; the rest of the prepayment is credited back to the user in the aggregator
-- **Fee Calculation**: Set by the fees of the selected arbiters, not by query complexity or jury size. On 2026-11-22 all 40 arbiters on Base mainnet charged 0.00002 ETH: 0.00024 ETH for a completed round, 0.00012 ETH for one that timed out
+- **Gas Fees**: Paid by user in ETH for the request and for each call that moves the round on
+- **Evaluation Fees**: Paid by the user in ETH, out of the prepayment. Each of the K drawn arbiters is credited its fee (at least the floor), and each arbiter in the winning cluster B times its fee on top; the rest of the prepayment is credited back to the user in the aggregator, except for a round that had enough commits but was not closed or promoted in time, a missed beacon quorum, or a cancelled round, where it goes to the treasury
+- **Rewards**: The draw reward (2 × the fee ceiling) and the promote reward (1 × the fee ceiling) are credited to whoever makes those calls; with the Run Query page that is the user
+- **Fee Calculation**: Set by the fees of the drawn arbiters, not by query complexity or jury size
 
 ## AI Provider APIs
 

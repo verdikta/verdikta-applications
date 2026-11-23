@@ -6,8 +6,10 @@ Verdikta Simple Frontend is a reference web application that showcases how to in
 
 1. Define a **question / dispute** with a set of mutually exclusive **outcomes**.
 2. Bundle supporting evidence into a **query package** (ZIP archive) that is uploaded to IPFS.
-3. Choose an **AI jury** (set of models or nodes) and submit the request to the **Verdikta Aggregator** smart‑contract running on **Base Sepolia**.
-4. Poll the chain until the Chainlink job fulfils the request, then fetch and render the **result vector** and the **AI‑generated justification**.
+3. Choose an **AI jury** (set of models or nodes) and submit the request to the **Verdikta Aggregator** (the v2 `ReputationAggregator`) on **Base** or **Base Sepolia**, prepaying the arbiters in ETH.
+4. Move the round on from the user's wallet (draw the jury, then promote the commits; each is a wallet transaction that earns the caller a reward), then fetch and render the **result vector** and the **AI‑generated justification**.
+
+> The client works with the **v2** aggregator only. The v2 aggregators are not deployed yet: `client/.env.example` holds placeholders for their addresses (see `MIGRATION_SUMMARY.md`).
 
 This repository contains:
 
@@ -24,7 +26,7 @@ This repository contains:
 |------------|--------------------------------------------------|
 | Front‑end  | React 18 · React Router · Chart.js · Ethers v6    |
 | Back‑end   | Node 20 · Express 4 · @verdikta/common            |
-| Blockchain | Base Sepolia test‑net · Chainlink Functions       |
+| Blockchain | Base / Base Sepolia · v2 ReputationAggregator (Chainlink operators) |
 | Storage    | IPFS                                             |
 
 ---
@@ -140,8 +142,8 @@ The client proxies API calls to `http://localhost:5000` by default (configure vi
 
 1. **Query Definition** – Write the question and enumerate possible outcomes.
 2. **Jury Selection** – Choose which AI nodes / models will deliberate and set runtime parameters.
-3. **Run Query** – Build or upload a query package and submit the on‑chain transaction.
-4. **Results** – Once the Chainlink oracle fulfils the request the result vector is displayed alongside the justification markdown.
+3. **Run Query** – Build or upload a query package and submit the on‑chain request, which prepays `maxTotalFee(maxFee, minFee, withBeacons)` in ETH. The page then drives the round with your wallet: `drawJury` a few seconds later (twice with beacons; earns 2 × the fee within 30 s), `closeCommits` if the commit window needs closing, `promote` when the commit phase closes (earns 1 × the fee), and `settle` if the round misses its deadline. Each call is dry-run first, and a phase timeline shows where the round is. Keep the page open until the result arrives; after a reload it offers to resume the round.
+4. **Results** – Once the round finalizes, the result vector is displayed alongside the justification markdown.
 
 Each step corresponds to a page in `client/src/pages/*` and local‑storage keeps draft data so you can navigate back & forth.
 

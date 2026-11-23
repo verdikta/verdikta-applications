@@ -1,48 +1,80 @@
 /**
- * The Run Query page, from "Run Query" to the end of the wait, against a fake chain.
- * These tests drive the real page and the real timeoutUtils; only ethers' provider and
- * contract classes, the wallet and the server calls are replaced.
+ * The Run Query page, from "Run Query" to the end of the round, against a fake v2
+ * aggregator. These tests drive the real page and the real timeoutUtils; only ethers'
+ * provider and contract classes, the wallet and the server calls are replaced.
  */
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import RunQuery from './RunQuery';
+import RunQuery, { PENDING_ROUND_KEY } from './RunQuery';
 import { fetchWithRetry, tryParseJustification } from '../utils/fetchUtils';
 
-const AGGREGATOR = '0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a';
-const WALLET = '0x742F15ebE4fCcC794a39dbBc00e3C5700A7BEB8D';
-const REQUEST_ID = '0x550c3efce479f5d364a86733cd47890d426214c55058f006cec0b26677c73608';
-const TX_HASH = '0x' + 'ab'.repeat(32);
-const REFUND = 1080000000000000n; // 0.00108 ETH
+const AGGREGATOR = '0x000000000000000000000000000000000000dEaD'; // placeholder: no v2 address yet
+const MOCK_WALLET = '0x742F15ebE4fCcC794a39dbBc00e3C5700A7BEB8D';
+const MOCK_AGG_ID = '0x' + '0'.repeat(63) + '7';
+const MOCK_TX_HASH = '0x' + 'ab'.repeat(32);
+const MOCK_MAX_FEE = 100000000000000n; // 0.0001 ETH
+const MOCK_REFUND = 1080000000000000n; // 0.00108 ETH
 
 // The fake chain. Names start with "mock" so the jest.mock factories below may use them.
 const mockChain = {};
 function resetChain() {
   Object.assign(mockChain, {
     chainId: 8453n,
-    timeoutSeconds: 300n,
-    evaluation: [[], '', false],
     ethOwed: 0n,
-    isFailed: false,
-    estimateGas: async () => 1888985n,
-    // What the wallet does with finalizeEvaluationTimeout: by default it is mined.
-    sendFinalize: async (contract) => ({
-      hash: TX_HASH,
-      wait: async () => {
-        mockChain.isFailed = true;
-        mockChain.ethOwed = REFUND;
-        return {
-          status: 1,
-          hash: TX_HASH,
-          logs: [contract.interface.encodeEventLog('RequesterRefunded', [REQUEST_ID, WALLET, REFUND])],
-        };
-      },
-    }),
-    finalizeCalls: [],
+    phase: 0, // no round until the request is mined
+    minedAt: null, // Date.now() when the request was mined
+    drawnAt: null,
+    promotedAt: null,
+    closeBlock: 0,
+    deadline: 0,
+    windowEnd: 0,
+    commits: 0,
+    maxCommits: 6, // M+ = 6 for K = 6, M = 5: the window closes by itself
+    revealAfter: 20, // seconds from promotion to the result (null: never)
+    evaluation: [[], '', false],
+    wallet: () => undefined, // (fn) => an Error to throw instead of sending
+    sent: [], // { fn, args, overrides, signer }
+    maxTotalFeeArgs: null,
   });
+}
+const MOCK_B0 = 5000;
+const MOCK_T0 = 1_800_000_000;
+
+function mockElapsed() {
+  return mockChain.minedAt === null ? 0 : Date.now() - mockChain.minedAt;
+}
+function mockHead() {
+  const ms = mockElapsed();
+  return { number: MOCK_B0 + Math.floor(ms / 2000), timestamp: MOCK_T0 + Math.floor(ms / 1000) };
+}
+// the arbiters, evaluated whenever the page reads the round
+function mockTick() {
+  const { timestamp, number } = mockHead();
+  const c = mockChain;
+  if (c.phase === 3) {
+    c.commits = Math.min(c.maxCommits, Math.floor((timestamp - c.drawnAt) / 10));
+    if (c.commits >= 6) {
+      c.phase = 4;
+      c.closeBlock = number;
+    }
+  }
+  if (c.phase === 5 && c.revealAfter !== null && timestamp - c.promotedAt >= c.revealAfter) {
+    c.phase = 6;
+    c.evaluation = [[700000n, 300000n], 'QmJustification', true];
+  }
 }
 
 jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers');
+  const revert = (name, iface) =>
+    actual.makeError('execution reverted', 'CALL_EXCEPTION', {
+      action: 'estimateGas',
+      data: iface.getError(name).selector,
+      reason: null,
+      transaction: {},
+      invocation: null,
+      revert: null,
+    });
 
   class FakeBrowserProvider {
     async getNetwork() { return { chainId: mockChain.chainId }; }
@@ -50,6 +82,7 @@ jest.mock('ethers', () => {
     async getBalance() { return 1000000000000000000n; }
     async getFeeData() { return { gasPrice: null, maxFeePerGas: 20000000n, maxPriorityFeePerGas: 1000000n }; }
     async getSigner() { return { isSigner: true, provider: this }; }
+    async getBlock() { return mockHead(); }
   }
 
   class FakeContract {
@@ -57,6 +90,8 @@ jest.mock('ethers', () => {
       this.target = address;
       this.runner = runner;
       this.interface = new actual.Interface(abi);
+      const iface = this.interface;
+      const c = mockChain;
 
       // ethers 6 refuses to send from a contract that is bound to a provider only.
       const requireSigner = () => {
@@ -67,26 +102,99 @@ jest.mock('ethers', () => {
         }
       };
 
-      this.responseTimeoutSeconds = async () => mockChain.timeoutSeconds;
-      this.maxTotalFee = async (fee) => fee * 12n;
-      this.ethOwed = async () => mockChain.ethOwed;
-      this.getEvaluation = async () => mockChain.evaluation;
-      this.isFailed = async () => mockChain.isFailed;
-      this.requestAIEvaluationWithApproval = async () => {
+      this.maxTotalFee = async (maxFee, minFee, withBeacons) => {
+        c.maxTotalFeeArgs = [maxFee, minFee, withBeacons];
+        return maxFee * 18n;
+      };
+      this.ethOwed = async () => c.ethOwed;
+      this.M = async () => 5n;
+      this.getEvaluation = async () => c.evaluation;
+      this.getRoundInfo = async () => {
+        mockTick();
+        return [c.phase, MOCK_B0, '0x' + '00'.repeat(32), c.closeBlock, 0n, 0n, 0n, 0n, c.deadline, c.windowEnd, c.commits, MOCK_T0];
+      };
+      this.filters = { RequesterRefunded: (id) => ({ id }) };
+      this.queryFilter = async () => [];
+      this.requestAIEvaluationWithApproval = async (...args) => {
         requireSigner();
+        const overrides = args.pop();
+        c.sent.push({ fn: 'requestAIEvaluationWithApproval', args, overrides, signer: runner });
         return {
-          wait: async () => ({
-            logs: [this.interface.encodeEventLog('RequestAIEvaluation', [mockChain.requestId, ['cid']])],
-          }),
+          wait: async () => {
+            c.phase = 1;
+            c.minedAt = Date.now();
+            return { logs: [iface.encodeEventLog('RequestAIEvaluation', [MOCK_AGG_ID, ['cid']])] };
+          },
         };
       };
-      const finalize = async (requestId, overrides) => {
-        requireSigner();
-        mockChain.finalizeCalls.push({ requestId, overrides, signer: runner });
-        return mockChain.sendFinalize(this);
+
+      const rules = {
+        drawJury: () => {
+          if (c.phase !== 1) throw revert('WrongPhase', iface);
+          if (mockHead().number < MOCK_B0 + 2) throw revert('TooEarly', iface);
+        },
+        promote: () => {
+          if (c.phase !== 4) throw revert('WrongPhase', iface);
+          if (mockHead().number < c.closeBlock + 2) throw revert('TooEarly', iface);
+        },
+        closeCommits: () => {
+          const { timestamp } = mockHead();
+          if (c.phase !== 3 || timestamp <= c.windowEnd || c.commits < 5) throw revert('WrongPhase', iface);
+        },
+        settle: () => {
+          if (c.phase < 3 || c.phase >= 7) throw revert('WrongPhase', iface);
+          if (mockHead().timestamp <= c.deadline) throw revert('NotDue', iface);
+        },
       };
-      finalize.estimateGas = async () => mockChain.estimateGas();
-      this.finalizeEvaluationTimeout = finalize;
+      const effects = {
+        drawJury: () => {
+          const { timestamp } = mockHead();
+          c.phase = 3;
+          c.drawnAt = timestamp;
+          c.windowEnd = timestamp + 155;
+          c.deadline = timestamp + 300;
+          c.ethOwed += 2n * MOCK_MAX_FEE;
+          return [iface.encodeEventLog('JuryDrawn', [MOCK_AGG_ID, MOCK_WALLET, 2n * MOCK_MAX_FEE])];
+        },
+        promote: () => {
+          c.phase = 5;
+          c.promotedAt = mockHead().timestamp;
+          c.ethOwed += MOCK_MAX_FEE;
+          return [];
+        },
+        closeCommits: () => {
+          c.phase = 4;
+          c.closeBlock = mockHead().number;
+          return [];
+        },
+        settle: () => {
+          c.phase = 8;
+          c.ethOwed += MOCK_REFUND;
+          return [iface.encodeEventLog('RequesterRefunded', [MOCK_AGG_ID, MOCK_WALLET, MOCK_REFUND])];
+        },
+      };
+      for (const fn of Object.keys(rules)) {
+        const send = async (id, overrides) => {
+          requireSigner();
+          const error = c.wallet(fn);
+          if (error) throw error;
+          c.sent.push({ fn, args: [id], overrides, signer: runner });
+          return {
+            hash: MOCK_TX_HASH,
+            wait: async () => {
+              rules[fn]();
+              return { status: 1, hash: MOCK_TX_HASH, logs: effects[fn]() };
+            },
+          };
+        };
+        send.estimateGas = async (id, overrides) => {
+          c.lastEstimateFrom = overrides?.from;
+          mockTick();
+          rules[fn]();
+          return 1_000_000n;
+        };
+        this[fn] = send;
+      }
     }
   }
 
@@ -110,10 +218,10 @@ jest.mock('../services/modelProviderService', () => ({
 
 const spies = {};
 
-function Harness({ network }) {
+function Harness({ network = 'base', withBeacons = false, minFee = 0n }) {
   const [transactionStatus, setTransactionStatus] = React.useState('');
   const [loadingResults, setLoadingResults] = React.useState(false);
-  const [timeoutInfo, setTimeoutInfo] = React.useState(null);
+  const [roundInfo, setRoundInfo] = React.useState(null);
   return (
     <RunQuery
       queryText="Is the sky blue?"
@@ -130,13 +238,13 @@ function Harness({ network }) {
       setQueryPackageCid={() => {}}
       isConnected
       setIsConnected={() => {}}
-      walletAddress={WALLET}
+      walletAddress={MOCK_WALLET}
       setWalletAddress={() => {}}
       contractAddress={AGGREGATOR}
       transactionStatus={transactionStatus}
       setTransactionStatus={setTransactionStatus}
-      timeoutInfo={timeoutInfo}
-      setTimeoutInfo={setTimeoutInfo}
+      roundInfo={roundInfo}
+      setRoundInfo={setRoundInfo}
       loadingResults={loadingResults}
       setLoadingResults={setLoadingResults}
       uploadProgress={0}
@@ -151,9 +259,11 @@ function Harness({ network }) {
       hyperlinks={[]}
       setOutcomeLabels={spies.setOutcomeLabels}
       alpha={500}
-      maxFee={100000000000000n}
+      maxFee={MOCK_MAX_FEE}
+      minFee={minFee}
       estimatedBaseCost={1000000000000n}
       maxFeeBasedScalingFactor={10}
+      withBeacons={withBeacons}
       selectedClassId={128}
       selectedNetwork={network}
     />
@@ -175,19 +285,20 @@ async function advance(seconds) {
   }
 }
 
-async function startQuery({ network = 'base' } = {}) {
-  render(<Harness network={network} />);
+async function startQuery(props = {}) {
+  const view = render(<Harness {...props} />);
   await act(flush);
   fireEvent.click(screen.getByRole('button', { name: 'Run Query' }));
   await advance(2); // the page sends the request and gets its confirmation
+  return view;
 }
 
 const runButton = () => screen.getAllByRole('button').find((button) => button.classList.contains('primary'));
-const countdown = () => Number(/\((\d+)s\)/.exec(runButton().textContent)?.[1]);
+const sentFns = () => mockChain.sent.map((s) => s.fn);
 
 beforeEach(() => {
   resetChain();
-  mockChain.requestId = REQUEST_ID;
+  window.localStorage.clear();
   Object.assign(spies, {
     setCurrentPage: jest.fn(),
     setOutcomes: jest.fn(),
@@ -212,155 +323,138 @@ afterEach(() => {
 
 /* ---------- tests ---------- */
 
-test('the countdown starts at the aggregator timeout: 300 s on Base', async () => {
-  await startQuery({ network: 'base' });
+test('the request has the 9 v2 arguments and attaches the 3-argument quote', async () => {
+  await startQuery({ minFee: 0n, withBeacons: false });
 
-  expect(runButton().textContent).toMatch(/Waiting for evaluation results/);
-  expect(countdown()).toBeGreaterThanOrEqual(297);
-  expect(countdown()).toBeLessThanOrEqual(300);
+  const request = mockChain.sent[0];
+  expect(request.fn).toBe('requestAIEvaluationWithApproval');
+  expect(request.args).toHaveLength(9);
+  const [cids, addendum, alpha, maxFee, minFee, baseCost, scaling, cls, withBeacons] = request.args;
+  expect(cids).toEqual(['QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH']);
+  expect(addendum).toBe('');
+  expect([alpha, maxFee, minFee, baseCost, scaling, cls, withBeacons]).toEqual([500, MOCK_MAX_FEE, 0n, 1000000000000n, 10, 128, false]);
+  expect(mockChain.maxTotalFeeArgs).toEqual([MOCK_MAX_FEE, 0n, false]);
+  expect(request.overrides.value).toBe(MOCK_MAX_FEE * 18n);
+  expect(request.signer.isSigner).toBe(true);
 });
 
-test('the countdown starts at the aggregator timeout: 900 s on Base Sepolia', async () => {
-  mockChain.chainId = 84532n;
-  mockChain.timeoutSeconds = 900n;
-  await startQuery({ network: 'base_sepolia' });
-
-  expect(countdown()).toBeGreaterThanOrEqual(897);
-  expect(countdown()).toBeLessThanOrEqual(900);
-
-  // The old page gave up after 300 s. Now it is still waiting, and has sent nothing.
-  await advance(400);
-  expect(runButton().textContent).toMatch(/Waiting for evaluation results/);
-  expect(countdown()).toBeGreaterThanOrEqual(497);
-  expect(countdown()).toBeLessThanOrEqual(500);
-  expect(mockChain.finalizeCalls).toHaveLength(0);
-  expect(screen.queryByTestId('timeout-notice')).toBeNull();
+test('the page tells the user which wallet transactions follow and who earns what', async () => {
+  render(<Harness />);
+  await act(flush);
+  const steps = screen.getByTestId('wallet-steps');
+  expect(steps).toHaveTextContent('drawJury');
+  expect(steps).toHaveTextContent('2 × the per-arbiter fee');
+  expect(steps).toHaveTextContent('promote');
+  expect(steps).toHaveTextContent('1 × the per-arbiter fee');
+  expect(steps).toHaveTextContent('closeCommits');
+  // the banner's default quote is the v2 formula: 0.0001 x (6 + 3 x 3) + 0.0001 x 3
+  expect(screen.getByText(/Queries are paid in/)).toHaveTextContent('0.0018 ETH');
 });
 
-test('fulfilled: a result that arrives during the wait opens the Results page', async () => {
+test('the wallet draws at B+2 and promotes at C+2, the timeline follows, and the result opens', async () => {
   await startQuery();
-  await advance(40);
-  expect(spies.setCurrentPage).not.toHaveBeenCalled();
+  expect(sentFns()).toEqual(['requestAIEvaluationWithApproval']); // nothing before block B+2
 
-  mockChain.evaluation = [[700000n, 300000n], 'QmJustification', true];
   await advance(6);
+  expect(sentFns()).toEqual(['requestAIEvaluationWithApproval', 'drawJury']);
+  expect(mockChain.sent[1].signer.isSigner).toBe(true);
+  expect(mockChain.sent[1].overrides.gasLimit).toBe(1_500_000n);
+  expect(mockChain.lastEstimateFrom).toBe(MOCK_WALLET);
+
+  // the commit phase, with its commits and the round deadline
+  await advance(25);
+  const timeline = screen.getByTestId('round-timeline');
+  expect(timeline).toHaveTextContent(MOCK_AGG_ID);
+  expect(timeline).toHaveTextContent(/committed\)/);
+  expect(screen.getByTestId('round-deadline')).toHaveTextContent(/Round deadline in \d+ s/);
+  expect(screen.getByRole('link', { name: 'drawJury' })).toHaveAttribute('href', `https://basescan.org/tx/${MOCK_TX_HASH}`);
+  expect(runButton().textContent).toMatch(/\(\d+s\)/);
+
+  // M+ commits close the window; promote at C+2, then the reveals finalize
+  await advance(70);
+  expect(sentFns()).toEqual(['requestAIEvaluationWithApproval', 'drawJury', 'promote']);
+  await advance(30);
 
   expect(spies.setOutcomes).toHaveBeenCalledWith([700000, 300000]);
-  expect(spies.setResultCid).toHaveBeenCalledWith('QmJustification');
   expect(spies.setJustification).toHaveBeenLastCalledWith('The jury agreed.');
   expect(spies.setCurrentPage).toHaveBeenCalledWith('RESULTS');
-  expect(mockChain.finalizeCalls).toHaveLength(0);
+  expect(screen.queryByTestId('timeout-notice')).toBeNull();
+  expect(window.localStorage.getItem(PENDING_ROUND_KEY)).toBeNull();
+});
+
+test('declined draw: the notice offers the draw, and the button finishes the round', async () => {
+  mockChain.wallet = (fn) =>
+    fn === 'drawJury'
+      ? jest.requireActual('ethers').makeError('user rejected action', 'ACTION_REJECTED', {
+          action: 'sendTransaction',
+          reason: 'rejected',
+          info: { error: { code: 4001, message: 'User denied transaction signature.' } },
+        })
+      : undefined;
+  await startQuery();
+  await advance(6);
+
+  const notice = screen.getByTestId('timeout-notice');
+  expect(notice).toHaveTextContent('The round is waiting for the jury draw.');
+  expect(notice).toHaveTextContent('You declined the wallet transaction, so it was not sent.');
+  expect(notice).toHaveTextContent(`Round ID: ${MOCK_AGG_ID}`);
+  expect(spies.setCurrentPage).not.toHaveBeenCalled();
+  expect(runButton().textContent).toBe('Run Query');
+  // still open, so a reload can find it
+  expect(JSON.parse(window.localStorage.getItem(PENDING_ROUND_KEY)).aggId).toBe(MOCK_AGG_ID);
+
+  // The user presses the button and approves this time.
+  mockChain.wallet = () => undefined;
+  fireEvent.click(screen.getByRole('button', { name: 'Draw the jury (wallet transaction)' }));
+  await advance(140);
+
+  expect(sentFns()).toEqual(['requestAIEvaluationWithApproval', 'drawJury', 'promote']);
+  expect(spies.setCurrentPage).toHaveBeenCalledWith('RESULTS');
   expect(screen.queryByTestId('timeout-notice')).toBeNull();
 });
 
-test('timed out and finalized: the wallet closes the round and the refund is shown', async () => {
+test('too few commits: the wallet settles after the deadline and the refund is shown', async () => {
+  mockChain.maxCommits = 3;
   await startQuery();
-  await advance(299);
-  expect(mockChain.finalizeCalls).toHaveLength(0); // nothing is sent before the timeout
+  await advance(300);
+  expect(sentFns()).toEqual(['requestAIEvaluationWithApproval', 'drawJury']); // no closeCommits with < M
 
-  await advance(8);
-
-  // Sent once, by the wallet's signer, with a gas limit that is enough.
-  expect(mockChain.finalizeCalls).toHaveLength(1);
-  expect(mockChain.finalizeCalls[0].requestId).toBe(REQUEST_ID);
-  expect(mockChain.finalizeCalls[0].signer.isSigner).toBe(true);
-  expect(mockChain.finalizeCalls[0].overrides.gasLimit).toBeGreaterThanOrEqual(3000000n);
+  await advance(15);
+  expect(sentFns()).toEqual(['requestAIEvaluationWithApproval', 'drawJury', 'settle']);
 
   const notice = screen.getByTestId('timeout-notice');
-  expect(notice).toHaveTextContent('No result arrived. The round is closed.');
-  expect(notice).toHaveTextContent('No result arrived within 300 seconds.');
-  expect(notice).toHaveTextContent('Your wallet sent the transaction that closes the round');
+  expect(notice).toHaveTextContent('No result: the round failed.');
+  expect(notice).toHaveTextContent('in the commit phase');
+  expect(notice).toHaveTextContent('Your wallet sent the transaction that settled it');
   expect(notice).toHaveTextContent('0.00108 ETH of your prepayment came back as prepay credit.');
-  expect(notice).toHaveTextContent('Your prepay credit is now 0.00108 ETH.');
-  expect(screen.getByRole('link', { name: 'view transaction' })).toHaveAttribute('href', `https://basescan.org/tx/${TX_HASH}`);
-  expect(notice).not.toHaveTextContent('FAILED');
-
-  // The page stays on Run Query, is ready for another query, and keeps the query's labels.
+  // the draw reward (0.0002) and the refund (0.00108) are both credit now
+  expect(notice).toHaveTextContent('Your prepay credit is now 0.00128 ETH.');
+  expect(screen.getByTestId('round-timeline')).toHaveTextContent('The round failed.');
   expect(spies.setCurrentPage).not.toHaveBeenCalled();
   expect(spies.setOutcomes).toHaveBeenLastCalledWith([]);
   expect(spies.setOutcomeLabels).not.toHaveBeenCalled();
-  expect(runButton().textContent).toBe('Run Query');
+  expect(window.localStorage.getItem(PENDING_ROUND_KEY)).toBeNull();
 });
 
-test('user declined: the page says the round is still open and how to close it, and can retry', async () => {
-  const mined = mockChain.sendFinalize;
-  mockChain.sendFinalize = async () => {
-    const { makeError } = jest.requireActual('ethers');
-    throw makeError('user rejected action', 'ACTION_REJECTED', {
-      action: 'sendTransaction',
-      reason: 'rejected',
-      info: { error: { code: 4001, message: 'User denied transaction signature.' } },
-    });
-  };
-  await startQuery();
-  await advance(307);
+test('after a reload the page offers to resume a round it was driving', async () => {
+  // A round this browser started, already drawn and waiting for promotion.
+  Object.assign(mockChain, { phase: 4, minedAt: Date.now() - 200_000, closeBlock: MOCK_B0 + 90, deadline: MOCK_T0 + 400, revealAfter: 10 });
+  window.localStorage.setItem(
+    PENDING_ROUND_KEY,
+    JSON.stringify({ aggId: MOCK_AGG_ID, contractAddress: AGGREGATOR, networkKey: 'base', withBeacons: false, account: MOCK_WALLET })
+  );
+  render(<Harness />);
+  await act(flush);
 
-  expect(mockChain.finalizeCalls).toHaveLength(1);
   const notice = screen.getByTestId('timeout-notice');
-  expect(notice).toHaveTextContent('No result arrived. The round is still open.');
-  expect(notice).toHaveTextContent('You declined the transaction that closes the round, so it was not sent.');
-  expect(notice).toHaveTextContent('the unspent part of your prepayment stays reserved in it');
-  expect(notice).toHaveTextContent('finalizeEvaluationTimeout');
-  expect(notice).toHaveTextContent(AGGREGATOR);
-  expect(notice).toHaveTextContent(`Request ID: ${REQUEST_ID}`);
-  expect(notice).not.toHaveTextContent('came back as prepay credit');
-  expect(spies.setCurrentPage).not.toHaveBeenCalled();
+  expect(notice).toHaveTextContent('The round is still open.');
+  expect(notice).toHaveTextContent('The page was closed or reloaded');
+  expect(mockChain.sent).toHaveLength(0); // nothing is sent without the user asking
 
-  // Later: the user presses the button and approves this time.
-  mockChain.sendFinalize = mined;
-  fireEvent.click(screen.getByRole('button', { name: 'Close the round now' }));
-  await advance(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Resume the round' }));
+  await advance(20);
 
-  expect(mockChain.finalizeCalls).toHaveLength(2);
-  expect(mockChain.finalizeCalls[1].signer.isSigner).toBe(true);
-  expect(screen.getByTestId('timeout-notice')).toHaveTextContent('No result arrived. The round is closed.');
-  expect(screen.getByTestId('timeout-notice')).toHaveTextContent('0.00108 ETH of your prepayment came back');
-  expect(screen.queryByRole('button', { name: 'Close the round now' })).toBeNull();
-});
-
-test('a round that completes just before the closing call is shown as a result', async () => {
-  // The last answer lands after the final poll: the dry run reverts with AggregationComplete.
-  mockChain.estimateGas = async () => {
-    const { makeError, id } = jest.requireActual('ethers');
-    mockChain.evaluation = [[550000n, 450000n], 'QmLate', true];
-    throw makeError('execution reverted', 'CALL_EXCEPTION', {
-      action: 'estimateGas',
-      data: id('AggregationComplete()').slice(0, 10),
-      reason: null,
-      transaction: {},
-      invocation: null,
-      revert: null,
-    });
-  };
-  await startQuery();
-  await advance(307);
-
-  expect(mockChain.finalizeCalls).toHaveLength(0);
-  expect(spies.setOutcomes).toHaveBeenCalledWith([550000, 450000]);
+  expect(sentFns()).toEqual(['promote']);
   expect(spies.setCurrentPage).toHaveBeenCalledWith('RESULTS');
-  expect(screen.queryByTestId('timeout-notice')).toBeNull();
-});
-
-test('a round another account already closed is reported as closed, without a transaction', async () => {
-  mockChain.estimateGas = async () => {
-    const { makeError, id } = jest.requireActual('ethers');
-    mockChain.isFailed = true;
-    mockChain.ethOwed = REFUND;
-    throw makeError('execution reverted', 'CALL_EXCEPTION', {
-      action: 'estimateGas',
-      data: id('AggregationComplete()').slice(0, 10),
-      reason: null,
-      transaction: {},
-      invocation: null,
-      revert: null,
-    });
-  };
-  await startQuery();
-  await advance(307);
-
-  expect(mockChain.finalizeCalls).toHaveLength(0);
-  const notice = screen.getByTestId('timeout-notice');
-  expect(notice).toHaveTextContent('No result arrived. The round is closed.');
-  expect(notice).toHaveTextContent('Another account had already closed the round');
-  expect(notice).toHaveTextContent('Your prepay credit is now 0.00108 ETH.');
+  expect(window.localStorage.getItem(PENDING_ROUND_KEY)).toBeNull();
 });

@@ -101,11 +101,13 @@ Each configured contract displays:
 ### Contract Requirements
 
 #### Smart Contract Interface
-Contracts must implement the AI Jury interface:
-- `requestAIEvaluationWithApproval()`: Main evaluation method
-- `getEvaluation()`: Retrieve evaluation results
-- `getContractConfig()`: Get contract configuration
-- Other required interface methods
+Contracts must be a v2 `ReputationAggregator` (verdikta-dispatcher). The v1 aggregators do not work with this application: their request takes 7 arguments, and they have none of the calls the page uses to move a round on. The application uses:
+- `requestAIEvaluationWithApproval()` (9 arguments) and `maxTotalFee(maxFee, minFee, withBeacons)`: Request and prepay an evaluation
+- `drawJury()`, `closeCommits()`, `promote()`, `settle()`: Move a round on, from the user's wallet
+- `getRoundInfo()`, `getEvaluation()`: Read the round and its result
+- `ethOwed()`, `withdrawEth()`: Prepay credit
+
+No v2 address is built in. After the v2 deploy, add its address here or put it in `client/.env` (`REACT_APP_CONTRACT_ADDRESSES`; `client/.env.example` holds placeholders). The server skips entries that are not addresses, and its only fallback is the optional `DEFAULT_AGGREGATOR_ADDRESS` in the server's environment.
 
 #### Funding Requirements
 - **Evaluation Fees**: Users pay in ETH, sent with each request. The contract itself holds no LINK and needs no balance

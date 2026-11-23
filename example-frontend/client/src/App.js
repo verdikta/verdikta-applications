@@ -182,9 +182,10 @@ function App() {
     setOverrideClassInfo(overrideInfo);
   };
   const [transactionStatus, setTransactionStatus] = useState('');
-  // What happened to a Run Query round that got no result in time. Kept here, like the
-  // status above, so the notice survives a visit to another tab while a query runs.
-  const [runTimeoutInfo, setRunTimeoutInfo] = useState(null);
+  // The aggregator round Run Query is driving (phase timeline) and, when the page stopped
+  // driving it without a result, what happened. Kept here, like the status above, so it
+  // survives a visit to another tab while the round runs.
+  const [runRoundInfo, setRunRoundInfo] = useState(null);
   const [resultTimestamp, setResultTimestamp] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [packageDetails, setPackageDetails] = useState(null);
@@ -196,14 +197,25 @@ function App() {
 
   // Default aggregator parameters
   const ALPHA = 500;
-  // Max per-oracle fee, in ETH (arbiters are now paid in ETH, not LINK). A typical
-  // arbiter fee is ~0.0001 ETH; the on-chain ReputationAggregator.maxOracleFee ceiling
-  // (0.0004 ETH) clamps anything higher, so this sits safely under it. Worst-case prepay
-  // for a query is maxTotalFee = effFee * (K + B*P) = 0.0001 * 12 = 0.0012 ETH.
+  // Max per-arbiter fee, in ETH (arbiters are paid in ETH, not LINK). A typical arbiter
+  // fee is ~0.0001 ETH; the aggregator's maxOracleFee ceiling (0.0004 ETH) clamps anything
+  // higher, so this sits safely under it. The v2 aggregator's worst-case prepay is
+  //   maxTotalFee(maxFee, minFee, withBeacons)
+  //     = max(eff, minFee) * (K + B*P [+ beacon quorum]) + eff * (draw 2 + promote 1)
+  // with eff = min(maxFee, maxOracleFee). With K = 6, B = 3, P = 3 and no floor or beacons:
+  // 0.0001 * 15 + 0.0001 * 3 = 0.0018 ETH. The draw and promote rewards (3 fees) come back
+  // to the user's prepay credit when the page's wallet makes those calls (the draw reward
+  // only within 30 s of the request).
   const MAX_FEE = parseEther("0.0001"); // returns a bigint
+  // Fee floor (v2): every juror (and beacon) is paid at least this. 0 = no floor.
+  const MIN_FEE = 0n;
   const BASE_FEE_PCT = 1; // 1%
   const ESTIMATED_BASE_COST = MAX_FEE * BigInt(BASE_FEE_PCT) / 100n; // Using native BigInt arithmetic
   const MAX_FEE_SCALING_FACTOR = 10;
+  // Beacon stage before the draw (v2). Off: one drawJury call draws the jury. On: the
+  // first drawJury starts the beacon stage and a second draws, and the quorum's beacons
+  // are paid too.
+  const WITH_BEACONS = false;
 
   // Handle network change
   const handleNetworkChange = async (newNetwork) => {
@@ -313,7 +325,8 @@ function App() {
           name: CONTRACT_NAMES[index] || `Contract ${index + 1}`,
           network: selectedNetwork
         };
-      }).filter(c => c.address);
+      // Only real addresses: .env.example holds placeholders until the v2 aggregators are deployed.
+      }).filter(c => /^0x[0-9a-fA-F]{40}$/.test((c.address || '').trim()));
 
       setContractOptions(fallbackOptions);
       if (fallbackOptions.length > 0) {
@@ -784,8 +797,8 @@ function App() {
             contractAddress={contractAddress}
             transactionStatus={transactionStatus}
             setTransactionStatus={setTransactionStatus}
-            timeoutInfo={runTimeoutInfo}
-            setTimeoutInfo={setRunTimeoutInfo}
+            roundInfo={runRoundInfo}
+            setRoundInfo={setRunRoundInfo}
             loadingResults={loadingResults}
             setLoadingResults={setLoadingResults}
             uploadProgress={uploadProgress}
@@ -802,8 +815,10 @@ function App() {
             // Pass new aggregator parameters:
             alpha={ALPHA}
             maxFee={MAX_FEE}
+            minFee={MIN_FEE}
             estimatedBaseCost={ESTIMATED_BASE_COST}
             maxFeeBasedScalingFactor={MAX_FEE_SCALING_FACTOR}
+            withBeacons={WITH_BEACONS}
             selectedClassId={selectedClassId}
             selectedNetwork={selectedNetwork}
           />

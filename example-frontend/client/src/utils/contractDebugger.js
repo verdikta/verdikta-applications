@@ -1,18 +1,11 @@
-// Browser-based contract debugging utility for the ETH-funded ReputationAggregator.
+// Browser-based contract debugging utility for the v2 ETH-funded ReputationAggregator.
 // Fired on-demand from RunQuery when a request errors. Arbiters are paid in ETH, so the
-// diagnostics check the requester's ETH balance vs. the worst-case prepay and dry-run the
-// payable request — there is no LINK allowance/balance to inspect anymore.
+// diagnostics check the requester's ETH balance vs. the worst-case prepay
+// (maxTotalFee(maxFee, minFee, withBeacons)) and dry-run the 9-argument payable request;
+// there is no LINK allowance/balance to inspect.
 
 import { ethers } from 'ethers';
-
-const CONTRACT_ABI = [
-  "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 currentFee)",
-  "function responseTimeoutSeconds() view returns (uint256)",
-  "function maxTotalFee(uint256 maxFee) view returns (uint256)",
-  "function maxOracleFee() view returns (uint256)",
-  "function ethOwed(address) view returns (uint256)",
-  "function requestAIEvaluationWithApproval(string[] memory cidArray, string memory textAddendum, uint256 alpha, uint256 maxFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 class) payable returns (bytes32)"
-];
+import { CONTRACT_ABI } from './contractUtils';
 
 export class ContractDebugger {
   constructor(provider, contractAddress, walletAddress) {
@@ -22,7 +15,7 @@ export class ContractDebugger {
     this.contract = new ethers.Contract(contractAddress, CONTRACT_ABI, provider);
   }
 
-  async debugContractState(contractClass) {
+  async debugContractState(contractClass, maxFee = ethers.parseUnits('0.0001', 18), minFee = 0n, withBeacons = false) {
     const debug = {
       timestamp: new Date().toISOString(),
       contract: this.contractAddress,
@@ -41,18 +34,30 @@ export class ContractDebugger {
         console.error('❌ No contract code at address (wrong network or address?)');
       }
 
-      // 2. Contract configuration (legacy view; linkAddr is informational only now)
-      console.log('📋 Checking contract configuration...');
+      // 2. Round configuration (v2 has no getContractConfig(); each value is a public getter)
+      console.log('📋 Checking aggregator configuration...');
       try {
-        const config = await this.contract.getContractConfig();
+        const [K, M, N, P, timeout, tPlus, ceiling] = await Promise.all([
+          this.contract.K(),
+          this.contract.M(),
+          this.contract.N(),
+          this.contract.P(),
+          this.contract.responseTimeoutSeconds(),
+          this.contract.tPlus(),
+          this.contract.maxOracleFee()
+        ]);
         debug.checks.config = {
           success: true,
-          oracleAddr: config.oracleAddr,
-          linkAddr: config.linkAddr,
-          jobId: config.jobId,
-          currentFee: ethers.formatUnits(config.currentFee, 18)
+          K: Number(K),
+          M: Number(M),
+          N: Number(N),
+          P: Number(P),
+          responseTimeoutSeconds: Number(timeout),
+          commitWindowSeconds: Number(tPlus),
+          maxOracleFee: ethers.formatEther(ceiling)
         };
       } catch (err) {
+        // A v1 aggregator has none of these getters: the address is not a v2 aggregator.
         debug.checks.config = { success: false, error: err.message };
       }
 
@@ -77,9 +82,8 @@ export class ContractDebugger {
       // 4. Fee ceiling + worst-case prepay vs. wallet ETH
       console.log('💸 Checking fee calculation...');
       try {
-        const testMaxFee = ethers.parseUnits("0.0001", 18); // typical arbiter fee (ETH)
         const [totalFee, ceiling] = await Promise.all([
-          this.contract.maxTotalFee(testMaxFee),
+          this.contract.maxTotalFee(maxFee, minFee, withBeacons),
           this.contract.maxOracleFee().catch(() => null)
         ]);
 
@@ -89,7 +93,9 @@ export class ContractDebugger {
 
         debug.checks.fees = {
           success: true,
-          maxFeeInput: ethers.formatUnits(testMaxFee, 18),
+          maxFeeInput: ethers.formatUnits(maxFee, 18),
+          minFeeInput: ethers.formatUnits(minFee, 18),
+          withBeacons,
           maxOracleFeeCeiling: ceiling != null ? ethers.formatEther(ceiling) : 'unknown',
           worstCasePrepay: ethers.formatEther(totalFee),
           ethToAttach: ethers.formatEther(valueNeeded),
@@ -113,7 +119,7 @@ export class ContractDebugger {
     }
   }
 
-  async dryRunTransaction(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass) {
+  async dryRunTransaction(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons) {
     try {
       console.log('🧪 Performing dry run...');
 
@@ -121,7 +127,7 @@ export class ContractDebugger {
       let value = 0n;
       try {
         const [total, credit] = await Promise.all([
-          this.contract.maxTotalFee(maxFee),
+          this.contract.maxTotalFee(maxFee, minFee, withBeacons),
           this.contract.ethOwed(this.walletAddress).catch(() => 0n)
         ]);
         value = total > credit ? total - credit : 0n;
@@ -135,9 +141,11 @@ export class ContractDebugger {
         textAddendum,
         alpha,
         maxFee,
+        minFee,
         estimatedBaseCost,
         maxFeeBasedScalingFactor,
         contractClass,
+        withBeacons,
         { value, from: this.walletAddress }
       );
 
@@ -187,7 +195,7 @@ export class ContractDebugger {
     }
   }
 
-  async generateDebugReport(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass) {
+  async generateDebugReport(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons) {
     console.log('🔍 Generating comprehensive debug report...');
 
     const report = {
@@ -197,15 +205,17 @@ export class ContractDebugger {
         textAddendum,
         alpha,
         maxFee: ethers.formatUnits(maxFee, 18),
+        minFee: ethers.formatUnits(minFee, 18),
         estimatedBaseCost: ethers.formatUnits(estimatedBaseCost, 18),
         maxFeeBasedScalingFactor,
-        contractClass
+        contractClass,
+        withBeacons
       }
     };
 
     // Run all debugging checks
-    report.stateAnalysis = await this.debugContractState(contractClass);
-    report.dryRun = await this.dryRunTransaction(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass);
+    report.stateAnalysis = await this.debugContractState(contractClass, maxFee, minFee, withBeacons);
+    report.dryRun = await this.dryRunTransaction(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons);
 
     // Generate recommendations
     report.recommendations = this.generateRecommendations(report);
@@ -226,6 +236,15 @@ export class ContractDebugger {
       });
     }
 
+    // Not a v2 aggregator (a v1 address, or another contract)
+    if (report.stateAnalysis.checks.contract?.success && report.stateAnalysis.checks.config && !report.stateAnalysis.checks.config.success) {
+      recommendations.push({
+        priority: 'CRITICAL',
+        issue: 'Not a v2 aggregator',
+        solution: 'The address does not answer the v2 aggregator getters (K(), tPlus(), ...). It may be a v1 aggregator: select the v2 aggregator address for this network.'
+      });
+    }
+
     // Insufficient ETH to cover the worst-case prepay
     if (report.stateAnalysis.checks.fees?.success && !report.stateAnalysis.checks.fees?.balanceSufficient) {
       recommendations.push({
@@ -240,7 +259,7 @@ export class ContractDebugger {
       recommendations.push({
         priority: 'CRITICAL',
         issue: 'Transaction will revert',
-        solution: `Dry run reverted: ${report.dryRun.revertReason}. Common causes: no active arbiters for the selected class, or the per-oracle fee ceiling excluded them.`
+        solution: `Dry run reverted: ${report.dryRun.revertReason}. Common causes: BadInput (estimatedBaseCost not below the clamped fee ceiling, alpha above 1000, or scaling outside 1..65535), InsufficientPayment (value plus credit below maxTotalFee), or a beacon request on an aggregator without a beacon contract. In v2 the request does not draw the jury, so an empty arbiter pool shows up at drawJury(), not here.`
       });
     }
 
@@ -250,4 +269,4 @@ export class ContractDebugger {
 
 // Usage example:
 // const dbg = new ContractDebugger(provider, contractAddress, walletAddress);
-// const report = await dbg.generateDebugReport(cidArray, textAddendum, alpha, maxFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass);
+// const report = await dbg.generateDebugReport(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons);

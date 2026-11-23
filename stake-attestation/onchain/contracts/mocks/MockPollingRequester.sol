@@ -21,13 +21,20 @@ contract MockPollingRequester {
         string calldata addendum,
         uint256 alpha,
         uint256 maxFee,
+        uint256 minFee,
         uint256 estimatedBaseCost,
         uint256 scaling,
-        uint64 requestedClass
+        uint64 requestedClass,
+        bool withBeacons
     ) external payable {
         lastRequestId = aggregator.requestAIEvaluationWithApproval{value: msg.value}(
-            cids, addendum, alpha, maxFee, estimatedBaseCost, scaling, requestedClass
+            cids, addendum, alpha, maxFee, minFee, estimatedBaseCost, scaling, requestedClass, withBeacons
         );
+    }
+
+    /// @dev Draw the last request's jury as its requester (the draw reward is credited here).
+    function draw() external {
+        aggregator.drawJury(lastRequestId);
     }
 
     function withdraw() external {

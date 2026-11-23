@@ -143,8 +143,8 @@ describe("StakeAttestation: late claims (P2e, decision D6)", function () {
       await expect(sa.connect(hunter).lateClaim(id, ARCHIVE, CT, { value: BOND + FEE - 1n })).to.be.revertedWith("payment below bond + fee");
       await expect(sa.connect(hunter).lateClaim(id, ZeroHash, CT, { value: BOND + FEE })).to.be.revertedWith("bad archiveHash");
       await expect(sa.connect(hunter).lateClaim(id, ARCHIVE, ZeroHash, { value: BOND + FEE })).to.be.revertedWith("bad ciphertextSha256");
-      await aggregator.setFeeMultiplier(5n);
-      expect(await sa.commitPrice(id)).to.equal(BOND + H.ORACLE.maxOracleFee * 5n);
+      await aggregator.setBonusMultiplier(5); // fee x (6 + 5 x 3 + 3)
+      expect(await sa.commitPrice(id)).to.equal(BOND + H.ORACLE.maxOracleFee * 24n);
       await expect(sa.connect(hunter).lateClaim(id, ARCHIVE, CT, { value: BOND + FEE })).to.be.revertedWith("payment below bond + fee");
       await expect(lateAs(sa, hunter, id)).to.not.be.rejected;
     });
@@ -320,12 +320,12 @@ describe("StakeAttestation: late claims (P2e, decision D6)", function () {
       expect(l.lateOutcomeCounts[0]).to.equal(1n);
     });
 
-    it("a failed round re-triggers as any claim's (E6); one never settled expires as a late expiry, the bond to the maker", async function () {
+    it("a failed round re-triggers as any claim's (E6); one never settled expires as a late expiry, the bond following the rounds", async function () {
       const { sa, aggregator, maker, other, hunter } = await loadFixture(deploy);
       const id = await closedListing(sa, maker);
       let snap = await snapshot();
       let f = await revealedLate(sa, hunter, id);
-      await time.increase(300); // the mock's response timeout
+      await H.expireRound(sa, aggregator, f.claimId); // drawn, no commits by the deadline
       await sa.finalize(f.claimId);
       expect((await sa.getClaim(f.claimId)).state).to.equal(ClaimState.RoundFailed);
       await sa.connect(hunter).retrigger(f.claimId, { value: FEE });
@@ -333,15 +333,25 @@ describe("StakeAttestation: late claims (P2e, decision D6)", function () {
       await expect(sa.settle(f.claimId)).to.changeEtherBalance(hunter, BOND);
       await restore(snap);
 
-      f = await revealedLate(sa, hunter, id);
-      await time.increase(300);
-      const rc = await (await sa.finalize(f.claimId)).wait();
-      await time.setNextBlockTimestamp((await blockTime(rc)) + REVEAL);
-      const tx = sa.connect(other).expire(f.claimId);
-      await expect(tx).to.emit(sa, "Expired").withArgs(f.claimId, id, Expiry.RoundsFailed);
-      await expect(tx).to.changeEtherBalances([maker, hunter], [BOND, 0n]);
-      const l = await sa.getListing(id);
-      expect([l.lateExpired, l.noVerdictClaims]).to.deep.equal([1n, 0n]);
+      // No result (the round failed at the aggregator): the bond comes back, RoundsUnanswered.
+      // A result that is no verdict (the jury answered): the bond goes to the maker, RoundsFailed.
+      for (const [how, toMaker, why] of [["no result", 0n, Expiry.RoundsUnanswered], ["malformed", BOND, Expiry.RoundsFailed]]) {
+        snap = await snapshot();
+        f = await revealedLate(sa, hunter, id);
+        if (how === "no result") await H.expireRound(sa, aggregator, f.claimId);
+        else {
+          await H.drawAs(sa, aggregator, f.claimId);
+          await aggregator.scriptResult(f.requestId, [1n], JUSTIFICATION); // a one-number answer
+        }
+        const rc = await (await sa.finalize(f.claimId)).wait();
+        await time.setNextBlockTimestamp((await blockTime(rc)) + REVEAL);
+        const tx = sa.connect(other).expire(f.claimId);
+        await expect(tx, how).to.emit(sa, "Expired").withArgs(f.claimId, id, why);
+        await expect(tx, how).to.changeEtherBalances([maker, hunter], [toMaker, BOND - toMaker]);
+        const l = await sa.getListing(id);
+        expect([l.lateExpired, l.noVerdictClaims], how).to.deep.equal([1n, 0n]);
+        await restore(snap);
+      }
     });
 
     it("an unrevealed late claim expires revealWindow after its reveal clock starts, the bond to the maker", async function () {

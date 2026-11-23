@@ -271,6 +271,8 @@ describe("StakeAttestation: settlement equals @verdikta/common settleBugOutcome 
       { listingId: id, stake: STAKES[0], ...(await H.revealedClaim(sa, hunter, id)) },
       { listingId: lowId, stake: { ...STAKES[0], floor: FLOORS[0] }, ...(await H.revealedClaim(sa, hunter, lowId)) },
     ];
+    // the v2 aggregator: both rounds are drawn before any result can arrive
+    for (const k of claims) await H.drawAs(sa, aggregator, k.claimId);
     const r = rng(0x00c0ffee);
     const names = Object.keys(GENERATORS);
     const sample = [

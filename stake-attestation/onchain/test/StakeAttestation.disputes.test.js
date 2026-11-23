@@ -5,12 +5,17 @@
 //   - E2: a dispute request is cids = [disputeCid, the claim's bcid, up to 8 prior valid
 //     bcids] and the addendum is the E1 disclosure line, a LF, and "verdikta-dispute:
 //     <statementCid>"; the statement is pinned, never inline.
-//   - E6 (owner decision Q12): the bond follows the round. A round the arbiters ran that
-//     settled no verdict leaves the claim re-triggerable with a fresh prepay inside a bounded
-//     window; if no round settles before expiry the bond goes to the maker; it comes back only
-//     when the aggregator refused to start every attempt. This supersedes §12's "expires the
-//     claim with the bond returned" and the catalogue's wording of
-//     payment-round-timeout-retrigger.
+//   - E6 (owner decision Q12, as the v2 aggregator lets it be applied): the bond follows the
+//     rounds. A round that settled no verdict leaves the claim re-triggerable with a fresh prepay
+//     inside a bounded window. If no round settles before expiry, the bond goes to the maker when
+//     some round's jury answered with a result that is no verdict (RoundsFailed), and comes back
+//     when every round that ran ended at the aggregator with no result (RoundsUnanswered: too few
+//     commits or reveals, never drawn, ...) or every attempt was refused (SubmissionsRefused).
+//     This supersedes §12's "expires the claim with the bond returned" and the catalogue's
+//     wording of payment-round-timeout-retrigger.
+// The v2 aggregator: a round is drawn (drawJury, through StakeAttestation so the wallet earns the
+// draw reward) before any result; "timeout" below is a drawn round whose deadline passed with too
+// few commits, which finalize settles at the aggregator (a failed round, its leftover refunded).
 // The re-trigger window is the claim's revealWindow from its FIRST failure (a re-triggered
 // round that fails again does not extend it), so a failed claim holds the head of the
 // commit-order queue for at most revealWindow plus one round.
@@ -27,7 +32,7 @@ const {
   TOP, AWARDS, BOND, ORACLE, FEE, DISPUTE_FEE, V,
   params, freshCommit, atCommit, deploy, eventsOf, blockTime,
   openListing, claimAs, revealAs, revealedClaim, judgeAs, afterDisputeWindow, disputeAs, judgeDisputeAs,
-  recordOf, listingIn, outcomesOf, findingIds,
+  recordOf, listingIn, outcomesOf, findingIds, drawAs, expireRound, roundInfo, leftover,
 } = H;
 const { ZeroHash, ZeroAddress } = ethers;
 
@@ -35,6 +40,14 @@ const JUSTIFICATION_2 = "bafkreidisputejustificationxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 // A distinct, valid CIDv0-shaped string per claim.
 const cidOf = (i) => `Qm${"D".repeat(42)}${String(i).padStart(2, "0")}`;
 const MALFORMED = [500000n, 500000n]; // a completed result that is no verdict (two outcomes)
+const EFF = ORACLE.maxOracleFee; // a claim round's clamped fee
+const PEFF = ORACLE.disputeMaxOracleFee; // a dispute-panel round's
+// What a round's wallet gets back, at the mock's defaults, once its round is over: the round's
+// leftover, the 2 x fee draw reward (the wallet draws: StakeAttestation.drawJury) and any value
+// sent above maxTotalFee. Judged by scriptResult (no promotion): 18 - 6 base - 9 bonus - 2 reward
+// = 1 fee, so 3 fees back; failed with no commits: 18 - 6 - 2 = 10, so 12 fees back.
+const judgedBack = (fee, extra = 0n) => 3n * fee + extra;
+const timeoutBack = (fee, extra = 0n) => 12n * fee + extra;
 
 async function snapshot() {
   return network.provider.send("evm_snapshot");
@@ -58,9 +71,9 @@ async function judgedClaim(sa, aggregator, hunter, listingId, vector, opts = {})
   return { claimId, requestId, judgedAt: at };
 }
 
-// One claim on `listingId` whose round failed `how`: "timeout" (a round the arbiters ran that
-// settled no verdict), "malformed" (a completed result that is no verdict) or "refused" (the
-// aggregator refused the submission). Returns the failure's time.
+// One claim on `listingId` whose round failed `how`: "timeout" (a drawn round whose deadline
+// passed with too few commits: no result), "malformed" (a completed result that is no verdict:
+// the jury answered) or "refused" (the aggregator refused the submission). Returns the failure's time.
 async function failedClaim(sa, aggregator, hunter, listingId, how, opts = {}) {
   const { claimId } = await claimAs(sa, hunter, listingId, opts);
   if (how === "refused") {
@@ -71,8 +84,11 @@ async function failedClaim(sa, aggregator, hunter, listingId, how, opts = {}) {
     return { claimId, requestId: ZeroHash, failedAt: await blockTime(rc) };
   }
   const { requestId } = await revealAs(sa, hunter, claimId, opts);
-  if (how === "timeout") await time.increase(300); // the mock's response timeout
-  else await aggregator.scriptResult(requestId, MALFORMED, JUSTIFICATION);
+  if (how === "timeout") await expireRound(sa, aggregator, claimId);
+  else {
+    await drawAs(sa, aggregator, claimId);
+    await aggregator.scriptResult(requestId, MALFORMED, JUSTIFICATION);
+  }
   const rc = await (await sa.finalize(claimId)).wait();
   expect(eventsOf(sa, rc, "EvaluationFailed")).to.have.length(1);
   return { claimId, requestId, failedAt: await blockTime(rc) };
@@ -86,9 +102,10 @@ async function overpaidClaim(sa, hunter, listingId, extra, opts = {}) {
   return { claimId, requestId };
 }
 
-// The round a re-trigger starts times out at the aggregator; finalize records the failure.
-async function failAgain(sa, claimId) {
-  await time.increase(300);
+// The round a re-trigger starts is drawn and fails at the aggregator (too few commits by its
+// deadline); finalize records the failure.
+async function failAgain(sa, aggregator, claimId) {
+  await expireRound(sa, aggregator, claimId);
   await sa.finalize(claimId);
   expect((await sa.getClaim(claimId)).state).to.equal(ClaimState.RoundFailed);
 }
@@ -188,7 +205,8 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(ethers.keccak256(await ethers.provider.getCode(wallet))).to.equal(await sa.walletCodehash());
       expect([...(await sa.walletInfo(wallet))]).to.deep.equal([maker.address, claimId]);
       expect([...(await sa.walletInfo(c.evalWallet))]).to.deep.equal([hunter.address, claimId]);
-      expect(await aggregator.ethReceived(requestId)).to.equal(DISPUTE_FEE);
+      expect((await roundInfo(aggregator, requestId)).received).to.equal(DISPUTE_FEE);
+      expect(await aggregator.requesterOf(requestId)).to.equal(wallet);
 
       // The dispute panel's fee, with the listing's other oracle settings (design §10.4).
       const p = await aggregator.requestParams(requestId);
@@ -197,25 +215,29 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(p.alpha).to.equal(ORACLE.alpha);
       expect(p.estimatedBaseCost).to.equal(ORACLE.estimatedBaseCost);
       expect(p.maxFeeBasedScaling).to.equal(ORACLE.maxFeeBasedScaling);
+      expect([p.minFee, p.withBeacons]).to.deep.equal([ORACLE.minOracleFee, ORACLE.withBeacons]);
     });
 
-    it("the fee is live (erratum E3): it follows the aggregator's multiplier and ceiling; more is accepted and funds the request", async function () {
+    it("the fee is live (erratum E3): it follows the aggregator's settings and ceiling; more is accepted and funds the request", async function () {
       const { sa, aggregator, maker, hunters } = await loadFixture(deploy);
       const id = await openListing(sa, maker, params(), { escrow: 3n * TOP });
       const a = await judgedClaim(sa, aggregator, hunters[0], id, V.HIGH);
-      await aggregator.setFeeMultiplier(4n);
-      expect(await sa.disputeFee(id)).to.equal(ORACLE.disputeMaxOracleFee * 4n);
+      await aggregator.setBonusMultiplier(4); // fee x (6 + 4 x 3 + 3)
+      const live = PEFF * 21n;
+      expect(await sa.disputeFee(id)).to.equal(live);
       await expect(sa.connect(maker).dispute(a.claimId, STATEMENT_CID, { value: DISPUTE_FEE })).to.be.revertedWith("prepay below fee");
-      const { requestId } = await disputeAs(sa, maker, a.claimId, { value: ORACLE.disputeMaxOracleFee * 4n + 999n });
-      expect(await aggregator.ethReceived(requestId)).to.equal(ORACLE.disputeMaxOracleFee * 4n + 999n);
+      const { requestId, wallet } = await disputeAs(sa, maker, a.claimId, { value: live + 999n });
+      // All of it is sent: the aggregator escrows the quote and credits the rest to the wallet.
+      expect((await roundInfo(aggregator, requestId)).received).to.equal(live);
+      expect(await aggregator.ethOwed(wallet)).to.equal(999n);
       await judgeDisputeAs(sa, aggregator, maker, a.claimId, V.HIGH);
       await sa.settle(a.claimId);
 
       // A ceiling below the panel's fee clamps it, and the base cost stays below the fee.
-      await aggregator.setFeeMultiplier(3n);
+      await aggregator.setBonusMultiplier(3);
       const ceiling = ORACLE.estimatedBaseCost; // at the base cost: the base must drop below it
       await aggregator.setMaxOracleFee(ceiling);
-      expect(await sa.disputeFee(id)).to.equal(ceiling * 3n);
+      expect(await sa.disputeFee(id)).to.equal(ceiling * 18n);
       const b = await judgedClaim(sa, aggregator, hunters[1], id, V.MEDIUM, { bcid: cidOf(2) });
       const d = await disputeAs(sa, maker, b.claimId);
       const p = await aggregator.requestParams(d.requestId);
@@ -281,7 +303,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       const { claimId } = await judgedClaim(sa, aggregator, hunters[0], id, V.HIGH);
       const l2 = await openListing(sa, maker, params({ artifact: atCommit(freshCommit()) }));
       const f = await failedClaim(sa, aggregator, hunters[1], l2, "timeout");
-      await aggregator.setFeeMultiplier(0n); // maxTotalFee is 0 for every fee
+      await aggregator.setMaxOracleFee(0n); // the ceiling clamps every fee to 0: maxTotalFee is 0
       await expect(sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: DISPUTE_FEE })).to.be.revertedWith("bad budget");
       await expect(sa.connect(hunters[1]).retrigger(f.claimId, { value: FEE })).to.be.revertedWith("bad budget");
     });
@@ -323,6 +345,8 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await expect(sa.finalize(claimId)).to.be.revertedWith("evaluation not ready");
       expect(await sa.settleableAt(claimId)).to.equal(0n);
 
+      await drawAs(sa, aggregator, claimId);
+      await expect(sa.finalize(claimId)).to.be.revertedWith("evaluation not ready"); // drawn, still open
       await aggregator.scriptResult(requestId, V.MEDIUM, JUSTIFICATION_2);
       const tx = sa.connect(other).finalize(claimId);
       await expect(tx).to.emit(sa, "DisputeJudged")
@@ -350,15 +374,18 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
         .withArgs(claimId, id, hunter.address, Outcome.MEDIUM, AWARDS[1], 0n);
     });
 
-    it("a failed dispute round (timed out, or a result that is no verdict) leaves the first verdict standing, and settle proceeds at once", async function () {
+    it("a failed dispute round (no result by its deadline, or a result that is no verdict) leaves the first verdict standing, and settle proceeds at once", async function () {
       const { sa, aggregator, maker, other, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
       const { claimId } = await judgedClaim(sa, aggregator, hunter, id, V.HIGH);
       for (const how of ["timeout", "malformed"]) {
         const snap = await snapshot();
         const { requestId } = await disputeAs(sa, maker, claimId);
-        if (how === "timeout") await time.increase(300);
-        else await aggregator.scriptResult(requestId, [0n, 0n, 0n, 0n, 0n, 999_000n], JUSTIFICATION_2); // a sum short of a verdict
+        if (how === "timeout") await expireRound(sa, aggregator, claimId);
+        else {
+          await drawAs(sa, aggregator, claimId);
+          await aggregator.scriptResult(requestId, [0n, 0n, 0n, 0n, 0n, 999_000n], JUSTIFICATION_2); // a sum short of a verdict
+        }
         const tx = sa.connect(other).finalize(claimId);
         await expect(tx, how).to.emit(sa, "DisputeFailed").withArgs(claimId, id, requestId, how === "malformed");
         await expect(tx).to.not.emit(sa, "DisputeJudged");
@@ -421,11 +448,16 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       const { sa, aggregator, maker, other, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
       const { claimId } = await judgedClaim(sa, aggregator, hunter, id, V.HIGH);
-      // The maker pays the escalation prepay; the oracles spend all of it (no refund).
-      const d = sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: DISPUTE_FEE });
-      await expect(d).to.changeEtherBalance(maker, -DISPUTE_FEE);
+      // The maker pays the escalation prepay; the oracles spend all of it (no refund): with no
+      // draw or promote reward in the quote, a finished round spends exactly K base fees and P bonuses.
+      await aggregator.setRewards(0, 0);
+      const fee = await sa.disputeFee(id);
+      expect(fee).to.equal(PEFF * 15n);
+      const d = sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: fee });
+      await expect(d).to.changeEtherBalance(maker, -fee);
       const { disputeRequestId } = await sa.getClaim(claimId);
       const panel = [0, 0, 0, 200_000, 500_000, 300_000]; // HIGH and above 800k >= T, CRITICAL alone below
+      await drawAs(sa, aggregator, claimId);
       await aggregator.scriptResult(disputeRequestId, panel, JUSTIFICATION_2);
       const tx = sa.connect(other).finalize(claimId);
       await expect(tx).to.emit(sa, "DisputeJudged").withArgs(claimId, id, DisputeResult.Held, Outcome.HIGH, panel, JUSTIFICATION_2);
@@ -469,7 +501,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await expect(sa.connect(hunter).retrigger(claimId, { value: FEE })).to.be.revertedWith("not failed"); // committed
       const { requestId } = await revealAs(sa, hunter, claimId);
       await expect(sa.connect(hunter).retrigger(claimId, { value: FEE })).to.be.revertedWith("not failed"); // revealed
-      await time.increase(300);
+      await expireRound(sa, aggregator, claimId);
       const rc = await (await sa.finalize(claimId)).wait();
       const failedAt = await blockTime(rc);
       let c = await sa.getClaim(claimId);
@@ -498,18 +530,22 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await expect(sa.connect(hunter).retrigger(claimId, { value: FEE })).to.be.revertedWith("not failed"); // judged
     });
 
-    it("after a round that ran and settled no verdict (timed out, or a malformed result): a fresh prepay through a new wallet; the old prepay was spent and its leftover refunded; the claim is judged as usual", async function () {
+    it("after a round that ran and settled no verdict (no result by its deadline, or a malformed result): a fresh prepay through a new wallet; the old prepay was spent and its leftover refunded; the claim is judged as usual", async function () {
       const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
-      const unspent = FEE / 4n;
-      await aggregator.setRefundAmount(unspent);
       for (const how of ["timeout", "malformed"]) {
         const snap = await snapshot();
         const { claimId } = await claimAs(sa, hunter, id);
         const first = await revealAs(sa, hunter, claimId);
         const firstWallet = (await sa.getClaim(claimId)).evalWallet;
-        if (how === "timeout") await time.increase(300);
-        else await aggregator.scriptResult(first.requestId, MALFORMED, JUSTIFICATION);
+        if (how === "timeout") await expireRound(sa, aggregator, claimId);
+        else {
+          await drawAs(sa, aggregator, claimId);
+          await aggregator.scriptResult(first.requestId, MALFORMED, JUSTIFICATION);
+        }
+        // the leftover (settle credits a failed round's at finalize) and the wallet's draw reward
+        const unspent = (await leftover(aggregator, first.requestId)) + 2n * EFF;
+        expect(unspent).to.equal(how === "timeout" ? timeoutBack(EFF) : judgedBack(EFF));
         const fin = sa.finalize(claimId);
         await expect(fin).to.emit(sa, "EvaluationFailed").withArgs(claimId, id, first.requestId, how === "malformed");
         await expect(fin).to.changeEtherBalance(hunter, unspent); // the leftover, inline
@@ -551,8 +587,8 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(c.roundStarted).to.equal(false);
       expect(c.prepayWei).to.equal(FEE); // held
       expect(await sa.retriggerTopUp(claimId)).to.equal(0n);
-      await aggregator.setFeeMultiplier(4n); // the live fee rose
-      const topUp = ORACLE.maxOracleFee * 4n - FEE;
+      await aggregator.setBonusMultiplier(4); // the live fee rose: fee x (6 + 4 x 3 + 3)
+      const topUp = EFF * 21n - FEE;
       expect(await sa.retriggerTopUp(claimId)).to.equal(topUp);
       await expect(sa.connect(hunter).retrigger(claimId, { value: topUp - 1n })).to.be.revertedWith("prepay below fee");
       const tx = sa.connect(hunter).retrigger(claimId, { value: topUp });
@@ -561,7 +597,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(c.state).to.equal(ClaimState.Revealed);
       expect(c.roundStarted).to.equal(true);
       expect(c.prepayWei).to.equal(FEE + topUp);
-      expect(await aggregator.ethReceived(c.requestId)).to.equal(FEE + topUp);
+      expect((await roundInfo(aggregator, c.requestId)).received).to.equal(FEE + topUp);
       expect(await sa.retriggerTopUp(claimId)).to.equal(0n); // not failed
     });
 
@@ -583,7 +619,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await aggregator.setPaused(false);
       expect(await sa.retriggerTopUp(claimId)).to.equal(0n);
       await retriggerAs(sa, hunter, claimId);
-      await failAgain(sa, claimId);
+      await failAgain(sa, aggregator, claimId);
       c = await sa.getClaim(claimId);
       expect(c.failedAt).to.equal(failedAt); // a failed re-trigger does not extend the window
       expect(await sa.retriggerDeadline(claimId)).to.equal(failedAt + REVEAL);
@@ -604,7 +640,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect((await sa.getClaim(claimId)).state).to.equal(ClaimState.Revealed);
     });
 
-    it("payment-round-timeout-retrigger (erratum E6, superseding the catalogue's 'bond returned'): too few reveals before the aggregator timeout; the hunter may re-trigger with a fresh prepay inside the window; with no settled round by expiry the bond goes to the maker, and comes back only when every attempt was refused", async function () {
+    it("payment-round-timeout-retrigger (erratum E6, superseding the catalogue's 'bond returned'; v2's bond rule): the round fails at the aggregator; the hunter may re-trigger with a fresh prepay inside the window; with no settled round by expiry the bond goes to the maker only if some round's jury answered with no verdict, and comes back when every round ended with no result or every attempt was refused", async function () {
       const { sa, aggregator, maker, other, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
 
@@ -617,50 +653,69 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await expect(sa.settle(f.claimId)).to.changeEtherBalances([hunter, maker], [AWARDS[2] + BOND, 0n]);
       await restore(snap);
 
-      // 2. Never re-triggered: anyone expires it at the window's end; the bond goes to the
-      //    maker; the round's prepay was spent, so nothing else moves.
+      // 2. Never re-triggered, the round ended with no result (too few commits): anyone expires it
+      //    at the window's end; the bond comes back (RoundsUnanswered); the round's base fees were
+      //    spent and its leftover refunded at finalize, so nothing else moves.
       snap = await snapshot();
       f = await failedClaim(sa, aggregator, hunter, id, "timeout");
       await time.setNextBlockTimestamp(f.failedAt + REVEAL);
       let tx = sa.connect(other).expire(f.claimId);
-      await expect(tx).to.changeEtherBalances([maker, hunter, other, sa], [BOND, 0n, 0n, -BOND]);
-      await expect(tx).to.emit(sa, "Expired").withArgs(f.claimId, id, Expiry.RoundsFailed);
+      await expect(tx).to.changeEtherBalances([maker, hunter, other, sa], [0n, BOND, 0n, -BOND]);
+      await expect(tx).to.emit(sa, "Expired").withArgs(f.claimId, id, Expiry.RoundsUnanswered);
       let c = await sa.getClaim(f.claimId);
       expect(c.state).to.equal(ClaimState.Expired);
-      expect(c.expiry).to.equal(Expiry.RoundsFailed);
+      expect(c.expiry).to.equal(Expiry.RoundsUnanswered);
+      expect([c.roundStarted, c.juryAnswered]).to.deep.equal([true, false]);
       let l = await sa.getListing(id);
       expect(l.noVerdictClaims).to.equal(1n);
       expect(l.pendingClaims).to.equal(0n);
       expect(l.headClaim).to.equal(0n);
-      expect(await aggregator.ethReceived(f.requestId)).to.equal(FEE); // the oracles' (no refund set)
+      const round = await roundInfo(aggregator, f.requestId);
+      expect([round.received, round.phase]).to.deep.equal([FEE, H.Phase.Failed]);
       let r = await recordOf(sa, id); // P2e: no verdict, nothing judged or published
       expect([r.history.noVerdict, r.history.pending, r.findingCount]).to.deep.equal([1n, 0n, 0n]);
       expect(outcomesOf(r.history)).to.deep.equal([0n, 0n, 0n, 0n, 0n, 0n]);
       await restore(snap);
 
-      // 3. Re-triggered and the new round fails too: a round ran, so the bond goes to the maker.
+      // 2b. Never re-triggered, the jury answered with a result that is no verdict: the bond goes
+      //     to the maker (RoundsFailed).
+      snap = await snapshot();
+      f = await failedClaim(sa, aggregator, hunter, id, "malformed");
+      expect((await sa.getClaim(f.claimId)).juryAnswered).to.equal(true);
+      await time.setNextBlockTimestamp(f.failedAt + REVEAL);
+      tx = sa.connect(other).expire(f.claimId);
+      await expect(tx).to.changeEtherBalances([maker, hunter, other, sa], [BOND, 0n, 0n, -BOND]);
+      await expect(tx).to.emit(sa, "Expired").withArgs(f.claimId, id, Expiry.RoundsFailed);
+      expect((await sa.getListing(id)).noVerdictClaims).to.equal(1n);
+      await restore(snap);
+
+      // 3. A malformed result, re-triggered, and the new round fails with no result: a round's
+      //    jury answered, so the bond goes to the maker.
       snap = await snapshot();
       f = await failedClaim(sa, aggregator, hunter, id, "malformed");
       await retriggerAs(sa, hunter, f.claimId, { value: FEE });
-      await failAgain(sa, f.claimId);
+      await failAgain(sa, aggregator, f.claimId);
       await time.setNextBlockTimestamp(f.failedAt + REVEAL);
       tx = sa.connect(other).expire(f.claimId);
       await expect(tx).to.changeEtherBalances([maker, hunter, sa], [BOND, 0n, -BOND]);
       await expect(tx).to.emit(sa, "Expired").withArgs(f.claimId, id, Expiry.RoundsFailed);
       await restore(snap);
 
-      // 4. A round ran, then the re-trigger was refused: the bond goes to the maker and the
-      //    refused attempt's held prepay back to the hunter.
-      snap = await snapshot();
-      f = await failedClaim(sa, aggregator, hunter, id, "timeout");
-      await aggregator.setPaused(true);
-      await sa.connect(hunter).retrigger(f.claimId, { value: FEE + 5n });
-      await time.setNextBlockTimestamp(f.failedAt + REVEAL);
-      tx = sa.connect(other).expire(f.claimId);
-      await expect(tx).to.changeEtherBalances([maker, hunter, sa], [BOND, FEE + 5n, -(BOND + FEE + 5n)]);
-      await expect(tx).to.emit(sa, "Expired").withArgs(f.claimId, id, Expiry.RoundsFailed);
-      await aggregator.setPaused(false);
-      await restore(snap);
+      // 4. A round ran, then the re-trigger was refused: the refused attempt's held prepay goes
+      //    back to the hunter; the bond follows the round that ran (back after no result, to the
+      //    maker after a malformed one).
+      for (const [how, toMaker, why] of [["timeout", 0n, Expiry.RoundsUnanswered], ["malformed", BOND, Expiry.RoundsFailed]]) {
+        snap = await snapshot();
+        f = await failedClaim(sa, aggregator, hunter, id, how);
+        await aggregator.setPaused(true);
+        await sa.connect(hunter).retrigger(f.claimId, { value: FEE + 5n });
+        await time.setNextBlockTimestamp(f.failedAt + REVEAL);
+        tx = sa.connect(other).expire(f.claimId);
+        await expect(tx, how).to.changeEtherBalances([maker, hunter, sa], [toMaker, BOND - toMaker + FEE + 5n, -(BOND + FEE + 5n)]);
+        await expect(tx, how).to.emit(sa, "Expired").withArgs(f.claimId, id, why);
+        await aggregator.setPaused(false);
+        await restore(snap);
+      }
 
       // 5. Every attempt refused (the reveal's and a re-trigger's): no round ran, so the bond
       //    and the held prepay go back to the hunter.
@@ -706,7 +761,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       const a = await claimAs(sa, hunters[0], id);
       const b = await claimAs(sa, hunters[1], id);
       await revealAs(sa, hunters[0], a.claimId);
-      await time.increase(300);
+      await expireRound(sa, aggregator, a.claimId);
       const rc = await (await sa.finalize(a.claimId)).wait();
       const failedAt = await blockTime(rc);
       await expect(sa.connect(hunters[1]).reveal(b.claimId, BCID, CK, EK)).to.be.revertedWith("earlier claim unresolved");
@@ -726,20 +781,20 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
     it("inline at finalize: the claim round's to the hunter, the dispute round's to the maker", async function () {
       const { sa, aggregator, maker, other, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
-      const r = FEE / 3n;
-      await aggregator.setRefundAmount(r);
       const { claimId, requestId } = await overpaidClaim(sa, hunter, id, 1234n); // prepay FEE + 1234
+      await drawAs(sa, aggregator, claimId, other); // anyone draws; the wallet earns the reward
       await aggregator.scriptResult(requestId, V.HIGH, JUSTIFICATION);
+      const r = judgedBack(EFF, 1234n);
       let tx = sa.connect(other).finalize(claimId);
-      await expect(tx).to.changeEtherBalances([hunter, maker, other, sa], [r + 1234n, 0n, 0n, 0n]);
-      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(claimId, hunter.address, r + 1234n);
+      await expect(tx).to.changeEtherBalances([hunter, maker, other, sa], [r, 0n, 0n, 0n]);
+      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(claimId, hunter.address, r);
 
       const d = await disputeAs(sa, maker, claimId, { value: DISPUTE_FEE + 777n });
-      await aggregator.setRefundAmount(5n);
+      await drawAs(sa, aggregator, claimId, other);
       await aggregator.scriptResult(d.requestId, V.HIGH, JUSTIFICATION_2);
       tx = sa.connect(other).finalize(claimId);
-      await expect(tx).to.changeEtherBalances([maker, hunter, other, sa], [5n + 777n, 0n, 0n, 0n]);
-      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(claimId, maker.address, 5n + 777n);
+      await expect(tx).to.changeEtherBalances([maker, hunter, other, sa], [judgedBack(PEFF, 777n), 0n, 0n, 0n]);
+      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(claimId, maker.address, judgedBack(PEFF, 777n));
       expect(await aggregator.ethOwed(d.wallet)).to.equal(0n);
       expect(await balanceOf(d.wallet)).to.equal(0n);
     });
@@ -748,11 +803,12 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       const { sa, aggregator, maker, other, hunters } = await loadFixture(deploy);
       const id = await openListing(sa, maker, params(), { escrow: 2n * TOP });
       const hunter = hunters[0];
-      const r = FEE / 2n;
-      await aggregator.setRefundAmount(r);
+      const r = judgedBack(EFF);
       const { claimId, requestId } = await revealedClaim(sa, hunter, id);
       const wallet = (await sa.getClaim(claimId)).evalWallet;
       await expect(sa.connect(other).recoverLeftoverEth(wallet)).to.be.revertedWith("round open");
+      await drawAs(sa, aggregator, claimId);
+      await expect(sa.connect(other).recoverLeftoverEth(wallet)).to.be.revertedWith("round open"); // its reward is in, the round still open
       await aggregator.scriptResult(requestId, V.HIGH, JUSTIFICATION);
       await aggregator.setWithdrawBroken(true);
       await expect(sa.finalize(claimId)).to.emit(sa, "RefundDeferred").withArgs(claimId, wallet);
@@ -770,11 +826,12 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       // A dispute round's wallet is open until its round is read.
       const d = await disputeAs(sa, maker, claimId);
       await expect(sa.recoverLeftoverEth(d.wallet)).to.be.revertedWith("round open");
+      await drawAs(sa, aggregator, claimId);
       await aggregator.setWithdrawBroken(true);
       await aggregator.scriptResult(d.requestId, V.MEDIUM, JUSTIFICATION_2);
       await expect(sa.finalize(claimId)).to.emit(sa, "RefundDeferred").withArgs(claimId, d.wallet);
       await aggregator.setWithdrawBroken(false);
-      await expect(sa.connect(hunters[1]).recoverLeftoverEth(d.wallet)).to.changeEtherBalances([maker, hunter, sa], [r, 0n, 0n]);
+      await expect(sa.connect(hunters[1]).recoverLeftoverEth(d.wallet)).to.changeEtherBalances([maker, hunter, sa], [judgedBack(PEFF), 0n, 0n]);
 
       // A refused submission's wallet never held anything.
       await sa.settle(claimId);
@@ -785,12 +842,12 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
     it("payment-leftover-recovery: the evaluation cost less than the prepay; the unused part comes back to the hunter through the wallet's ethOwed credit, inline at finalize, or by recoverLeftoverEth when that was deferred", async function () {
       const { sa, aggregator, maker, other, hunters } = await loadFixture(deploy);
       const id = await openListing(sa, maker, params(), { escrow: 3n * TOP });
-      const unspent = FEE / 3n;
-      await aggregator.setRefundAmount(unspent);
+      const unspent = judgedBack(EFF); // the round's leftover and the wallet's draw reward
 
       // Inline, as BountyEscrow passes it today: wallet -> withdrawEth -> wallet -> contract -> hunter.
       const a = await overpaidClaim(sa, hunters[0], id, 1000n, { bcid: cidOf(1) });
       const walletA = (await sa.getClaim(a.claimId)).evalWallet;
+      await drawAs(sa, aggregator, a.claimId);
       await aggregator.scriptResult(a.requestId, V.DUPLICATE, JUSTIFICATION);
       await expect(sa.finalize(a.claimId)).to.changeEtherBalance(hunters[0], unspent + 1000n);
       expect(await aggregator.ethOwed(walletA)).to.equal(0n);
@@ -800,6 +857,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       // Deferred (a broken aggregator withdrawal), then recovered by anyone.
       const b = await revealedClaim(sa, hunters[1], id, { bcid: cidOf(2) });
       const walletB = (await sa.getClaim(b.claimId)).evalWallet;
+      await drawAs(sa, aggregator, b.claimId);
       await aggregator.scriptResult(b.requestId, V.HIGH, JUSTIFICATION);
       await aggregator.setWithdrawBurnsGas(true);
       await expect(sa.finalize(b.claimId)).to.emit(sa, "RefundDeferred").withArgs(b.claimId, walletB);
@@ -822,6 +880,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await act("disclose", [c, CT_CID]);
       await act("reveal", [c, cidOf(3), CK, EK]);
       await rejecting.setRejecting(true);
+      await drawAs(sa, aggregator, c);
       await aggregator.scriptResult((await sa.getClaim(c)).requestId, V.INVALID, JUSTIFICATION);
       await expect(sa.finalize(c)).to.emit(sa, "PaymentDeferred").withArgs(rejecting.target, unspent);
       expect(await sa.withdrawable(rejecting.target)).to.equal(unspent);
@@ -832,19 +891,18 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       const [hunterA, hunterB] = hunters;
       const l1 = await openListing(sa, maker);
       const l2 = await openListing(sa, maker, params({ artifact: atCommit(freshCommit()) }));
-      // Each round overpays by its own amount, and settles under its own refund setting, so
-      // every leftover is distinct: a misrouted one shows.
+      // Each round overpays by its own amount, and the claim rounds end differently, so every
+      // leftover is distinct: a misrouted one shows.
       const A = await overpaidClaim(sa, hunterA, l1, 1_000n);
       const walletA1 = (await sa.getClaim(A.claimId)).evalWallet;
       const B = await overpaidClaim(sa, hunterB, l2, 2_000n);
       const walletB1 = (await sa.getClaim(B.claimId)).evalWallet;
 
+      await drawAs(sa, aggregator, A.claimId);
       await aggregator.setWithdrawBroken(true); // both claim rounds' inline recoveries defer
-      await aggregator.setRefundAmount(10n);
       await aggregator.scriptResult(A.requestId, V.HIGH, JUSTIFICATION);
       await expect(sa.finalize(A.claimId)).to.emit(sa, "RefundDeferred").withArgs(A.claimId, walletA1);
-      await aggregator.setRefundAmount(20n);
-      await time.increase(300);
+      await expireRound(sa, aggregator, B.claimId); // B's round gets no commits and fails
       await expect(sa.finalize(B.claimId)).to.emit(sa, "RefundDeferred").withArgs(B.claimId, walletB1);
       await aggregator.setWithdrawBroken(false);
 
@@ -854,24 +912,24 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
 
       const watched = [maker, hunterA, hunterB, other, sa];
       // The dispute round settles first and pays the maker inline.
-      await aggregator.setRefundAmount(30n);
+      await drawAs(sa, aggregator, A.claimId);
       await aggregator.scriptResult(D.requestId, V.HIGH, JUSTIFICATION_2);
       let tx = sa.connect(other).finalize(A.claimId);
-      await expect(tx).to.changeEtherBalances(watched, [4_030n, 0n, 0n, 0n, 0n]);
-      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(A.claimId, maker.address, 4_030n);
+      await expect(tx).to.changeEtherBalances(watched, [judgedBack(PEFF, 4_000n), 0n, 0n, 0n, 0n]);
+      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(A.claimId, maker.address, judgedBack(PEFF, 4_000n));
       // B's first wallet, recovered by a third party, pays B.
       tx = sa.connect(other).recoverLeftoverEth(walletB1);
-      await expect(tx).to.changeEtherBalances(watched, [0n, 0n, 2_020n, 0n, 0n]);
-      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(B.claimId, hunterB.address, 2_020n);
+      await expect(tx).to.changeEtherBalances(watched, [0n, 0n, timeoutBack(EFF, 2_000n), 0n, 0n]);
+      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(B.claimId, hunterB.address, timeoutBack(EFF, 2_000n));
       // B's re-triggered round settles and pays B inline.
-      await aggregator.setRefundAmount(40n);
+      await drawAs(sa, aggregator, B.claimId);
       await aggregator.scriptResult(B2.requestId, V.MEDIUM, JUSTIFICATION);
       tx = sa.connect(other).finalize(B.claimId);
-      await expect(tx).to.changeEtherBalances(watched, [0n, 0n, 3_040n, 0n, 0n]);
+      await expect(tx).to.changeEtherBalances(watched, [0n, 0n, judgedBack(EFF, 3_000n), 0n, 0n]);
       // A's first wallet, recovered last, pays A.
       tx = sa.connect(other).recoverLeftoverEth(walletA1);
-      await expect(tx).to.changeEtherBalances(watched, [0n, 1_010n, 0n, 0n, 0n]);
-      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(A.claimId, hunterA.address, 1_010n);
+      await expect(tx).to.changeEtherBalances(watched, [0n, judgedBack(EFF, 1_000n), 0n, 0n, 0n]);
+      await expect(tx).to.emit(sa, "LeftoverRefunded").withArgs(A.claimId, hunterA.address, judgedBack(EFF, 1_000n));
 
       for (const w of [walletA1, walletB1, B2.wallet, D.wallet]) {
         expect(await aggregator.ethOwed(w)).to.equal(0n);
@@ -899,12 +957,13 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
         const { claimId } = await judgedClaim(sa, aggregator, hunter, id, V.HIGH);
         await act("dispute", [claimId, STATEMENT_CID], DISPUTE_FEE + 50n);
         const { disputeRequestId, disputeWallet } = await sa.getClaim(claimId);
+        await drawAs(sa, aggregator, claimId);
         await aggregator.scriptResult(disputeRequestId, V.HIGH, JUSTIFICATION_2);
         const args = {
           recoverLeftoverEth: [disputeWallet], dispute: [claimId, STATEMENT_CID], retrigger: [claimId], finalize: [claimId],
         }[entry];
         await reentrant.setAttack(sa.target, sa.interface.encodeFunctionData(entry, args));
-        await expect(sa.finalize(claimId)).to.changeEtherBalance(reentrant, 50n);
+        await expect(sa.finalize(claimId)).to.changeEtherBalance(reentrant, judgedBack(PEFF, 50n));
         expect(await reentrant.attempted()).to.equal(true);
         expect(await reentrant.attackOk()).to.equal(false);
         expect(await reentrant.attackReasonHash()).to.equal(
@@ -948,9 +1007,9 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(await sa.retriggerDeadline(f.claimId)).to.equal(f.failedAt + REVEAL);
       expect(await lens.retriggerDeadline(f.claimId)).to.equal(f.failedAt + REVEAL);
       expect(await sa.retriggerTopUp(f.claimId)).to.equal(0n);
-      await aggregator.setFeeMultiplier(5n);
-      expect(await sa.retriggerTopUp(f.claimId)).to.equal(ORACLE.maxOracleFee * 5n - FEE);
-      expect(await lens.retriggerTopUp(f.claimId)).to.equal(ORACLE.maxOracleFee * 5n - FEE);
+      await aggregator.setBonusMultiplier(5); // fee x (6 + 5 x 3 + 3)
+      expect(await sa.retriggerTopUp(f.claimId)).to.equal(EFF * 24n - FEE);
+      expect(await lens.retriggerTopUp(f.claimId)).to.equal(EFF * 24n - FEE);
     });
 
     it("declares an event for every state change this node adds", async function () {

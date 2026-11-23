@@ -14,7 +14,7 @@ const { ethers, network } = hre;
 const { time, loadFixture, mine } = require("@nomicfoundation/hardhat-network-helpers");
 const { linkedFactory } = require("./helpers/linked");
 // The record (P2e): the lens's recordByHash for a listing's artifact hash.
-const { recordOf, listingIn, outcomesOf } = require("./helpers/claims");
+const { recordOf, listingIn, outcomesOf, quote, drawAs, roundInfo, leftover } = require("./helpers/claims");
 
 const { parseEther, ZeroAddress, ZeroHash, sha256, toUtf8Bytes } = ethers;
 
@@ -24,7 +24,7 @@ const Outcome = { INVALID: 0n, DUPLICATE: 1n, LOW: 2n, MEDIUM: 3n, HIGH: 4n, CRI
 const ClaimState = {
   Committed: 0n, Revealable: 1n, Revealed: 2n, Judged: 3n, Disputed: 4n, Settled: 5n, Expired: 6n, RoundFailed: 7n,
 };
-const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n, RoundsFailed: 3n, SubmissionsRefused: 4n };
+const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n, RoundsFailed: 3n, SubmissionsRefused: 4n, RoundsUnanswered: 5n };
 
 const HOUR = 3600n;
 const DAY = 24n * HOUR;
@@ -60,9 +60,12 @@ const ORACLE = {
   estimatedBaseCost: parseEther("0.000001"),
   alpha: 500n,
   maxFeeBasedScaling: 1n,
+  minOracleFee: 0n, // the v2 fee floor: none
+  withBeacons: false,
 };
-// The mock quotes maxTotalFee = min(fee, its ceiling) * feeMultiplier (3 by default).
-const FEE = ORACLE.maxOracleFee * 3n;
+// The v2 mock's maxTotalFee at its defaults: eff x (K + B x P + draw + promote) = 18 eff
+// (helpers/claims.js, quote).
+const FEE = quote(ORACLE.maxOracleFee);
 
 // A distinct, valid CIDv0-shaped string per prior finding.
 const priorCid = (i) => `Qm${"P".repeat(42)}${String(i).padStart(2, "0")}`;
@@ -251,8 +254,8 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       await expect(sa.connect(hunter).commit(id, ARCHIVE, CT, { value: BOND + FEE - 1n }))
         .to.be.revertedWith("payment below bond + fee");
 
-      await aggregator.setFeeMultiplier(5n); // the live fee rises
-      const live = ORACLE.maxOracleFee * 5n;
+      await aggregator.setBonusMultiplier(5); // the live fee rises: eff x (6 + 5 x 3 + 3)
+      const live = ORACLE.maxOracleFee * 24n;
       expect(await sa.commitPrice(id)).to.equal(BOND + live);
       await expect(sa.connect(hunter).commit(id, ARCHIVE, CT, { value: BOND + FEE }))
         .to.be.revertedWith("payment below bond + fee");
@@ -261,9 +264,9 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
 
       // The fee follows a lowered ceiling: the quote clamps maxOracleFee as the aggregator does.
       await aggregator.setMaxOracleFee(ORACLE.maxOracleFee / 2n);
-      expect(await sa.commitPrice(id)).to.equal(BOND + (ORACLE.maxOracleFee / 2n) * 5n);
+      expect(await sa.commitPrice(id)).to.equal(BOND + (ORACLE.maxOracleFee / 2n) * 24n);
 
-      await aggregator.setFeeMultiplier(0n); // a quote of 0 is a broken aggregator, not a free round
+      await aggregator.setMaxOracleFee(0n); // a quote of 0 is a broken aggregator, not a free round
       await expect(sa.connect(hunter).commit(id, ARCHIVE, CT, { value: BOND })).to.be.revertedWith("bad budget");
     });
 
@@ -731,9 +734,8 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const impl = (await sa.walletImplementation()).toLowerCase().slice(2);
       const code = await ethers.provider.getCode(c.evalWallet);
       expect(code).to.equal(`0x363d3d373d3d3d363d73${impl}5af43d82803e903d91602b57fd5bf3`);
-      const status = await aggregator.getAggregationStatus(c.requestId);
-      expect(status.requester).to.equal(c.evalWallet);
-      expect(await aggregator.ethReceived(c.requestId)).to.equal(FEE);
+      expect(await aggregator.requesterOf(c.requestId)).to.equal(c.evalWallet);
+      expect((await roundInfo(aggregator, c.requestId)).received).to.equal(FEE);
       const wallet = await ethers.getContractAt("EvaluationWallet", c.evalWallet);
       expect(await wallet.requester()).to.equal(sa.target);
       expect(await wallet.aggId()).to.equal(c.requestId);
@@ -763,15 +765,15 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
       const { claimId } = await claimAs(sa, hunter, id);
-      await aggregator.setFeeMultiplier(4n);
-      const live = ORACLE.maxOracleFee * 4n;
+      await aggregator.setBonusMultiplier(4); // eff x (6 + 4 x 3 + 3)
+      const live = ORACLE.maxOracleFee * 21n;
       expect(await sa.revealTopUp(claimId)).to.equal(live - FEE);
       await expect(revealTx(sa, hunter, claimId, { value: live - FEE - 1n })).to.be.revertedWith("prepay below fee");
       const tx = revealTx(sa, hunter, claimId, { value: live - FEE });
       await expect(tx).to.changeEtherBalances([hunter, sa], [-(live - FEE), -FEE]);
       const c = await sa.getClaim(claimId);
       expect(c.prepayWei).to.equal(live);
-      expect(await aggregator.ethReceived(c.requestId)).to.equal(live);
+      expect((await roundInfo(aggregator, c.requestId)).received).to.equal(live);
       await expect(tx).to.emit(sa, "EvaluationRequested").withArgs(claimId, c.evalWallet, c.requestId, live);
     });
 
@@ -779,23 +781,25 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
       const { claimId } = await claimAs(sa, hunter, id);
-      await aggregator.setFeeMultiplier(2n);
+      await aggregator.setBonusMultiplier(1); // the live fee falls to eff x (6 + 1 x 3 + 3)
+      const live = ORACLE.maxOracleFee * 12n;
       expect(await sa.revealTopUp(claimId)).to.equal(0n);
       const { requestId } = await revealAs(sa, hunter, claimId, { value: 0n });
-      expect(await aggregator.ethReceived(requestId)).to.equal(FEE);
+      // The v2 aggregator escrows the live figure and credits the excess value to the requester.
+      expect((await roundInfo(aggregator, requestId)).received).to.equal(live);
       const wallet = (await sa.getClaim(claimId)).evalWallet;
-      // The oracles spend at most the live figure; the mock credits the rest to the requester.
+      expect(await aggregator.ethOwed(wallet)).to.equal(FEE - live);
+      // The round's own leftover and the wallet's draw reward join it at finalization.
+      await drawAs(sa, aggregator, claimId);
       await aggregator.scriptResult(requestId, [0, 0, 0, 1_000_000, 0, 0], "QmJustification");
-      expect(await aggregator.ethOwed(wallet)).to.equal(FEE - ORACLE.maxOracleFee * 2n);
+      const left = await leftover(aggregator, requestId);
+      expect(await aggregator.ethOwed(wallet)).to.equal(FEE - live + left + ORACLE.maxOracleFee * 2n);
     });
 
-    it("refuses a reveal when the aggregator quotes no budget (fee multiplier or ceiling at 0)", async function () {
+    it("refuses a reveal when the aggregator quotes no budget (its ceiling at 0)", async function () {
       const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
       const { claimId } = await claimAs(sa, hunter, id);
-      await aggregator.setFeeMultiplier(0n);
-      await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.be.revertedWith("bad budget");
-      await aggregator.setFeeMultiplier(3n);
       await aggregator.setMaxOracleFee(0n); // the clamp takes the fee, and the base cost, to 0
       await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.be.revertedWith("bad budget");
       await aggregator.setMaxOracleFee(parseEther("0.0004"));
@@ -807,7 +811,9 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
       const { claimId } = await claimAs(sa, hunter, id, { value: BOND + FEE + 1000n });
       const { requestId } = await revealAs(sa, hunter, claimId, { value: 5n });
-      expect(await aggregator.ethReceived(requestId)).to.equal(FEE + 1005n);
+      // The v2 aggregator escrows maxTotalFee and credits the excess value to the requester at once.
+      expect((await roundInfo(aggregator, requestId)).received).to.equal(FEE);
+      expect(await aggregator.ethOwed((await sa.getClaim(claimId)).evalWallet)).to.equal(1005n);
       expect((await sa.getClaim(claimId)).prepayWei).to.equal(FEE + 1005n);
     });
 
@@ -823,6 +829,8 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       expect(p.estimatedBaseCost).to.equal(ORACLE.estimatedBaseCost);
       expect(p.maxFeeBasedScaling).to.equal(ORACLE.maxFeeBasedScaling);
       expect(p.requestedClass).to.equal(ORACLE.requestedClass);
+      expect(p.minFee).to.equal(ORACLE.minOracleFee);
+      expect(p.withBeacons).to.equal(ORACLE.withBeacons);
     });
 
     it("clamps the fee to a lowered aggregator ceiling, and the base cost below it, as BountyEscrow does", async function () {
@@ -1096,6 +1104,7 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       for (const [i, { claimId }] of claims.entries()) {
         await time.setNextBlockTimestamp(turn + HOUR);
         const { requestId } = await revealAs(harness, hunters[i], claimId);
+        await drawAs(harness, aggregator, claimId);
         await aggregator.scriptResult(requestId, [0, 0, 0, 0, 1_000_000, 0], "QmJustification");
         const [, , exists] = await aggregator.getEvaluation(requestId);
         expect(exists, `claim ${i + 1} judged`).to.equal(true);
@@ -1241,20 +1250,34 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
   });
 
   describe("EvaluationWallet", function () {
+    // The request's settings, as one struct (EvaluationWallet.Request).
+    const REQUEST = {
+      addendumText: "", alpha: 500n, maxOracleFee: ORACLE.maxOracleFee, minOracleFee: 0n, estimatedBaseCost: 0n,
+      maxFeeBasedScaling: 1n, requestedClass: 133n, withBeacons: false,
+    };
     it("only its requester operates it; it starts once and hands every refund back to the requester", async function () {
       const { aggregator, owner, other } = await loadFixture(deploy);
       const wallet = await (await ethers.getContractFactory("EvaluationWallet")).deploy(owner.address, aggregator.target);
       const start = (signer, value = FEE) =>
-        wallet.connect(signer).startEvaluation([LISTING_CID, BCID], "", 500n, ORACLE.maxOracleFee, 0n, 1n, 133n, { value });
+        wallet.connect(signer).startEvaluation([LISTING_CID, BCID], REQUEST, { value });
       await expect(start(other)).to.be.revertedWith("not requester");
       await expect(wallet.connect(other).refundLeftoverEth()).to.be.revertedWith("not requester");
+      await expect(wallet.connect(other).drawJury()).to.be.revertedWith("not requester");
       await start(owner);
       await expect(start(owner)).to.be.revertedWith("already started");
       const aggId = await wallet.aggId();
       expect(await wallet.started()).to.equal(true);
-      await aggregator.setRefundAmount(1000n);
+      const p = await aggregator.requestParams(aggId);
+      expect([p.maxFee, p.minFee, p.estimatedBaseCost, p.withBeacons]).to.deep.equal([ORACLE.maxOracleFee, 0n, 0n, false]);
+      // The wallet draws as the requester, so the draw reward is its own.
+      await aggregator.setArbiterFee(ORACLE.maxOracleFee / 2n); // the jurors' posted fee: half the ceiling
+      await mine(1);
+      await expect(wallet.drawJury()).to.emit(aggregator, "JuryDrawn").withArgs(aggId, wallet.target, ORACLE.maxOracleFee * 2n);
       await aggregator.scriptResult(aggId, [0, 0, 0, 1_000_000, 0, 0], "QmJustification");
-      await expect(wallet.refundLeftoverEth()).to.changeEtherBalance(owner, 1000n);
+      // Refunded: the round's leftover (18 - 3 base - 4.5 bonus - 2 reward = 8.5 eff) plus the 2 eff reward.
+      const back = (await leftover(aggregator, aggId)) + ORACLE.maxOracleFee * 2n;
+      expect(back).to.equal((ORACLE.maxOracleFee * 21n) / 2n);
+      await expect(wallet.refundLeftoverEth()).to.changeEtherBalance(owner, back);
       // Idempotent: nothing left, nothing sent.
       await expect(wallet.refundLeftoverEth()).to.changeEtherBalance(owner, 0n);
     });
@@ -1263,12 +1286,9 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       const { aggregator } = await loadFixture(deploy);
       const requester = await (await ethers.getContractFactory("MockRejectingHunter")).deploy();
       const wallet = await (await ethers.getContractFactory("EvaluationWallet")).deploy(requester.target, aggregator.target);
-      const start = wallet.interface.encodeFunctionData("startEvaluation", [
-        [LISTING_CID, BCID], "", 500n, ORACLE.maxOracleFee, 0n, 1n, 133n,
-      ]);
-      await requester.act(wallet.target, start, { value: FEE });
-      await aggregator.setRefundAmount(1000n);
-      await aggregator.scriptResult(await wallet.aggId(), [0, 0, 0, 1_000_000, 0, 0], "QmJustification");
+      const start = wallet.interface.encodeFunctionData("startEvaluation", [[LISTING_CID, BCID], REQUEST]);
+      // 1000 wei over maxTotalFee: the aggregator credits it to the wallet at once.
+      await requester.act(wallet.target, start, { value: FEE + 1000n });
       await requester.setRejecting(true);
       const refund = wallet.interface.encodeFunctionData("refundLeftoverEth");
       await expect(requester.act(wallet.target, refund)).to.be.revertedWith("repatriate failed");

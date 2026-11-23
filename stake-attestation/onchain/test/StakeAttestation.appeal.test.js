@@ -32,7 +32,7 @@ const path = require("path");
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers, network } = hre;
-const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { time, mine, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const { codeReview } = require("@verdikta/common");
 const H = require("./helpers/claims");
 
@@ -41,7 +41,7 @@ const {
   LISTING_CID, DISPUTE_CID, CT_CID, BCID, JUSTIFICATION, ARCHIVE, CT, CK, EK, TOP, AWARDS, BOND,
   ORACLE, DISPUTE_FEE, V, params, freshCommit, atCommit, deployDefaults, eventsOf, blockTime,
   openListing, claimAs, revealAs, revealedClaim, judgeAs, disputeAs, judgeDisputeAs, confirmAs, appealAs,
-  lateClaimAs, recordOf, listingIn, outcomesOf, lateOutcomesOf, findingIds,
+  lateClaimAs, recordOf, listingIn, outcomesOf, lateOutcomesOf, findingIds, roundInfo, QUOTE, quote,
 } = H;
 
 const THRESHOLD = BigInt(T);
@@ -72,16 +72,62 @@ async function judged(sa, aggregator, hunter, listingId, vector, opts = {}) {
   return { claimId, requestId, judgedAt: at };
 }
 
-// A dispute-panel round (here mostly an appeal's) that settles no verdict: timed out (the mock's
-// response timeout) or malformed.
+// ---- the v2 aggregator's rounds (MIGRATION.md), driven through the mock ----
+// A dispute-panel round's clamped fee on the default listing: DF = 18 x PANEL_EFF.
+const PANEL_EFF = ORACLE.disputeMaxOracleFee;
+
+// Mine to the round's block B+2 and draw it as the test's default account (the aggregator's
+// deployer), not the requester: inside the requester's 30 s it earns no reward.
+async function drawDirect(aggregator, requestId) {
+  const r = await roundInfo(aggregator, requestId);
+  const now = BigInt(await ethers.provider.getBlockNumber());
+  if (now < r.requestBlock + 2n) await mine(Number(r.requestBlock + 2n - now));
+  await aggregator.drawJury(requestId);
+}
+
+// A round run as the network runs it, at the mock: drawn once the requester's 30 s are over by the
+// default account (which takes the draw reward), M+ commits, promoted by it (the promote reward),
+// and the N reveals of `vector`. Its jurors post the fee that leaves `leftover` unspent: 15 x
+// (eff - posted), the base fees and bonuses they do not take. At the default, nothing: the whole
+// prepay is spent, as the tests written for the v1 mock (no refund unless one was set) expect.
+// Any msg.value above the escrow was credited to the wallet at the request and comes back too.
+async function runRound(aggregator, requestId, vector, justification = JUSTIFICATION, { leftover = 0n } = {}) {
+  const q = await aggregator.requestParams(requestId);
+  const ceiling = await aggregator.maxOracleFee();
+  const eff = q.maxFee < ceiling ? q.maxFee : ceiling;
+  if (leftover % 15n !== 0n || leftover >= 15n * eff) throw new Error(`no posted fee leaves ${leftover}`);
+  await aggregator.setArbiterFee(eff - leftover / 15n);
+  await time.increase(31);
+  const r = await roundInfo(aggregator, requestId);
+  const now = BigInt(await ethers.provider.getBlockNumber());
+  if (now < r.requestBlock + 2n) await mine(Number(r.requestBlock + 2n - now));
+  await aggregator.drawJury(requestId);
+  await aggregator.scriptCommits(requestId, Number(await aggregator.K()));
+  await mine(1);
+  await aggregator.promote(requestId);
+  const n = Number(await aggregator.N());
+  await aggregator.scriptReveals(requestId, Array.from({ length: n }, () => [...vector].map(BigInt)), justification);
+  await aggregator.setArbiterFee(0n);
+  expect(await H.leftover(aggregator, requestId)).to.equal(leftover);
+}
+
+// A dispute-panel round (here mostly an appeal's) that settles no verdict: no jury answer by its
+// deadline (drawn without a reward, no commits: the aggregator fails it at settle and refunds all
+// but the base fees, 18 - 6 = 12 x PANEL_EFF, to the round's wallet), or a malformed result.
+// Returns the refund that comes back to the round's funder.
 async function failPanelRound(sa, aggregator, claimId, how = "timeout") {
-  const { disputeRequestId } = await sa.getClaim(claimId);
-  if (how === "timeout") await time.increase(300);
-  else await aggregator.scriptResult(disputeRequestId, MALFORMED, JUSTIFICATION);
+  const { disputeRequestId, disputeWallet } = await sa.getClaim(claimId);
+  if (how === "timeout") {
+    await drawDirect(aggregator, disputeRequestId);
+    await time.increaseTo((await roundInfo(aggregator, disputeRequestId)).deadline + 1n);
+  } else {
+    await runRound(aggregator, disputeRequestId, MALFORMED);
+  }
+  const refund = (await aggregator.ethOwed(disputeWallet)) + (how === "timeout" ? await H.leftover(aggregator, disputeRequestId) : 0n);
   const rc = await (await sa.finalize(claimId)).wait();
   expect(eventsOf(sa, rc, "DisputeFailed").map((e) => [e.args.requestId, e.args.malformed]))
     .to.deep.equal([[disputeRequestId, how !== "timeout"]]);
-  return { rc, endedAt: await blockTime(rc) };
+  return { rc, endedAt: await blockTime(rc), refund };
 }
 
 describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E7 (P16)", function () {
@@ -138,13 +184,14 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       const { claimId, requestId: roundId } = await judged(sa, aggregator, hunter, id, V.INVALID);
       const roundWallet = (await sa.getClaim(claimId)).evalWallet;
       await expect(sa.connect(hunter).appeal(claimId, { value: DF - 1n })).to.be.revertedWith("prepay below fee");
-      // The fee is live: it follows the aggregator's multiplier, as disputeFee quotes it.
-      await aggregator.setFeeMultiplier(5n);
+      // The fee is live: it follows the aggregator's settings (here its bonus multiplier), as
+      // disputeFee quotes it.
+      await aggregator.setBonusMultiplier(5);
       const live = await sa.disputeFee(id);
-      expect(live).to.equal(ORACLE.disputeMaxOracleFee * 5n);
+      expect(live).to.equal(quote(PANEL_EFF, { q: { ...QUOTE, B: 5n } }));
       await expect(sa.connect(hunter).appeal(claimId, { value: live - 1n })).to.be.revertedWith("prepay below fee");
       const snap = await snapshot();
-      await aggregator.setFeeMultiplier(0n);
+      await aggregator.setMaxOracleFee(0n); // a ceiling of 0: the quote is 0
       await expect(sa.connect(hunter).appeal(claimId, { value: live })).to.be.revertedWith("bad budget");
       await restore(snap);
 
@@ -155,7 +202,8 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       await expect(tx).to.changeEtherBalances([hunter, sa], [-value, 0n]);
       const ev = eventsOf(sa, await (await tx).wait(), "Appealed")[0];
       expect(ev.args.prepayWei).to.equal(value);
-      expect(await aggregator.ethReceived(ev.args.requestId)).to.equal(value);
+      expect((await roundInfo(aggregator, ev.args.requestId)).received).to.equal(live); // the escrow
+      expect(await aggregator.ethOwed(ev.args.wallet)).to.equal(value - live); // the excess, the wallet's credit
       expect(ev.args.wallet).to.not.equal(roundWallet);
       expect(ev.args.requestId).to.not.equal(roundId);
       expect([...(await sa.walletInfo(ev.args.wallet))]).to.deep.equal([hunter.address, claimId]);
@@ -171,10 +219,9 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       // Inline at finalize.
       const a = await judged(sa, aggregator, hunters[0], id, V.INVALID);
       const leftover = DF / 3n;
-      await aggregator.setRefundAmount(leftover);
       const apA = await appealAs(sa, hunters[0], a.claimId, { value: DF + 7n });
       await expect(sa.connect(other).recoverLeftoverEth(apA.wallet)).to.be.revertedWith("round open");
-      await aggregator.scriptResult(apA.requestId, V.INVALID, JUSTIFICATION);
+      await runRound(aggregator, apA.requestId, V.INVALID, JUSTIFICATION, { leftover });
       const fin = sa.connect(other).finalize(a.claimId);
       await expect(fin).to.emit(sa, "LeftoverRefunded").withArgs(a.claimId, hunters[0].address, leftover + 7n);
       await expect(fin).to.changeEtherBalances([hunters[0], maker, other], [leftover + 7n, 0n, 0n]);
@@ -183,7 +230,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       // Deferred, then recovered by anyone, to the hunter.
       const b = await judged(sa, aggregator, hunters[1], id, V.INVALID);
       const apB = await appealAs(sa, hunters[1], b.claimId);
-      await aggregator.scriptResult(apB.requestId, V.HIGH, JUSTIFICATION);
+      await runRound(aggregator, apB.requestId, V.HIGH, JUSTIFICATION, { leftover });
       await aggregator.setWithdrawBroken(true);
       await expect(sa.connect(other).finalize(b.claimId)).to.emit(sa, "RefundDeferred").withArgs(b.claimId, apB.wallet);
       await aggregator.setWithdrawBroken(false);
@@ -216,9 +263,9 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       expect(parsed.ok).to.equal(true);
       expect(parsed.disclosure).to.deep.equal(disclosure);
       expect(parsed.dispute ?? null).to.equal(null);
-      expect([p.maxFee, p.requestedClass, p.alpha, p.estimatedBaseCost, p.maxFeeBasedScaling])
-        .to.deep.equal([ORACLE.disputeMaxOracleFee, ORACLE.requestedClass, ORACLE.alpha, ORACLE.estimatedBaseCost, ORACLE.maxFeeBasedScaling]);
-      expect(await aggregator.ethReceived(requestId)).to.equal(DF);
+      expect([p.maxFee, p.minFee, p.requestedClass, p.alpha, p.estimatedBaseCost, p.maxFeeBasedScaling, p.withBeacons])
+        .to.deep.equal([ORACLE.disputeMaxOracleFee, ORACLE.minOracleFee, ORACLE.requestedClass, ORACLE.alpha, ORACLE.estimatedBaseCost, ORACLE.maxFeeBasedScaling, ORACLE.withBeacons]);
+      expect((await roundInfo(aggregator, requestId)).received).to.equal(DF);
     });
 
     it("a submission the aggregator refuses: appeal reverts, nothing recorded, and a second attempt inside the window goes through; exactly SUBMISSION_GAS, not caught", async function () {
@@ -316,7 +363,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       await act("disclose", [claimId, CT_CID]);
       await act("reveal", [claimId, BCID, CK, EK]);
       const { requestId } = await sa.getClaim(claimId);
-      await aggregator.scriptResult(requestId, V.INVALID, JUSTIFICATION);
+      await runRound(aggregator, requestId, V.INVALID); // all spent: only the 50 wei above the escrow come back
       await reentrant.setAttack(sa.target, sa.interface.encodeFunctionData("appeal", [claimId]));
       await expect(sa.finalize(claimId)).to.changeEtherBalance(reentrant, 50n);
       expect(await reentrant.attempted()).to.equal(true);
@@ -381,13 +428,12 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       const id = await openListing(sa, maker, params(), { escrow: 2n * TOP });
       const { claimId } = await judged(sa, aggregator, hunter, id, V.INVALID);
       const leftover = DF / 4n;
-      await aggregator.setRefundAmount(leftover);
       const ap = await appealAs(sa, hunter, claimId);
       const escrow = (await sa.getListing(id)).escrowWei;
 
       // Held.
       const snap = await snapshot();
-      await aggregator.scriptResult(ap.requestId, V.INVALID.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, ap.requestId, V.INVALID, JUSTIFICATION, { leftover });
       const fin = sa.connect(other).finalize(claimId);
       await expect(fin).to.emit(sa, "DisputeJudged").withArgs(claimId, id, DisputeResult.Held, Outcome.INVALID, V.INVALID, JUSTIFICATION);
       await expect(fin).to.emit(sa, "LeftoverRefunded").withArgs(claimId, hunter.address, leftover);
@@ -404,7 +450,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       await restore(snap);
 
       // Overturned to HIGH: the award and the bond, and no more.
-      await aggregator.scriptResult(ap.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, ap.requestId, V.HIGH, JUSTIFICATION, { leftover });
       await expect(sa.connect(other).finalize(claimId)).to.emit(sa, "DisputeJudged").withArgs(claimId, id, DisputeResult.Overturned, Outcome.HIGH, V.HIGH, JUSTIFICATION);
       const won = sa.connect(other).settle(claimId);
       await expect(won).to.changeEtherBalances([hunter, maker], [AWARDS[2] + BOND, 0n]);
@@ -431,7 +477,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       ];
       for (const k of cases) {
         const snap = await snapshot();
-        await aggregator.scriptResult(ap.requestId, k.panel.map(BigInt), JUSTIFICATION);
+        await runRound(aggregator, ap.requestId, k.panel);
         await sa.connect(other).finalize(claimId);
         const c = await sa.getClaim(claimId);
         expect([c.dispute, c.outcome], `panel ${k.panel}`).to.deep.equal([DisputeResult.Overturned, k.outcome]);
@@ -455,7 +501,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       const id = await openListing(sa, maker, params(), { escrow: TOP });
       const { claimId } = await judged(sa, aggregator, hunter, id, V.INVALID);
       const ap = await appealAs(sa, hunter, claimId);
-      await aggregator.scriptResult(ap.requestId, V.CRITICAL.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, ap.requestId, V.CRITICAL);
       await sa.connect(other).finalize(claimId);
       const tx = sa.connect(other).settle(claimId);
       await expect(tx).to.emit(sa, "Settled").withArgs(claimId, id, hunter.address, Outcome.CRITICAL, TOP, 0n);
@@ -476,7 +522,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       await revealAs(sa, hunters[1], b.claimId);
       await judgeAs(sa, aggregator, other, b.claimId, V.INVALID);
       const ap = await appealAs(sa, hunters[1], b.claimId);
-      await aggregator.scriptResult(ap.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, ap.requestId, V.HIGH);
       await sa.connect(other).finalize(b.claimId);
       const tx = sa.connect(other).settle(b.claimId);
       await expect(tx).to.emit(sa, "Settled").withArgs(b.claimId, id, hunters[1].address, Outcome.HIGH, AWARDS[1], AWARDS[2] - AWARDS[1]);
@@ -520,10 +566,10 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       const id = await openListing(sa, maker, params(), { escrow: 2n * TOP });
       const { claimId } = await judged(sa, aggregator, hunter, id, V.INVALID);
       const leftover = DF / 5n;
-      await aggregator.setRefundAmount(leftover);
       const first = await appealAs(sa, hunter, claimId);
-      const { rc, endedAt } = await failPanelRound(sa, aggregator, claimId, "timeout");
-      expect(eventsOf(sa, rc, "LeftoverRefunded").map((e) => [e.args.funder, e.args.amountWei])).to.deep.equal([[hunter.address, leftover]]);
+      const { rc, endedAt, refund } = await failPanelRound(sa, aggregator, claimId, "timeout");
+      expect(refund).to.equal(12n * PANEL_EFF); // all but the base fees: no juror committed
+      expect(eventsOf(sa, rc, "LeftoverRefunded").map((e) => [e.args.funder, e.args.amountWei])).to.deep.equal([[hunter.address, refund]]);
       let c = await sa.getClaim(claimId);
       expect([c.state, c.dispute, c.disputeKind, c.outcome, c.appealRetriggered]).to.deep.equal(
         [ClaimState.Judged, DisputeResult.NoVerdict, DisputeKind.Appeal, Outcome.INVALID, false],
@@ -543,7 +589,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       expect(second.wallet).to.not.equal(first.wallet);
       expect(second.requestId).to.not.equal(first.requestId);
       expect([...(await sa.walletInfo(second.wallet))]).to.deep.equal([hunter.address, claimId]);
-      expect(await aggregator.ethReceived(second.requestId)).to.equal(DF);
+      expect((await roundInfo(aggregator, second.requestId)).received).to.equal(DF);
       expect([...(await aggregator.getRequestCids(second.requestId))]).to.deep.equal([...(await aggregator.getRequestCids(first.requestId))]);
       expect((await aggregator.requestParams(second.requestId)).addendum).to.equal((await aggregator.requestParams(first.requestId)).addendum);
       c = await sa.getClaim(claimId);
@@ -560,7 +606,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
         [V.MEDIUM, DisputeResult.Overturned, Outcome.MEDIUM, AWARDS[1] + BOND, 0n, AWARDS[1]],
       ]) {
         const snap = await snapshot();
-        await aggregator.scriptResult(second.requestId, panel.map(BigInt), JUSTIFICATION);
+        await runRound(aggregator, second.requestId, panel, JUSTIFICATION, { leftover });
         const fin = sa.connect(other).finalize(claimId);
         await expect(fin).to.emit(sa, "DisputeJudged").withArgs(claimId, id, result, outcome, panel, JUSTIFICATION);
         await expect(fin).to.emit(sa, "LeftoverRefunded").withArgs(claimId, hunter.address, leftover);
@@ -652,8 +698,9 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
         await expect(sa.connect(who).retrigger(claimId, { value: DF }), who.address).to.be.revertedWith("not hunter");
       }
       await expect(sa.connect(hunter).retrigger(claimId, { value: DF - 1n })).to.be.revertedWith("prepay below fee");
-      await aggregator.setFeeMultiplier(4n);
+      await aggregator.setBonusMultiplier(4); // the live fee rises
       const live = await sa.disputeFee(id);
+      expect(live).to.equal(quote(PANEL_EFF, { q: { ...QUOTE, B: 4n } }));
       expect(await sa.retriggerTopUp(claimId)).to.equal(live);
       await expect(sa.connect(hunter).retrigger(claimId, { value: live - 1n })).to.be.revertedWith("prepay below fee");
 
@@ -717,7 +764,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       for (const k of cases) {
         const snap = await snapshot();
         if (k.panel) {
-          await aggregator.scriptResult(ap.requestId, k.panel.map(BigInt), JUSTIFICATION);
+          await runRound(aggregator, ap.requestId, k.panel);
           await sa.connect(other).finalize(claimId);
           expect((await sa.getClaim(claimId)).dispute, k.name).to.equal(DisputeResult.Held);
         } else {
@@ -744,7 +791,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       const conf = await confirmAs(sa, other, claimId);
       for (const [panel, hunterGets, makerGets] of [[V.INVALID, 0n, BOND], [invalidWith(400_000), BOND, 0n]]) {
         const snap = await snapshot();
-        await aggregator.scriptResult(conf.requestId, panel.map(BigInt), JUSTIFICATION);
+        await runRound(aggregator, conf.requestId, panel);
         await sa.connect(other).finalize(claimId);
         const c = await sa.getClaim(claimId);
         expect([c.dispute, c.outcome, c.disputeKind]).to.deep.equal([DisputeResult.Overturned, Outcome.INVALID, DisputeKind.Confirmation]);
@@ -803,7 +850,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
         await expect(sa.connect(other).settle(claimId)).to.be.revertedWith("appeal window open");
         const ap = await appealAs(sa, hunter, claimId);
         if (k.panel) {
-          await aggregator.scriptResult(ap.requestId, k.panel.map(BigInt), JUSTIFICATION);
+          await runRound(aggregator, ap.requestId, k.panel);
           await sa.connect(other).finalize(claimId);
         } else {
           await failPanelRound(sa, aggregator, claimId, "timeout");
@@ -925,9 +972,9 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       expect(await views(claimId)).to.deep.equal([0n, 0n, 0n, 0n]);
       const { endedAt } = await failPanelRound(sa, aggregator, claimId, "timeout");
       expect(await views(claimId)).to.deep.equal([0n, endedAt + REVEAL, DF, endedAt + REVEAL]);
-      await aggregator.setFeeMultiplier(6n);
-      expect((await views(claimId))[2]).to.equal(ORACLE.disputeMaxOracleFee * 6n);
-      await aggregator.setFeeMultiplier(3n);
+      await aggregator.setBonusMultiplier(6);
+      expect((await views(claimId))[2]).to.equal(quote(PANEL_EFF, { q: { ...QUOTE, B: 6n } }));
+      await aggregator.setBonusMultiplier(3);
       await appealAs(sa, hunter, claimId, { retrigger: true });
       expect(await views(claimId)).to.deep.equal([0n, 0n, 0n, 0n]);
       const { endedAt: second } = await failPanelRound(sa, aggregator, claimId, "timeout");
@@ -952,7 +999,8 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
         "confirmationsNoVerdict", "appealsFiled", "appealsHeld", "appealsOverturned", "appealsNoVerdict",
         "lateAppealsFiled", "lateAppealsHeld", "lateAppealsOverturned", "lateAppealsNoVerdict",
       ]);
-      expect(claim.slice(claim.indexOf("disputeKind"))).to.deep.equal(["disputeKind", "appealRetriggered"]);
+      // juryAnswered: the v2 port's (erratum E6's bond rule), appended after this node's.
+      expect(claim.slice(claim.indexOf("disputeKind"))).to.deep.equal(["disputeKind", "appealRetriggered", "juryAnswered"]);
       const record = sa.interface.getFunction("recordByHash").outputs[0].components;
       const history = record.find((c) => c.name === "history").components.map((c) => c.name);
       expect(history.slice(history.indexOf("lateNarrowInvalid"))).to.deep.equal([

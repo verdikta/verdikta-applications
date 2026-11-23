@@ -100,6 +100,11 @@ contract StakeAttestation is Ownable2Step {
         uint256 estimatedBaseCost;   // wei, below both fees; price-boost baseline (0 disables it)
         uint256 alpha;               // 0..MAX_ALPHA, quality-vs-timeliness blend in selection
         uint256 maxFeeBasedScaling;  // 1..MAX_FEE_SCALING_FACTOR, caps the price boost (1 disables it)
+        // The v2 aggregator's two request settings, terms of the listing like the rest:
+        uint256 minOracleFee;        // fee floor (wei; 0 = none): every juror (and beacon) of every
+                                     // round, claim or dispute panel, is paid at least this. It may
+                                     // exceed the ceiling; the prepay is quoted with it (maxTotalFee)
+        bool    withBeacons;         // request the beacon stage (the draw then takes two calls)
     }
 
     /// @notice Everything list() takes besides the archives and the known issues.
@@ -171,7 +176,7 @@ contract StakeAttestation is Ownable2Step {
         uint32[6] outcomeCounts;     // settled claims by Outcome
         uint64  owedCursor;          // _owedClaims[listingId] index of the first claim still owed
         // failed rounds and disputes (P2d)
-        uint64  noVerdictClaims;     // expired after failed rounds (Expiry.RoundsFailed or SubmissionsRefused)
+        uint64  noVerdictClaims;     // expired after failed rounds (Expiry.RoundsFailed, SubmissionsRefused or RoundsUnanswered)
         uint64  disputesFiled;
         uint64  disputesHeld;        // the panel confirmed the outcome: failed disputes (design §13.2)
         uint64  disputesOverturned;  // the panel's different outcome replaced the first
@@ -219,10 +224,14 @@ contract StakeAttestation is Ownable2Step {
     enum ClaimState { Committed, Revealable, Revealed, Judged, Disputed, Settled, Expired, RoundFailed }
 
     /// @notice Why a claim expired. The listing counts each (undisclosedClaims, unrevealedClaims,
-    ///         noVerdictClaims for the last two). Erratum E6, the bond follows the round:
-    ///         RoundsFailed (some attempt's round ran, none settled a verdict: bond to the maker)
-    ///         and SubmissionsRefused (the aggregator refused every attempt: bond back).
-    enum Expiry { None, Undisclosed, Unrevealed, RoundsFailed, SubmissionsRefused }
+    ///         noVerdictClaims for the last three). Erratum E6, the bond follows the rounds (as
+    ///         the v2 aggregator lets them be told apart, ClaimLogic.expire): RoundsFailed (some
+    ///         round's jury answered with a result that is no verdict: bond to the maker),
+    ///         SubmissionsRefused (the aggregator refused every attempt: bond back) and
+    ///         RoundsUnanswered (rounds ran, but each ended at the aggregator with no result:
+    ///         never drawn or cancelled, beacon quorum missed, pool shortage, too few commits or
+    ///         reveals, never promoted: bond back). Order is ABI: append only.
+    enum Expiry { None, Undisclosed, Unrevealed, RoundsFailed, SubmissionsRefused, RoundsUnanswered }
 
     /// @notice How a claim's dispute stands (design §13.2). Pending while its round is open;
     ///         then Held (the panel returned the same outcome: the record's failed dispute),
@@ -294,7 +303,7 @@ contract StakeAttestation is Ownable2Step {
         // failed rounds (P2d, erratum E6)
         uint64  failedAt;            // when the claim first entered RoundFailed (0 = never); the
                                      // re-trigger window runs revealWindow from it, never reset
-        bool    roundStarted;        // some attempt's request was accepted: a round ran
+        bool    roundStarted;        // some attempt's request was accepted: a round ran (see juryAnswered)
         // dispute (P2d); outcome, vector and judgedAt above stay the verdict settle applies
         DisputeResult dispute;
         Outcome disputedOutcome;     // the first verdict's outcome, which the maker disputed
@@ -308,6 +317,8 @@ contract StakeAttestation is Ownable2Step {
         DisputeKind disputeKind;     // whose dispute-panel round the dispute fields describe
         // the hunter's appeal (P16, erratum E7)
         bool    appealRetriggered;   // the appeal's one re-trigger has been used
+        // the v2 aggregator (erratum E6's bond rule, ClaimLogic.expire)
+        bool    juryAnswered;        // a claim round's jury returned a result that is no verdict
     }
 
     // ------------------------------------------------------------------
@@ -700,8 +711,8 @@ contract StakeAttestation is Ownable2Step {
     event SubmissionFailed(uint256 indexed claimId, address wallet, bytes reason);
 
     /// @notice The claim expired. Undisclosed, Unrevealed and RoundsFailed: the bond went to the
-    ///         maker; SubmissionsRefused: back to the hunter. Any prepay still held went back to
-    ///         the hunter.
+    ///         maker; SubmissionsRefused and RoundsUnanswered: back to the hunter. Any prepay
+    ///         still held went back to the hunter.
     event Expired(uint256 indexed claimId, uint256 indexed listingId, Expiry reason);
 
     /// @notice finalize read a verdict: the claim is Judged and the dispute window runs from now:
@@ -709,8 +720,10 @@ contract StakeAttestation is Ownable2Step {
     ///         E7; settled at once only by the hunter). A DUPLICATE may be settled at once.
     event Judged(uint256 indexed claimId, uint256 indexed listingId, Outcome outcome, uint32[6] vector, string justificationCid);
 
-    /// @notice finalize found the round over without a verdict: no result (timed out), or a
-    ///         result that is no verdict (`malformed`). The claim is RoundFailed (erratum E6).
+    /// @notice finalize found the round over without a verdict: no result (the aggregator failed
+    ///         or cancelled the round), or a result that is no verdict (`malformed`). The claim is
+    ///         RoundFailed (erratum E6). Not the aggregator's EvaluationFailed(bytes32, uint8),
+    ///         which has the same name: tell them apart by the emitting address.
     event EvaluationFailed(uint256 indexed claimId, uint256 indexed listingId, bytes32 requestId, bool malformed);
 
     /// @notice The claim settled: `paidWei` of its award paid now, `owedWei` still owed.
@@ -1129,8 +1142,13 @@ contract StakeAttestation is Ownable2Step {
     ///           expires while commit order forbids its reveal.
     ///         - A failed round (erratum E6): from revealWindow after the claim first entered
     ///           RoundFailed, when the hunter can no longer retrigger. The bond follows the
-    ///           round: to the maker if any attempt's round ran (RoundsFailed), back to the hunter
-    ///           only if the aggregator refused every attempt (SubmissionsRefused).
+    ///           rounds: to the maker if some round's jury answered with a result that is no
+    ///           verdict (RoundsFailed); back to the hunter if every round that ran ended at the
+    ///           aggregator with no result (RoundsUnanswered: never drawn or cancelled, beacon
+    ///           quorum missed, pool shortage, too few commits or reveals, never promoted: none
+    ///           of it the hunter's doing, and on the v2 aggregator a jury that does not commit is
+    ///           indistinguishable from one that abstains), or if the aggregator refused every
+    ///           attempt (SubmissionsRefused).
     function expire(uint256 claimId) external nonReentrant {
         Claim storage c = _mustClaim(claimId);
         (address bondTo, uint256 bond, uint256 prepay) = ClaimLogic.expire(_claims, _listings[c.listingId], claimId);
@@ -1248,12 +1266,28 @@ contract StakeAttestation is Ownable2Step {
     //                    judgement and settlement (P2c)
     // ------------------------------------------------------------------
 
+    /// @notice Draw the jury of a claim's open round on the v2 aggregator (its claim round while
+    ///         Revealed, its dispute-panel round while Disputed). Anyone may call; the site's
+    ///         keeper does. It calls the round's EvaluationWallet, the round's requester, so the
+    ///         draw reward (2 x the clamped fee; the requester's alone for 30 s after the request,
+    ///         or after the beacon quorum, anyone's after) is credited to the wallet and comes back
+    ///         to the round's funder with its leftover. The aggregator decides when: from block
+    ///         B+2, within a day of the request (after that the round can only be cancelled, its
+    ///         whole prepay to the treasury, and finalize reads it as failed); with beacons the
+    ///         first call starts the beacon stage and a second draws. Its revert is passed on.
+    function drawJury(uint256 claimId) external nonReentrant {
+        ClaimLogic.drawJury(_mustClaim(claimId));
+    }
+
     /// @notice Read a Revealed or Disputed claim's open round from the aggregator (erratum E4: it
     ///         never calls back) and judge it. Anyone may call; the site's keeper does. Reverts
     ///         "evaluation not ready" while the round is open; otherwise never fails on the
-    ///         round's content. A claim round: a verdict makes the claim Judged (outcome by
-    ///         ClaimRules.judge; the dispute window starts), a round over without one (timed out,
-    ///         or a vector of the wrong length or sum) makes it RoundFailed. A dispute-panel round
+    ///         round's content. It first tries the aggregator's settle (a drawn round past its
+    ///         deadline fails) and cancelUnsealed (a round that can never be drawn), so a dead
+    ///         round needs no other call. A claim round: a verdict makes the claim Judged (outcome
+    ///         by ClaimRules.judge; the dispute window starts), a round over without one (failed
+    ///         or cancelled at the aggregator, or a result of the wrong length or sum: a
+    ///         one-number answer is no verdict) makes it RoundFailed. A dispute-panel round
     ///         (the maker's dispute, a confirmation or the hunter's appeal; the second finalize,
     ///         final): a verdict replaces the first (Held or Overturned) and the claim settles at
     ///         once; none leaves the first standing (NoVerdict), and a claim above the listing's

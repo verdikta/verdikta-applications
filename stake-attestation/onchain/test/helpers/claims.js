@@ -4,7 +4,7 @@
 // test/fixtures/code-review/code_review.bug.json stake block.
 const hre = require("hardhat");
 const { ethers } = hre;
-const { time } = require("@nomicfoundation/hardhat-network-helpers");
+const { time, mine } = require("@nomicfoundation/hardhat-network-helpers");
 const { linkedFactory } = require("./linked");
 
 const { parseEther, ZeroAddress, ZeroHash, sha256, toUtf8Bytes } = ethers;
@@ -16,7 +16,9 @@ const OUTCOME_NAMES = ["INVALID", "DUPLICATE", "LOW", "MEDIUM", "HIGH", "CRITICA
 const ClaimState = {
   Committed: 0n, Revealable: 1n, Revealed: 2n, Judged: 3n, Disputed: 4n, Settled: 5n, Expired: 6n, RoundFailed: 7n,
 };
-const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n, RoundsFailed: 3n, SubmissionsRefused: 4n };
+const Expiry = { None: 0n, Undisclosed: 1n, Unrevealed: 2n, RoundsFailed: 3n, SubmissionsRefused: 4n, RoundsUnanswered: 5n };
+// The v2 aggregator's round phases (getRoundInfo).
+const Phase = { Draw: 1n, Beacons: 2n, Commit: 3n, Closing: 4n, Reveal: 5n, Final: 6n, Settled: 7n, Failed: 8n, Cancelled: 9n };
 const DisputeResult = { None: 0n, Pending: 1n, Held: 2n, Overturned: 3n, NoVerdict: 4n };
 // Which dispute-panel round a claim's dispute fields describe (errata E7-E9): the maker's dispute,
 // the escrow's confirmation (P17), the hunter's appeal (P16).
@@ -59,9 +61,21 @@ const ORACLE = {
   estimatedBaseCost: parseEther("0.000001"),
   alpha: 500n,
   maxFeeBasedScaling: 1n,
+  minOracleFee: 0n, // the v2 fee floor: none
+  withBeacons: false,
 };
-const FEE = ORACLE.maxOracleFee * 3n; // the mock's maxTotalFee: min(fee, ceiling) * 3
-const DISPUTE_FEE = ORACLE.disputeMaxOracleFee * 3n; // the same for the dispute panel's fee
+// The v2 mock's maxTotalFee at its defaults, no floor, no beacons: eff x (K + B x P) + eff x (draw
+// + promote rewards) = eff x (6 + 3 x 3 + 2 + 1) = 18 eff, eff = min(fee, ceiling). quote() is
+// the formula; a test that moves the aggregator's settings reads the live quote (commitPrice,
+// disputeFee) instead, and "FEE is the live quote" holds the two equal.
+const QUOTE = { K: 6n, B: 3n, P: 3n, DRAW: 2n, PROMOTE: 1n };
+function quote(fee, { ceiling = parseEther("0.0004"), minFee = 0n, beacons = 0n, q = QUOTE } = {}) {
+  const eff = fee < ceiling ? fee : ceiling;
+  const juror = minFee > eff ? minFee : eff;
+  return juror * (q.K + q.B * q.P + beacons) + eff * (q.DRAW + q.PROMOTE);
+}
+const FEE = quote(ORACLE.maxOracleFee);
+const DISPUTE_FEE = quote(ORACLE.disputeMaxOracleFee); // the same for the dispute panel's fee
 
 // The six one-hot verdicts and a few named vectors (order INVALID, DUPLICATE, LOW..CRITICAL).
 const oneHot = (i) => OUTCOME_NAMES.map((_, k) => (k === i ? SCALE : 0));
@@ -189,9 +203,56 @@ async function revealedClaim(sa, hunter, listingId, opts = {}) {
   return { claimId, requestId, rc };
 }
 
-// the jury's vector arrives at the aggregator (the round finalizes there); then finalize
+// ---- the v2 aggregator's round, driven through the mock's hooks ----
+
+// The round a claim has open: its claim round while Revealed, its dispute-panel round while Disputed.
+async function openRequestId(sa, claimId) {
+  const c = await sa.getClaim(claimId);
+  return c.state === ClaimState.Disputed ? c.disputeRequestId : c.requestId;
+}
+
+// getRoundInfo as an object.
+async function roundInfo(aggregator, requestId) {
+  const r = await aggregator.getRoundInfo(requestId);
+  return {
+    phase: r.phase, requestBlock: r.requestBlock, sealedHash: r.sealedHash, closeBlock: r.closeBlock,
+    received: r.received, baseFees: r.baseFees, bonuses: r.bonuses, rewards: r.rewards,
+    deadline: r.deadline, windowEnd: r.windowEnd, commits: r.commits, requestTime: r.requestTime,
+  };
+}
+
+// What the round has not spent (the refund at its end, to the requester or the treasury).
+async function leftover(aggregator, requestId) {
+  const r = await roundInfo(aggregator, requestId);
+  return r.received - r.baseFees - r.bonuses - r.rewards;
+}
+
+// Draw a claim's open round through StakeAttestation.drawJury (the wallet earns the reward):
+// mine to block B+2 first. A round already drawn is left alone. With beacons this only starts
+// the stage (scriptBeacons, then draw again).
+async function drawAs(sa, aggregator, claimId, caller) {
+  const requestId = await openRequestId(sa, claimId);
+  const r = await roundInfo(aggregator, requestId);
+  if (r.phase !== Phase.Draw && r.phase !== Phase.Beacons) return requestId;
+  const now = BigInt(await ethers.provider.getBlockNumber());
+  if (now < r.requestBlock + 2n) await mine(Number(r.requestBlock + 2n - now));
+  await (caller ? sa.connect(caller) : sa).drawJury(claimId);
+  return requestId;
+}
+
+// Draw a claim's open round, then let its deadline pass: finalize then settles it at the
+// aggregator, a failed round (refund to the requester: too few commits).
+async function expireRound(sa, aggregator, claimId) {
+  const requestId = await drawAs(sa, aggregator, claimId);
+  const { deadline } = await roundInfo(aggregator, requestId);
+  const now = BigInt(await time.latest());
+  if (now <= deadline) await time.increaseTo(deadline + 1n);
+  return requestId;
+}
+
+// the jury's vector arrives at the aggregator (drawn first; the round finalizes there); then finalize
 async function judgeAs(sa, aggregator, caller, claimId, vector, justification = JUSTIFICATION) {
-  const { requestId } = await sa.getClaim(claimId);
+  const requestId = await drawAs(sa, aggregator, claimId);
   await aggregator.scriptResult(requestId, vector.map(BigInt), justification);
   const rc = await (await sa.connect(caller).finalize(claimId)).wait();
   return { rc, at: await blockTime(rc) };
@@ -208,7 +269,7 @@ async function disputeAs(sa, maker, claimId, { statementCid = STATEMENT_CID, val
 
 // the dispute panel's vector arrives at the aggregator; then the second finalize
 async function judgeDisputeAs(sa, aggregator, caller, claimId, vector, justification = JUSTIFICATION) {
-  const { disputeRequestId } = await sa.getClaim(claimId);
+  const disputeRequestId = await drawAs(sa, aggregator, claimId);
   await aggregator.scriptResult(disputeRequestId, vector.map(BigInt), justification);
   const rc = await (await sa.connect(caller).finalize(claimId)).wait();
   return { rc, at: await blockTime(rc) };
@@ -269,7 +330,8 @@ const findingIds = (r) => [...r.findings].map((f) => f.claimId);
 const flagIds = (r) => [...r.flags].map((f) => f.claimId);
 
 module.exports = {
-  ListingState, Outcome, OUTCOME_NAMES, ClaimState, Expiry, DisputeResult, DisputeKind,
+  ListingState, Outcome, OUTCOME_NAMES, ClaimState, Expiry, DisputeResult, DisputeKind, Phase, QUOTE, quote,
+  openRequestId, roundInfo, leftover, drawAs, expireRound,
   HOUR, DAY, FIX, DISPUTE, GRACE, REVEAL, SCALE, T,
   LISTING_CID, DISPUTE_CID, CT_CID, BCID, JUSTIFICATION, STATEMENT_CID, REPO, COMMIT,
   ARCHIVE, CT, CK, EK, LISTING_FEE, AWARDS, TOP, BOND, ORACLE, FEE, DISPUTE_FEE, V, oneHot,

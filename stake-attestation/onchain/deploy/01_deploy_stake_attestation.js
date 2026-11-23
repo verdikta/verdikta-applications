@@ -73,12 +73,22 @@ function configFromEnv(network, env = process.env) {
   };
 }
 
-/** Refuse an aggregator address with no contract, or one that does not answer maxOracleFee(). */
+/**
+ * Refuse an aggregator address with no contract, or one that is not a v2 ReputationAggregator: it
+ * must answer maxOracleFee() and the v2 quote, maxTotalFee(fee, floor, withBeacons). A v1
+ * aggregator (maxTotalFee(fee) only) reverts on the three-argument call.
+ */
 async function checkAggregator(hre, address) {
   const code = await hre.ethers.provider.getCode(address);
   if (code === "0x") throw new Error(`There is no contract at the aggregator address ${address}`);
   const aggregator = await hre.ethers.getContractAt("IVerdiktaAggregator", address);
-  return aggregator.maxOracleFee();
+  const ceiling = await aggregator.maxOracleFee();
+  try {
+    await aggregator.maxTotalFee(ceiling, 0, false);
+  } catch {
+    throw new Error(`The aggregator at ${address} does not answer the v2 maxTotalFee(fee, floor, withBeacons): not a v2 ReputationAggregator`);
+  }
+  return ceiling;
 }
 
 /**

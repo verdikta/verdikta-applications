@@ -35,8 +35,8 @@ export const SAFETY_MARGIN_MS = 3_000;
 
 // Gas for finalizeEvaluationTimeout(). The call updates the reputation score of every
 // arbiter that did not answer, so it is not cheap. On forks of Base mainnet and Base
-// Sepolia on 2026-11-22 (6 arbiters polled, none answered) it used between 1.45 and
-// 1.89 million gas in five runs, the node's estimate was up to 2.13 million, and a
+// Sepolia on 2026-11-22 (6 arbiters polled, none answered) it used between 1.44 and
+// 1.89 million gas in ten runs, the node's estimate was up to 2.15 million, and a
 // limit of 900,000 ran out of gas. Those score updates run inside try/catch, where a
 // limit that is only just enough can let an update fail quietly, so the page sends the
 // estimate plus 50% and never less than the floor.

@@ -8,7 +8,7 @@
  * Why this exists: ingest authenticates an event by recovering its EIP-191
  * signer and requiring it to equal the operator contract's on-chain `owner()`.
  * Operators commonly run their nodes with a separate ops wallet — the owner
- * key controls the wVDKA stake, `deregisterOracle`, and ETH earnings, so
+ * key controls the wVDKA stake, the keeper exit and fee controls, and ETH earnings, so
  * copying it onto an internet-facing box just to send a health ping is a bad
  * trade. Those nodes sign with a key the server doesn't recognize and every
  * heartbeat is dropped with a 403, so the arbiter silently shows as "not

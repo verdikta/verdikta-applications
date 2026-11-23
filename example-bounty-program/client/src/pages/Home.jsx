@@ -672,9 +672,13 @@ function JobCard({ job, ethPrice, registryClassIds }) {
   const pendingEvaluationCount = (job.submissions || []).filter(
     s => isSubmissionOnChain(s.status) && isSubmissionPending(s.status)
   ).length;
+  // v2 (item 12): a soft fail / no-result round to finalize or close, or a re-run awaited
+  const hasRoundToResolve = (job.submissions || []).some(
+    s => ['SOFT_FAIL_PENDING_FINALIZATION', 'NO_RESULT_PENDING_CLOSE', 'AWAITING_RERUN'].includes(s.status)
+  );
   const hasIncompleteEvaluation = pendingEvaluationCount > 0;
   const hasPendingEvaluation = hasIncompleteEvaluation ||
-    hasAcceptedPendingClaim || hasRejectedPendingFinalization;
+    hasAcceptedPendingClaim || hasRejectedPendingFinalization || hasRoundToResolve;
 
   // How long ago the bounty expired (negative timeRemaining means expired)
   const minutesSinceExpiry = timeRemaining < 0 ? Math.abs(timeRemaining) / 60 : 0;

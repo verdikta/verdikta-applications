@@ -8,6 +8,20 @@ const CONTRACTS_FILE_PATH = path.resolve(__dirname, '../data/contracts.json');
 const DATA_DIR = path.dirname(CONTRACTS_FILE_PATH);
 const CLIENT_ENV_PATH = path.resolve(__dirname, '../../client/.env');
 
+// No aggregator address is built in. This app speaks the v2 ReputationAggregator only; the
+// v1 aggregators it used to fall back to do not accept v2 requests.
+// TODO(v2 deploy): once the v2 aggregators are deployed, put their addresses in
+// client/.env (REACT_APP_CONTRACT_ADDRESSES), or set DEFAULT_AGGREGATOR_ADDRESS here in the
+// server's environment to give the server a fallback.
+function defaultContracts(network) {
+  const address = (process.env.DEFAULT_AGGREGATOR_ADDRESS || '').trim();
+  if (!isValidEthereumAddress(address)) {
+    console.warn('No aggregator configured: set REACT_APP_CONTRACT_ADDRESSES in client/.env to the v2 aggregator address(es).');
+    return [];
+  }
+  return [{ address, name: 'Default Contract', class: 128, network }];
+}
+
 /**
  * Imports contracts from the client .env file
  * @returns {Promise<Array>} Array of contract objects
@@ -20,17 +34,10 @@ async function importContractsFromEnv() {
       envContent = await fs.readFile(CLIENT_ENV_PATH, 'utf8');
       console.log('Found .env file for importing contracts');
     } catch (error) {
-      console.log('No .env file found for import, using default contract');
+      console.log('No .env file found for import, using the default contract if one is configured');
       // Get default network from env or fall back to base_sepolia
       const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
-      return [
-        {
-          address: "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
-          name: "Default Contract",
-          class: 128,
-          network: defaultNetwork
-        }
-      ];
+      return defaultContracts(defaultNetwork);
     }
 
     // Parse the .env file
@@ -42,15 +49,8 @@ async function importContractsFromEnv() {
     const currentNetwork = envVars.REACT_APP_NETWORK || 'base_sepolia';
 
     if (addresses.length === 0) {
-      console.log('No contract addresses found in .env, using default contract');
-      return [
-        {
-          address: "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
-          name: "Default Contract",
-          class: 128,
-          network: currentNetwork
-        }
-      ];
+      console.log('No contract addresses found in .env, using the default contract if one is configured');
+      return defaultContracts(currentNetwork);
     }
 
     // Create contract objects from the addresses, names, and classes
@@ -65,19 +65,20 @@ async function importContractsFromEnv() {
       };
     });
 
-    console.log(`Imported ${contracts.length} contracts from .env file with network: ${currentNetwork}`);
-    return contracts;
+    // Skip anything that is not an address, such as the placeholders in .env.example that
+    // stand for the v2 aggregator addresses until they are filled in.
+    const valid = contracts.filter((c) => {
+      if (isValidEthereumAddress(c.address)) return true;
+      console.warn(`Skipping "${c.address}" from .env: not an address (a placeholder to fill in after the v2 deploy?)`);
+      return false;
+    });
+
+    console.log(`Imported ${valid.length} contracts from .env file with network: ${currentNetwork}`);
+    return valid;
   } catch (error) {
     console.error('Error importing contracts from .env:', error);
     const defaultNetwork = process.env.REACT_APP_NETWORK || 'base_sepolia';
-    return [
-      {
-        address: "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
-        name: "Default Contract",
-        class: 128,
-        network: defaultNetwork
-      }
-    ];
+    return defaultContracts(defaultNetwork);
   }
 }
 
@@ -231,14 +232,8 @@ async function loadContracts() {
     return jsonContracts;
   } catch (error) {
     console.error('Error loading contracts:', error);
-    // Return default contract in case of error
-    return [
-      {
-        address: "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
-        name: "Default Contract",
-        class: 128
-      }
-    ];
+    // Return the default contract (if one is configured) in case of error
+    return defaultContracts(process.env.REACT_APP_NETWORK || 'base_sepolia');
   }
 }
 

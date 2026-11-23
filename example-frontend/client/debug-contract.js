@@ -1,46 +1,68 @@
 #!/usr/bin/env node
 
-// Debug script for the ETH-funded ReputationAggregator.
+// Debug script for the v2 ETH-funded ReputationAggregator.
 // Arbiters are paid in ETH (not LINK): requestAIEvaluationWithApproval is payable and the
-// requester prepays maxTotalFee() in msg.value; unspent ETH is refunded as an on-chain
-// ethOwed credit. So this script checks the requester's ETH balance + ethOwed credit vs.
-// the worst-case prepay, then dry-runs the payable request — there is no LINK to inspect.
+// requester prepays maxTotalFee(maxFee, minFee, withBeacons); msg.value comes first and the
+// requester's ethOwed credit covers any shortfall. Unspent ETH comes back as ethOwed credit.
+// This script checks the requester's ETH balance + ethOwed credit vs. the worst-case prepay,
+// then dry-runs the 9-argument payable request. There is no LINK to inspect.
 //
-// Usage: node debug-contract.js <contract_address> <wallet_address> <class> [rpc_url]
+// A v2 request does not draw the jury: the requester then sends drawJury(aggId) from block
+// B+2 and promote(aggId) after the commit phase (the Run Query page does this), so an empty
+// arbiter pool does not show up in this dry run.
+//
+// Usage: node debug-contract.js <contract_address> <wallet_address> <class> [rpc_url] [min_fee_eth] [with_beacons]
+//   contract_address may be "env" to use AGGREGATOR_ADDRESS from the environment.
 //   rpc_url defaults to Base Sepolia. For mainnet pass https://mainnet.base.org.
+//   No v2 aggregator address is filled in here: use the one your deployment published.
 
 const { ethers } = require('ethers');
 
 const CONTRACT_ABI = [
-  // Legacy view: still present on the ETH contract; linkAddr is informational only now.
-  "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 currentFee)",
-  "function responseTimeoutSeconds() view returns (uint256)",
-  "function maxTotalFee(uint256 maxFee) view returns (uint256)",
-  "function maxOracleFee() view returns (uint256)",
-  "function ethOwed(address) view returns (uint256)",
+  'function K() view returns (uint8)',
+  'function M() view returns (uint8)',
+  'function N() view returns (uint8)',
+  'function P() view returns (uint8)',
+  'function tPlus() view returns (uint40)',
+  'function responseTimeoutSeconds() view returns (uint40)',
+  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) view returns (uint256)',
+  'function maxOracleFee() view returns (uint256)',
+  'function ethOwed(address) view returns (uint256)',
   // The payable request entry point we want to dry-run.
-  "function requestAIEvaluationWithApproval(string[] memory cidArray, string memory textAddendum, uint256 alpha, uint256 maxFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 class) payable returns (bytes32)"
+  'function requestAIEvaluationWithApproval(string[] cids, string addendumText, uint256 alpha, uint256 maxFee, uint256 minFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 requestedClass, bool withBeacons) payable returns (bytes32)',
+  'error BadInput()',
+  'error KeeperNotSet()',
+  'error InsufficientPayment()',
 ];
 
 async function debugContract() {
   const args = process.argv.slice(2);
   if (args.length < 3) {
-    console.log('Usage: node debug-contract.js <contract_address> <wallet_address> <class> [rpc_url]');
-    console.log('Example (testnet): node debug-contract.js 0xe8a385E473EA710c5a88Cc72681a16a26fe380e4 0xYourWallet 128');
-    console.log('Example (mainnet): node debug-contract.js 0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a 0xYourWallet 128 https://mainnet.base.org');
+    console.log('Usage: node debug-contract.js <contract_address|env> <wallet_address> <class> [rpc_url] [min_fee_eth] [with_beacons]');
+    console.log('Example (testnet): node debug-contract.js <v2 aggregator address> 0xYourWallet 128');
+    console.log('Example (mainnet): AGGREGATOR_ADDRESS=<v2 aggregator address> node debug-contract.js env 0xYourWallet 128 https://mainnet.base.org');
+    console.log('Example (fee floor 0.0002 ETH, beacons on): node debug-contract.js <v2 aggregator address> 0xYourWallet 128 "" 0.0002 true');
     process.exit(1);
   }
 
-  const [contractAddr, walletAddr, classNum, rpcArg] = args;
+  const [contractArg, walletAddr, classNum, rpcArg, minFeeArg, beaconsArg] = args;
+  const contractAddr = contractArg === 'env' ? process.env.AGGREGATOR_ADDRESS : contractArg;
+  if (!contractAddr || !ethers.isAddress(contractAddr)) {
+    console.log('❌ No valid aggregator address. Pass the v2 aggregator address, or "env" with AGGREGATOR_ADDRESS set.');
+    process.exit(1);
+  }
   const contractClass = parseInt(classNum);
   const rpcUrl = rpcArg || 'https://sepolia.base.org';
+  const testMinFee = minFeeArg ? ethers.parseEther(minFeeArg) : 0n; // fee floor (0 = none)
+  const testWithBeacons = beaconsArg === 'true';
 
-  console.log('🔍 Debugging ETH-funded Aggregator Contract');
+  console.log('🔍 Debugging the v2 ETH-funded Aggregator Contract');
   console.log('===========================================');
   console.log(`Contract: ${contractAddr}`);
   console.log(`Wallet:   ${walletAddr}`);
   console.log(`Class:    ${contractClass}`);
   console.log(`RPC:      ${rpcUrl}`);
+  console.log(`Fee floor: ${ethers.formatEther(testMinFee)} ETH, beacons: ${testWithBeacons}`);
   console.log('');
 
   try {
@@ -57,13 +79,16 @@ async function debugContract() {
     console.log('📋 CONTRACT CONFIGURATION');
     console.log('========================');
     try {
-      const config = await contract.getContractConfig();
-      console.log(`✅ LINK Token Address (informational): ${config.linkAddr}`);
-      console.log(`✅ Response Timeout: ${await contract.responseTimeoutSeconds()} seconds`);
-      const ceiling = await contract.maxOracleFee().catch(() => null);
-      if (ceiling != null) console.log(`✅ Max Oracle Fee ceiling: ${ethers.formatEther(ceiling)} ETH`);
+      const [K, M, N, P, tPlus, timeout, ceiling] = await Promise.all([
+        contract.K(), contract.M(), contract.N(), contract.P(),
+        contract.tPlus(), contract.responseTimeoutSeconds(), contract.maxOracleFee(),
+      ]);
+      console.log(`✅ Round size: K=${K} drawn, M=${M} promoted, N=${N} reveals finalize, P=${P} cluster`);
+      console.log(`✅ Commit window (T+): ${tPlus} s; round deadline: ${timeout} s after the draw`);
+      console.log(`✅ Max Oracle Fee ceiling: ${ethers.formatEther(ceiling)} ETH`);
     } catch (err) {
-      console.log(`❌ Error getting contract config: ${err.message}`);
+      // v1 has none of these getters
+      console.log(`❌ Not a v2 aggregator (or not reachable): ${err.message}`);
     }
 
     console.log('');
@@ -80,9 +105,9 @@ async function debugContract() {
     const testMaxFee = ethers.parseUnits("0.0001", 18); // typical arbiter fee (ETH)
     let valueToAttach = 0n;
     try {
-      const totalFee = await contract.maxTotalFee(testMaxFee);
+      const totalFee = await contract.maxTotalFee(testMaxFee, testMinFee, testWithBeacons);
       valueToAttach = totalFee > credit ? totalFee - credit : 0n;
-      console.log(`✅ Worst-case prepay (maxTotalFee): ${ethers.formatEther(totalFee)} ETH`);
+      console.log(`✅ Worst-case prepay (maxTotalFee(maxFee, minFee, withBeacons)): ${ethers.formatEther(totalFee)} ETH`);
       console.log(`✅ ETH to attach (after credit):    ${ethers.formatEther(valueToAttach)} ETH`);
       if (ethBalance < valueToAttach) {
         console.log(`❌ INSUFFICIENT ETH!`);
@@ -112,18 +137,21 @@ async function debugContract() {
         testAddendum,
         testAlpha,
         testMaxFee,
+        testMinFee,
         testEstimatedBaseCost,
         testScalingFactor,
         contractClass,
+        testWithBeacons,
         { value: valueToAttach, from: walletAddr }
       );
 
       console.log('✅ Dry run successful - transaction should work');
     } catch (err) {
       console.log(`❌ Dry run failed: ${err.message}`);
-      console.log('   Likely causes: no active arbiters for this class, the fee ceiling excluded them,');
-      console.log('   or insufficient attached value. Try a different class.');
-      // Decode a custom error if present (e.g. InactiveOracle, BadSelectionCount, InsufficientPayment).
+      console.log('   Likely causes: BadInput (base cost not below the clamped fee, alpha > 1000, scaling');
+      console.log('   outside 1..65535, bad CIDs), InsufficientPayment, a paused aggregator, or beacons');
+      console.log('   requested from an aggregator with no beacon contract.');
+      // Decode a custom error if present (e.g. BadInput, InsufficientPayment).
       if (err.data) {
         try {
           const parsed = contract.interface.parseError(err.data);

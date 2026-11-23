@@ -55,32 +55,68 @@ export const CHAIN_PARAMS = {
 // ------------------
 // Contract Constants
 // ------------------
-// ETH-funded ReputationAggregator ABI. Arbiters are paid in ETH (not LINK):
-// requestAIEvaluationWithApproval is now `payable` and funded by msg.value and/or the
-// caller's existing on-chain ethOwed credit. Unspent prepay is refunded as an ethOwed
-// credit (pull-payment) — withdrawn via withdrawEth() or auto-applied to the next request.
+// ABI of the v2 ReputationAggregator (verdikta-dispatcher, reputationBasedAggregator;
+// MIGRATION.md there lists the changes from v1). Arbiters are paid in ETH.
+//
+// A request escrows maxTotalFee(maxFee, minFee, withBeacons) from msg.value, and the
+// caller's ethOwed credit covers any shortfall; excess value goes to credit. The jury
+// is NOT drawn by the request: the requester (here, the user's wallet) moves the round
+// on with drawJury() and promote(); see utils/timeoutUtils.js. Unspent prepay, draw
+// and promote rewards are credited to ethOwed and withdrawn with withdrawEth().
+//
+// getRoundInfo().phase: 1 draw, 2 beacons, 3 commit, 4 closing, 5 reveal, 6 final,
+// 7 settled, 8 failed, 9 cancelled. aggId = bytes32(roundId), sequential from 1.
 export const CONTRACT_ABI = [
-  'event RequestAIEvaluation(bytes32 indexed requestId, string[] cids)',
-  'event FulfillAIEvaluation(bytes32 indexed requestId, uint256[] likelihoods, string justificationCID)',
-  'event ChainlinkRequested(bytes32 indexed id)',
-  'event ChainlinkFulfilled(bytes32 indexed id)',
-  'function getContractConfig() public view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 currentFee)',
-  'function getEvaluation(bytes32 _requestId) public view returns (uint256[] memory likelihoods, string memory justificationCID, bool exists)',
-  'function requestAIEvaluationWithApproval(string[] memory cids, string memory addendumText, uint256 _alpha, uint256 _maxFee, uint256 _estimatedBaseCost, uint256 _maxFeeBasedScalingFactor, uint64 _requestedClass) public payable returns (bytes32 requestId)',
-  'function maxTotalFee(uint256 requestedMaxOracleFee) public view returns (uint256)',
-  'function maxOracleFee() public view returns (uint256)',
-  'function ethOwed(address) public view returns (uint256)',
-  'function withdrawEth() external',
-  'function isFailed(bytes32 aggId) external view returns (bool)',
-  'function responseTimeoutSeconds() external view returns (uint256)',
-  'function finalizeEvaluationTimeout(bytes32 aggId) external',
-  // Timeout path: what finalizeEvaluationTimeout() emits and how it reverts.
-  'event EvaluationTimedOut(bytes32 indexed aggRequestId)',
-  'event EvaluationFailed(bytes32 indexed aggRequestId, string phase)',
+  // request and fees
+  'function requestAIEvaluationWithApproval(string[] cids, string addendumText, uint256 alpha, uint256 maxFee, uint256 minFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 requestedClass, bool withBeacons) payable returns (bytes32 aggId)',
+  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) view returns (uint256)',
+  'function maxOracleFee() view returns (uint256)',
+  'function ethOwed(address) view returns (uint256)',
+  'function withdrawEth()',
+  // moving a round on (anyone may call; see timeoutUtils.js for who earns what)
+  'function drawJury(bytes32 aggId)',
+  'function closeCommits(bytes32 aggId)',
+  'function promote(bytes32 aggId)',
+  'function settle(bytes32 aggId)',
+  'function cancelUnsealed(bytes32 aggId)',
+  // reading a round
+  'function getRoundInfo(bytes32 aggId) view returns (uint8 phase, uint256 requestBlock, bytes32 sealedHash, uint256 closeBlock, uint256 received, uint256 baseFees, uint256 bonuses, uint256 rewards, uint256 deadline, uint256 windowEnd, uint256 commits, uint256 requestTime)',
+  'function getEvaluation(bytes32 aggId) view returns (uint256[] aggregated, string justifications, bool valid)',
+  'function isFailed(bytes32 aggId) view returns (bool)',
+  'function responseTimeoutSeconds() view returns (uint40)',
+  'function tPlus() view returns (uint40)',
+  'function revealWindow() view returns (uint40)',
+  'function K() view returns (uint8)',
+  'function M() view returns (uint8)',
+  'function N() view returns (uint8)',
+  'function P() view returns (uint8)',
+  // events
+  'event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)',
+  'event RequestFunded(bytes32 indexed aggRequestId, address indexed requester, uint256 fromCredit, uint256 fromValue)',
+  'event BeaconStageStarted(bytes32 indexed aggRequestId, uint256 beacons)',
+  'event JuryDrawn(bytes32 indexed aggRequestId, address indexed drawer, uint256 reward)',
+  'event CommitWindowClosed(bytes32 indexed aggRequestId, uint256 closeBlock)',
+  'event CommitPhaseComplete(bytes32 indexed aggRequestId, uint256 promoted)',
+  'event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, string justifications)',
+  'event EvaluationFailed(bytes32 indexed aggRequestId, uint8 phase)',
+  'event RoundSettled(bytes32 indexed aggRequestId, bool failed)',
+  'event RoundCancelled(bytes32 indexed aggRequestId, uint256 toTreasury)',
   'event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount)',
-  'error AggregationComplete()',
-  'error NotTimedOut()',
-  'error UnknownRequest()'
+  'event EthWithdrawn(address indexed payee, uint256 amount)',
+  // errors
+  'error BadInput()',
+  'error KeeperNotSet()',
+  'error InsufficientPayment()',
+  'error BadSelectionCount()',
+  'error UnknownRequest()',
+  'error WrongPhase()',
+  'error TooEarly()',
+  'error NotDue()',
+  'error SeedExpired()',
+  'error DrawExpired()',
+  'error OutOfGas()',
+  'error NothingOwed()',
+  'error EthTransferFailed()',
 ];
 
 // ------------------
@@ -189,5 +225,6 @@ export function makeRpcProvider(networkKey = DEFAULT_NET_KEY) {
 // migration. It gated requests on the aggregator's LINK balance, but the ETH-funded
 // ReputationAggregator holds no LINK for routine operation (arbiters are paid in ETH
 // from the requester's escrowed msg.value). The relevant pre-flight check now is the
-// requester's own ETH balance vs. maxTotalFee(), done inline in RunQuery.
+// requester's own ETH balance vs. maxTotalFee(maxFee, minFee, withBeacons), done inline
+// in RunQuery.
 

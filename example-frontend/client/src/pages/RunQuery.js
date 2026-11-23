@@ -15,8 +15,9 @@ import {
   ensureCorrectNetwork,
 } from '../utils/contractUtils';
 import { modelProviderService } from '../services/modelProviderService';
-import { waitForFulfilOrTimeout, closeTimedOutRound } from '../utils/timeoutUtils';
+import { driveRound, describeError } from '../utils/timeoutUtils';
 import TimeoutNotice from '../components/TimeoutNotice';
+import RoundTimeline from '../components/RoundTimeline';
 import { ContractDebugger } from '../utils/contractDebugger';
 
 // Default query package CID for example/testing
@@ -61,16 +62,56 @@ async function getSignerContract(networkKey, address) {
 }
 
 /**
+ * The round this browser is driving, kept in localStorage so that a reload can say the
+ * round is still open and offer to pick it up (the page, not the chain, moves a v2 round
+ * from one phase to the next).
+ */
+export const PENDING_ROUND_KEY = 'verdikta.runQuery.pendingRound';
+
+function savePendingRound(entry) {
+  try {
+    window.localStorage.setItem(PENDING_ROUND_KEY, JSON.stringify(entry));
+  } catch {
+    // storage full or disabled: the page still works, it just cannot offer a resume
+  }
+}
+
+function loadPendingRound() {
+  try {
+    const raw = window.localStorage.getItem(PENDING_ROUND_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingRound() {
+  try {
+    window.localStorage.removeItem(PENDING_ROUND_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** The worst-case prepay before the contract's own maxTotalFee() has been read. */
+function estimateMaxTotalFee(maxFee = 0n, minFee = 0n, withBeacons = false) {
+  // v2 defaults: K = 6, bonus multiplier B = 3, P = 3, beacon quorum 2, draw reward 2 fees,
+  // promote reward 1 fee: max(fee, floor) x (K + B x P [+ 2]) + fee x (2 + 1).
+  const juror = minFee > maxFee ? minFee : maxFee;
+  return juror * (15n + (withBeacons ? 2n : 0n)) + maxFee * 3n;
+}
+
+/**
  * Read the round once. When it holds a result, push it into the page state, load the
- * justification and return true; otherwise return false. How long and how often this is
- * called is decided by waitForFulfilOrTimeout() from the aggregator's own timeout.
+ * justification and return true; otherwise return false. driveRound() calls it once the
+ * round reaches the final phase.
  */
 async function loadEvaluationIfReady(
   contract,
-  requestId,
+  aggId,
   { setTransactionStatus, setOutcomes, setJustification, setResultCid, setResultTimestamp, setOutcomeLabels }
 ) {
-  const [likelihoods, justificationCid, exists] = await contract.getEvaluation(requestId);
+  const [likelihoods, justificationCid, exists] = await contract.getEvaluation(aggId);
   if (!exists || !likelihoods?.length) return false;
 
   console.log('✅ Found evaluation results!');
@@ -103,17 +144,20 @@ async function loadEvaluationIfReady(
  * Compute the ETH (wei) the caller must attach to a request, given the contract's
  * worst-case requirement and the caller's existing on-chain ethOwed credit.
  *
- * The ETH-funded ReputationAggregator funds a round from the caller's existing
- * ethOwed credit FIRST, then requires msg.value to cover the remaining shortfall.
- * So value = max(0, required - credit). Mirrors _fundFromCredit() on-chain.
+ * The v2 aggregator escrows exactly maxTotalFee(maxFee, minFee, withBeacons): msg.value
+ * first, and the caller's ethOwed credit covers any shortfall (excess value goes back to
+ * credit). Attaching value = max(0, required - credit) therefore uses the credit up first
+ * and never overpays.
  *
  * @param {ethers.Contract} readContract - aggregator bound to a read provider
- * @param {bigint} maxFee   - per-oracle max fee (ETH wei) passed to the request
- * @param {string} owner    - the requester address (msg.sender)
+ * @param {bigint} maxFee       - per-arbiter fee ceiling (ETH wei) passed to the request
+ * @param {bigint} minFee       - fee floor (ETH wei, 0 = none) passed to the request
+ * @param {boolean} withBeacons - the request's beacon flag
+ * @param {string} owner        - the requester address (msg.sender)
  * @returns {Promise<{required: bigint, credit: bigint, value: bigint}>}
  */
-async function computeEthFunding(readContract, maxFee, owner) {
-  const required = await readContract.maxTotalFee(maxFee); // worst case, ETH wei
+async function computeEthFunding(readContract, maxFee, minFee, withBeacons, owner) {
+  const required = await readContract.maxTotalFee(maxFee, minFee, withBeacons); // worst case, ETH wei
   let credit = 0n;
   try {
     credit = await readContract.ethOwed(owner);
@@ -145,9 +189,11 @@ function RunQuery({
   contractAddress,
   transactionStatus,
   setTransactionStatus,
-  // What happened to a round that got no result in time (see TimeoutNotice). App state.
-  timeoutInfo,
-  setTimeoutInfo,
+  // The round this page is driving: its phase timeline and, once the page stops driving
+  // it without a result, what happened (see RoundTimeline, TimeoutNotice). App state, so
+  // it survives a visit to another tab while the round runs.
+  roundInfo,
+  setRoundInfo,
   loadingResults,
   setLoadingResults,
   uploadProgress,
@@ -164,8 +210,10 @@ function RunQuery({
   // New props for the aggregator parameters (passed from App.js)
   alpha,
   maxFee,
+  minFee = 0n,
   estimatedBaseCost,
   maxFeeBasedScalingFactor,
+  withBeacons = false,
   selectedClassId,
   selectedNetwork,
 }) {
@@ -183,24 +231,38 @@ function RunQuery({
   const [hasError, setHasError] = useState(false);
   const [lastError, setLastError] = useState(null);
 
-  // Countdown to the aggregator's timeout. It is computed from a deadline, not counted
-  // down tick by tick, so it stays right when the browser slows timers in a hidden tab.
-  const [waitDeadline, setWaitDeadline] = useState(null); // ms since epoch; null = inactive
-  const [secondsLeft, setSecondsLeft] = useState(null);
+  // Countdown to the round's deadline (known from the draw on). It is computed from the
+  // deadline, not counted down tick by tick, so it stays right when the browser slows
+  // timers in a hidden tab.
+  const waitDeadline = roundInfo && !roundInfo.outcome ? roundInfo.deadlineMs || null : null;
+  const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
-    if (waitDeadline === null) {
-      setSecondsLeft(null);
-      return undefined;
-    }
-    const tick = () => setSecondsLeft(Math.max(0, Math.ceil((waitDeadline - Date.now()) / 1000)));
-    tick();
-    const id = setInterval(tick, 1000);
+    if (waitDeadline === null) return undefined;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, [waitDeadline]);
+  const secondsLeft = waitDeadline === null ? null : Math.max(0, Math.ceil((waitDeadline - nowMs) / 1000));
 
-  // Second attempt to close a round that got no result (see TimeoutNotice).
-  const [closingRound, setClosingRound] = useState(false);
-  const [closeStatus, setCloseStatus] = useState('');
+  // Picking up a round the page stopped driving (see TimeoutNotice).
+  const [resumingRound, setResumingRound] = useState(false);
+  const [resumeStatus, setResumeStatus] = useState('');
+
+  // After a reload: a round this browser started and did not finish is still open.
+  useEffect(() => {
+    if (roundInfo) return;
+    const pending = loadPendingRound();
+    if (!pending?.aggId) return;
+    setRoundInfo({
+      ...pending,
+      explorerUrl: getNetworkConfig(pending.networkKey).explorer,
+      round: null,
+      steps: [],
+      outcome: { status: 'stalled', step: null, reason: 'page-left' },
+    });
+    // Only on mount: later changes of roundInfo are this page's own.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Update showingDefaultCid when selectedMethod changes to 'ipfs'
   useEffect(() => {
@@ -214,9 +276,12 @@ function RunQuery({
   // also auto-applied to the next query. Surface it so users can see and reclaim it.
   const [ethCredit, setEthCredit] = useState(0n);
   const [withdrawing, setWithdrawing] = useState(false);
-  // Worst-case prepay shown in the banner. Default to maxFee * (K + B*P) with the live
-  // defaults (K=6, B=3, P=2 => 12); refined to the contract's exact maxTotalFee() below.
-  const [maxTotalFeeEstimate, setMaxTotalFeeEstimate] = useState(() => (maxFee || 0n) * 12n);
+  // Worst-case prepay shown in the banner. Starts from the v2 formula with the default
+  // round sizes (estimateMaxTotalFee) and is refined to the contract's exact
+  // maxTotalFee(maxFee, minFee, withBeacons) below.
+  const [maxTotalFeeEstimate, setMaxTotalFeeEstimate] = useState(() =>
+    estimateMaxTotalFee(maxFee || 0n, minFee || 0n, withBeacons)
+  );
 
   const refreshEthCredit = useCallback(async () => {
     if (!isConnected || !walletAddress || !contractAddress) {
@@ -234,7 +299,7 @@ function RunQuery({
       const readContract = new ethers.Contract(contractAddress, CONTRACT_ABI, roProvider);
       const [owed, worstCase] = await Promise.all([
         readContract.ethOwed(walletAddress),
-        readContract.maxTotalFee(maxFee).catch(() => null),
+        readContract.maxTotalFee(maxFee, minFee, withBeacons).catch(() => null),
       ]);
       setEthCredit(owed);
       if (worstCase != null) setMaxTotalFeeEstimate(worstCase);
@@ -242,7 +307,7 @@ function RunQuery({
       console.warn('Could not read ETH prepay credit:', err?.message || err);
       setEthCredit(0n);
     }
-  }, [isConnected, walletAddress, contractAddress, selectedNetwork, maxFee]);
+  }, [isConnected, walletAddress, contractAddress, selectedNetwork, maxFee, minFee, withBeacons]);
 
   useEffect(() => {
     refreshEthCredit();
@@ -309,9 +374,11 @@ const debugContractIssues = async () => {
       textAddendum.trim(),
       alpha || 500, // Use actual alpha value
       maxFee || parseUnits("0.0001", 18), // Use actual maxFee (ETH)
+      minFee || 0n, // fee floor (0 = none)
       estimatedBaseCost || parseUnits("0.000001", 18), // Use actual estimatedBaseCost (ETH)
       maxFeeBasedScalingFactor || 10, // Use actual scaling factor
-      selectedClassId || 128
+      selectedClassId || 128,
+      withBeacons
     );
     
     console.log('📋 Full Debug Report:', report);
@@ -333,52 +400,110 @@ const debugContractIssues = async () => {
   }
 };
 
-// Second chance to close a round that got no result: the user declined the wallet
-// prompt, or the transaction could not be sent.
-const handleCloseRound = async () => {
-  if (!timeoutInfo || closingRound) return;
-  const { requestId, contractAddress: roundContract, networkKey } = timeoutInfo;
-  setClosingRound(true);
-  setCloseStatus('Checking the round...');
-  try {
-    const readContract = new ethers.Contract(roundContract, CONTRACT_ABI, getReadOnlyProvider(networkKey));
-    const result = await closeTimedOutRound({
-      readContract,
-      getWriteContract: () => getSignerContract(networkKey, roundContract),
-      requestId,
-      checkForResult: () => loadEvaluationIfReady(readContract, requestId, {
-        setOutcomes,
-        setJustification,
-        setResultCid,
-        setResultTimestamp,
-        setOutcomeLabels
-      }),
-      setTransactionStatus: setCloseStatus
-    });
-    if (result.status === 'fulfilled') {
-      // The round completed after all: show its result.
-      setTimeoutInfo(null);
-      setCurrentPage(PAGES.RESULTS);
-      return;
-    }
-    setTimeoutInfo((info) => (info ? { ...info, outcome: result } : info));
-    if (result.round === 'closed') {
-      setJustification?.('No result: the arbiters did not answer in time, and the round was closed.');
-    }
-  } catch (err) {
-    console.error('Close round error:', err);
-    setTimeoutInfo((info) => (info ? {
+// Move a round from wherever it is to its end with the user's wallet (drawJury, then
+// closeCommits if needed, promote, and settle if it fails; see utils/timeoutUtils.js),
+// keep the phase timeline up to date, and record how it ended.
+const runRound = async ({ aggId, roundContract, networkKey, roundWithBeacons, setStatus }) => {
+  const roProvider = getReadOnlyProvider(networkKey);
+  const readContract = new ethers.Contract(roundContract, CONTRACT_ABI, roProvider);
+  const sameRound = (info) => info && String(info.aggId).toLowerCase() === String(aggId).toLowerCase();
+
+  const result = await driveRound({
+    readContract,
+    getWriteContract: () => getSignerContract(networkKey, roundContract),
+    aggId,
+    account: walletAddress,
+    withBeacons: roundWithBeacons,
+    getHead: async () => {
+      const block = await roProvider.getBlock('latest');
+      return { number: Number(block.number), timestamp: Number(block.timestamp) };
+    },
+    checkForResult: () => loadEvaluationIfReady(readContract, aggId, {
+      setTransactionStatus: setStatus,
+      setOutcomes,
+      setJustification,
+      setResultCid,
+      setResultTimestamp,
+      setOutcomeLabels
+    }),
+    onRound: (round, head) => setRoundInfo((info) => (sameRound(info) ? {
       ...info,
-      outcome: {
-        status: 'timed-out',
-        round: 'open',
-        reason: 'check-failed',
-        errorMessage: err?.shortMessage || err?.message || String(err)
-      }
+      round,
+      // the deadline in this browser's clock, from the chain's own time
+      deadlineMs: round.deadline > 0 ? Date.now() + (round.deadline - head.timestamp) * 1000 : null
+    } : info)),
+    onStep: (step) => setRoundInfo((info) => (sameRound(info) ? {
+      ...info,
+      steps: [...(info.steps || []), step]
+    } : info)),
+    setTransactionStatus: setStatus
+  });
+
+  if (result.status === 'fulfilled') {
+    clearPendingRound();
+    setRoundInfo((info) => (sameRound(info) ? null : info));
+    setCurrentPage(PAGES.RESULTS);
+    return result;
+  }
+
+  console.warn('The round ended without a result, or is waiting for a call:', { aggId, ...result });
+  // Only a round that can still move on is kept for a later resume.
+  if (result.status !== 'stalled') clearPendingRound();
+
+  // Clear result state so the Results page cannot show data from an earlier query.
+  // The outcome labels are left alone: they are the query's own definition.
+  setJustification?.(
+    result.status === 'stalled'
+      ? 'No result yet: the round is waiting for a transaction. See the Run Query page.'
+      : 'No result: the round ended without one. See the Run Query page.'
+  );
+  setOutcomes?.([]);
+  setResultCid?.('');
+  setResultTimestamp?.('');
+  setRoundInfo((info) => (sameRound(info) ? {
+    ...info,
+    round: result.round || info.round,
+    deadlineMs: null,
+    outcome: result
+  } : info));
+
+  // Also log to server if possible
+  try {
+    fetch('/api/log-timeout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: `Client-side round end without result: ${result.status}` +
+          (result.status === 'stalled' ? ` (${result.step || 'unknown step'}: ${result.reason})` : '') +
+          (result.reason && result.status !== 'stalled' ? ` (${result.reason})` : ''),
+        timestamp: new Date().toISOString(),
+        walletAddress: walletAddress
+      })
+    }).catch(e => console.log('Could not log to server:', e.message));
+  } catch (e) {
+    console.log('Could not send the round log to server:', e.message);
+  }
+  return result;
+};
+
+// Pick up a round the page stopped driving: the user declined a wallet prompt, a call
+// could not be sent, or the page was reloaded mid-round.
+const handleResumeRound = async () => {
+  if (!roundInfo || resumingRound) return;
+  const { aggId, contractAddress: roundContract, networkKey, withBeacons: roundWithBeacons } = roundInfo;
+  setResumingRound(true);
+  setResumeStatus('Checking the round...');
+  try {
+    await runRound({ aggId, roundContract, networkKey, roundWithBeacons, setStatus: setResumeStatus });
+  } catch (err) {
+    console.error('Resume round error:', err);
+    setRoundInfo((info) => (info ? {
+      ...info,
+      outcome: { status: 'stalled', step: null, reason: 'check-failed', errorMessage: describeError(err) }
     } : info));
   } finally {
-    setClosingRound(false);
-    setCloseStatus('');
+    setResumingRound(false);
+    setResumeStatus('');
     refreshEthCredit();
   }
 };
@@ -399,9 +524,10 @@ const handleRunQuery = async () => {
     // Clear any previous errors when starting a new query
     setHasError(false);
     setLastError(null);
-    // Drop the notice about an earlier round that is closed; keep one about a round
-    // that is still open, so the way to close it stays on the page.
-    setTimeoutInfo((info) => (info?.outcome?.round === 'open' ? info : null));
+    // Drop the notice about an earlier round that has ended; keep one about a round that
+    // still waits for a call, so the way to move it on stays on the page until the new
+    // request replaces it.
+    setRoundInfo((info) => (info?.outcome?.status === 'stalled' ? info : null));
 
     console.log('🌐 Creating provider and ensuring correct network...');
     console.log('📍 Selected network:', selectedNetwork);
@@ -441,11 +567,6 @@ const handleRunQuery = async () => {
     // 2) (ETH payment) No LINK funding/allowance check is needed: arbiters are paid in
     //    ETH from the requester's escrowed msg.value. The requester's own ETH balance is
     //    verified against the worst-case prepay in step 4 below.
-
-    // Read the on-chain responseTimeoutSeconds so UI stays in sync
-    const responseTimeoutSeconds = Number(
-      await readContract.responseTimeoutSeconds()
-    );
 
       // 3) Process query package based on selected method (config, file, or IPFS)
       let cid;
@@ -522,9 +643,9 @@ const handleRunQuery = async () => {
         setCurrentCid?.(cid);
       }
 
-    // 4) Compute the ETH to attach (msg.value). Worst-case prepay is maxTotalFee(maxFee);
-    //    any existing ethOwed credit is applied first, and unspent ETH is refunded as a
-    //    fresh ethOwed credit after the round settles.
+    // 4) Compute the ETH to attach (msg.value). Worst-case prepay is
+    //    maxTotalFee(maxFee, minFee, withBeacons); existing ethOwed credit covers what the
+    //    value does not, and unspent ETH comes back as ethOwed credit when the round ends.
     let ethValue;
     try {
       console.log('💰 Computing ETH funding - walletAddress:', walletAddress);
@@ -532,7 +653,7 @@ const handleRunQuery = async () => {
         throw new Error('Wallet address is not available for funding calculation');
       }
 
-      const { required, credit, value } = await computeEthFunding(readContract, maxFee, walletAddress);
+      const { required, credit, value } = await computeEthFunding(readContract, maxFee, minFee, withBeacons, walletAddress);
       ethValue = value;
       console.log(
         `ETH funding — required: ${ethers.formatEther(required)} ETH, ` +
@@ -609,18 +730,22 @@ const handleRunQuery = async () => {
       const randomDelay = (combinedSeed % 200) + 10; // 10-210ms delay
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
-      setTransactionStatus?.('Sending transaction...');
+      setTransactionStatus?.('Confirm the request in your wallet (it prepays the worst-case fees)...');
       const tx = await writeContract.requestAIEvaluationWithApproval(
         cidArray,
-	textAddendum.trim(),
+        textAddendum.trim(),
         alpha,
         maxFee,
+        minFee, // fee floor per juror (0 = none)
         estimatedBaseCost,
         maxFeeBasedScalingFactor,
-	selectedClassId === undefined ? 128 : selectedClassId,
+        selectedClassId === undefined ? 128 : selectedClassId,
+        withBeacons, // beacon stage before the draw
         {
-          value: ethValue, // ETH prepay (msg.value); unspent portion refunded as ethOwed credit
-          gasLimit: 4500000, // high current gas limit
+          value: ethValue, // ETH prepay (msg.value); credit covers the rest, unspent part comes back as credit
+          // The request escrows (~0.2 million gas) and settles up to two due rounds of other
+          // requesters (~0.25 million each for small classes); this limit leaves ample room.
+          gasLimit: 4500000,
           maxFeePerGas: adjustedMaxFee,
           maxPriorityFeePerGas: adjustedPriorityFee
         }
@@ -645,80 +770,32 @@ const handleRunQuery = async () => {
       if (!event) {
         throw new Error('RequestAIEvaluation event not found in transaction receipt');
       }
-      const requestId = event.args.requestId;
+      const aggId = event.args.aggRequestId;
 
-      /* ----- Count down the aggregator's own timeout (300 s on Base, 900 s on Base Sepolia) ----- */
-      setWaitDeadline(Date.now() + responseTimeoutSeconds * 1000);
-
-      const resultSetters = {
-        setTransactionStatus,
-        setOutcomes,
-        setJustification,
-        setResultCid,
-        setResultTimestamp,
-        setOutcomeLabels
-      };
-
-      // Poll for as long as the aggregator's timeout. If no result arrives, the user's
-      // wallet is asked to send finalizeEvaluationTimeout(), which closes the round and
-      // returns the unspent prepayment as prepay credit.
-      const result = await waitForFulfilOrTimeout({
-        readContract,
-        getWriteContract: () => getSignerContract(networkToUse, contractAddress),
-        requestId,
-        checkForResult: () => loadEvaluationIfReady(readContract, requestId, resultSetters),
-        responseTimeoutSeconds,
-        setTransactionStatus
+      // 6) Drive the round with the user's wallet: drawJury from block B+2 (twice with
+      //    beacons), closeCommits if the commit window needs closing, promote, and settle
+      //    if the round misses its deadline. Remembered in the browser until it ends, so a
+      //    reload can pick it up.
+      const pending = { aggId, contractAddress, networkKey: networkToUse, withBeacons, account: walletAddress };
+      savePendingRound(pending);
+      setRoundInfo({
+        ...pending,
+        explorerUrl: getNetworkConfig(networkToUse).explorer,
+        round: null,
+        deadlineMs: null,
+        steps: [],
+        outcome: null
       });
-      setWaitDeadline(null);
 
-      if (result.status === 'timed-out') {
-        console.warn('No result within the timeout:', { requestId, responseTimeoutSeconds, ...result });
-
-        // Clear result state so the Results page cannot show data from an earlier query.
-        // The outcome labels are left alone: they are the query's own definition.
-        setJustification?.(
-          result.round === 'closed'
-            ? 'No result: the arbiters did not answer in time, and the round was closed.'
-            : 'No result: the arbiters did not answer in time. The round is still open: see the Run Query page.'
-        );
-        setOutcomes?.([]);
-        setResultCid?.('');
-        setResultTimestamp?.('');
-
-        // Stay on the Run Query page and say what happened to the round.
-        setTimeoutInfo({
-          requestId,
-          contractAddress,
-          networkKey: networkToUse,
-          explorerUrl: getNetworkConfig(networkToUse).explorer,
-          timeoutSeconds: responseTimeoutSeconds,
-          outcome: result
-        });
-        setTransactionStatus('');
-
-        // Also log to server if possible
-        try {
-          fetch('/api/log-timeout', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              message: `Client-side timeout: round ${result.round}` +
-                (result.round === 'open' ? ` (${result.reason})` : ` (closed by ${result.closedBy})`),
-              timestamp: new Date().toISOString(),
-              walletAddress: walletAddress
-            })
-          }).catch(e => console.log('Could not log to server:', e.message));
-        } catch (e) {
-          console.log('Could not send timeout log to server:', e.message);
-        }
-
-        return; // Don't navigate to Results page
-      }
-
-      // 6) Navigate to the RESULTS page on success
+      const result = await runRound({
+        aggId,
+        roundContract: contractAddress,
+        networkKey: networkToUse,
+        roundWithBeacons: withBeacons,
+        setStatus: setTransactionStatus
+      });
       setTransactionStatus('');
-      setCurrentPage(PAGES.RESULTS);
+      if (result.status !== 'fulfilled') return; // stay on Run Query: the notice says why
     } catch (error) {
       console.error('Error running query:', error);
       // Set error state to enable debug functionality
@@ -744,13 +821,16 @@ const handleRunQuery = async () => {
 Each query prepays the worst-case arbiter fees in ETH (refunded if unused). Please ensure your wallet has enough ETH and try again.`;
         setTransactionStatus(`Error: Insufficient ETH for payment`);
         alert(errorMessage);
-      } else if (msg.includes('InactiveOracle') || msg.includes('BadSelectionCount')) {
-        const errorMessage = `No eligible arbiters could be selected for this request (class ${selectedClassId === undefined ? 128 : selectedClassId}).
+      } else if (msg.includes('BadInput')) {
+        const errorMessage = `The aggregator rejected the request parameters (BadInput).
 
-This usually means too few active oracles serve the selected class, or the per-oracle fee ceiling excluded them. Try a different class or contact the administrator.`;
-        setTransactionStatus(`Error: ${decoded || 'No eligible arbiters'}`);
+The estimated base cost must be below the fee ceiling (after clamping to the aggregator's maxOracleFee), alpha at most 1000, the scaling factor between 1 and 65535, and the query 1 to 10 CIDs of at most 100 characters with an addendum of at most 1000.`;
+        setTransactionStatus(`Error: ${decoded || 'BadInput'}`);
         alert(errorMessage);
-      } else if (msg.includes('User rejected')) {
+      } else if (msg.includes('KeeperNotSet') || msg.toLowerCase().includes('paused')) {
+        setTransactionStatus(`Error: ${decoded || msg}`);
+        alert('The aggregator is not accepting requests right now (paused, or not configured). Try again later or contact the administrator.');
+      } else if (msg.includes('User rejected') || msg.includes('user rejected')) {
         setTransactionStatus(`Error: Transaction rejected`);
         alert('You rejected the transaction in your wallet. Please try again and approve the transaction.');
       } else {
@@ -759,9 +839,8 @@ This usually means too few active oracles serve the selected class, or the per-o
       }
     } finally {
       setLoadingResults(false);
-      setWaitDeadline(null);
-      // A settled (or failed/timed-out) round may have refunded unspent prepay as an
-      // ethOwed credit — refresh the widget so the user sees their reclaimable balance.
+      // A round that ended (or a draw/promote reward) may have credited ETH to ethOwed:
+      // refresh the widget so the user sees their reclaimable balance.
       refreshEthCredit();
     }
   };
@@ -770,15 +849,18 @@ This usually means too few active oracles serve the selected class, or the per-o
     <div className="page run">
       <h2>Run Query</h2>
       
-      {/* What happened to a round that got no result in time */}
+      {/* What happened to a round that ended without a result, or what it waits for */}
       <TimeoutNotice
-        info={timeoutInfo}
+        info={roundInfo}
         ethCredit={ethCredit}
-        onCloseRound={handleCloseRound}
-        closing={closingRound}
-        closeStatus={closeStatus}
+        onResume={handleResumeRound}
+        busy={resumingRound}
+        busyStatus={resumeStatus}
         disabled={loadingResults}
       />
+
+      {/* The round's phases, and the wallet transactions sent for it */}
+      <RoundTimeline info={roundInfo} nowMs={nowMs} />
 
       {/* ETH payment notice + prepay credit */}
       {isConnected && (
@@ -796,6 +878,18 @@ This usually means too few active oracles serve the selected class, or the per-o
             fees (about <strong>{ethers.formatEther(maxTotalFeeEstimate)} ETH</strong>); any unused
             amount is returned as on-chain <em>prepay credit</em> that is automatically applied to
             your next query.
+          </div>
+          <div style={{ marginTop: '8px' }} data-testid="wallet-steps">
+            After the request, this page moves the round on with your wallet, and each step is a
+            wallet transaction you confirm: <strong>drawJury</strong> a few seconds after the
+            request{withBeacons ? ' (twice: the first call starts the beacon stage)' : ''}, which
+            earns you the draw reward (2 × the per-arbiter fee) if sent within 30 seconds;
+            {' '}<strong>closeCommits</strong> only if the commit window needs closing (no reward);
+            and <strong>promote</strong> when the commit phase closes, which earns its caller 1 × the
+            per-arbiter fee. If the round misses its deadline, <strong>settle</strong> returns the
+            unspent prepay. Rewards and refunds are added to your prepay credit. Keep this page
+            open until the result arrives: a round whose jury nobody draws never ends, and after a
+            day its prepay can only go to the treasury.
           </div>
           {ethCredit > 0n && (
             <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
@@ -952,7 +1046,7 @@ This usually means too few active oracles serve the selected class, or the per-o
           <button
             className="primary"
             onClick={handleRunQuery}
-            disabled={loadingResults || (selectedMethod === 'file' && !queryPackageFile)}
+            disabled={loadingResults || resumingRound || (selectedMethod === 'file' && !queryPackageFile)}
           >
 	  {loadingResults ? (
             <>

@@ -1,65 +1,84 @@
-# Migration Summary — ETH Payment (LINK → ETH)
+# Migration Summary — v1 → v2 aggregator
 
-This document summarizes the migration of `example-frontend` from the **LINK-funded**
-aggregator to the **ETH-funded** `ReputationAggregator`. Arbiters are now paid in ETH; the
-client no longer touches LINK (no token approval, no allowance management).
+This document summarizes the port of `example-frontend` from the v1 ETH-funded
+`ReputationAggregator` to the **v2** `ReputationAggregator` (verdikta-dispatcher,
+`reputationBasedAggregator/contracts/ReputationAggregator.sol`; its `MIGRATION.md` lists the
+contract changes). v2 is a redeploy, not an upgrade: the client no longer works with the v1
+aggregators.
 
-> Supersedes the previous "Enhanced LINK Token Management" summary. The LINK allowance
-> system described there (`topUpLinkAllowance`, on-chain `Approval` event scanning, 0.5–2
-> LINK reserves) has been **removed** — it is no longer how the app pays for evaluations.
+## Aggregator addresses
 
-## New deployed aggregators (ETH)
+The v2 aggregators are **not deployed yet**. The v1 addresses were removed from
+`client/.env.example`, the tracked `client/.env.backup`, `client/debug-contract.js` and the
+fallbacks in `server/utils/contractsManager.js`.
 
 | Network | Address |
 |---|---|
-| Base Mainnet | `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a` |
-| Base Sepolia | `0xe8a385E473EA710c5a88Cc72681a16a26fe380e4` |
+| Base Mainnet | TODO after the v2 deploy (`V2_AGGREGATOR_ADDRESS_BASE` placeholder in `client/.env.example`) |
+| Base Sepolia | TODO after the v2 deploy (`V2_AGGREGATOR_ADDRESS_BASE_SEPOLIA` placeholder) |
 
-Same ReputationKeeper and operator/oracle contracts as before; only the aggregator's
-payment rail changed.
+The server skips `.env` entries that are not addresses, so the placeholders offer no
+aggregator. Its only built-in fallback is the optional `DEFAULT_AGGREGATOR_ADDRESS` in the
+server's environment (`server/.env.example`).
 
-## How payment works now
+## What changed in the protocol, as the client sees it
 
-- `requestAIEvaluationWithApproval(...)` is **`payable`**. The requester prepays the
-  worst-case cost in `msg.value` (and/or from existing on-chain credit). No LINK approval.
-- Worst case = `maxTotalFee(maxFee)` = `effFee * (K + B*P)`. With the live params
-  (K=6, M=4, N=3, P=2, B=3) and a 0.0001 ETH fee, that is `0.0001 * 12 = 0.0012 ETH`.
-- The per-oracle fee is clamped on-chain to `maxOracleFee` (0.0004 ETH ceiling).
-- Unspent prepay is **refunded as a pull-payment credit** (`ethOwed`), not auto-returned.
-  It is auto-applied to the caller's next request, or withdrawn via `withdrawEth()`.
+| v1 | v2 |
+|---|---|
+| `requestAIEvaluationWithApproval(cids, addendum, alpha, maxFee, baseCost, scaling, class)` | 9 arguments: `minFee` (fee floor, 0 = none) after `maxFee`, and `withBeacons` at the end |
+| `maxTotalFee(maxFee)` = `eff × (K + B×P)` | `maxTotalFee(maxFee, minFee, withBeacons)` = `max(eff, minFee) × (K + B×P [+ beacon quorum]) + eff × (2 + 1)`; 0.0018 ETH with the app's defaults (0.0001 ETH fee, K=6, B=3, P=3) |
+| credit first, then `msg.value` | `msg.value` first, credit covers the shortfall, excess value goes to credit |
+| `RequestAIEvaluation(requestId, cids)`, a hash | `RequestAIEvaluation(aggRequestId, cids)`, `aggId = bytes32(roundId)`, sequential from 1 |
+| the request polls the arbiters | the request only escrows; the requester moves the round: `drawJury` from block B+2 (twice with beacons), `closeCommits` after T+ if needed, `promote` from the close block + 2 |
+| `finalizeEvaluationTimeout(aggId)` after `responseTimeoutSeconds` from the request | `settle(aggId)` after the round's deadline (`responseTimeoutSeconds` from the draw); an undrawn round never times out, and `drawJury` reverts `DrawExpired` after a day |
+| `getAggregationStatus`, `getContractConfig`, `EvaluationTimedOut`, `NotTimedOut`, `AggregationComplete`, `InactiveOracle` | `getRoundInfo` (phase 1 draw … 9 cancelled), `K()`/`M()`/`N()`/`P()`/`tPlus()`, `EvaluationFailed(aggId, uint8 phase)`, `WrongPhase`, `TooEarly`, `NotDue`, `SeedExpired`, `DrawExpired` |
+| a failed round refunds the requester | refunded to the requester at settlement, except a missed beacon quorum, M commits never promoted, and cancelled rounds: those go to the treasury |
+| | rewards: the draw (2 × fee, only the requester within 30 s) and promote (1 × fee) callers, credited to `ethOwed` |
 
 ## Files changed
 
 ### Code
-- **`client/src/utils/contractUtils.js`** — ABI updated: `requestAIEvaluationWithApproval`
-  marked `payable`; added `maxOracleFee`, `ethOwed`, `withdrawEth`, `isFailed`. Removed the
-  dead LINK-balance `checkContractFunding()`.
-- **`client/src/pages/RunQuery.js`** — removed `topUpLinkAllowance()` and the LINK ABI
-  import. New `computeEthFunding()` sizes `value = max(0, maxTotalFee − ethOwed)` and
-  attaches it to the request; ETH-balance pre-flight; ETH custom-error messages
-  (`InsufficientPayment`, `InactiveOracle`/`BadSelectionCount`). Added a **prepay-credit
-  widget** (shows worst-case prepay + your `ethOwed` credit, with a "Withdraw credit"
-  button and auto-reuse messaging).
-- **`client/src/App.js`** — `MAX_FEE` set to `0.0001 ETH` (typical arbiter fee, under the
-  0.0004 ETH ceiling). Also fixed network↔contract selection so switching networks
-  re-selects a valid contract instead of stranding a wrong-network address.
-- **`client/src/utils/contractDebugger.js`** and **`client/debug-contract.js`** — rewritten
-  for ETH (ETH balance + `ethOwed` credit + worst-case prepay vs. balance + payable
-  dry-run); dropped all LINK allowance/balance probing.
-- **Removed** `client/src/utils/LINKTokenABI.json` (no longer used).
+- **`client/src/utils/contractUtils.js`** — v2 ABI: functions, events and errors.
+- **`client/src/utils/timeoutUtils.js`** — the v1 wait-then-finalize flow is replaced by
+  `driveRound()`: it reads `getRoundInfo` and, phase by phase, dry-runs (`estimateGas` from
+  the user's address) and sends `drawJury`, `closeCommits`, `promote` and `settle` with the
+  user's wallet, only when the dry run passes. Gas: the estimate plus half; v1's 3-million
+  floor is gone because the v2 calls revert with `OutOfGas` rather than fail quietly
+  (measured on the dispatcher's v2 test network: `drawJury` 2.3–2.9M, `promote` 0.74M,
+  `settle` 0.25M).
+- **`client/src/pages/RunQuery.js`** — 9-argument request; 3-argument quote in
+  `computeEthFunding`, the credit banner and its default estimate; reads `aggRequestId`;
+  drives the round with `driveRound()`; keeps the open round in `localStorage` and offers to
+  resume it after a reload; explains which wallet transactions follow and who earns what.
+- **`client/src/components/RoundTimeline.js`** (new) — phase timeline: phases, commits,
+  deadline countdown, and the transactions the wallet sent with their rewards.
+- **`client/src/components/TimeoutNotice.js`** — reports a failed round (and whether the
+  refund came to the user or went to the treasury), a cancelled or expired round, or the
+  call a round is waiting for, with a button that resumes it.
+- **`client/src/App.js`** — `MIN_FEE = 0n` and `WITH_BEACONS = false`, passed to Run Query;
+  the round state is `runRoundInfo`; the `.env` fallback ignores entries that are not
+  addresses.
+- **`client/src/utils/contractDebugger.js`**, **`client/debug-contract.js`** — v2 ABI and
+  getters, 9-argument dry run, 3-argument quote; the script takes the address from the
+  command line or `AGGREGATOR_ADDRESS`.
+- **`server/utils/contractsManager.js`** — no built-in v1 address (see above).
 
-### Config / data
-- `server/data/contracts.json`, `client/.env`, `client/.env.example`, and the fallback in
-  `server/utils/contractsManager.js` updated to the new ETH aggregator addresses.
+### Tests
+- `timeoutUtils.test.js`, `components/TimeoutNotice.test.js` (also covers `RoundTimeline`)
+  and `pages/RunQuery.timeout.test.js` (fakes ethers with a v2 round) cover the draw at B+2,
+  the beacon double draw, `closeCommits`, `promote` at C+2, `settle` after a missed deadline,
+  declined prompts and resuming, rounds moved by another account, and the rounds whose
+  prepay goes to the treasury.
+
+## Earlier: LINK → ETH
+
+Before v2, the client moved from the LINK-funded aggregator to the ETH-funded v1
+aggregator: no token approval, the request became `payable`, unspent prepay became an
+`ethOwed` credit withdrawn with `withdrawEth()`, and the LINK allowance code
+(`topUpLinkAllowance`, `LINKTokenABI.json`) was removed. That part still holds in v2.
 
 ### Ops
-- Added `rebuildAndRestart.sh` (project root): rebuilds the static client bundle, then
-  restarts the services. Because the site is served from `client/build` and CRA bakes code
-  + `REACT_APP_*` in at build time, client changes require a rebuild **and** restart.
-
-## Testing
-
-- ✅ Production build passes (`client/buildClient.sh` / `npm run build`), warnings only.
-- ✅ Verified on Base Sepolia: no LINK approval step; MetaMask prompts for an ETH value;
-  results render; unused prepay appears as withdrawable `ethOwed` credit.
-- The same network-agnostic bundle serves Base Mainnet when the network toggle is switched.
+- `rebuildAndRestart.sh` (project root) rebuilds the static client bundle, then restarts the
+  services. The site is served from `client/build` and CRA bakes code and `REACT_APP_*` in
+  at build time, so client changes (including the v2 addresses, once deployed) require a
+  rebuild **and** restart.

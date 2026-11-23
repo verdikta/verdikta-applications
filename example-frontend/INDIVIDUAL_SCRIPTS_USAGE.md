@@ -103,8 +103,8 @@ cp .env.example .env
 
 2. Edit `.env` with your configuration:
 ```env
-# Contract Configuration (ETH-funded ReputationAggregator)
-REACT_APP_CONTRACT_ADDRESSES=0xe8a385E473EA710c5a88Cc72681a16a26fe380e4
+# Contract Configuration (v2 ReputationAggregator; TODO: the address once v2 is deployed)
+REACT_APP_CONTRACT_ADDRESSES=V2_AGGREGATOR_ADDRESS_BASE_SEPOLIA
 REACT_APP_CONTRACT_NAMES=Aggregator Base Sepolia Testnet
 REACT_APP_CONTRACT_CLASSES=128
 

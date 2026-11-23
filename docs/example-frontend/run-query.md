@@ -3,7 +3,7 @@
 The Run Query page is where you execute your AI jury evaluation. You can choose from three different methods to run your query, each suited to different use cases and workflows.
 
 !!! note "Checked against the code"
-    Revised on 2026-11-22 against `example-frontend/client/src/pages/RunQuery.js` and `utils/timeoutUtils.js` in this repository, and against the aggregator on Base mainnet at `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a`. A query is paid in ETH, in the same transaction that submits it. There is no LINK step.
+    Revised on 2026-11-23 for the v2 aggregator, against `example-frontend/client/src/pages/RunQuery.js` and `utils/timeoutUtils.js` in this repository and the v2 `ReputationAggregator` source (verdikta-dispatcher, `reputationBasedAggregator/contracts/ReputationAggregator.sol`). The v2 aggregator is not deployed yet, so no address is given here. A query is paid in ETH, in the transaction that submits it; there is no LINK step. Your wallet then sends the transactions that move the round on.
 
 ## Execution Methods
 
@@ -91,10 +91,13 @@ This method references query packages already stored on IPFS using Content IDs.
 
 ## Blockchain Transaction Process
 
+The aggregator is Verdikta's v2 `ReputationAggregator`. In v2 the query transaction only prepays the round. The round then needs a few more calls to move from one phase to the next, and the Run Query page makes them with **your wallet**: each one is a wallet transaction you confirm. A query therefore takes two to five wallet transactions, not one.
+
 ### Prerequisites
 - **Wallet Connected**: MetaMask must be connected
 - **Network**: The wallet is switched to the network selected in the header, Base or Base Sepolia
-- **ETH**: Your wallet needs ETH for the evaluation prepayment (0.0012 ETH with the application's settings, see [Cost Considerations](#cost-considerations)) and for gas. No LINK is needed
+- **Aggregator**: A v2 aggregator address must be selected. The v1 aggregators do not work with this page (see [Contract Management](contract-management.md))
+- **ETH**: Your wallet needs ETH for the evaluation prepayment (0.0018 ETH with the application's settings, see [Cost Considerations](#cost-considerations)) and for the gas of each transaction. No LINK is needed
 
 ### Transaction Steps
 
@@ -104,27 +107,44 @@ This method references query packages already stored on IPFS using Content IDs.
 
 #### 2. ETH Prepayment
 - There is no approval transaction: the fee is ETH sent with the query itself
-- The page reads the worst-case fee from the aggregator (`maxTotalFee()`) and any prepay credit you already hold there (`ethOwed()`), and attaches the difference
+- The page reads the worst-case fee from the aggregator, `maxTotalFee(maxFee, minFee, withBeacons)`, and any prepay credit you already hold there (`ethOwed()`), and attaches the difference. The aggregator takes the attached ETH first and covers any shortfall from your credit
 - If your wallet holds less than that amount, the page stops with an "Insufficient ETH" message before anything is sent
 
-#### 3. Query Execution
-- One transaction submits your query to the blockchain and carries the prepayment
-- The page sets a gas limit of 4,500,000 for this transaction
-- Transaction includes the query package CID(s) and the request parameters
+#### 3. Query Request (wallet transaction 1)
+- `requestAIEvaluationWithApproval(cids, addendum, alpha, maxFee, minFee, estimatedBaseCost, scaling, class, withBeacons)` submits your query and carries the prepayment. The application sends a fee floor (`minFee`) of 0 and no beacons (`MIN_FEE` and `WITH_BEACONS` in `client/src/App.js`)
+- The page sets a gas limit of 4,500,000 for this transaction. The request itself uses about 0.2 million gas; it may also settle up to two earlier rounds that are due
+- The page reads the round's ID (`aggRequestId`) from the `RequestAIEvaluation` event. Round IDs count up from 1
 
-#### 4. Evaluation Wait
-- The page waits for as long as the aggregator's own timeout, which it reads from the contract (`responseTimeoutSeconds()`): 300 seconds on Base mainnet, 900 seconds on Base Sepolia
-- A countdown timer shows the time left
-- System polls for results every 5 seconds until the timeout has passed. A result that arrives at any point in that time opens the Results page
+#### 4. Driving the Round
+From here the page reads the round's phase (`getRoundInfo()`) every few seconds and shows it in a **phase timeline**: the phases, the one the round is in, the commits received, the time left to the round's deadline, and the transactions your wallet sent, with any reward they earned.
 
-#### 5. If No Result Arrives
-A round that gets too few answers does not end by itself. It stays open, with the unspent part of your prepayment reserved in it, until someone calls `finalizeEvaluationTimeout(requestId)` on the aggregator after the timeout. Anyone can make that call. The page asks your wallet to make it:
+Before each transaction the page checks, without a transaction (a dry run from your address), that the call will succeed, and your wallet is asked to confirm only a call that will. The gas limit is the network's estimate plus 50%.
 
-- When the timeout has passed without a result, the page first checks, without a transaction, that the call would succeed. If the round completed at the last moment, the page shows the result instead. If another account has already closed the round, the page says so and your wallet is not asked for anything
-- Otherwise your wallet asks you to confirm one more transaction. The page sets its gas limit to the network's estimate plus 50%, and to at least 3,000,000. On local copies of Base mainnet and Base Sepolia on 2026-11-22 the call used between 1.44 and 1.89 million gas when none of the six arbiters had answered
-- **If you confirm**, the page waits for the transaction and then shows **"No result arrived. The round is closed."**, with a link to the transaction, the amount that came back as prepay credit and your prepay credit after it
-- **If you decline**, or the transaction cannot be sent, the page shows **"No result arrived. The round is still open."** It states why nothing was sent, the request ID and the aggregator's address, and offers a **"Close the round now"** button that asks your wallet again. You can also make the call from any other wallet or tool. The notice is lost when you reload the page, so keep the request ID if you plan to close the round later
-- In each of these cases the page stays on the Run Query page. The fees already credited to the arbiters that were polled are not returned (see [Cost Considerations](#cost-considerations))
+| Phase | What happens | Your wallet | Who earns what |
+|---|---|---|---|
+| 1 Draw | The jury has not been drawn yet | `drawJury(aggId)`, from two blocks after the request (a few seconds) | Within 30 seconds of the request only the requester earns the **draw reward**, 2 × the per-arbiter fee ceiling; after that anyone who draws earns it |
+| 2 Beacons (only with beacons) | The first `drawJury` started a beacon stage | A second `drawJury` once the beacon values are in | The draw reward, within 30 seconds of the last needed beacon value |
+| 3 Commit | The drawn arbiters commit their answers. The window closes by itself when enough have committed | `closeCommits(aggId)`, only if the commit window (`tPlus()`, 155 s by default) is over with at least M commits but not enough to close it | No reward |
+| 4 Closing | The commit window is closed | `promote(aggId)`, from two blocks after the close | The caller earns the **promote reward**, 1 × the fee ceiling |
+| 5 Reveal | The promoted arbiters reveal; the last needed reveal finalizes the round | Nothing | |
+| 6 Final | The result is ready: the page opens the Results page | Nothing | |
+
+Rewards and refunds are credited to your prepay credit, not sent to your wallet. Measured on the aggregator's test network, `drawJury` uses about 2.3 to 2.9 million gas (it sends the requests to the drawn arbiters), `promote` about 0.75 million and `settle` about 0.25 million.
+
+#### 5. If the Round Misses Its Deadline
+The deadline is `responseTimeoutSeconds()` after the draw (300 seconds by default), extended when needed so that promoted arbiters always get time to reveal. The page shows it as a countdown. If the round has not finished by then:
+
+- **Too few commits, or too few reveals**: the page asks your wallet to send `settle(aggId)`. It fails the round and credits the unspent part of the prepayment to your prepay credit. The page then shows **"No result: the round failed."**, with a link to the transaction and the amount that came back
+- **Enough commits, but the commit phase was not closed, or it closed and was not promoted**: the round fails and the unspent prepayment goes to the **treasury**, not back to you (a refund here would let a requester re-roll a jury it did not like). Settling it would return nothing to you, so the page does not ask your wallet to; it shows **"No result: the round can no longer finish."**
+- A round whose jury cannot be drawn (fewer eligible arbiters than needed) fails at the draw, and the prepayment is credited back to you
+
+#### 6. If You Decline a Transaction or Leave the Page
+- **If you decline** one of these transactions, or it cannot be sent, the page stops and shows **"The round is waiting for ..."** (the jury draw, the commits to be promoted, ...). It says why nothing was sent, what the call does and who earns what, the round ID and the aggregator's address, and offers a button such as **"Draw the jury (wallet transaction)"** that picks the round up where it is. You can also make the call from any other wallet or tool: anyone may
+- **If you switch to another tab of the application**, the page keeps driving the round in the background
+- **If you close or reload the page**, nothing moves the round on from this browser. The page remembers the round in the browser's storage, and when you come back it shows **"The round is still open."** with a **"Resume the round"** button. Meanwhile:
+    - an **undrawn round never times out**. After 30 seconds anyone may draw it (and earns the draw reward). If nobody does, the jury can no longer be drawn a day after the request, and the round can only be cancelled (`cancelUnsealed`), which sends the whole prepayment to the treasury
+    - a round waiting for `closeCommits` or `promote` can be moved on by anyone (`promote` pays its caller). If nobody does before the deadline, the unspent prepayment goes to the treasury
+    - a round that misses its deadline in the reveal phase is settled by anyone who calls `settle`, or by a later request to the same aggregator, and the unspent prepayment is credited to you either way
 
 ### Status Messages
 
@@ -134,13 +154,17 @@ During execution, you'll see various status updates:
 - **"Uploading file to server..."**: Uploading your ZIP file (Method 2)
 - **"Applying ... ETH credit; attaching ... ETH…"**: Part of the prepayment comes from your prepay credit
 - **"Fully covered by your existing prepay credit — no ETH needed beyond gas…"**: Your credit covers the whole prepayment
-- **"Sending transaction..."**: Submitting main transaction
+- **"Confirm the request in your wallet..."**: Submitting the query
 - **"Waiting for confirmation..."**: Transaction mining
-- **"Waiting for evaluation results..."**: AI processing
+- **"Request confirmed. Waiting two blocks before the jury can be drawn..."**: The draw is allowed from block B+2
+- **"Confirm drawJury in your wallet..."**: Your wallet is asked to draw the jury; the message says what the call earns
+- **"Waiting for the beacon values (up to 2 minutes)..."**: Only for rounds with beacons
+- **"Waiting for the arbiters to commit (N so far)..."**: The commit phase
+- **"Confirm closeCommits in your wallet..."**, **"Confirm promote in your wallet..."**: The next phase needs your wallet
+- **"Waiting for the arbiters to reveal their answers..."**: The reveal phase
+- **"The round missed its deadline. Confirm settle in your wallet..."**: See [If the Round Misses Its Deadline](#5-if-the-round-misses-its-deadline)
+- **"Waiting for ... to be mined..."**: One of these transactions is being mined
 - **"Fetching justification from server..."**: Retrieving results
-- **"Waiting for the network to reach the timeout..."**: The page's timer has run out a few seconds before the blockchain's
-- **"No result arrived in time. Confirm the transaction in your wallet to close the round and release your prepayment..."**: Your wallet is waiting for you (see [If No Result Arrives](#5-if-no-result-arrives))
-- **"Closing the round on the blockchain..."**: The closing transaction is being mined
 
 ### Error Handling
 
@@ -150,21 +174,25 @@ Common errors and solutions:
 - **Cause**: Your wallet holds less ETH than the prepayment, or the transaction was sent with too little ETH (the contract's `InsufficientPayment` error)
 - **Solution**: Add ETH to your wallet and try again. The message states the amount needed
 
-#### "No eligible arbiters"
-- **Cause**: Too few active arbiters serve the selected class, or their fee is above the application's fee limit
-- **Solution**: Try a different class or contact the administrator
+#### "BadInput"
+- **Cause**: The aggregator rejected the request parameters: the estimated base cost must be below the fee ceiling, alpha at most 1000, the scaling factor between 1 and 65535, and the query 1 to 10 CIDs with an addendum of at most 1000 characters
+- **Solution**: Check the parameters, or contact the administrator
 
 #### "User rejected transaction"
-- **Cause**: You declined the transaction in MetaMask
+- **Cause**: You declined the query transaction in MetaMask
 - **Solution**: Try again and approve the transaction
 
-#### "No result arrived. The round is closed."
-- **Cause**: No result arrived within the aggregator's timeout, and the round was closed, by your wallet or by another account
-- **Solution**: You can try again. The unspent part of the prepayment is back as prepay credit and is applied to your next query
+#### "The round is waiting for ..."
+- **Cause**: A transaction that moves the round on (draw, close, promote or settle) was declined, could not be sent, or failed
+- **Solution**: Use the button in the notice, or make the named call with the round ID on the aggregator from any wallet. See [If You Decline a Transaction or Leave the Page](#6-if-you-decline-a-transaction-or-leave-the-page)
 
-#### "No result arrived. The round is still open."
-- **Cause**: No result arrived within the aggregator's timeout, and the transaction that closes the round was not sent or did not succeed. The notice gives the reason, for example that you declined it
-- **Solution**: Use the **"Close the round now"** button in the notice, or call `finalizeEvaluationTimeout(requestId)` on the aggregator yourself. Until then the unspent part of the prepayment stays reserved in the round. See [If No Result Arrives](#5-if-no-result-arrives)
+#### "No result: the round failed."
+- **Cause**: The round ended without a result. The notice says in which phase, and where the unspent prepayment went: back to your prepay credit, or to the treasury
+- **Solution**: You can try again. Prepay credit is applied to your next query
+
+#### "No result: the round can no longer finish." / "the round was cancelled."
+- **Cause**: The commit phase was not closed or not promoted in time, or the jury was not drawn within a day. The prepayment goes to the treasury
+- **Solution**: Run the query again, and keep the page open until the result arrives
 
 #### Network or connectivity issues
 - **Solution**: Check internet connection and try again
@@ -173,17 +201,19 @@ Common errors and solutions:
 
 ### Fee Components
 - **Evaluation Fee**: Paid in ETH to the arbiters that evaluate your query, out of a prepayment sent with the query
-- **Gas Fees**: Blockchain transaction costs (paid in ETH)
+- **Gas Fees**: Blockchain transaction costs (paid in ETH), for the query and for each transaction that moves the round on
+- **Rewards back to you**: The draw reward (2 × the fee ceiling) and the promote reward (1 × the fee ceiling) are part of the prepayment. When your wallet makes those calls, they come back to your prepay credit
 
 ### How the Prepayment Works
-- The application sets a fee limit of 0.0001 ETH per arbiter (`MAX_FEE` in `client/src/App.js`). The aggregator requires a prepayment of 12 times that limit, 0.0012 ETH, which its `maxTotalFee()` function returns. The banner at the top of the page shows the amount
-- The round then costs what the selected arbiters charge: each of the 6 arbiters polled is credited its own fee, and each of the 2 arbiters whose answers are clustered gets 3 times its fee on top
-- On 2026-11-22 all 40 arbiters registered on Base mainnet charged 0.00002 ETH, so a completed query cost 0.00024 ETH in arbiter fees and a query that timed out cost 0.00012 ETH, plus gas. A query that times out needs gas twice: for the query and for the transaction that closes the round
-- The rest of the prepayment is returned as **prepay credit** held in the aggregator. It is applied automatically to your next query, and the **"Withdraw credit"** button on this page sends it back to your wallet
+- The application sets a fee ceiling of 0.0001 ETH per arbiter (`MAX_FEE` in `client/src/App.js`), clamped by the aggregator to its `maxOracleFee()`, and no fee floor (`MIN_FEE = 0`)
+- The aggregator's worst case is `maxTotalFee(maxFee, minFee, withBeacons)` = max(fee, floor) × (K + B × P [+ beacon quorum]) + fee × (2 + 1), where K arbiters are drawn, P are paid a bonus of B times their fee, and 2 and 1 are the draw and promote rewards. With K = 6, B = 3, P = 3 that is 0.0001 × 15 + 0.0001 × 3 = 0.0018 ETH. The banner at the top of the page shows the amount the contract returns
+- The round then costs what the drawn arbiters charge: each of the K arbiters drawn is credited its own fee (at least the floor), and each arbiter whose revealed answer is in the winning cluster gets B times its fee on top
+- The rest of the prepayment is returned as **prepay credit** held in the aggregator, when the round finalizes or is settled, except in the cases listed in [If the Round Misses Its Deadline](#5-if-the-round-misses-its-deadline) and [If You Decline a Transaction or Leave the Page](#6-if-you-decline-a-transaction-or-leave-the-page), where it goes to the treasury. Credit is applied automatically to your next query, and the **"Withdraw credit"** button on this page sends it back to your wallet
 
 ### Cost Factors
-- **Arbiter fees**: Set by the arbiters that are selected, up to the application's fee limit
-- **Outcome of the round**: A completed round pays bonuses to two arbiters; a round that times out pays base fees only
+- **Arbiter fees**: Set by the arbiters that are drawn, up to the application's fee ceiling
+- **Outcome of the round**: A completed round pays bonuses to the clustered arbiters; a failed round pays base fees only
+- **Who moves the round**: The draw and promote rewards come back to you only when your wallet makes those calls (the draw reward only within 30 seconds)
 - The number of AI models, runs per model, iterations and the size of the query do not change the on-chain fee
 ## Best Practices
 
@@ -194,7 +224,8 @@ Common errors and solutions:
 
 ### During Execution
 - **Stay Connected**: Keep browser tab active during evaluation
-- **Don't Refresh**: Page refresh will lose progress tracking
+- **Don't Refresh**: The page, not the blockchain, moves the round on. After a refresh it offers to resume the round, but nothing moves it in the meantime
+- **Confirm Promptly**: The draw reward is yours only if the draw is confirmed within 30 seconds of the request
 - **Monitor Status**: Watch status messages for any issues
 
 ### After Completion

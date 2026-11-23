@@ -389,9 +389,8 @@ function BountyDetails({ walletState }) {
   }, [bountyId]);
 
   /**
-   * Refresh force-fail eligibility for every on-chain pending submission by reading
-   * the aggregator (read-only RPC; no wallet needed). Replaces the old
-   * "age > SUBMISSION_TIMEOUT_MINUTES" heuristic.
+   * Refresh the v2 round state of every on-chain submission from the escrow lens
+   * (read-only RPC; no wallet needed): getOracleResult + nextAction.
    */
   const refreshRoundStates = useCallback(async (subs) => {
     const onChainId = getOnChainBountyId();
@@ -688,8 +687,8 @@ function BountyDetails({ walletState }) {
         }
       }
 
-      // Re-read the aggregator gate so force-fail buttons appear as soon as the
-      // round settles (no status change needed for that).
+      // Re-read the round states so round-step buttons appear as soon as the
+      // round moves on (no status change needed for that).
       if (isMountedRef.current) {
         try { await refreshRoundStates(currentSubs); } catch (_) { /* ignore */ }
       }
@@ -1752,7 +1751,7 @@ function BountyDetails({ walletState }) {
       if (!contractService.isConnected()) await contractService.connect();
 
       // ====================================================================
-      // PHASE 1 — Resolve each pending submission (finalize or force-fail)
+      // PHASE 1 — Resolve each pending submission (follow nextAction: finalize, close, expire)
       // ====================================================================
       const resolvedIds = [];
       const unresolvedIds = [];
@@ -2260,7 +2259,7 @@ function BountyDetails({ walletState }) {
                 <>
                   {hasActiveSubmissions && (
                     <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
-                      {pendingSubmissions.length} pending submission(s) will be resolved (finalize or force-fail) before closing.
+                      {pendingSubmissions.length} pending submission(s) will be resolved (finalize, close a failed round or expire a re-run) before closing.
                     </div>
                   )}
                   <button

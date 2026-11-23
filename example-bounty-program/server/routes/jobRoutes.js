@@ -27,6 +27,7 @@ const { validateRubric, validateJuryNodes, normalizeBountyPayments, validateProc
 const { lookupClass, registryModelMatcher, checkJuryAgainstClass, checkClassCoverage } = require('../utils/classPolicy');
 const { getVerdiktaService, isVerdiktaServiceAvailable, LIKELY_MALFORMED_OUTCOME } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, isGatingIssue, isTransientIssue, maxEvaluationQueryChars } = require('../utils/bountyValidator');
+const { DRAW_GAS_LIMIT_FALLBACK, START_GAS_LIMIT } = require('../utils/gasLimits');
 const { getContractService, normalizeOracleSettings, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
@@ -156,7 +157,7 @@ function unevaluableGateResponse(jobId, errors) {
     error: 'This bounty\'s evaluation package cannot be evaluated and is not accepting submissions.',
     reason,
     issues: errors,
-    fix: `Check GET /api/jobs/${jobId}/validate for full details. If you already started an evaluation and it timed out, use GET /api/jobs/${jobId}/submissions to find it and POST .../timeout to recover your prepay.`,
+    fix: `Check GET /api/jobs/${jobId}/validate for full details. If you already started an evaluation and its round failed, use GET /api/jobs/${jobId}/submissions to find it and POST .../close-failed to close the round (the unspent prepay is refunded; the bond is returned once no re-run follows).`,
   };
 }
 
@@ -300,13 +301,17 @@ function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null, j
   const forfeitLine = int(body.forfeitLine, preset.forfeitLine, 'forfeitLine');
   if (jury >= juryCount) throw new Error(`jury must be an approved aggregator index, 0..${juryCount - 1} (contract: "bad jury")`);
   if (quota < 1 || forfeitLine > quota) throw new Error('quota must be at least 1 and forfeitLine at most quota (contract: "bad quota")');
-  const bond = body.bond != null && body.bond !== '' ? parseFeeToWei(body.bond, 'bond') : priced(preset.bondUsd, 'bond');
+  const bond = body.bond != null && body.bond !== '' ? parseFeeToWei(body.bond, 'bond', { maxWei: BOND_SANITY_MAX_WEI }) : priced(preset.bondUsd, 'bond');
   if (bond < 0n || bond > UINT96_MAX) throw new Error('bond is out of range (contract: "bad bond")');
   const minOracleFeeWei = body.oracleMinOracleFee != null && body.oracleMinOracleFee !== ''
     ? null   // resolveOracleSettings reads the creator's own value
     : priced(preset.feeFloorUsd, 'fee floor').toString();
   return { bountyClass: preset.key, jury, quota, forfeitLine, bond: bond.toString(), minOracleFeeWei, withBeacons: preset.withBeacons };
 }
+
+// A bond is an amount, not a per-juror fee: allow far more than the fee parser's 0.01 ETH, but still
+// catch a units mix-up (wei passed as ETH).
+const BOND_SANITY_MAX_WEI = ethers.parseEther('100');
 
 /** Does resolving these settings need an ETH price (a preset USD amount the body doesn't override)? */
 function presetNeedsPrice(body = {}, bountyUsd = null) {
@@ -498,11 +503,11 @@ function withTimeout(p, ms, label='operation') {
  * the contract service, or the safe fallback when the service is down or the call would
  * revert right now. Never throws — see ContractService.estimateResolveGas for the why.
  */
-async function resolveGasGuidance(data, from) {
+async function resolveGasGuidance(data, from, { fallbackLimit = RESOLVE_GAS_LIMIT_FALLBACK } = {}) {
   try {
-    return await getContractService().estimateResolveGas({ data, from });
+    return await getContractService().estimateResolveGas({ data, from }, { fallbackLimit });
   } catch (err) {
-    return { gasLimit: RESOLVE_GAS_LIMIT_FALLBACK.toString(), estimatedGas: null, source: 'fallback', reason: err.message };
+    return { gasLimit: fallbackLimit.toString(), estimatedGas: null, source: 'fallback', reason: err.message };
   }
 }
 /**
@@ -2111,7 +2116,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
 
 // POST /api/jobs/:jobId/submit/approve  (DEPRECATED)
 // The oracle is ETH-funded now: there is no LINK approval step. Fund the
-// evaluation by attaching ethMaxBudget as msg.value on /submissions/:submissionId/start.
+// evaluation by attaching startValue (prepay + bond) as msg.value on /submissions/:submissionId/start.
 router.post('/:jobId/submit/approve', async (req, res) => {
   const { jobId } = req.params;
   logger.info('[submit/approve] called (deprecated, ETH migration)', { jobId });
@@ -2376,7 +2381,7 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
         data: calldata,
         value: valueWei,   // startValue(bountyId) read live: the round's prepay + the hunter bond
         chainId: config.chainId,
-        gasLimit: '4000000'
+        gasLimit: START_GAS_LIMIT.toString()   // the request may settle up to 2 due rounds first
       },
       prepayWei,          // escrowed with the aggregator; the unspent part is refunded to the funder
       bondWei,            // held by the escrow; returned unless a hard fail forfeits it to the creator
@@ -5781,7 +5786,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
           dataTemplate: 'startPreparedSubmission({BOUNTY_ID}, {SUBMISSION_ID})',
           value: '{START_VALUE}',
           chainId,
-          gasLimit: 4000000,
+          gasLimit: Number(START_GAS_LIMIT),
           note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata + value'
         }
       ],
@@ -6053,7 +6058,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
             data: startData,
             value: startValue,
             chainId,
-            gasLimit: 4000000
+            gasLimit: Number(START_GAS_LIMIT)
           }
         },
         postEvaluation: {
@@ -6093,7 +6098,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
           data: startData,
           value: startValue,
           chainId,
-          gasLimit: 4000000
+          gasLimit: Number(START_GAS_LIMIT)
         }
       ],
       postEvaluation: {
@@ -7270,7 +7275,10 @@ async function roundStepTx(ctx, call, { value = '0' } = {}) {
     args = [ctx.chainSub.verdiktaAggId];
   }
   const data = iface.encodeFunctionData(call.method, args);
-  const gas = call.target === 'escrow' ? await resolveGasGuidance(data) : null;
+  // drawJury costs up to ~13.5M (50 jurors with beacons): its fallback is the per-tx cap.
+  const gas = call.target === 'escrow'
+    ? await resolveGasGuidance(data, undefined, call.method === 'drawJury' ? { fallbackLimit: DRAW_GAS_LIMIT_FALLBACK } : {})
+    : null;
   return {
     transaction: { to, data, value, chainId: config.chainId, ...(gas ? { gasLimit: gas.gasLimit } : {}) },
     ...(gas ? { gas: { ...gas, note: RESOLVE_GAS_NOTE } } : {}),

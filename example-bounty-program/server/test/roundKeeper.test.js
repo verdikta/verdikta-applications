@@ -141,3 +141,25 @@ describe('GET /api/classes/presets', () => {
     expect(res.body).toMatchObject({ maxRounds: 6, rerunWindowSeconds: 7200, ethUsd: 2500 });
   });
 });
+
+describe('RoundKeeper gas near the per-transaction cap', () => {
+  test('clamps estimate + margin to the cap, and simulates at the cap when estimateGas fails', async () => {
+    const calls = [];
+    let estimateFails = false;
+    const mk = () => new Proxy({}, { get: (_, prop) => {
+      if (prop === 'then') return undefined;
+      if (prop === 'connect') return () => mk();
+      const f = async (...a) => { calls.push({ method: prop, opts: a[a.length - 1] }); return { hash: '0x1' }; };
+      f.estimateGas = async () => { if (estimateFails) throw new Error('gas required exceeds allowance'); return 13_500_000n; };
+      f.staticCall = async () => true;
+      return f;
+    } });
+    const cs = { contract: mk(), getAggregatorFor: async () => mk() };
+    const keeper = new RoundKeeper({ contractService: cs, signer: { getAddress: async () => '0xk' }, logger: quiet });
+    await keeper.tend(1, 0, { nextAction: 'DRAW' });
+    expect(calls[0].opts.gasLimit).toBe(16_500_000n);
+    estimateFails = true;
+    await keeper.tend(2, 0, { nextAction: 'DRAW' });
+    expect(calls[1].opts.gasLimit).toBe(16_500_000n);
+  });
+});

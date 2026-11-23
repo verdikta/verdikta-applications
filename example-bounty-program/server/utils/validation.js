@@ -369,7 +369,7 @@ const FEE_SANITY_MAX_WEI = ethers.parseEther('0.01');
  * @param {string} fieldName - for error messages
  * @returns {bigint} wei
  */
-function parseFeeToWei(value, fieldName = 'fee') {
+function parseFeeToWei(value, fieldName = 'fee', { maxWei = FEE_SANITY_MAX_WEI } = {}) {
   const s = String(value === undefined || value === null ? '' : value).trim();
   if (s === '') throw new Error(`${fieldName} is empty`);
   let wei;
@@ -383,7 +383,10 @@ function parseFeeToWei(value, fieldName = 'fee') {
     throw new Error(`${fieldName} "${s}" must be a decimal-ETH string (e.g. "0.00002") or an integer-wei value (e.g. "20000000000000")`);
   }
   if (wei < 0n) throw new Error(`${fieldName} must be non-negative`);
-  if (wei > FEE_SANITY_MAX_WEI) {
+  if (maxWei !== FEE_SANITY_MAX_WEI && wei > maxWei) {
+    throw new Error(`${fieldName} resolves to ${ethers.formatEther(wei)} ETH, above the ${ethers.formatEther(maxWei)} ETH sanity limit. Did you mix up units? Pass decimal ETH (e.g. "0.02") OR integer wei.`);
+  }
+  if (maxWei === FEE_SANITY_MAX_WEI && wei > FEE_SANITY_MAX_WEI) {
     throw new Error(`${fieldName} resolves to ${ethers.formatEther(wei)} ETH, which is implausibly high (the on-chain maxOracleFee ceiling is 0.0004 ETH). Did you mix up units? Pass decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — both are accepted on every submit endpoint.`);
   }
   return wei;

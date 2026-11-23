@@ -33,6 +33,8 @@ const ACTIONS = Object.freeze({
 });
 
 const GAS_MARGIN_PCT = 25n;
+// A 50-juror draw uses ~13.5M, so estimate + 25% would pass the per-tx cap: the limit is clamped to it.
+const { TX_GAS_CAP } = require('./gasLimits');
 const IN_FLIGHT_MS = 90_000;            // don't resend the same step while its tx may still land
 const LOW_BALANCE_WEI = 2_000_000_000_000_000n;   // 0.002 ETH
 const BALANCE_CHECK_MS = 10 * 60_000;
@@ -86,16 +88,24 @@ class RoundKeeper {
     }
     const args = spec.args(bountyId, submissionId, state.aggId);
     const from = await this.address();
-    let gas;
+    let gasLimit;
     try {
-      gas = await contract[spec.fn].estimateGas(...args, { from });
+      const gas = await contract[spec.fn].estimateGas(...args, { from });
+      gasLimit = (BigInt(gas) * (100n + GAS_MARGIN_PCT)) / 100n;
+      if (gasLimit > TX_GAS_CAP) gasLimit = TX_GAS_CAP;
     } catch (err) {
-      // The step won't succeed right now (another caller got there first, or the round moved on).
-      this.logger.debug('[keeper] simulation refused', { bountyId, submissionId, action, reason: err.shortMessage || err.message });
-      return { action, sent: false, reason: 'simulation_failed' };
+      // Some nodes' estimateGas fails for a call that needs most of the cap (a 50-juror draw:
+      // try/catch inside makes the binary search ask for far more). Simulate at the cap itself.
+      try {
+        await contract[spec.fn].staticCall(...args, { from, gasLimit: TX_GAS_CAP });
+        gasLimit = TX_GAS_CAP;
+      } catch {
+        // The step won't succeed right now (another caller got there first, or the round moved on).
+        this.logger.debug('[keeper] simulation refused', { bountyId, submissionId, action, reason: err.shortMessage || err.message });
+        return { action, sent: false, reason: 'simulation_failed' };
+      }
     }
     try {
-      const gasLimit = (BigInt(gas) * (100n + GAS_MARGIN_PCT)) / 100n;
       const tx = await contract[spec.fn](...args, { gasLimit });
       this.inFlight.set(key, { hash: tx.hash, at: this.now() });
       this.sent++;

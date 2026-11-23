@@ -126,9 +126,11 @@ function computeCanBeClosed(bountyStruct) {
 
 // Gas guidance for the "resolve" calls (finalizeSubmission / closeFailedRound / rerunSubmission).
 // See ContractService.estimateResolveGas for why 300k is NOT enough: closeFailedRound settles the
-// round on the aggregator inside a try/catch (one keeper outcome per juror: up to ~1.6M gas at
-// Jumbo's 50 jurors, measured on the v2 contracts), and finalize reads every counted score.
-const RESOLVE_GAS_LIMIT_FALLBACK = 2_500_000n;
+// round on the aggregator inside a try/catch (one keeper outcome per juror). Measured against the
+// real v2 contracts (2026-11-23): closeFailedRound 205k-571k at K <= 12 and 2.38M at Jumbo's
+// K = 50; finalize 153k-346k; drawJury 2.0M (K = 6), 3.7M (K = 12), 13.5M (K = 50, beacons).
+const RESOLVE_GAS_LIMIT_FALLBACK = 4_000_000n;
+const { TX_GAS_CAP, DRAW_GAS_LIMIT_FALLBACK, START_GAS_LIMIT, capGas } = require('./gasLimits');
 const RESOLVE_GAS_LIMIT_MIN = 300_000n;
 const RESOLVE_GAS_MARGIN_PCT = 25n;
 const RESOLVE_GAS_NOTE = 'closeFailedRound may need >1.5M gas: it settles the round on the aggregator (one outcome per juror, plus the prepay refund) inside a try/catch. With a smaller limit that inner call runs out of gas, the catch swallows it, and the tx fails with no revert reason (gasUsed == gasLimit) even though eth_call/estimateGas pass. Use this gasLimit or your own estimateGas + margin; never hard-code a lower value.';
@@ -319,8 +321,8 @@ class ContractService {
    * reason? } — estimate + margin when the node can simulate the call, otherwise the
    * RESOLVE_GAS_LIMIT_FALLBACK (which covers the settle path). Never throws.
    */
-  async estimateResolveGas({ data, value = 0n, from } = {}, { timeoutMs = 8000 } = {}) {
-    const fallback = { gasLimit: RESOLVE_GAS_LIMIT_FALLBACK.toString(), estimatedGas: null, source: 'fallback' };
+  async estimateResolveGas({ data, value = 0n, from } = {}, { timeoutMs = 8000, fallbackLimit = RESOLVE_GAS_LIMIT_FALLBACK } = {}) {
+    const fallback = { gasLimit: fallbackLimit.toString(), estimatedGas: null, source: 'fallback' };
     if (!data) return { ...fallback, reason: 'no calldata' };
     try {
       const tx = { to: this.contractAddress, data, value };
@@ -330,7 +332,7 @@ class ContractService {
         new Promise((_, rej) => setTimeout(() => rej(new Error('estimateGas timed out')), timeoutMs))
       ]);
       const withMargin = (BigInt(estimated) * (100n + RESOLVE_GAS_MARGIN_PCT)) / 100n;
-      const gasLimit = withMargin > RESOLVE_GAS_LIMIT_MIN ? withMargin : RESOLVE_GAS_LIMIT_MIN;
+      const gasLimit = capGas(withMargin > RESOLVE_GAS_LIMIT_MIN ? withMargin : RESOLVE_GAS_LIMIT_MIN);
       return { gasLimit: gasLimit.toString(), estimatedGas: BigInt(estimated).toString(), source: 'estimate' };
     } catch (err) {
       // A revert here ("Verdikta not ready", "evaluation not settled", …) or an RPC
@@ -639,6 +641,10 @@ module.exports = {
   initializeContractService,
   RESOLVE_GAS_LIMIT_FALLBACK,
   RESOLVE_GAS_NOTE,
+  TX_GAS_CAP,
+  DRAW_GAS_LIMIT_FALLBACK,
+  START_GAS_LIMIT,
+  capGas,
   getContractService,
   ContractService,
   normalizeOracleSettings,

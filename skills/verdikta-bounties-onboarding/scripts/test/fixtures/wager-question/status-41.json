@@ -30,7 +30,10 @@
     "estimatedBaseCost": "10000000000000",
     "maxFeeBasedScaling": 3,
     "maxOracleFeeEth": "0.00002",
-    "estimatedBaseCostEth": "0.00001"
+    "estimatedBaseCostEth": "0.00001",
+    "minOracleFee": "0",
+    "minOracleFeeEth": "0.0",
+    "withBeacons": false
   },
   "effectiveOracleSettings": {
     "maxOracleFee": "20000000000000",
@@ -38,12 +41,20 @@
     "estimatedBaseCost": "10000000000000",
     "maxFeeBasedScaling": 3,
     "maxOracleFeeEth": "0.00002",
-    "estimatedBaseCostEth": "0.00001"
+    "estimatedBaseCostEth": "0.00001",
+    "minOracleFee": "0",
+    "withBeacons": false
   },
   "linkage": {
     "state": "linked",
     "onChain": true,
     "syncedFromBlockchain": true,
     "detail": "Sync service has confirmed this job matches an on-chain bounty with the same id."
+  },
+  "decisionSettings": {
+    "jury": 0,
+    "quota": 3,
+    "forfeitLine": 1,
+    "bondWei": "0"
   }
 }

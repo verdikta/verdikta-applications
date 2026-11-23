@@ -1,16 +1,22 @@
 {
   "base": {
     "chainId": 8453,
-    "address": "0xA741eFf41Bcf14793E61CEbB4179E05C9124D3f6",
-    "codeHash": "0x37511060fbbd00c75212ac5b433c81cfce7531627809b32908bbc2f7ba2d0da3",
-    "observedAt": "2026-09-28T18:58:42.752Z",
-    "docsUrl": "https://bounties.verdikta.org/api/docs"
+    "escrowVersion": 2,
+    "status": "NOT_DEPLOYED",
+    "address": null,
+    "codeHash": null,
+    "observedAt": null,
+    "docsUrl": "https://bounties.verdikta.org/api/docs",
+    "note": "PLACEHOLDER: BountyEscrow v2 is not deployed yet. A maintainer fills in the reviewed v2 address, the keccak256 of its runtime code and observedAt, and removes status; until then every escrow script refuses. The v1 escrow 0xA741eFf41Bcf14793E61CEbB4179E05C9124D3f6 takes the v1 createBounty struct and is not used by this version."
   },
   "base-sepolia": {
     "chainId": 84532,
-    "address": "0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f",
-    "codeHash": "0xc604dbb65559e4bebe2d8dfaa9b3ef4501059e7d83d828d677673f3e13641fb8",
-    "observedAt": "2026-09-28T18:58:42.828Z",
-    "docsUrl": "https://bounties-testnet.verdikta.org/api/docs"
+    "escrowVersion": 2,
+    "status": "NOT_DEPLOYED",
+    "address": null,
+    "codeHash": null,
+    "observedAt": null,
+    "docsUrl": "https://bounties-testnet.verdikta.org/api/docs",
+    "note": "PLACEHOLDER: BountyEscrow v2 is not deployed yet. A maintainer fills in the reviewed v2 address, the keccak256 of its runtime code and observedAt, and removes status; until then every escrow script refuses. The v1 escrow 0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f takes the v1 createBounty struct and is not used by this version."
   }
 }

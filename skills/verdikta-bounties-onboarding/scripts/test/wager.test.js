@@ -1,3 +1,4 @@
+import './_v2-deployment.js'; // synthetic v2 escrow: deployments.json holds placeholders until the deploy
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -36,7 +37,11 @@ test('an honest first bounty passes and the shared answer builder mirrors it, na
   assert.equal(config.submissionDeadline, '2026-10-21T19:00:00Z'); assert.equal(config.creatorAssessmentWindowSeconds, 0);
   assert.equal(config.publicSubmissions, true); assert.equal(config.iterations, 1); assert.equal(config.workProductType, 'Wager settlement claim');
   assert.deepEqual(config.juryNodes.map((n) => n.provider), ['OpenAI', 'Anthropic']);
-  assert.deepEqual(config.oracle, { maxOracleFee: '20000000000000', alpha: 500, estimatedBaseCost: '10000000000000', maxFeeBasedScaling: 3 });
+  assert.deepEqual(config.oracle, { maxOracleFee: '20000000000000', alpha: 500, estimatedBaseCost: '10000000000000', maxFeeBasedScaling: 3, minOracleFee: '0', withBeacons: false });
+  // v2: every wager bounty is Bondless Small, explicitly (no bond beyond the stake, the same rule on both sides).
+  assert.deepEqual([config.bountyClass, config.jury, config.quota, config.forfeitLine, config.bond], ['bondless-small', 0, 3, 1, '0']);
+  const p = creationTerms(config).params;
+  assert.deepEqual([p.jury, p.quota, p.forfeitLine, p.bond, p.oracle.minOracleFee, p.oracle.withBeacons], [0n, 3n, 1n, 0n, 0n, false]);
   assert.ok(validateRubric(config.rubricJson).valid); assert.ok(!('threshold' in config.rubricJson)); assert.equal(W.shared.mutualWagerRubricProblem(config.rubricJson), null);
   assert.equal(creationTerms(config).submissionDeadline, BigInt(Date.parse('2026-10-21T19:00:00Z') / 1000));
 });
@@ -74,6 +79,13 @@ test('check against the bettor\'s own posted terms: honest counter passes, bad c
 test('the escrow read must agree with the site record', () => {
   assert.match(report(bounty(18, { rpc: { targetHunter: carol } }), bob).problems.join('\n'), /on chain: its target differs/);
   assert.match(report(bounty(18, { rpc: { oracle: { ...fx(18, 'rpc').oracle, maxOracleFee: '1' } } }), bob).problems.join('\n'), /on chain: its oracle settings differ/);
+  // v2: the decision settings are read back too, and a counter bounty must use the wager settings (no bond, Bondless Small).
+  assert.match(report(bounty(18, { rpc: { quota: '2' } }), bob).problems.join('\n'), /on chain: its decision settings differ/);
+  assert.match(report(bounty(18, { status: { decisionSettings: undefined } }), bob).problems.join('\n'), /on chain: its decision settings differ/);
+  assert.match(report(bounty(18, { rpc: { oracle: { ...fx(18, 'rpc').oracle, withBeacons: true } } }), bob).problems.join('\n'), /on chain: its oracle settings differ/);
+  const bonded = report(bounty(18, { rpc: { bond: '5000', quota: '2' }, status: { decisionSettings: { jury: 0, quota: 2, forfeitLine: 1, bondWei: '5000' } } }), bob).problems.join('\n');
+  assert.match(bonded, /its decision settings \(quota 2, hunter bond 5000\) are not the wager settings both sides use/);
+  assert.doesNotMatch(bonded, /differs from the site's record/);
   assert.match(report(bounty(18, { rpc: { status: '1' } }), bob).problems.join('\n'), /no longer open/);
   assert.match(report({ ...bounty(18), rpc: null }, bob).problems.join('\n'), /could not be read from the escrow/);
 });

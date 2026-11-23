@@ -13,4 +13,4 @@ console.log('Funding status');
 console.log('Network:', network);
 console.log('Address:', address);
 console.log('ETH:', formatEther(ethBal));
-console.log('Current bounties use ETH for reward, gas and oracle prepay. Read requiredPrepay immediately before starting.');
+console.log('Current bounties use ETH for reward, gas and oracle prepay. A start attaches startValue (the oracle prepay plus the hunter bond the bounty sets), read immediately before starting; a re-run attaches requiredPrepay.');

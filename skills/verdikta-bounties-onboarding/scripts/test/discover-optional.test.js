@@ -1,5 +1,6 @@
 // The onboarding skill installed alone (no sibling verdikta-discover): plain and wager submissions work, a work-order
 // submission stops before any upload, and the work-order pre-check never misses a description the parser accepts.
+import './_v2-deployment.js'; // synthetic v2 escrow: deployments.json holds placeholders until the deploy
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, readdir, rm, mkdir, cp, symlink, access } from 'node:fs/promises';
@@ -64,6 +65,8 @@ async function installedAlone(t) {
   await mkdir(dir, { recursive: true });
   await cp(scripts, dir, { recursive: true, filter: (src) => !/[/\\](node_modules|test)([/\\]|$)/.test(path.relative(scripts, src) ? `/${path.relative(scripts, src)}` : '') });
   await symlink(path.join(scripts, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+  // The copy reads its own deployments.json: give it the same synthetic v2 deployment as these tests.
+  await writeFile(path.join(dir, 'deployments.json'), JSON.stringify(deployments, null, 2));
   await assert.rejects(access(path.join(root, 'skills', 'verdikta-discover')));
   return { root, ...(await import(pathToFileURL(path.join(dir, 'submit_to_bounty.js')).href)) };
 }
@@ -87,7 +90,7 @@ test('installed without verdikta-discover: a wager claim submits, a work-order s
       sendTx: async (signer, method, tx, opts) => { verifyTransaction(tx, { network: 'base', method, args: opts.args, value: opts.exactValueWei ?? 0n, maxValueWei: policy.maxValueWei }); await opts.onSigned?.({ hash }); sent.push(method);
         return { status: 1, hash, logs: [log('SubmissionPrepared', [7, 0, hunter, poster, 100n, cid])] }; } };
     const transaction = { to: d.address, chainId: d.chainId, value: '0', data: iface.encodeFunctionData('prepareSubmission', [7, cid, hunterCid]) };
-    const env = { baseUrl: 'https://mock.invalid', pause: async () => {}, contract: () => ({ getBounty: async () => ({ evaluationCid: cid, targetHunter: hunter }), isAcceptingSubmissions: async () => true, getSubmission: async () => ({ hunter, hunterCid }), nextAction: async () => 'AWAIT_ORACLE', requiredPrepay: async () => 123n }),
+    const env = { baseUrl: 'https://mock.invalid', pause: async () => {}, contract: () => ({ getBounty: async () => ({ evaluationCid: cid, targetHunter: hunter }), isAcceptingSubmissions: async () => true, getSubmission: async () => ({ hunter, hunterCid }), nextAction: async () => 'AWAIT_ORACLE', startValue: async () => 123n, requiredPrepay: async () => 100n }),
       fetchApi: async (url) => {
         if (url.endsWith('/7')) return json({ job: { jobId: 7, onChain: true, evaluationCid: cid, description } });
         if (url.endsWith('/validate')) return json({ valid: true });

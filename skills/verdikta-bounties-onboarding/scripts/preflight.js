@@ -13,7 +13,7 @@
 //   4. On-chain isAcceptingSubmissions returns true
 //   5. Deadline has sufficient buffer
 //   6. Bot has sufficient ETH for gas
-//   7. Bot has sufficient ETH for the live requiredPrepay
+//   7. Bot has sufficient ETH for the live startValue (oracle prepay + hunter bond)
 //
 // Prints a clear GO / NO-GO verdict.
 
@@ -176,9 +176,9 @@ if (job?.submissionCloseTime) {
 // 6. Live ETH oracle prepay; never treat prepare-time estimates as authoritative.
 try {
   await preflightDeployment(network, provider, baseUrl);
-  const required = await escrowContract(network, provider).requiredPrepay(jobId);
+  const required = await escrowContract(network, provider).startValue(jobId); // prepay + hunter bond
   const balance = await provider.getBalance(botAddress);
-  check('ETH evaluation prepay', balance > required, `${ethers.formatEther(required)} ETH plus gas required`);
+  check('ETH evaluation prepay', balance > required, `${ethers.formatEther(required)} ETH (startValue: prepay + bond) plus gas required`);
 } catch (err) { check('ETH evaluation prepay', false, err.message); }
 
 // 7. ETH balance for gas

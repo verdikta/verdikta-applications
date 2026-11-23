@@ -2,7 +2,8 @@
 // Non-spending guardrail: verify local escrow defaults match the live agent docs.
 
 import './_env.js';
-import { ESCROW, getNetwork } from './_lib.js';
+import { getNetwork } from './_lib.js';
+import { escrowAddress } from './_transaction-guards.js';
 
 const NETWORK_DOCS = {
   base: 'https://bounties.verdikta.org/agents.txt',
@@ -11,12 +12,13 @@ const NETWORK_DOCS = {
 
 const network = getNetwork();
 const docsUrl = NETWORK_DOCS[network];
-const localEscrow = ESCROW[network];
-
-if (!docsUrl || !localEscrow) {
+if (!docsUrl) {
   console.error(`Unsupported network for contract validation: ${network}`);
   process.exit(1);
 }
+let localEscrow;
+try { localEscrow = escrowAddress(network); } // "not deployed yet" while deployments.json holds the v2 placeholder
+catch (error) { console.error(error.message); process.exit(1); }
 
 const res = await fetch(docsUrl);
 if (!res.ok) {

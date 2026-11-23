@@ -1,6 +1,7 @@
 // Question wagers: the same builders, checks and claims as the website's shared module, and the same args and fixtures
 // as the native verdikta-agents runtime (#419). New proposals are mutual-wager-v5; the fixture pair #40/#41 is a v4
 // pair already posted, which is still answered, checked and claimed as v4.
+import './_v2-deployment.js'; // synthetic v2 escrow: deployments.json holds placeholders until the deploy
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

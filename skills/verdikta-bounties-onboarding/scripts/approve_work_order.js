@@ -81,6 +81,8 @@ export function bindApproval({ input, approvalText, title, notes, defaults, disc
   };
   if (defaults.creatorDeterminationPayment != null) config.creatorDeterminationPayment = defaults.creatorDeterminationPayment;
   if (defaults.arbiterDeterminationPayment != null) config.arbiterDeterminationPayment = defaults.arbiterDeterminationPayment;
+  // v2 decision settings (size-class preset and overrides; see create_bounty.js / decisionTerms). Absent: Bondless Small.
+  for (const k of ['bountyClass', 'jury', 'quota', 'forfeitLine', 'bond', 'ethUsd']) if (defaults[k] != null) config[k] = defaults[k];
   return { config, draftText: text, draftSha256, approval, templateId: draft.template_id };
 }
 

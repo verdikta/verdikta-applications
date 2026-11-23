@@ -7,12 +7,13 @@ import { JsonRpcProvider, Wallet, Contract, parseEther, formatEther } from 'ethe
 import { defaultSecretsDir } from './_paths.js';
 
 // Generated escrow + lens ABI and reviewed deployment snapshots.
-import { abi, deployments } from './_transaction-guards.js';
+import { abi, deployments, escrowAddress } from './_transaction-guards.js';
 export { reviewedApiOrigin } from './_transaction-guards.js';
 import { walletPassword } from './_secret.js';
 import { execute, loadSpendPolicy } from './_executor.js';
 export { preflightDeployment, loadSpendPolicy } from './_executor.js';
-export const ESCROW = Object.fromEntries(Object.entries(deployments).map(([n,d]) => [n,d.address]));
+// null for a network whose v2 escrow is not deployed yet (deployments.json placeholder).
+export const ESCROW = Object.fromEntries(Object.entries(deployments).map(([n,d]) => [n,d.address ?? null]));
 export const CHAIN_IDS = Object.fromEntries(Object.entries(deployments).map(([n,d]) => [n,d.chainId]));
 export const BOUNTY_ESCROW_ABI = abi;
 
@@ -22,9 +23,8 @@ export const BOUNTY_ESCROW_ABI = abi;
  * @param {import('ethers').Signer|import('ethers').Provider} signerOrProvider
  */
 export function escrowContract(network, signerOrProvider) {
-  const addr = ESCROW[network];
-  if (!addr) throw new Error(`No escrow address for network ${network}`);
-  return new Contract(addr, BOUNTY_ESCROW_ABI, signerOrProvider);
+  // Throws "not deployed yet" while deployments.json holds the v2 placeholder.
+  return new Contract(escrowAddress(network), BOUNTY_ESCROW_ABI, signerOrProvider);
 }
 
 /**

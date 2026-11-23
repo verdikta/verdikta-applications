@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// prepare -> creator window or start with LIVE ETH prepay -> confirm. No LINK.
+// prepare -> creator window or start with the LIVE startValue (ETH prepay + hunter bond) -> confirm. No LINK.
+// After the start the round is drawn and moved on (claim_bounty.js, or the server's keeper), then finalized.
 import fs from 'node:fs/promises';
 import { saveState } from './_state.js';
 import path from 'node:path';
 import { isMain } from './_cli.js';
-import { Contract } from 'ethers';
+import { Contract, formatEther } from 'ethers';
 
-import { abi, iface, deployments, verifyTransaction, reviewedApiOrigin } from './_transaction-guards.js';
+import { abi, iface, deployments, verifyTransaction, reviewedApiOrigin, escrowAddress } from './_transaction-guards.js';
 import { checkWorkOrderResult } from './_work-order-result.js';
 
 export async function runSubmit(lib, { contract = (address, abi, provider) => new Contract(address, abi, provider), fetchApi = globalThis.fetch, baseUrl: configuredBaseUrl = process.env.VERDIKTA_BOUNTIES_BASE_URL || '', pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
@@ -17,7 +18,7 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
   }
   const jobId = arg('jobId');
   if (!/^[0-9]+$/.test(jobId || '')) throw new Error('Usage: submit_to_bounty.js --jobId ID --file report.md --state submission.json [--yes]; --dry-run requires --hunterCid CID; --resume SUBMISSION_ID only starts an existing prepare');
-  const network = getNetwork(), provider = providerFor(network);
+  const network = getNetwork(), escrowAt = escrowAddress(network), provider = providerFor(network);
   try {
     const baseUrl = configuredBaseUrl ? configuredBaseUrl.replace(/\/+$/, '') : reviewedApiOrigin(network);
     await preflightDeployment(network, provider, baseUrl);
@@ -38,7 +39,7 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
       catch { throw new Error(`API ${route}: invalid JSON (HTTP ${res.status}); retain existing IDs, do not prepare another submission`); }
       return data;
     }
-    const escrow = contract(deployments[network].address, abi, provider);
+    const escrow = contract(escrowAt, abi, provider);
     const bounty = await escrow.getBounty(jobId);
     const response = await api(''), job = response.job;
     if (!job || String(job.jobId) !== String(jobId) || !(job.onChain || job.syncedFromBlockchain) || job.evaluationCid !== bounty.evaluationCid) throw new Error('API/on-chain job identity mismatch');
@@ -56,7 +57,7 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
         // evaluator's structural gates would fail anything else, so the upload is refused here first.
         const workOrder = await checkWorkOrderResult({ description: job.description, files: argAll('file') });
         if (workOrder.workOrder && workOrder.errors.length) throw new Error(`Work-order result check failed (${workOrder.templateId}): ${workOrder.errors.join('; ')}`);
-        await confirmSpendOrExit([`Publish files and prepare submission for bounty ${jobId}; network ${network}`, `Evaluation prepay is ETH, limited by the owner policy ${policy.maxValueWei} wei; a creator window may defer start.`]);
+        await confirmSpendOrExit([`Publish files and prepare submission for bounty ${jobId}; network ${network}`, `Starting the evaluation attaches ETH: the round's prepay plus the bounty's hunter bond ${formatEther(bounty.bond ?? 0n)} ETH (returned unless a hard fail forfeits it to the creator), limited by the owner policy ${policy.maxValueWei} wei; a creator window may defer start.`]);
         state = { network, jobId, hunter, status: 'UPLOAD_PENDING' };
         await fs.writeFile(statePath, JSON.stringify(state), { flag: 'wx', mode: 0o600 });
         const form = new FormData(); form.append('hunter', hunter);
@@ -71,12 +72,12 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
       if (!/^[a-zA-Z0-9]{46,100}$/.test(hunterCid || '')) throw new Error('A bare work CID is required; dry-run uploads nothing');
       // Encode locally for dry-run: do not call mutation-shaped preparation endpoints.
       const args = [BigInt(jobId), bounty.evaluationCid, hunterCid];
-      const transaction = isDryRun() ? { to: deployments[network].address, chainId: deployments[network].chainId, value: '0', data: iface.encodeFunctionData('prepareSubmission', args) } : (await api('/submit/prepare', { hunter, hunterCid })).transaction;
+      const transaction = isDryRun() ? { to: escrowAt, chainId: deployments[network].chainId, value: '0', data: iface.encodeFunctionData('prepareSubmission', args) } : (await api('/submit/prepare', { hunter, hunterCid })).transaction;
       const receipt = await sendTx(signer, 'prepareSubmission', transaction, { network, args, policy,
         onSigned: async ({ rawTransaction, hash }) => { state.prepareTxHash = hash; state.prepareRawTransaction = rawTransaction; await saveState(statePath, state); },
         onBroadcast: async hash => { state.prepareTxHash = hash; await saveState(statePath, state); } });
       if (!receipt) { return; }
-      const event = receipt.logs.filter(l => l.address.toLowerCase() === deployments[network].address.toLowerCase()).map(l => { try { return iface.parseLog(l); } catch { return null; } })
+      const event = receipt.logs.filter(l => l.address.toLowerCase() === escrowAt.toLowerCase()).map(l => { try { return iface.parseLog(l); } catch { return null; } })
         .find(e => e?.name === 'SubmissionPrepared' && e.args.bountyId === BigInt(jobId) && e.args.hunter.toLowerCase() === hunter.toLowerCase());
       if (!event) throw new Error('No matching SubmissionPrepared; recover from saved hash, never repeat prepare blindly');
       submissionId = event.args.submissionId.toString(); state.submissionId = submissionId;
@@ -108,7 +109,7 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
         const receipt = await provider.getTransactionReceipt(state.prepareTxHash);
         if (!tx || tx.from.toLowerCase() !== hunter.toLowerCase() || receipt?.status !== 1 || receipt.hash !== state.prepareTxHash) throw new Error('Prepare transaction not confirmed for this hunter');
         verifyTransaction(tx, { network, method: 'prepareSubmission', args: [BigInt(jobId), bounty.evaluationCid, state.hunterCid], value: 0n, maxValueWei: policy.maxValueWei });
-        const event = receipt.logs.filter(l => l.address.toLowerCase() === deployments[network].address.toLowerCase()).map(l => { try { return iface.parseLog(l); } catch { return null; } })
+        const event = receipt.logs.filter(l => l.address.toLowerCase() === escrowAt.toLowerCase()).map(l => { try { return iface.parseLog(l); } catch { return null; } })
           .find(e => e?.name === 'SubmissionPrepared' && e.args.bountyId === BigInt(jobId) && e.args.submissionId === BigInt(submissionId) && e.args.hunter.toLowerCase() === hunter.toLowerCase() && e.args.evaluationCid === bounty.evaluationCid);
         if (!event) throw new Error('Recovered submission ID does not match the saved prepare receipt');
         state.submissionId = String(submissionId);
@@ -136,12 +137,18 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
     const next = await escrow.nextAction(jobId, submissionId);
     console.log(`Submission ${submissionId}: ${next}`);
     if (next === 'START') {
-      const value = await escrow.requiredPrepay(jobId);
+      // startValue = requiredPrepay (the round's oracle prepay; the unspent part comes back) + the hunter bond (held by
+      // the escrow: back on a pass, a soft fail that runs out of re-runs or no result; to the creator on a hard fail).
+      const [value, prepay] = await Promise.all([escrow.startValue(jobId), escrow.requiredPrepay(jobId)]);
+      const bond = value - prepay;
       const args = [BigInt(jobId), BigInt(submissionId)];
-      const transaction = isDryRun() ? { to: deployments[network].address, chainId: deployments[network].chainId, value: value.toString(), data: iface.encodeFunctionData('startPreparedSubmission', args) } : (await api(`/submissions/${submissionId}/start`, { hunter })).transaction;
-      await sendTx(signer, 'startPreparedSubmission', transaction, { network, args, exactValueWei: value, policy });
+      const transaction = isDryRun() ? { to: escrowAt, chainId: deployments[network].chainId, value: value.toString(), data: iface.encodeFunctionData('startPreparedSubmission', args) } : (await api(`/submissions/${submissionId}/start`, { hunter })).transaction;
+      const review = [`Start value ${formatEther(value)} ETH = prepay ${prepay} wei + hunter bond ${bond} wei`,
+        `Bond: returned on a pass, or when the submission fails without a hard fail; forfeited to the creator if fewer than ${bounty.forfeitLine ?? '?'} juror scores reach the threshold (a pass needs ${bounty.quota ?? '?'})`];
+      const receipt = await sendTx(signer, 'startPreparedSubmission', transaction, { network, args, exactValueWei: value, policy, review });
+      if (receipt) console.log(`Started. The round must now be drawn (DRAW, from two blocks on; twice on a beacon bounty) and moved on: the server's keeper usually does it, or run claim_bounty.js --jobId ${jobId} --submissionId ${submissionId}, one step per run, until FINALIZE.`);
     } else {
-      console.log('No start transaction sent. AWAIT_* means wait; use claim_bounty.js for FINALIZE, FORCE_FAIL or RECOVER_REFUND. Re-run --resume with this submission ID, not a new prepare.');
+      console.log(`No start transaction sent. AWAIT_* means wait. claim_bounty.js --jobId ${jobId} --submissionId ${submissionId} performs DRAW, CLOSE_COMMITS, PROMOTE, FINALIZE, CLOSE_FAILED, EXPIRE_RERUN or RECOVER_REFUND, and RERUN with --rerun. Re-run --resume with this submission ID, not a new prepare.`);
     }
   } finally { provider.destroy(); }
 }

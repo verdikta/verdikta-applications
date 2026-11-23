@@ -2,8 +2,26 @@
 import { Interface, getAddress, ZeroAddress, parseEther, keccak256, Transaction } from 'ethers';
 import abi from './bounty-escrow.abi.json' with { type: 'json' };
 import deployments from './deployments.json' with { type: 'json' };
-export { abi, deployments };
+import presets from './_class-presets.cjs';
+export { abi, deployments, presets };
 export const iface = new Interface(abi);
+// The two round steps that go to the bounty's aggregator (escrow.aggregatorOf), not the escrow. Gas only, anyone may send.
+export const aggregatorIface = new Interface(['function closeCommits(bytes32 aggId)', 'function promote(bytes32 aggId)']);
+export const AGGREGATOR_METHODS = Object.freeze(['closeCommits', 'promote']);
+/**
+ * The reviewed BountyEscrow v2 deployment for a network. Until a maintainer records one in deployments.json (address +
+ * runtime codeHash), every escrow script stops here: this version never reads, signs for or falls back to the v1 escrow.
+ * The API origin (reviewedApiOrigin) and owner withdrawals need no escrow and keep working.
+ */
+export function escrowDeployment(network) {
+  const d = deployments[network];
+  if (!d) throw new Error(`Unsupported network ${network}`);
+  if (d.status === 'NOT_DEPLOYED' || !d.address || !d.codeHash) {
+    throw new Error(`BountyEscrow v2 is not deployed on ${network} yet: scripts/deployments.json holds a placeholder (no reviewed address or codeHash). Nothing was read, signed or sent. A maintainer must update deployments.json with the reviewed v2 deployment (address, runtime codeHash) first; this version never uses the v1 escrow`);
+  }
+  return d;
+}
+export const escrowAddress = (network) => getAddress(escrowDeployment(network).address);
 // The bot API key and bounty data go only to the API origin reviewed for each network in deployments.json.
 // An unset URL means that origin; any other URL is refused, so a changed .env cannot redirect the key.
 export function reviewedApiOrigin(network, configured) {
@@ -44,7 +62,8 @@ export function creationTerms(config) {
   if (parseEther(String(config.bountyAmount)) !== value) throw new Error('bountyAmount must equal maximum determination payment');
   const o = config.oracle;
   if (!o) throw new Error('Explicit oracle settings required');
-  const oracle = { maxOracleFee: uint(o.maxOracleFee, 'oracle fee'), alpha: uint(o.alpha, 'alpha', 1000n), estimatedBaseCost: uint(o.estimatedBaseCost, 'base cost'), maxFeeBasedScaling: uint(o.maxFeeBasedScaling, 'scaling', 1000n) };
+  const decision = decisionTerms(config);
+  const oracle = { maxOracleFee: uint(o.maxOracleFee, 'oracle fee'), alpha: uint(o.alpha, 'alpha', 1000n), estimatedBaseCost: uint(o.estimatedBaseCost, 'base cost'), maxFeeBasedScaling: uint(o.maxFeeBasedScaling, 'scaling', 1000n), minOracleFee: decision.minOracleFee, withBeacons: decision.withBeacons };
   if (!oracle.maxOracleFee || oracle.estimatedBaseCost >= oracle.maxOracleFee || !oracle.maxFeeBasedScaling) throw new Error('Invalid oracle settings');
   // A whole-hour window, or an exact deadline for terms that name a date (a wager's settlement deadline).
   let submissionDeadline = null;
@@ -56,7 +75,44 @@ export function creationTerms(config) {
     if (!Number.isSafeInteger(hours) || hours <= 0 || !Number.isSafeInteger(hours * 3600) || BigInt(hours * 3600) <= window + 2n) throw new Error('Submission window must be whole hours');
   }
   if (window % 3600n !== 0n) throw new Error('Creator assessment window must be whole hours');
-  return { params: { requestedClass, threshold, targetHunter, creatorDeterminationPayment: creator, arbiterDeterminationPayment: arbiter, creatorAssessmentWindowSize: window, oracle }, value, submissionDeadline };
+  const { jury, quota, forfeitLine, bond } = decision;
+  return { params: { requestedClass, threshold, targetHunter, creatorDeterminationPayment: creator, arbiterDeterminationPayment: arbiter, creatorAssessmentWindowSize: window, oracle, jury, quota, forfeitLine, bond }, value, submissionDeadline, decision };
+}
+const UINT96 = (1n << 96n) - 1n;
+/**
+ * The v2 decision settings (item 12's rule, item 15's size classes): jury (approved aggregator index), pass quota Q,
+ * forfeit line R <= Q, hunter bond (wei), fee floor oracle.minOracleFee (wei) and oracle.withBeacons. They start from
+ * a size-class preset (_class-presets.cjs, the site's and API's): config.bountyClass, else the smallest class offered
+ * for bountyAmount at config.ethUsd, else Bondless Small. Any of jury, quota, forfeitLine, bond, oracle.minOracleFee
+ * and oracle.withBeacons in the config overrides the preset. A preset's USD bond or fee floor converts only at an
+ * owner-reviewed config.ethUsd; without one, give the wei amount. Everything is sent to the API explicitly, so the
+ * server never picks a class or an ETH price for this bounty.
+ */
+export function decisionTerms(config) {
+  let key = config.bountyClass;
+  if (key == null) {
+    const ethUsd = config.ethUsd == null ? null : Number(config.ethUsd);
+    key = ethUsd > 0 ? presets.presetForBounty(Number(config.bountyAmount) * ethUsd)?.key : 'bondless-small';
+  }
+  const preset = presets.presetByKey(key);
+  if (!preset) throw new Error(`bountyClass must be one of ${presets.CLASS_PRESETS.map((c) => c.key).join(', ')}`);
+  const o = config.oracle || {};
+  const priced = (value, usd, name) => {
+    if (value != null) return uint(value, name, UINT96);
+    if (!usd) return 0n;
+    if (!(Number(config.ethUsd) > 0)) throw new Error(`The ${preset.name} preset's ${name} is $${usd}: give ${name === 'bond' ? 'bond' : 'oracle.minOracleFee'} in wei, or an owner-reviewed ethUsd to convert it`);
+    return presets.usdToWei(usd, config.ethUsd);
+  };
+  const small = (value, fallback, name) => uint(value ?? fallback, name, 255n);
+  const jury = small(config.jury, preset.jury, 'jury'), quota = small(config.quota, preset.quota, 'quota'), forfeitLine = small(config.forfeitLine, preset.forfeitLine, 'forfeitLine');
+  if (quota < 1n || forfeitLine > quota) throw new Error('quota must be at least 1 and forfeitLine at most quota');
+  const withBeacons = o.withBeacons ?? preset.withBeacons;
+  if (typeof withBeacons !== 'boolean') throw new Error('oracle.withBeacons must be true or false');
+  return { bountyClass: preset.key, className: preset.name, jury, quota, forfeitLine, bond: priced(config.bond, preset.bondUsd, 'bond'), minOracleFee: priced(o.minOracleFee, preset.feeFloorUsd, 'fee floor'), withBeacons };
+}
+/** The /jobs/create fields for decisionTerms: every one explicit (wei as decimal strings). */
+export function decisionBody(decision) {
+  return { bountyClass: decision.bountyClass, jury: Number(decision.jury), quota: Number(decision.quota), forfeitLine: Number(decision.forfeitLine), bond: decision.bond.toString(), oracleMinOracleFee: decision.minOracleFee.toString(), oracleWithBeacons: decision.withBeacons };
 }
 // Unix seconds, or ISO-8601 UTC ending in Z ("2026-10-22T00:00:00Z"). The server encodes this second exactly.
 export function exactDeadline(value) {
@@ -90,34 +146,44 @@ export function bindCreation(config, response, { recovery = false, apiCreatedAt 
   if (Number(job.threshold) !== Number(config.threshold)) throw new Error('Server threshold drift');
   return { params: { ...params, evaluationCid: job.evaluationCid, submissionDeadline: deadline }, value, transaction: response.onChain.transaction };
 }
-export function verifyTransaction(tx, { network, method, args, value = 0n, maxValueWei }) {
-  const deployment = deployments[network];
-  if (!deployment || Number(tx?.chainId) !== deployment.chainId) throw new Error('Transaction chain mismatch');
-  if (getAddress(tx.to) !== getAddress(deployment.address)) throw new Error('Transaction destination mismatch');
-  if (uint(tx.value, 'transaction value') !== BigInt(value)) throw new Error('Transaction value mismatch');
+// aggregator: for closeCommits / promote only, the bounty's aggregator as the reviewed escrow names it (aggregatorOf).
+export function verifyTransaction(tx, { network, method, args, value = 0n, maxValueWei, aggregator = null }) {
+  const deployment = escrowDeployment(network);
+  if (Number(tx?.chainId) !== deployment.chainId) throw new Error('Transaction chain mismatch');
+  const onAggregator = AGGREGATOR_METHODS.includes(method);
+  if (onAggregator && !aggregator) throw new Error(`${method} goes to the bounty's aggregator; its address from escrow.aggregatorOf is required`);
+  const to = getAddress(onAggregator ? aggregator : deployment.address);
+  if (getAddress(tx.to) !== to) throw new Error('Transaction destination mismatch');
+  if (uint(tx.value, 'transaction value') !== BigInt(value) || (onAggregator && BigInt(value) !== 0n)) throw new Error('Transaction value mismatch');
   if (maxValueWei == null || BigInt(value) > uint(maxValueWei, 'value cap')) throw new Error('Transaction exceeds value cap');
   // Exact re-encoding also rejects unexpected selectors, argument drift and trailing data.
-  if (!method || !Array.isArray(args) || tx.data?.toLowerCase() !== iface.encodeFunctionData(method, args).toLowerCase()) throw new Error('Transaction calldata/ABI drift');
-  return { to: deployment.address, data: tx.data, value: BigInt(value), chainId: deployment.chainId };
+  if (!method || !Array.isArray(args) || tx.data?.toLowerCase() !== (onAggregator ? aggregatorIface : iface).encodeFunctionData(method, args).toLowerCase()) throw new Error('Transaction calldata/ABI drift');
+  return { to, data: tx.data, value: BigInt(value), chainId: deployment.chainId };
 }
 export async function verifyDeployment(network, provider, docs) {
-  const d = deployments[network];
-  if (!d || Number((await provider.getNetwork()).chainId) !== d.chainId || Number(docs?.contract?.chainId) !== d.chainId) throw new Error('Deployment chain mismatch');
+  const d = escrowDeployment(network);
+  if (Number((await provider.getNetwork()).chainId) !== d.chainId || Number(docs?.contract?.chainId) !== d.chainId) throw new Error('Deployment chain mismatch');
   if (getAddress(docs.contract.address) !== getAddress(d.address)) throw new Error('Live destination drift; maintainer review required');
   const code = await provider.getCode(d.address);
   if (code === '0x' || keccak256(code) !== d.codeHash) throw new Error('Live contract bytecode drift');
-  for (const name of ['createBounty', 'prepareSubmission', 'requiredPrepay']) {
+  // The v2 createBounty struct and startValue: a site still documenting the v1 escrow fails here.
+  for (const name of DOCUMENTED_FUNCTIONS) {
     const signature = docs.contract.functions?.[name]?.signature;
     if (!signature || new Interface([`function ${signature}`]).getFunction(name).selector !== iface.getFunction(name).selector) throw new Error('Live ABI selector drift');
   }
   return d.address;
 }
 
+export const DOCUMENTED_FUNCTIONS = Object.freeze(['createBounty', 'prepareSubmission', 'requiredPrepay', 'startValue']);
+
 export function verifyCreatedBounty(bounty, expected, creator) {
   if (getAddress(bounty.creator) !== getAddress(creator)) throw new Error('Created bounty creator mismatch');
   for (const [key, value] of Object.entries(expected)) {
     if (key === 'oracle') {
-      for (const [field, term] of Object.entries(value)) if (BigInt(bounty.oracle[field]) !== term) throw new Error(`Created bounty oracle ${field} mismatch`);
+      for (const [field, term] of Object.entries(value)) {
+        const live = bounty.oracle[field];
+        if (typeof term === 'boolean' ? Boolean(live) !== term : BigInt(live) !== term) throw new Error(`Created bounty oracle ${field} mismatch`);
+      }
     } else if (key === 'targetHunter') {
       if (getAddress(bounty[key]) !== getAddress(value)) throw new Error('Created bounty target mismatch');
     } else if (typeof value === 'bigint' ? BigInt(bounty[key]) !== value : bounty[key] !== value) throw new Error(`Created bounty ${key} mismatch`);
@@ -138,18 +204,25 @@ export function verifySignedTransaction(raw, expected, creator, policy, hash) {
   return tx;
 }
 
-// Clearing before a close. closeExpiredBounty reverts "active evaluation - finalize first" while any claim is pending,
-// and in a wager only the opponent can submit, so a rejected claim nobody finalized would hold the creator's refund.
-// The creator of an open bounty past its deadline may resolve those claims with exactly these two gas-only calls, which
-// cannot change who wins. A close never finalizes a passing result (that pays the claimant) or one not stored yet.
-export const CLEARING_METHODS = Object.freeze(['finalizeSubmission', 'failTimedOutSubmission']);
-const SCORE_SCALE = 1_000_000n, SCORE_DIVISOR = 10_000n;
-/** The escrow's pass rule (_scoreVector): scores = [DONT_FUND, FUND] on SCORE_SCALE; FUND / SCORE_DIVISOR >= threshold. */
-export function resultPasses(scores, threshold) {
-  if (!Array.isArray(scores) || scores.length !== 2) return false;
-  const [reject, accept] = scores.map((s) => BigInt(s));
-  if (reject > SCORE_SCALE || accept > SCORE_SCALE) return false;
-  return accept / SCORE_DIVISOR >= BigInt(threshold);
+// Clearing before a close. closeExpiredBounty reverts "active evaluation - finalize first" while any submission is on
+// the pending list (a round in flight, or awaiting a re-run), and in a wager only the opponent can submit, so a claim
+// nobody resolved would hold the creator's refund. The creator of an open bounty past its deadline may resolve those
+// claims with exactly these gas-only calls, none of which can change who wins: finalizeSubmission for a stored result
+// that does not pass (past the deadline a soft fail cannot re-run, so it fails with the bond returned; a hard fail
+// forfeits the bond to the creator), closeFailedRound for a round with no result that can get none, expireRerun for a
+// re-run that can no longer happen. A close never finalizes a passing result (that pays the claimant).
+export const CLEARING_METHODS = Object.freeze(['finalizeSubmission', 'closeFailedRound', 'expireRerun']);
+/** getOracleResult().outcome (BountyRules.Outcome). */
+export const OUTCOMES = Object.freeze(['NOT_READY', 'NO_RESULT', 'PASS', 'SOFT_FAIL', 'HARD_FAIL']);
+export const outcomeName = (outcome) => OUTCOMES[Number(outcome)] ?? `UNKNOWN(${outcome})`;
+/**
+ * When a round that is still moving will have a result or can be closed (unix seconds), or null: its deadline once
+ * drawn (settle is due after it), else a day after the request (an undrawn round can be cancelled by then).
+ */
+export function roundSettlesBy(result) {
+  const deadline = Number(result?.deadline ?? 0), requested = Number(result?.requestTime ?? 0);
+  if (deadline > 0) return deadline + 1;
+  return requested > 0 ? requested + 86400 + 1 : null;
 }
 /** Throws unless signer created the bounty, it is open and chainNow (latest block time) is at or past its deadline. */
 export function assertClearable({ bounty, signer, chainNow }) {
@@ -158,21 +231,29 @@ export function assertClearable({ bounty, signer, chainNow }) {
   if (BigInt(chainNow) < BigInt(bounty.submissionDeadline)) throw new Error(`The bounty's deadline ${new Date(Number(bounty.submissionDeadline) * 1000).toISOString()} has not passed: it cannot be closed, or its claims cleared, before then`);
 }
 /**
- * The clearing call for one pending submission: { method } (one of CLEARING_METHODS), { wait } (still being
- * evaluated) or { stop } (the close cannot go ahead). next = nextAction(), result = getOracleResult().
+ * The clearing call for one pending submission: { method } (one of CLEARING_METHODS), { wait, retryAfter } (its round
+ * is still moving) or { stop } (the close cannot go ahead). next = nextAction(), result = getOracleResult() (v2 struct).
+ * v1's "FINALIZE without a stored result" no longer exists: a round with no result that can get none is CLOSE_FAILED.
  */
 export function clearingCall({ bounty, signer, chainNow, submissionId, next, result }) {
   assertClearable({ bounty, signer, chainNow });
   const id = `Submission ${submissionId}`;
-  if (next === 'FORCE_FAIL') return { method: 'failTimedOutSubmission' };
-  if (next === 'AWAIT_ORACLE') return { wait: `${id} is still being evaluated` };
-  if (next === 'FINALIZE' || next === 'AWAIT_EARLIER') {
-    if (!result?.hasResult) return { stop: `${id}: its jury round timed out with enough answers but no stored result, so finalizing it would decide the claim now and pay the claimant if it passes. Finalize it only with the owner's agreement (claim_bounty.js), then close` };
-    const accept = result.scores?.length === 2 ? Number(BigInt(result.scores[1]) / SCORE_DIVISOR) : null;
-    if (resultPasses(result.scores, bounty.threshold)) return { stop: `${id} passed its evaluation (acceptance ${accept}, threshold ${bounty.threshold}): finalizing it pays the claimant, so this bounty cannot be closed` };
-    return next === 'FINALIZE' ? { method: 'finalizeSubmission' } : { wait: `${id} waits for an earlier evaluation` };
+  const passed = () => `${id} passed its evaluation (${result?.passCount ?? '?'} juror score(s) at or above threshold ${bounty.threshold}, quota ${bounty.quota ?? '?'}): finalizing it pays the claimant, so this bounty cannot be closed`;
+  switch (next) {
+    case 'CLOSE_FAILED': return { method: 'closeFailedRound' };
+    case 'EXPIRE_RERUN': return { method: 'expireRerun' };
+    case 'FINALIZE': {
+      const outcome = outcomeName(result?.outcome);
+      if (!result?.hasResult) return { stop: `${id}: nextAction is FINALIZE but its round reports no result; inspect it before closing` };
+      if (outcome === 'PASS') return { stop: passed() };
+      if (!['SOFT_FAIL', 'HARD_FAIL', 'NO_RESULT'].includes(outcome)) return { stop: `${id}: unexpected outcome ${outcome}` };
+      return { method: 'finalizeSubmission', outcome };
+    }
+    case 'AWAIT_EARLIER': return { stop: passed() };
+    case 'DRAW': case 'CLOSE_COMMITS': case 'PROMOTE': case 'AWAIT_ORACLE':
+      return { wait: `${id} is still being evaluated (${next === 'AWAIT_ORACLE' ? 'its jury is working' : `its round waits for ${next}, which anyone may send with claim_bounty.js`})`, retryAfter: roundSettlesBy(result) };
+    default: return { stop: `${id}: unexpected next action ${next}` };
   }
-  return { stop: `${id}: unexpected next action ${next}` };
 }
 
 // Owner withdrawals: the only transactions not sent to the escrow. ETH goes straight to the owner address recorded at
@@ -188,6 +269,7 @@ export function ownerAddress(value) {
   if (address === ZeroAddress) throw new Error('The owner address is the zero placeholder; no owner is recorded');
   return address;
 }
+// Needs only the network's chainId: withdrawals to the owner work before the v2 escrow is deployed.
 export function ownerTransferFields({ network, owner, asset, amount }) {
   const deployment = deployments[network], recipient = ownerAddress(owner), value = uint(amount, 'withdrawal amount');
   if (!deployment) throw new Error(`Unsupported network ${network}`);

@@ -1,8 +1,10 @@
+import './_v2-deployment.js'; // synthetic v2 escrow: deployments.json holds placeholders until the deploy
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Interface, ZeroAddress, keccak256 } from 'ethers';
-import { iface, targetFor, creationTerms, bindCreation, verifyTransaction, verifyDeployment, deployments } from '../_transaction-guards.js';
+import { iface, aggregatorIface, targetFor, creationTerms, decisionTerms, decisionBody, bindCreation, verifyTransaction, verifyDeployment, verifyCreatedBounty, deployments, escrowDeployment, DOCUMENTED_FUNCTIONS } from '../_transaction-guards.js';
+import { withPlaceholders } from './_v2-deployment.js';
 const config = { procurementMode:'TARGETED',targetHunter:'0x1111111111111111111111111111111111111111', classId:128,threshold:85,bountyAmount:'0.001',submissionWindowHours:24,oracle:{maxOracleFee:'100000000000000',alpha:500,estimatedBaseCost:'0',maxFeeBasedScaling:1} };
 const opened=Math.floor(Date.now()/1000),cid='Qm'+'a'.repeat(44);
 const response={success:true,job:{jobId:1,evaluationCid:cid,threshold:85,submissionOpenTime:opened,submissionCloseTime:opened+86400},onChain:{transaction:{}}};
@@ -13,7 +15,9 @@ function fixture(c=config) {
 }
 test('current generated create struct and three-argument prepare',()=>{
   assert.equal(iface.getFunction('createBounty').inputs.length,1);
-  assert.equal(iface.getFunction('createBounty').inputs[0].components.length,9);
+  const create=iface.getFunction('createBounty').inputs[0].components;
+  assert.deepEqual(create.map(c=>c.name),['evaluationCid','requestedClass','threshold','submissionDeadline','targetHunter','creatorDeterminationPayment','arbiterDeterminationPayment','creatorAssessmentWindowSize','oracle','jury','quota','forfeitLine','bond']);
+  assert.deepEqual(create[8].components.map(c=>c.name),['maxOracleFee','alpha','estimatedBaseCost','maxFeeBasedScaling','minOracleFee','withBeacons']);
   assert.equal(iface.getFunction('prepareSubmission').inputs.length,3);
   const {tx,expected}=fixture();assert.equal(verifyTransaction(tx,expected).value,1000000000000000n);
   assert.equal(iface.decodeFunctionData('createBounty',tx.data)[0].targetHunter,config.targetHunter);
@@ -31,10 +35,11 @@ test('deadline is exact server seconds; wrong units/window rejected',()=>{
 test('all transaction fields and argument drift fail closed',()=>{
   const {tx,expected}=fixture();
   for(const mutate of [t=>t.to=ZeroAddress,t=>t.chainId=84532,t=>delete t.chainId,t=>t.value='1',t=>t.data='0x12345678',t=>t.data+='00']) {const bad={...tx};mutate(bad);assert.throws(()=>verifyTransaction(bad,expected));}
-  for(const field of ['evaluationCid','requestedClass','threshold','submissionDeadline','targetHunter','creatorDeterminationPayment','arbiterDeterminationPayment','creatorAssessmentWindowSize']) {
-    const params={...expected.args[0],[field]: field==='evaluationCid'?'Qm'+'b'.repeat(44):field==='targetHunter'?ZeroAddress:1n};
+  for(const field of ['evaluationCid','requestedClass','threshold','submissionDeadline','targetHunter','creatorDeterminationPayment','arbiterDeterminationPayment','creatorAssessmentWindowSize','jury','quota','forfeitLine','bond']) {
+    const params={...expected.args[0],[field]: field==='evaluationCid'?'Qm'+'b'.repeat(44):field==='targetHunter'?ZeroAddress:BigInt(expected.args[0][field])+1n};
     assert.throws(()=>verifyTransaction({...tx,data:iface.encodeFunctionData('createBounty',[params])},expected));
   }
+  for(const oracle of [{...expected.args[0].oracle,minOracleFee:1n},{...expected.args[0].oracle,withBeacons:true}]) assert.throws(()=>verifyTransaction({...tx,data:iface.encodeFunctionData('createBounty',[{...expected.args[0],oracle}])},expected));
   assert.throws(()=>verifyTransaction(tx,{...expected,maxValueWei:1n}));
 });
 test('oracle bounds and split payment invariants',()=>{
@@ -51,6 +56,57 @@ test('SubmissionPrepared budget precedes CID; finalization includes paid bool; t
   const fields=iface.getFunction('getSubmission').outputs[0].components.map(x=>x.name);
   assert.ok(fields.includes('funder'));assert.ok(!fields.includes('evaluationCid'));assert.ok(!fields.includes('addendum'));
 });
+test('decision settings: a size-class preset (Bondless Small by default), overrides, and USD only at a reviewed price',()=>{
+  const d=decisionTerms(config);
+  assert.deepEqual({...d},{bountyClass:'bondless-small',className:'Bondless Small',jury:0n,quota:3n,forfeitLine:1n,bond:0n,minOracleFee:0n,withBeacons:false});
+  const p=creationTerms(config).params;
+  assert.deepEqual([p.jury,p.quota,p.forfeitLine,p.bond,p.oracle.minOracleFee,p.oracle.withBeacons],[0n,3n,1n,0n,0n,false]);
+  // A preset with a USD bond or fee floor needs the wei amount, or an owner-reviewed ethUsd to convert it.
+  assert.throws(()=>decisionTerms({...config,bountyClass:'medium'}),/Medium preset's bond is \$50: give bond in wei, or an owner-reviewed ethUsd/);
+  assert.throws(()=>decisionTerms({...config,bountyClass:'medium',bond:'1'}),/fee floor is \$0.25: give oracle.minOracleFee in wei/);
+  const medium=decisionTerms({...config,bountyClass:'medium',ethUsd:2500});
+  assert.deepEqual([medium.jury,medium.quota,medium.forfeitLine,medium.bond,medium.minOracleFee,medium.withBeacons],[1n,3n,2n,20000000000000000n,100000000000000n,false]);
+  assert.equal(decisionTerms({...config,bountyClass:'jumbo',bond:'5',oracle:{...config.oracle,minOracleFee:'7'}}).withBeacons,true);
+  // No class named: the smallest class offered for the reward at ethUsd (0.001 ETH x $2500 = $2.50: Bondless Small; 0.2 ETH = $500: Medium).
+  assert.equal(decisionTerms({...config,ethUsd:2500}).bountyClass,'bondless-small');
+  assert.equal(decisionTerms({...config,bountyAmount:'0.2',ethUsd:2500}).bountyClass,'medium');
+  const custom=decisionTerms({...config,bountyClass:'small',bond:'123',jury:1,quota:2,forfeitLine:0,oracle:{...config.oracle,withBeacons:true}});
+  assert.deepEqual([custom.jury,custom.quota,custom.forfeitLine,custom.bond,custom.withBeacons],[1n,2n,0n,123n,true]);
+  for(const bad of [{bountyClass:'huge'},{quota:0},{quota:2,forfeitLine:3},{jury:256},{bond:'-1'},{bond:(1n<<96n).toString()},{oracle:{...config.oracle,withBeacons:'yes'}}]) assert.throws(()=>decisionTerms({...config,...bad}));
+  // Every setting goes to the API explicitly, so the server picks no class and converts no price.
+  assert.deepEqual(decisionBody(medium),{bountyClass:'medium',jury:1,quota:3,forfeitLine:2,bond:'20000000000000000',oracleMinOracleFee:'100000000000000',oracleWithBeacons:false});
+});
+test('the created bounty is read back field by field, the v2 settings included',()=>{
+  const {params}=bindCreation(config,response),creator='0x3333333333333333333333333333333333333333';
+  const bounty={...params,creator,oracle:{...params.oracle}};
+  verifyCreatedBounty(bounty,params,creator);
+  for(const change of [{quota:2n},{forfeitLine:0n},{bond:1n},{jury:1n},{oracle:{...params.oracle,withBeacons:true}},{oracle:{...params.oracle,minOracleFee:1n}}]) assert.throws(()=>verifyCreatedBounty({...bounty,...change},params,creator),/mismatch/);
+});
+test('closeCommits and promote go only to the aggregator the escrow names, with no value',()=>{
+  const aggregator='0x4444444444444444444444444444444444444444',aggId='0x'+'ab'.repeat(32);
+  const tx={to:aggregator,chainId:8453,value:'0',data:aggregatorIface.encodeFunctionData('promote',[aggId])};
+  const expected={network:'base',method:'promote',args:[aggId],maxValueWei:0n,aggregator};
+  assert.equal(verifyTransaction(tx,expected).to,aggregator);
+  assert.throws(()=>verifyTransaction(tx,{...expected,aggregator:null}),/aggregatorOf/);
+  assert.throws(()=>verifyTransaction({...tx,to:deployments.base.address},expected),/destination/);
+  assert.throws(()=>verifyTransaction({...tx,data:aggregatorIface.encodeFunctionData('closeCommits',[aggId])},expected),/drift/);
+  assert.throws(()=>verifyTransaction({...tx,data:aggregatorIface.encodeFunctionData('promote',['0x'+'cd'.repeat(32)])},expected),/drift/);
+  assert.throws(()=>verifyTransaction({...tx,value:'1'},{...expected,value:1n,maxValueWei:1n}),/value/);
+  // An escrow call is never accepted at the aggregator address.
+  assert.throws(()=>verifyTransaction({...tx,data:iface.encodeFunctionData('finalizeSubmission',[1,2])},{network:'base',method:'finalizeSubmission',args:[1,2],maxValueWei:0n,aggregator}),/destination/);
+});
+test('until the v2 deployment is recorded, every escrow transaction stops with a clear message',async()=>{
+  const {tx,expected}=fixture();
+  await withPlaceholders(async()=>{
+    assert.equal(deployments.base.status,'NOT_DEPLOYED');assert.equal(deployments.base.address,null);assert.equal(deployments['base-sepolia'].codeHash,null);
+    for(const network of ['base','base-sepolia']) assert.throws(()=>escrowDeployment(network),new RegExp(`BountyEscrow v2 is not deployed on ${network} yet: scripts/deployments.json holds a placeholder.*never uses the v1 escrow`));
+    assert.throws(()=>verifyTransaction(tx,expected),/not deployed on base yet/);
+    await assert.rejects(verifyDeployment('base',{getNetwork:async()=>({chainId:8453n}),getCode:async()=>'0x1234'},{contract:{address:ZeroAddress,chainId:8453}}),/not deployed on base yet/);
+  });
+  // The placeholder file itself: no address, no code hash, and the v1 escrows named only in the note.
+  const file=JSON.parse(readFileSync(new URL('../deployments.json',import.meta.url),'utf8'));
+  for(const d of Object.values(file)) {assert.equal(d.status,'NOT_DEPLOYED');assert.equal(d.address,null);assert.equal(d.codeHash,null);assert.equal(d.escrowVersion,2);}
+});
 test('start uses exact live prepay value and owner cap',()=>{
   const tx={to:deployments.base.address,chainId:8453,value:'200',data:iface.encodeFunctionData('startPreparedSubmission',[1,2])};
   const expected={network:'base',method:'startPreparedSubmission',args:[1,2],value:200n,maxValueWei:300n};
@@ -58,13 +114,18 @@ test('start uses exact live prepay value and owner cap',()=>{
 });
 test('deployment chain, destination, code and selectors verified without fallback',async()=>{
   const d=deployments.base, old=d.codeHash;d.codeHash=keccak256('0x1234');
-  const docs={contract:{address:d.address,chainId:8453,functions:Object.fromEntries(['createBounty','prepareSubmission','requiredPrepay'].map(n=>[n,{signature:iface.getFunction(n).format('full').replace(/^function /,'')}]))}};
+  const docs={contract:{address:d.address,chainId:8453,functions:Object.fromEntries(DOCUMENTED_FUNCTIONS.map(n=>[n,{signature:iface.getFunction(n).format('full').replace(/^function /,'')}]))}};
   const provider={getNetwork:async()=>({chainId:8453n}),getCode:async()=> '0x1234'};
   try {
     assert.equal(await verifyDeployment('base',provider,docs),d.address);
     await assert.rejects(verifyDeployment('base',{...provider,getNetwork:async()=>({chainId:84532n})},docs));
     await assert.rejects(verifyDeployment('base',{...provider,getCode:async()=> '0xabcd'},docs));
     await assert.rejects(verifyDeployment('base',provider,{contract:{...docs.contract,address:ZeroAddress}}));
+    // A site still documenting the v1 escrow: its createBounty struct has a different selector, and it has no startValue.
+    const v1Create='createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)';
+    await assert.rejects(verifyDeployment('base',provider,{contract:{...docs.contract,functions:{...docs.contract.functions,createBounty:{signature:v1Create}}}}),/selector drift/);
+    const {startValue,...v1Functions}=docs.contract.functions;
+    await assert.rejects(verifyDeployment('base',provider,{contract:{...docs.contract,functions:v1Functions}}),/selector drift/);
     docs.contract.functions.prepareSubmission.signature='prepareSubmission(uint256,string,string,string,uint256,uint256,uint256,uint256)';
     await assert.rejects(verifyDeployment('base',provider,docs));
   } finally {d.codeHash=old;}

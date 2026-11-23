@@ -15,6 +15,7 @@
  *   NETWORK=base node scripts/submitToBounties.js --count 1
  *   node scripts/submitToBounties.js --count 3 --bounty-id 5
  *   node scripts/submitToBounties.js --count 1 --dry-run
+ *   node scripts/submitToBounties.js --bounty-id 5 --draw   (also draw the jury if no keeper does)
  *
  * Environment Variables Required (in .env or .env.secrets):
  *   ANTHROPIC_API_KEY - API key for Claude AI
@@ -136,6 +137,7 @@ function parseArgs() {
     count: 1,
     bountyId: null,
     dryRun: false,
+    draw: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -151,6 +153,9 @@ function parseArgs() {
       case '--dry-run':
       case '-d':
         options.dryRun = true;
+        break;
+      case '--draw':
+        options.draw = true;
         break;
       case '--model':
       case '-m':
@@ -169,12 +174,21 @@ Options:
   --bounty-id, -b <id>  Target specific bounty by on-chain ID
   --model, -m <model>   AI model to use (default: claude-sonnet-4-20250514)
                         Try: claude-opus-4-20250514 for higher quality
+  --draw                After starting, wait (up to 3 min) and send drawJury when
+                        the round is due a draw. The server's keeper usually draws
+                        it; use this when the server runs without a keeper.
   --dry-run, -d         Show what would be submitted without actually submitting
   --help, -h            Show this help message
+
+The start attaches startValue(bountyId), read live: the round's prepay (the
+unspent part is refunded) plus the bounty's hunter bond (returned unless a hard
+fail forfeits it). The script does not wait for the result; finalize, close or
+re-run later with scripts/claimResults.js.
 
 Examples:
   node scripts/submitToBounties.js --count 1
   node scripts/submitToBounties.js --bounty-id 17 --model claude-opus-4-20250514
+  node scripts/submitToBounties.js --bounty-id 17 --draw
         `);
         process.exit(0);
     }
@@ -250,7 +264,8 @@ function isBountyWinnable(bounty, hunterAddress = null) {
 
   // Check if this hunter already has a pending submission (avoid duplicates)
   if (hunterAddress) {
-    const pendingStatuses = ['Prepared', 'PREPARED', 'PendingVerdikta', 'PENDING_EVALUATION', 'PendingCreatorApproval'];
+    const pendingStatuses = ['Prepared', 'PREPARED', 'PendingVerdikta', 'PENDING_EVALUATION', 'PendingCreatorApproval',
+      'AwaitingRerun', 'AWAITING_RERUN', 'SOFT_FAIL_PENDING_FINALIZATION', 'NO_RESULT_PENDING_CLOSE'];
     const hunterPendingSubmission = bounty.submissions.find(s =>
       s.hunter?.toLowerCase() === hunterAddress.toLowerCase() &&
       (pendingStatuses.includes(s.status) || pendingStatuses.includes(s.onChainStatus))
@@ -303,11 +318,11 @@ async function fetchFromIPFS(cid) {
 
 /**
  * Fetch past submission feedback (justifications) for a bounty.
- * Queries Verdikta directly for pending submissions that have completed evaluation
- * but haven't been finalized yet.
+ * Asks the escrow's lens (getOracleResult) for submissions whose current round has a
+ * result that the backend has not recorded yet (not finalized).
  * Returns an array of { score, threshold, passed, justification } objects
  */
-async function fetchPastFeedback(bounty, provider) {
+async function fetchPastFeedback(bounty, provider, onChainBountyId) {
   if (!bounty.submissions || bounty.submissions.length === 0) {
     return [];
   }
@@ -315,8 +330,8 @@ async function fetchPastFeedback(bounty, provider) {
   const threshold = bounty.threshold || 80;
   const feedback = [];
 
-  // Verdikta contract for querying evaluation results directly
-  const verdikta = new ethers.Contract(VERDIKTA_ADDRESS, VERDIKTA_ABI, provider);
+  // The escrow (merged lens ABI): getOracleResult reads the round without the aggregator ABI.
+  const escrow = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, provider);
 
   for (const sub of bounty.submissions) {
     const subId = sub.submissionId ?? sub.onChainSubmissionId ?? '?';
@@ -325,24 +340,26 @@ async function fetchPastFeedback(bounty, provider) {
     let justificationCids = sub.justificationCids || '';
     let score = sub.acceptance ?? sub.score ?? null;
 
-    // If no justification yet but we have a verdiktaAggId, query Verdikta directly
+    // If no justification yet but the submission was started, ask the lens for its round
     if ((!justificationCids || justificationCids === '') && sub.verdiktaAggId &&
-        sub.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
+        sub.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000' &&
+        Number.isInteger(Number(subId))) {
       try {
-        console.log(`    Submission #${subId}: Checking Verdikta for pending evaluation...`);
-        const [scores, justCid, exists] = await verdikta.getEvaluation(sub.verdiktaAggId);
+        console.log(`    Submission #${subId}: Checking the escrow for a round result...`);
+        const r = await escrow.getOracleResult(onChainBountyId, Number(subId));
 
-        if (exists && justCid && justCid.length > 0) {
-          justificationCids = justCid;
-          // scores[1] is acceptance, normalize from 0-1000000 to 0-100
-          score = Number(scores[1]) / 10000;
-          console.log(`    Submission #${subId}: Found! Score: ${score.toFixed(1)}%`);
+        if (r.hasResult && r.justificationCids && r.justificationCids.length > 0) {
+          justificationCids = r.justificationCids;
+          // scores are [reject, accept] on 0..1e6; normalize acceptance to 0-100
+          const s = Array.from(r.scores).map(Number);
+          score = (s.length === 2 ? s[1] : s[0]) / 10000;
+          console.log(`    Submission #${subId}: Found! Score: ${score.toFixed(1)}% (outcome ${ORACLE_OUTCOMES[Number(r.outcome)]}, ${r.passCount} juror(s) at the threshold)`);
         } else {
           console.log(`    Submission #${subId}: Evaluation not ready yet`);
           continue;
         }
       } catch (e) {
-        console.log(`    Submission #${subId}: Could not query Verdikta: ${e.message}`);
+        console.log(`    Submission #${subId}: Could not read the round result: ${e.message}`);
         continue;
       }
     }
@@ -566,46 +583,20 @@ async function submitWork(jobId, content, hunter, dryRun) {
 // BLOCKCHAIN INTERACTION
 // =============================================================================
 
-// Network-specific addresses
-const NETWORK_ADDRESSES = {
-  'base-sepolia': {
-    verdikta: '0xb2b724e4ee4Fa19Ccd355f12B4bB8A2F8C8D0089',
-  },
-  'base': {
-    verdikta: '0x2f7a02298D4478213057edA5e5bEB07F20c4c054',
-  },
-};
+// v2 BountyEscrow, merged escrow + lens ABI: there is no single Verdikta address any more (the
+// escrow has one approved aggregator per jury size, aggregatorOf(bountyId)); round results are
+// read through the lens (getOracleResult, nextAction) at the escrow address.
+const BOUNTY_ESCROW_ABI = require('../../onchain/abi/BountyEscrow.json');
+const { PHASES, OUTCOMES: ORACLE_OUTCOMES, SUBMISSION_STATUSES } = require('../utils/aggregatorAbi');
 
-const networkAddrs = NETWORK_ADDRESSES[serverConfig.network] || NETWORK_ADDRESSES['base-sepolia'];
-const VERDIKTA_ADDRESS = networkAddrs.verdikta;
+// On-chain submission status codes (BountyEscrow.SubmissionStatus):
+// 0 Prepared, 1 PendingVerdikta, 2 Failed, 3 PassedPaid, 4 PassedUnpaid,
+// 5 PendingCreatorApproval, 6 AwaitingRerun
+const ON_CHAIN_STATUS = Object.fromEntries(SUBMISSION_STATUSES.map((s, i) => [i, s]));
 
-const VERDIKTA_ABI = [
-  'function getEvaluation(bytes32 requestId) view returns (uint256[] likelihoods, string justificationCID, bool exists)',
-];
-
-// September 2026 BountyEscrow revision: prepareSubmission takes only the two CIDs
-// (the creator's oracle settings live on the bounty), getSubmission lost the
-// hunter-side oracle fields and gained `funder`, and SubmissionPrepared emits
-// ethMaxBudget BEFORE the dynamic string.
-const BOUNTY_ESCROW_ABI = [
-  'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)',
-  'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
-  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))',
-  'function submissionCount(uint256 bountyId) view returns (uint256)',
-  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))',
-  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)',
-];
-
-// On-chain submission status codes
-// Must match the SubmissionStatus enum in BountyEscrow.sol
-const ON_CHAIN_STATUS = {
-  0: 'Prepared',
-  1: 'PendingVerdikta',
-  2: 'Failed',
-  3: 'PassedPaid',
-  4: 'PassedUnpaid',
-  5: 'PendingCreatorApproval',
-};
+// How long --draw keeps trying to get the jury drawn after the start.
+const DRAW_WAIT_MS = 3 * 60_000;
+const DRAW_POLL_MS = 5_000;
 
 async function getWallet() {
   if (!CONFIG.privateKey) {
@@ -616,13 +607,12 @@ async function getWallet() {
 }
 
 /**
- * Check on-chain if any submission has already passed (status 4 or 5)
- * Also checks Verdikta for pending submissions that have passing scores
+ * Check on-chain if any submission has already passed (status 3 or 4)
+ * Also asks the lens whether a round in flight already passes (Q-of-N, not yet finalized)
  * Returns { hasWinner, winnerInfo } where winnerInfo contains details if found
  */
 async function checkOnChainWinner(provider, onChainBountyId, threshold) {
   const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, provider);
-  const verdikta = new ethers.Contract(VERDIKTA_ADDRESS, VERDIKTA_ABI, provider);
 
   // Helper to add timeout to promises
   const withTimeout = (promise, ms, label) => {
@@ -672,32 +662,29 @@ async function checkOnChainWinner(provider, onChainBountyId, threshold) {
           };
         }
 
-        // Status 1 = PendingVerdikta - check if Verdikta already has a passing score
-        if (status === 1 && sub.verdiktaAggId && sub.verdiktaAggId !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
+        // Status 1 = PendingVerdikta - ask the lens whether its round already passes (Q-of-N)
+        if (status === 1) {
           try {
-            const [scores, , exists] = await withTimeout(
-              verdikta.getEvaluation(sub.verdiktaAggId),
+            const r = await withTimeout(
+              contract.getOracleResult(onChainBountyId, i),
               10000,
-              `getEvaluation(${i})`
+              `getOracleResult(${i})`
             );
 
-            if (exists && scores && scores.length >= 2) {
-              // scores[1] is the acceptance score, normalize from 0-1000000 to 0-100
-              const acceptance = Number(scores[1]) / 10000;
-              if (acceptance >= threshold) {
-                return {
-                  hasWinner: true,
-                  winnerInfo: {
-                    submissionId: i,
-                    hunter: sub.hunter,
-                    status: 'PendingVerdikta (passed, awaiting finalization)',
-                    acceptance: acceptance,
-                  }
-                };
-              }
+            if (r.hasResult && Number(r.outcome) === 2) {   // 2 = pass
+              const s = Array.from(r.scores).map(Number);
+              return {
+                hasWinner: true,
+                winnerInfo: {
+                  submissionId: i,
+                  hunter: sub.hunter,
+                  status: `PendingVerdikta (passed ${r.passCount} juror(s) at ${threshold}%, awaiting finalization)`,
+                  acceptance: s.length ? (s.length === 2 ? s[1] : s[0]) / 10000 : 'n/a',
+                }
+              };
             }
-          } catch (verdiktaError) {
-            // Verdikta query failed, continue checking other submissions
+          } catch (lensError) {
+            // Lens query failed, continue checking other submissions
           }
         }
       } catch (subError) {
@@ -777,7 +764,7 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
   }
 
   console.log(`    Submission ID: ${submissionId}, EvalWallet: ${evalWallet}`);
-  console.log(`    ETH prepay: ${ethers.formatEther(ethMaxBudget)} ETH`);
+  console.log(`    ETH prepay estimate: ${ethers.formatEther(ethMaxBudget)} ETH (the start attaches the live startValue: prepay + bond)`);
 
   // For windowed bounties, stop here. The submission is in PendingCreatorApproval status.
   // The creator may approve directly, or after window expires anyone can call
@@ -793,19 +780,22 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     };
   }
 
-  // Check if we have enough ETH to cover the prepay (plus gas headroom is the caller's concern)
-  if (ethBalance < ethMaxBudget) {
-    throw new Error(`Insufficient ETH: need ${ethers.formatEther(ethMaxBudget)} ETH, have ${ethers.formatEther(ethBalance)} ETH`);
-  }
-
-  // Step 2: Start the prepared submission, attaching the ETH prepay as msg.value.
-  // Unspent ETH is refunded to the hunter automatically when the submission finalizes.
+  // Step 2: Start the prepared submission, attaching startValue(bountyId) as msg.value: the
+  // round's prepay (requiredPrepay; the unspent part is refunded when the round resolves) plus the
+  // bounty's hunter bond (returned unless a hard fail forfeits it to the creator). Read LIVE: the
+  // prepare-time ethMaxBudget is only the prepay estimate, without the bond ("wrong eth amount").
   // Retry logic handles transient failures.
   console.log('    Starting evaluation...');
   let startReceipt;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const startTx = await contract.startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
+      const [value, prepay] = await Promise.all([contract.startValue(bountyId), contract.requiredPrepay(bountyId)]);
+      console.log(`    Start value: ${ethers.formatEther(value)} ETH (prepay ${ethers.formatEther(prepay)} + bond ${ethers.formatEther(value - prepay)})`);
+      // Check if we have enough ETH (plus gas headroom is the caller's concern)
+      if (ethBalance < value) {
+        throw new Error(`Insufficient ETH: need ${ethers.formatEther(value)} ETH, have ${ethers.formatEther(ethBalance)} ETH`);
+      }
+      const startTx = await contract.startPreparedSubmission(bountyId, submissionId, { value });
       startReceipt = await startTx.wait();
       console.log(`    Start tx: ${startReceipt.hash}`);
       break;
@@ -825,7 +815,7 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
       const reason = (error.reason || '').toLowerCase();
       // Check for non-retryable errors
       if (msg.includes('another submission already passed') || msg.includes('anothersubmissionalreadypassed') ||
-          reason.includes('another submission already passed')) {
+          reason.includes('another submission already passed') || msg.includes('insufficient eth')) {
         throw error; // Don't retry
       }
       if (attempt < 3) {
@@ -844,6 +834,50 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     txHash: startReceipt.hash,
     blockNumber: startReceipt.blockNumber,
   };
+}
+
+/**
+ * --draw: get the started round's jury drawn. The server's keeper normally does this; here the
+ * hunter sends drawJury(bountyId, submissionId) itself whenever the lens says DRAW (from two blocks
+ * after the start; a beacon bounty needs a second draw once its beacon values are in), until the
+ * round reaches its commit phase or DRAW_WAIT_MS passes. Never throws.
+ */
+async function driveDraw(wallet, bountyId, submissionId) {
+  const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, wallet);
+  const until = Date.now() + DRAW_WAIT_MS;
+  let draws = 0;
+  while (Date.now() < until) {
+    try {
+      const [action, r] = await Promise.all([
+        contract.nextAction(bountyId, submissionId),
+        contract.getOracleResult(bountyId, submissionId),
+      ]);
+      const phase = Number(r.phase);
+      // 1 draw, 2 beacons; 3+ = drawn (commit, closing, reveal, ...)
+      if (phase >= 3 || (action !== 'DRAW' && action !== 'AWAIT_ORACLE')) {
+        console.log(`    Round phase: ${PHASES[phase] || phase}, nextAction: ${action}${draws ? ` (${draws} draw tx(s) sent)` : ''}`);
+        return { drawn: phase >= 3, action: String(action) };
+      }
+      if (action === 'DRAW') {
+        try {
+          await contract.drawJury.estimateGas(bountyId, submissionId);
+          const tx = await contract.drawJury(bountyId, submissionId);
+          console.log(`    drawJury tx: ${tx.hash}`);
+          await tx.wait();
+          draws++;
+          continue;
+        } catch (e) {
+          // Someone (the keeper) drew first, or too early: re-read and go on.
+          console.log(`    drawJury not sent: ${e.reason || e.shortMessage || e.message}`);
+        }
+      }
+    } catch (e) {
+      console.log(`    Could not read the round: ${e.shortMessage || e.message}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, DRAW_POLL_MS));
+  }
+  console.log('    Jury not drawn yet; the server keeper (or anyone) can draw it: POST /api/jobs/:jobId/submissions/:id/draw');
+  return { drawn: false };
 }
 
 // =============================================================================
@@ -971,7 +1005,7 @@ async function main() {
       let pastFeedback = [];
       if (details.submissions && details.submissions.length > 0) {
         console.log(`  Fetching feedback from ${details.submissions.length} past submission(s)...`);
-        pastFeedback = await fetchPastFeedback(details, wallet.provider);
+        pastFeedback = await fetchPastFeedback(details, wallet.provider, bounty.jobId);
         if (pastFeedback.length > 0) {
           console.log(`  ✓ Found ${pastFeedback.length} submission(s) with AI feedback to learn from`);
           pastFeedback.forEach(fb => {
@@ -1061,6 +1095,12 @@ async function main() {
             }
           } else {
             console.log(`  ✅ Evaluation started on-chain!`);
+            if (options.draw) {
+              console.log('  Drawing the jury (--draw)...');
+              await driveDraw(wallet, bounty.jobId, chainResult.submissionId);
+            } else {
+              console.log('  The jury is drawn next (the server keeper usually does it; or rerun with --draw).');
+            }
           }
           console.log(`  On-chain submission ID: ${chainResult.submissionId}`);
           console.log(`  Transaction: ${chainResult.txHash}`);
@@ -1121,8 +1161,9 @@ async function main() {
   console.log(`Failed:    ${failed}`);
 
   if (!options.dryRun && submitted > 0) {
-    console.log('\nSubmissions are now being evaluated by Verdikta.');
-    console.log('Check the web UI to see results when ready.');
+    console.log('\nSubmissions are now being evaluated by Verdikta (drawn jury, Q-of-N decision).');
+    console.log('Check the web UI, then run scripts/claimResults.js to finalize, close a failed round,');
+    console.log('or (--rerun) re-run a soft fail within its 2-hour window.');
   }
 }
 

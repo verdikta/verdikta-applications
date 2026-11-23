@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 /**
- * Claim Results Script
+ * Claim Results Script (BountyEscrow v2)
  *
- * Finalizes all outstanding submissions that have completed Verdikta evaluation.
- * This is the CLI equivalent of clicking "Claim Results" in the GUI.
+ * Resolves every outstanding submission the escrow says can be moved on right now: it asks the
+ * lens for nextAction(bountyId, submissionId) and sends that call (finalizeSubmission,
+ * closeFailedRound, expireRerun; rerunSubmission with --rerun; the keeper's round steps with
+ * --move-rounds). This is the CLI equivalent of clicking "Claim Results" in the GUI.
  *
  * Usage:
  *   node scripts/claimResults.js
  *   node scripts/claimResults.js --passed-only
  *   node scripts/claimResults.js --dry-run
  *   node scripts/claimResults.js --bounty-id 2
+ *   node scripts/claimResults.js --rerun
  *
  * Environment Variables Required:
  *   PRIVATE_KEY - Private key for signing transactions
@@ -60,25 +63,45 @@ const CONFIG = {
 // CONTRACT ABIS
 // =============================================================================
 
-const BOUNTY_ESCROW_ABI = [
-  'function bountyCount() view returns (uint256)',
-  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))',
-  'function submissionCount(uint256 bountyId) view returns (uint256)',
-  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))',
-  'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
-  'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
-  'function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)',
-  'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
-  'function verdikta() view returns (address)',
-];
-
-const VERDIKTA_ABI = [
-  'function getEvaluation(bytes32 requestId) view returns (uint256[] likelihoods, string justificationCID, bool exists)',
-];
+// The merged v2 escrow + lens ABI: the lens views (nextAction, getOracleResult, ...) are callable
+// at the escrow address through its fallback.
+const BOUNTY_ESCROW_ABI = require('../../onchain/abi/BountyEscrow.json');
+// The v2 aggregator (closeCommits / promote for --move-rounds) and the enum names.
+const { AGGREGATOR_ABI, PHASES, OUTCOMES, SUBMISSION_STATUSES } = require('../utils/aggregatorAbi');
 
 // Status enums matching the contract
 const BOUNTY_STATUS = ['Open', 'Awarded', 'Closed'];
-const SUBMISSION_STATUS = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
+const SUBMISSION_STATUS = SUBMISSION_STATUSES; // 0 Prepared ... 5 PendingCreatorApproval, 6 AwaitingRerun
+
+// Resolve calls may settle the aggregator round inside a try/catch, which can need well over 1.5M
+// gas on a large jury: never send them with a hand-picked low limit (the same rule as
+// utils/contractService.js estimateResolveGas: estimate + 25%, at least 300k, else 2.5M).
+const GAS_MARGIN_PCT = 25n;
+const GAS_LIMIT_MIN = 300_000n;
+const GAS_LIMIT_FALLBACK = 2_500_000n;
+
+// What the default mode sends for each nextAction. `flag` = only with that CLI option.
+const STEP_CALLS = {
+  FINALIZE: { target: 'escrow', fn: 'finalizeSubmission' },
+  CLOSE_FAILED: { target: 'escrow', fn: 'closeFailedRound' },
+  EXPIRE_RERUN: { target: 'escrow', fn: 'expireRerun' },
+  RERUN: { target: 'escrow', fn: 'rerunSubmission', flag: 'rerun' },
+  DRAW: { target: 'escrow', fn: 'drawJury', flag: 'moveRounds' },
+  CLOSE_COMMITS: { target: 'aggregator', fn: 'closeCommits', flag: 'moveRounds' },
+  PROMOTE: { target: 'aggregator', fn: 'promote', flag: 'moveRounds' },
+};
+
+// Why a submission is skipped, by nextAction.
+const WAITING = {
+  AWAIT_ORACLE: 'round in progress (draw, beacons, commits or reveals) - wait',
+  AWAIT_EARLIER: 'passes, but an earlier submission by another hunter still holds priority - retry once it resolves',
+  AWAIT_EXPIRY: 'awaiting a re-run that would revert (another round already passes) - expire it once its window closes',
+  AWAIT_SLOT: 'evaluation slots full (64 rounds in flight) - retry later',
+  RERUN: 'soft fail / no result: may re-run within its 2 h window (--rerun, as the hunter or bond funder)',
+  DRAW: 'jury not drawn yet - the server keeper usually draws it (or use --move-rounds)',
+  CLOSE_COMMITS: 'commit window can be closed - keeper step (or use --move-rounds)',
+  PROMOTE: 'commit phase closed, promote is due - keeper step (or use --move-rounds)',
+};
 
 // =============================================================================
 // CLI ARGUMENT PARSING
@@ -90,6 +113,8 @@ function parseArgs() {
     dryRun: false,
     bountyId: null,
     passedOnly: false,
+    rerun: false,
+    moveRounds: false,
     approve: false,
     startExpired: false,
     help: false,
@@ -109,6 +134,12 @@ function parseArgs() {
       case '-p':
         options.passedOnly = true;
         break;
+      case '--rerun':
+        options.rerun = true;
+        break;
+      case '--move-rounds':
+        options.moveRounds = true;
+        break;
       case '--approve':
         options.approve = true;
         break;
@@ -127,10 +158,28 @@ function parseArgs() {
 
 function showHelp() {
   console.log(`
-Claim Results Script
+Claim Results Script (BountyEscrow v2)
 
-CLI equivalent of "Claim Results" in the GUI. Default mode finalizes
-PendingVerdikta submissions that have completed AI evaluation.
+CLI equivalent of "Claim Results" in the GUI. The default mode walks every
+submission holding payout priority (in evaluation or awaiting a re-run) and
+sends the call the escrow's lens says will succeed now (nextAction):
+
+  FINALIZE      finalizeSubmission: the round has a result, judged Q-of-N.
+                A pass is paid and returns the bond; a soft fail awaits a
+                re-run (2 h window, up to 6 rounds); a hard fail forfeits
+                the bond to the creator.
+  CLOSE_FAILED  closeFailedRound: the round ended (or must end) with no
+                result; the submission keeps its place and bond and may
+                re-run.
+  EXPIRE_RERUN  expireRerun: a re-run was not taken in time; the submission
+                fails and its bond is returned.
+  RERUN         rerunSubmission, only with --rerun and only where this wallet
+                is the hunter or the bond funder (attaches requiredPrepay).
+  DRAW / CLOSE_COMMITS / PROMOTE
+                round steps the server's keeper normally sends; only with
+                --move-rounds.
+Anything else (AWAIT_ORACLE, AWAIT_EARLIER, AWAIT_SLOT, ...) is reported
+and skipped.
 
 Two extra modes for windowed bounties (creator approval window):
   --approve         As bounty creator: bulk-approve submissions whose creator
@@ -138,9 +187,11 @@ Two extra modes for windowed bounties (creator approval window):
                     determination amount to each hunter.
   --start-expired   For ANY caller: bulk-call startPreparedSubmission on
                     PendingCreatorApproval submissions whose window has
-                    expired. Requires ETH in the calling wallet to fund the
-                    evaluation prepay (ETH is attached as msg.value by the
-                    caller, not the original hunter; unspent ETH is refunded).
+                    expired. Attaches startValue(bountyId) from the calling
+                    wallet: the round's prepay (unspent part refunded) plus
+                    the hunter bond (returned unless a hard fail forfeits it).
+                    The jury is then drawn by the server keeper, or by
+                    running this script with --move-rounds.
 
 Usage:
   node scripts/claimResults.js [options]
@@ -148,16 +199,22 @@ Usage:
 Options:
   --dry-run, -d          Show what would happen without executing
   --bounty-id, -b <id>   Only process a specific bounty (on-chain ID)
-  --passed-only, -p      Default mode: only finalize submissions that passed
+  --passed-only, -p      Default mode: only finalize passing results
+                         (skip every other step)
+  --rerun                Default mode: also re-run soft-failed / no-result
+                         submissions this wallet may re-run
+  --move-rounds          Default mode: also send DRAW / CLOSE_COMMITS / PROMOTE
   --approve              Mode: bulk-approve as creator (window must be open)
   --start-expired        Mode: bulk-start expired creator-approval windows
   --help, -h             Show this help message
 
 Examples:
-  node scripts/claimResults.js                      # finalize completed evaluations
+  node scripts/claimResults.js                      # finalize / close / expire what is due
   node scripts/claimResults.js --dry-run
   node scripts/claimResults.js --bounty-id 2
   node scripts/claimResults.js --passed-only
+  node scripts/claimResults.js --rerun              # also re-run your soft fails
+  node scripts/claimResults.js --move-rounds        # also draw / close commits / promote
   node scripts/claimResults.js --approve            # approve open creator windows
   node scripts/claimResults.js --approve --dry-run
   node scripts/claimResults.js --start-expired      # start expired windows (uses your ETH)
@@ -176,123 +233,11 @@ async function getWallet() {
   return new ethers.Wallet(CONFIG.privateKey, provider);
 }
 
-async function findPendingSubmissions(contract, verdikta, targetBountyId = null) {
-  const pending = [];
-  const bountyCount = await contract.bountyCount();
-
-  console.log(`Scanning ${bountyCount} bounties...`);
-
-  for (let bountyId = 0; bountyId < bountyCount; bountyId++) {
-    // Skip if targeting a specific bounty
-    if (targetBountyId !== null && bountyId !== targetBountyId) {
-      continue;
-    }
-
-    try {
-      const bounty = await contract.getBounty(bountyId);
-      const bountyStatus = Number(bounty.status);
-
-      // Skip closed/awarded bounties (though we might still finalize for record-keeping)
-      // Actually, we should still check - submissions might need finalization even after awarded
-
-      const subCount = await contract.submissionCount(bountyId);
-
-      for (let subId = 0; subId < subCount; subId++) {
-        try {
-          const sub = await contract.getSubmission(bountyId, subId);
-          const status = Number(sub.status);
-
-          // Only interested in PendingVerdikta (status 1)
-          if (status !== 1) {
-            continue;
-          }
-
-          // Check if Verdikta has a result
-          const aggId = sub.verdiktaAggId;
-          if (!aggId || aggId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
-            continue;
-          }
-
-          try {
-            const [scores, justCid, exists] = await verdikta.getEvaluation(aggId);
-
-            if (exists && scores && scores.length >= 2) {
-              const acceptance = Number(scores[1]) / 10000; // Normalize to 0-100
-              const rejection = Number(scores[0]) / 10000;
-              const threshold = Number(bounty.threshold);
-              const passed = acceptance >= threshold;
-
-              pending.push({
-                bountyId,
-                submissionId: subId,
-                hunter: sub.hunter,
-                acceptance,
-                rejection,
-                threshold,
-                passed,
-                justCid,
-                bountyStatus: BOUNTY_STATUS[bountyStatus] || `Unknown(${bountyStatus})`,
-              });
-            }
-          } catch (verdiktaError) {
-            // Verdikta query failed - evaluation might not be ready yet
-            continue;
-          }
-        } catch (subError) {
-          continue;
-        }
-      }
-    } catch (bountyError) {
-      continue;
-    }
-  }
-
-  return pending;
-}
-
-async function finalizeSubmission(contract, bountyId, submissionId, dryRun) {
-  if (dryRun) {
-    console.log(`    [DRY RUN] Would call finalizeSubmission(${bountyId}, ${submissionId})`);
-    return { success: true, dryRun: true };
-  }
-
-  try {
-    console.log(`    Sending transaction...`);
-    const tx = await contract.finalizeSubmission(bountyId, submissionId);
-    console.log(`    Tx hash: ${tx.hash}`);
-
-    const receipt = await tx.wait();
-    console.log(`    Confirmed in block ${receipt.blockNumber}`);
-
-    return {
-      success: true,
-      txHash: receipt.hash,
-      blockNumber: receipt.blockNumber,
-      gasUsed: receipt.gasUsed.toString(),
-    };
-  } catch (error) {
-    let msg = error.reason || error.message;
-    if (error.data) {
-      try {
-        const parsed = contract.interface.parseError(error.data);
-        if (parsed) {
-          const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
-          msg = parsed.name + args;
-        }
-      } catch {}
-    }
-    return {
-      success: false,
-      error: msg,
-    };
-  }
-}
-
 /**
  * Helper to decode contract revert reasons.
  */
 function decodeError(error, contract) {
-  let msg = error.reason || error.message;
+  let msg = error.reason || error.shortMessage || error.message;
   if (error.data) {
     try {
       const parsed = contract.interface.parseError(error.data);
@@ -303,6 +248,123 @@ function decodeError(error, contract) {
     } catch {}
   }
   return msg;
+}
+
+/** Scores (0..1e6, [reject, accept] or one value) as percentages, or null. */
+function scoresToPercent(scores) {
+  const v = Array.from(scores || []).map(Number);
+  if (v.length === 2) return { acceptance: v[1] / 10000, rejection: v[0] / 10000 };
+  if (v.length === 1) return { acceptance: v[0] / 10000, rejection: 100 - v[0] / 10000 };
+  return null;
+}
+
+/**
+ * Every submission holding payout priority (PendingVerdikta or AwaitingRerun, from
+ * pendingSubmissionIds) with the lens's view of it: nextAction and getOracleResult.
+ */
+async function findActionableSubmissions(contract, targetBountyId = null) {
+  const found = [];
+  const bountyCount = Number(await contract.bountyCount());
+
+  console.log(`Scanning ${bountyCount} bounties...`);
+
+  for (let bountyId = 0; bountyId < bountyCount; bountyId++) {
+    if (targetBountyId !== null && bountyId !== targetBountyId) continue;
+
+    let bounty, ids;
+    try {
+      [bounty, ids] = await Promise.all([contract.getBounty(bountyId), contract.pendingSubmissionIds(bountyId)]);
+    } catch {
+      continue;
+    }
+    ids = Array.from(ids).map(Number).sort((a, b) => a - b);
+
+    for (const subId of ids) {
+      try {
+        const [sub, nextAction, r] = await Promise.all([
+          contract.getSubmission(bountyId, subId),
+          contract.nextAction(bountyId, subId),
+          contract.getOracleResult(bountyId, subId),
+        ]);
+        found.push({
+          bountyId,
+          submissionId: subId,
+          hunter: sub.hunter,
+          bondFunder: sub.bondFunder,
+          status: SUBMISSION_STATUS[Number(sub.status)] || `Unknown(${sub.status})`,
+          nextAction: String(nextAction),
+          aggId: sub.verdiktaAggId,
+          outcome: OUTCOMES[Number(r.outcome)] || 'unknown',
+          phase: PHASES[Number(r.phase)] || 'unknown',
+          rounds: Number(r.rounds),
+          passCount: Number(r.passCount),
+          scores: r.hasResult ? scoresToPercent(r.scores) : null,
+          rerunDeadline: Number(sub.rerunDeadline),
+          threshold: Number(bounty.threshold),
+          quota: Number(bounty.quota),
+          forfeitLine: Number(bounty.forfeitLine),
+          bountyStatus: BOUNTY_STATUS[Number(bounty.status)] || `Unknown(${bounty.status})`,
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return found;
+}
+
+async function gasLimitFor(contractFn, args, overrides) {
+  try {
+    const est = await contractFn.estimateGas(...args, overrides);
+    const withMargin = (BigInt(est) * (100n + GAS_MARGIN_PCT)) / 100n;
+    return withMargin > GAS_LIMIT_MIN ? withMargin : GAS_LIMIT_MIN;
+  } catch (error) {
+    // The simulation reverted: surface that instead of sending a doomed tx.
+    error.simulation = true;
+    throw error;
+  }
+}
+
+/** Send one step (see STEP_CALLS) for a submission. */
+async function sendStep(contract, wallet, sub, dryRun) {
+  const spec = STEP_CALLS[sub.nextAction];
+  let target = contract;
+  let args = [sub.bountyId, sub.submissionId];
+  const overrides = {};
+
+  if (spec.target === 'aggregator') {
+    const aggAddr = await contract.aggregatorOf(sub.bountyId);
+    target = new ethers.Contract(aggAddr, AGGREGATOR_ABI, wallet);
+    args = [sub.aggId];
+  }
+  if (spec.fn === 'rerunSubmission') {
+    overrides.value = await contract.requiredPrepay(sub.bountyId);   // live
+  }
+
+  const label = `${spec.fn}(${args.join(', ')})${overrides.value != null ? ` with ${ethers.formatEther(overrides.value)} ETH` : ''}`;
+  if (dryRun) {
+    console.log(`    [DRY RUN] Would call ${label}`);
+    return { success: true, dryRun: true };
+  }
+
+  try {
+    if (overrides.value != null) {
+      const bal = await wallet.provider.getBalance(wallet.address);
+      if (bal < overrides.value) {
+        return { success: false, error: `Insufficient ETH: need ${ethers.formatEther(overrides.value)}, have ${ethers.formatEther(bal)}` };
+      }
+    }
+    const gasLimit = await gasLimitFor(target[spec.fn], args, overrides);
+    console.log(`    Sending ${label} (gas limit ${gasLimit})...`);
+    const tx = await target[spec.fn](...args, { ...overrides, gasLimit });
+    console.log(`    Tx hash: ${tx.hash}`);
+    const receipt = await tx.wait();
+    console.log(`    Confirmed in block ${receipt.blockNumber}`);
+    return { success: true, txHash: receipt.hash, blockNumber: receipt.blockNumber, gasUsed: receipt.gasUsed.toString() };
+  } catch (error) {
+    return { success: false, error: (error.simulation ? 'simulation reverted: ' : '') + decodeError(error, target) };
+  }
 }
 
 /**
@@ -361,6 +423,7 @@ async function findPendingCreatorApproval(contract, walletAddress, targetBountyI
           creatorPayWei: bounty.creatorDeterminationPayment,
           creatorPayEth: ethers.formatEther(bounty.creatorDeterminationPayment),
           arbiterPayEth: ethers.formatEther(bounty.arbiterDeterminationPayment),
+          bondEth: ethers.formatEther(bounty.bond),
           threshold: Number(bounty.threshold),
           submittedAt: Number(sub.submittedAt),
         });
@@ -392,61 +455,34 @@ async function creatorApproveSubmission(contract, bountyId, submissionId, dryRun
 }
 
 async function startExpiredSubmission(contract, wallet, bountyId, submissionId, dryRun) {
+  // v2: the start attaches startValue(bountyId) = requiredPrepay + the hunter bond, read live
+  // (the prepare-time ethMaxBudget is only the prepay estimate and would revert "wrong eth amount").
+  const value = await contract.startValue(bountyId);
+  const prepay = await contract.requiredPrepay(bountyId);
+  const valueStr = `${ethers.formatEther(value)} ETH = prepay ${ethers.formatEther(prepay)} + bond ${ethers.formatEther(value - prepay)}`;
+
   if (dryRun) {
-    console.log(`    [DRY RUN] Would call startPreparedSubmission(${bountyId}, ${submissionId})`);
+    console.log(`    [DRY RUN] Would call startPreparedSubmission(${bountyId}, ${submissionId}) with ${valueStr}`);
     return { success: true, dryRun: true };
   }
 
   try {
-    // Read the submission to get the required ETH prepay budget
-    const sub = await contract.getSubmission(bountyId, submissionId);
-    const ethMaxBudget = sub.ethMaxBudget;
-
-    // Check ETH balance covers the prepay
     const ethBalance = await wallet.provider.getBalance(wallet.address);
-    if (ethBalance < ethMaxBudget) {
+    if (ethBalance < value) {
       return {
         success: false,
-        error: `Insufficient ETH: need ${ethers.formatEther(ethMaxBudget)}, have ${ethers.formatEther(ethBalance)}`,
+        error: `Insufficient ETH: need ${ethers.formatEther(value)}, have ${ethers.formatEther(ethBalance)}`,
       };
     }
 
-    // Attach the ETH prepay as msg.value; unspent ETH is refunded when the submission finalizes.
-    console.log(`    Sending startPreparedSubmission tx (${ethers.formatEther(ethMaxBudget)} ETH prepay)...`);
-    const tx = await contract.startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
+    console.log(`    Sending startPreparedSubmission tx (${valueStr})...`);
+    const tx = await contract.startPreparedSubmission(bountyId, submissionId, { value });
     console.log(`    Tx hash: ${tx.hash}`);
     const receipt = await tx.wait();
     console.log(`    Confirmed in block ${receipt.blockNumber}`);
     return { success: true, txHash: receipt.hash, blockNumber: receipt.blockNumber, gasUsed: receipt.gasUsed.toString() };
   } catch (error) {
     return { success: false, error: decodeError(error, contract) };
-  }
-}
-
-function getAuthHeaders() {
-  const headers = {};
-  if (CONFIG.botApiKey) {
-    headers['X-Bot-API-Key'] = CONFIG.botApiKey;
-  }
-  return headers;
-}
-
-// Backwards-compatible alias
-const getBotHeaders = getAuthHeaders;
-
-async function syncBackend(jobId, submissionId) {
-  try {
-    const response = await fetch(
-      `${CONFIG.apiUrl}/api/jobs/${jobId}/submissions/${submissionId}/refresh`,
-      { method: 'POST', headers: getBotHeaders() }
-    );
-    if (response.ok) {
-      const data = await response.json();
-      return { success: true, status: data.submission?.status };
-    }
-    return { success: false };
-  } catch (e) {
-    return { success: false, error: e.message };
   }
 }
 
@@ -458,50 +494,75 @@ function formatSecondsRemaining(seconds) {
   return `${m}m ${s}s`;
 }
 
-async function runFinalizeMode(contract, verdikta, options) {
-  console.log('Mode: Finalize completed Verdikta evaluations\n');
-  console.log('Finding submissions ready for finalization...\n');
-
-  let pending = await findPendingSubmissions(contract, verdikta, options.bountyId);
-
-  if (options.passedOnly) {
-    const beforeCount = pending.length;
-    pending = pending.filter(sub => sub.passed);
-    if (beforeCount > pending.length) {
-      console.log(`Filtered: ${beforeCount - pending.length} failed submission(s) skipped (--passed-only)\n`);
+/** Whether the default mode acts on this submission (and if not, why). */
+function plan(sub, wallet, options) {
+  const spec = STEP_CALLS[sub.nextAction];
+  if (!spec) return { act: false, why: WAITING[sub.nextAction] || sub.nextAction };
+  if (options.passedOnly && !(sub.nextAction === 'FINALIZE' && sub.outcome === 'pass')) {
+    return { act: false, why: '--passed-only: not a passing result' };
+  }
+  if (spec.flag && !options[spec.flag]) return { act: false, why: WAITING[sub.nextAction] };
+  if (sub.nextAction === 'RERUN') {
+    const me = wallet.address.toLowerCase();
+    if (sub.hunter.toLowerCase() !== me && String(sub.bondFunder).toLowerCase() !== me) {
+      return { act: false, why: 'may re-run, but only its hunter or bond funder can' };
     }
   }
+  return { act: true };
+}
 
-  if (pending.length === 0) {
-    console.log('No submissions found that are ready for finalization.');
+async function runResolveMode(contract, wallet, options) {
+  console.log('Mode: Resolve submissions (lens nextAction)\n');
+
+  const subs = await findActionableSubmissions(contract, options.bountyId);
+  if (subs.length === 0) {
+    console.log('No submissions in evaluation or awaiting a re-run.');
     return 0;
   }
 
-  console.log(`Found ${pending.length} submission(s) ready for finalization:\n`);
+  console.log(`Found ${subs.length} submission(s) in evaluation or awaiting a re-run:\n`);
 
-  let finalized = 0;
-  let failed = 0;
+  const counts = { sent: 0, failed: 0, skipped: 0 };
+  const byAction = {};
 
-  for (const sub of pending) {
-    const passedStr = sub.passed ? '✓ PASSED' : '✗ FAILED';
+  for (const sub of subs) {
+    byAction[sub.nextAction] = (byAction[sub.nextAction] || 0) + 1;
     console.log(`[Bounty ${sub.bountyId} / Submission ${sub.submissionId}]`);
-    console.log(`  Hunter:     ${sub.hunter}`);
-    console.log(`  Score:      ${sub.acceptance.toFixed(1)}% acceptance / ${sub.rejection.toFixed(1)}% rejection`);
-    console.log(`  Threshold:  ${sub.threshold}%`);
-    console.log(`  Result:     ${passedStr}`);
-    console.log(`  Bounty:     ${sub.bountyStatus}`);
+    console.log(`  Hunter:      ${sub.hunter}`);
+    console.log(`  Status:      ${sub.status} (round ${sub.rounds}, phase ${sub.phase})`);
+    if (sub.scores) {
+      console.log(`  Score:       ${sub.scores.acceptance.toFixed(1)}% acceptance / ${sub.scores.rejection.toFixed(1)}% rejection`);
+    }
+    if (sub.outcome !== 'not_ready') {
+      console.log(`  Outcome:     ${sub.outcome} (${sub.passCount} juror score(s) >= ${sub.threshold}%; pass at Q=${sub.quota}, bond forfeited below R=${sub.forfeitLine})`);
+    }
+    if (sub.status === 'AwaitingRerun') {
+      console.log(`  Re-run by:   ${new Date(sub.rerunDeadline * 1000).toISOString()}`);
+    }
+    console.log(`  Bounty:      ${sub.bountyStatus}`);
+    console.log(`  nextAction:  ${sub.nextAction}`);
 
-    const result = await finalizeSubmission(contract, sub.bountyId, sub.submissionId, options.dryRun);
+    const p = plan(sub, wallet, options);
+    if (!p.act) {
+      console.log(`  Skipped:     ${p.why}\n`);
+      counts.skipped++;
+      continue;
+    }
 
+    const result = await sendStep(contract, wallet, sub, options.dryRun);
     if (result.success) {
-      if (!options.dryRun) {
-        console.log(`  ✅ Finalized! Gas: ${result.gasUsed}`);
-        console.log(`  Sync backend manually or wait for sync service`);
+      if (!result.dryRun) {
+        let after = '';
+        try {
+          const s = await contract.getSubmission(sub.bountyId, sub.submissionId);
+          after = ` -> ${SUBMISSION_STATUS[Number(s.status)]}`;
+        } catch {}
+        console.log(`  ✅ Done${after}. Gas: ${result.gasUsed}`);
       }
-      finalized++;
+      counts.sent++;
     } else {
       console.log(`  ❌ Failed: ${result.error}`);
-      failed++;
+      counts.failed++;
     }
     console.log('');
   }
@@ -509,20 +570,14 @@ async function runFinalizeMode(contract, verdikta, options) {
   console.log('============================================================');
   console.log('SUMMARY');
   console.log('============================================================');
-  if (options.dryRun) {
-    console.log(`Would finalize: ${finalized} submission(s)`);
-  } else {
-    console.log(`Finalized: ${finalized}`);
-    console.log(`Failed:    ${failed}`);
-  }
+  console.log(`${options.dryRun ? 'Would send' : 'Sent'}: ${counts.sent}`);
+  if (!options.dryRun) console.log(`Failed:  ${counts.failed}`);
+  console.log(`Skipped: ${counts.skipped}`);
+  console.log('\nBy nextAction:');
+  for (const [a, n] of Object.entries(byAction)) console.log(`  ${a.padEnd(14)} ${n}`);
+  if (!options.dryRun && counts.sent > 0) console.log('\nThe backend picks the changes up on its next sync (or POST .../refresh).');
 
-  const passed = pending.filter(s => s.passed).length;
-  const failedEval = pending.filter(s => !s.passed).length;
-  console.log(`\nEvaluation results:`);
-  console.log(`  Passed:  ${passed}`);
-  console.log(`  Failed:  ${failedEval}`);
-
-  return failed;
+  return counts.failed;
 }
 
 async function runApproveMode(contract, wallet, options) {
@@ -585,7 +640,7 @@ async function runApproveMode(contract, wallet, options) {
 
 async function runStartExpiredMode(contract, wallet, options) {
   console.log('Mode: Start expired creator-approval windows\n');
-  console.log(`Caller: ${wallet.address} (ETH prepay attached from this wallet; refunded if unspent)\n`);
+  console.log(`Caller: ${wallet.address} (attaches startValue from this wallet: prepay, refunded if unspent, plus the hunter bond)\n`);
 
   const all = await findPendingCreatorApproval(contract, wallet.address, options.bountyId);
   const expired = all.filter(s => !s.windowOpen);
@@ -610,12 +665,13 @@ async function runStartExpiredMode(contract, wallet, options) {
     console.log(`[Bounty ${sub.bountyId} / Submission ${sub.submissionId}]`);
     console.log(`  Hunter:    ${sub.hunter}`);
     console.log(`  Creator:   ${sub.creator}`);
-    console.log(`  Will pay:  ${sub.arbiterPayEth} ETH if oracle approves (after AI evaluation)`);
+    console.log(`  Will pay:  ${sub.arbiterPayEth} ETH if the jury passes it (Q-of-N)`);
+    console.log(`  Bond:      ${sub.bondEth} ETH from your wallet (you become the bond funder)`);
 
     const result = await startExpiredSubmission(contract, wallet, sub.bountyId, sub.submissionId, options.dryRun);
 
     if (result.success) {
-      if (!options.dryRun) console.log(`  ✅ Started! Gas: ${result.gasUsed}`);
+      if (!options.dryRun) console.log(`  ✅ Started! Gas: ${result.gasUsed} (the jury is drawn next: keeper, or --move-rounds)`);
       started++;
     } else {
       console.log(`  ❌ Failed: ${result.error}`);
@@ -651,21 +707,23 @@ async function main() {
     process.exit(1);
   }
 
-  const mode = options.approve ? 'approve' : (options.startExpired ? 'start-expired' : 'finalize');
+  const mode = options.approve ? 'approve' : (options.startExpired ? 'start-expired' : 'resolve');
 
   console.log('============================================================');
-  console.log('Claim Results Script');
+  console.log('Claim Results Script (BountyEscrow v2)');
   console.log('============================================================');
   console.log(`Mode:        ${mode}`);
   console.log(`Target:      ${options.bountyId !== null ? `Bounty #${options.bountyId}` : 'All bounties'}`);
-  if (mode === 'finalize') {
+  if (mode === 'resolve') {
     console.log(`Passed Only: ${options.passedOnly ? 'Yes' : 'No'}`);
+    console.log(`Re-run:      ${options.rerun ? 'Yes' : 'No'}`);
+    console.log(`Move rounds: ${options.moveRounds ? 'Yes' : 'No'}`);
   }
   console.log(`Dry Run:     ${options.dryRun ? 'Yes' : 'No'}`);
   console.log('============================================================\n');
 
   // Validate configuration
-  if (!options.dryRun && !CONFIG.privateKey) {
+  if (!CONFIG.privateKey) {
     console.error('Error: PRIVATE_KEY not set');
     process.exit(1);
   }
@@ -678,12 +736,14 @@ async function main() {
   // Setup
   const wallet = await getWallet();
   const contract = new ethers.Contract(CONFIG.contractAddress, BOUNTY_ESCROW_ABI, wallet);
-  const verdiktaAddr = await contract.verdikta();
-  const verdikta = new ethers.Contract(verdiktaAddr, VERDIKTA_ABI, wallet.provider);
 
-  console.log(`Wallet:    ${wallet.address}`);
-  console.log(`Contract:  ${CONFIG.contractAddress}`);
-  console.log(`Verdikta:  ${verdiktaAddr}\n`);
+  console.log(`Wallet:      ${wallet.address}`);
+  console.log(`Contract:    ${CONFIG.contractAddress}`);
+  try {
+    console.log(`Aggregators: ${await contract.aggregatorCount()} approved (one per jury size)\n`);
+  } catch {
+    console.log('');
+  }
 
   let exitCode = 0;
   if (mode === 'approve') {
@@ -691,7 +751,7 @@ async function main() {
   } else if (mode === 'start-expired') {
     exitCode = await runStartExpiredMode(contract, wallet, options);
   } else {
-    exitCode = await runFinalizeMode(contract, verdikta, options);
+    exitCode = await runResolveMode(contract, wallet, options);
   }
 
   process.exit(exitCode > 0 ? 1 : 0);

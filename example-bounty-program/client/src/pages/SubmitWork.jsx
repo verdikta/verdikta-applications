@@ -21,6 +21,7 @@ import JuryModels from '../components/JuryModels';
 import ClassTrustNote from '../components/ClassTrustNote';
 import { apiService } from '../services/api';
 import { getContractService } from '../services/contractService';
+import { fmtEth, jobDecision, MAX_ROUNDS } from '../utils/roundDisplay';
 import { config, currentNetwork } from '../config';
 import {
   BountyStatus,
@@ -87,6 +88,9 @@ function SubmitWork({ walletState }) {
   const [submissionResult, setSubmissionResult] = useState(null);
   const [showCIDDialog, setShowCIDDialog] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  // v2: what a start attaches — startValue = the round prepay (requiredPrepay) + the hunter bond.
+  // From GET /api/jobs/:id/onchain-status; null until read (the start re-reads it live).
+  const [startCost, setStartCost] = useState(null);
   // dragenter/dragleave fire for every child the pointer crosses; counting
   // them keeps the highlight steady until the drag really leaves the zone.
   const dragDepthRef = useRef(0);
@@ -120,6 +124,21 @@ function SubmitWork({ walletState }) {
   useEffect(() => {
     loadJobDetails();
   }, [bountyId, walletState.isConnected]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiService.getOnchainStatus(bountyId).then((st) => {
+      if (cancelled || !st?.startValue) return;
+      const prepay = BigInt(st.requiredPrepay || 0);
+      const total = BigInt(st.startValue);
+      setStartCost({ startValue: total, prepay, bond: total - prepay });
+    }).catch(() => { /* shown as "read at start" */ });
+    return () => { cancelled = true; };
+  }, [bountyId]);
+  const decision = jobDecision(job);
+  const startCostText = startCost
+    ? `${fmtEth(startCost.startValue)} ETH (${fmtEth(startCost.prepay)} ETH round prepay${startCost.bond > 0n ? ` + ${fmtEth(startCost.bond)} ETH hunter bond` : ', no bond'})`
+    : 'the round prepay plus the hunter bond (read live at start)';
 
   // jobId === onChainId in the aligned ID system
   const getOnChainId = (job) => {
@@ -506,12 +525,13 @@ function SubmitWork({ walletState }) {
         return;
       }
 
-      // STEP 3: Start the Verdikta evaluation, funding it with ETH (msg.value = ethMaxBudget).
-      // No ERC20 approval is needed; unspent prepay is refunded to the hunter at finalization.
+      // STEP 3: Start the evaluation's first round, funding it with ETH: msg.value = startValue
+      // (the round prepay + the hunter bond), read live by contractService. No ERC20 approval;
+      // the unspent prepay comes back to the hunter, and the bond unless a hard fail forfeits it.
       // hunterCid was already stored in prepareSubmission, no need to pass again
-      setLoadingMessage(`Starting AI evaluation (${(Number(ethMaxBudget) / 1e18).toFixed(4)} ETH prepay)...`);
-      console.log('🔄 Starting evaluation for bountyId:', onChainId, 'submissionId:', submissionId, 'value:', ethMaxBudget);
-      const evalResult = await contractService.startPreparedSubmission(onChainId, submissionId, ethMaxBudget);
+      setLoadingMessage(`Starting AI evaluation (attaching ${startCostText})...`);
+      console.log('🔄 Starting evaluation for bountyId:', onChainId, 'submissionId:', submissionId);
+      const evalResult = await contractService.startPreparedSubmission(onChainId, submissionId);
       console.log('✅ Evaluation started:', evalResult);
 
       // STEP 5: Sync backend status from blockchain
@@ -552,12 +572,12 @@ function SubmitWork({ walletState }) {
 
       if (errorMessage.includes('insufficient funds for gas') ||
           errorMessage.toLowerCase().includes('insufficient funds')) {
-        errorMessage = '💰 Insufficient ETH to fund the evaluation. Get testnet ETH from a Base Sepolia faucet.';
+        errorMessage = `💰 Insufficient ETH to fund the evaluation (${startCostText}, plus gas). Get testnet ETH from a Base Sepolia faucet.`;
       } else if (errorMessage.includes('user rejected') || errorMessage.includes('User denied') ||
                  errorMessage.includes('ACTION_REJECTED')) {
         errorMessage = '🚫 Transaction cancelled by user';
       } else if (errorMessage.includes('Incorrect ETH amount') || errorMessage.includes('wrong eth amount')) {
-        errorMessage = '⚠️ Incorrect ETH prepay amount for the evaluation. Please refresh and try again.';
+        errorMessage = '⚠️ Incorrect ETH amount for the start (prepay + bond changed). Please refresh and try again.';
       } else if (errorMessage.includes('bounty is targeted')) {
         errorMessage = 'This bounty is restricted to a specific address. Only the targeted wallet can submit.';
       } else if (errorMessage.includes('deadline passed')) {
@@ -712,8 +732,8 @@ function SubmitWork({ walletState }) {
           </p>
           <p>
             If they don't approve within the window, AI evaluation becomes available. You (or anyone) can trigger it
-            from this bounty's details page after the window expires. Triggering AI evaluation requires a small ETH
-            prepay (refunded if unspent).
+            from this bounty's details page after the window expires. Triggering AI evaluation attaches
+            {' '}{startCostText}: the unspent prepay is refunded, and the bond comes back unless the jury hard-fails the work.
           </p>
           <p>
             <strong>You will not be asked to fund the evaluation at submit time.</strong> Only ETH for gas is needed right now.
@@ -886,18 +906,22 @@ function SubmitWork({ walletState }) {
             <li>Hunter Submission CID is generated with your work and narrative</li>
             <li>Smart contract creates an EvaluationWallet and records your submission as <em>Pending Creator Approval</em></li>
             <li>The creator has <strong>{windowMinutes} minute{windowMinutes === 1 ? '' : 's'}</strong> to approve directly. If they approve, you receive <strong>{creatorPaymentEth} ETH</strong> immediately and the bounty closes 🎉</li>
-            <li>If the window expires without creator approval, you'll see a <em>Start AI Evaluation</em> button on the bounty details page. Clicking it attaches a small ETH prepay and starts oracle evaluation</li>
-            <li>Oracle results are written back on-chain within 1-5 minutes after evaluation starts</li>
+            <li>If the window expires without creator approval, you'll see a <em>Start AI Evaluation</em> button on the bounty details page. Clicking it attaches {startCostText} and starts a jury round</li>
+            <li>The jury is drawn, commits and reveals its scores; the round's result is on-chain typically within 5-10 minutes</li>
           </ol>
         ) : (
           <ol>
             <li>Your files are uploaded to IPFS (permanent storage)</li>
             <li>Hunter Submission CID is generated with your work and narrative</li>
             <li>Smart contract creates an EvaluationWallet for your submission</li>
-            <li>You attach a small ETH prepay (~0.00024 ETH) to fund AI evaluation — unspent ETH is refunded to you when the result finalizes</li>
-            <li>Evaluation starts with your Hunter CID + the bounty's evaluation package</li>
-            <li>Results are written back on-chain within 1-5 minutes</li>
-            <li>If you pass, bounty is awarded automatically! 🎉</li>
+            <li>You attach {startCostText} — the unspent prepay is refunded to you when the round finalizes</li>
+            <li>A jury is drawn for your Hunter CID + the bounty's evaluation package (anyone may send the draw; the site's keeper usually does)</li>
+            <li>The jurors commit and reveal their scores; the round's result is on-chain typically within 5-10 minutes</li>
+            <li>
+              Pass: at least {decision.quota ?? 'Q'} of {decision.N ?? 'N'} arbiters score it at the threshold — finalize and the bounty is paid, bond returned 🎉.
+              {' '}Soft fail{decision.forfeitLine != null ? ` (${decision.forfeitLine} to ${Math.max((decision.quota ?? 1) - 1, 0)})` : ''} or no result: you may re-run within 2 hours with a fresh jury (up to {MAX_ROUNDS} rounds), keeping your place and bond.
+              {' '}Hard fail{decision.forfeitLine ? ` (fewer than ${decision.forfeitLine})` : ''}: the bond goes to the creator.
+            </li>
           </ol>
         )}
         <p className="locked-terms-note">
@@ -912,7 +936,7 @@ function SubmitWork({ walletState }) {
         </p>
         <ul>
           <li><strong>ETH</strong> for gas fees (~0.005 ETH on Base Sepolia)</li>
-          <li><strong>ETH</strong> prepay for AI evaluation (~0.00024 ETH with default settings, usually spent in full; any unspent part is refunded)</li>
+          <li><strong>ETH</strong> to start the evaluation: {startCostText}. The prepay pays the jury (any unspent part is refunded); each re-run attaches another round prepay. The bond is returned unless the round hard-fails</li>
         </ul>
         <p>
           Get testnet ETH from a <a href="https://docs.base.org/chain/network-faucets" target="_blank" rel="noopener noreferrer">Base Sepolia faucet</a>.
@@ -993,7 +1017,7 @@ function SubmitWork({ walletState }) {
                         <strong>Creator payout if approved:</strong> {creatorPaymentEth} ETH
                       </p>
                       <p className="success-note">
-                        <Hourglass size={14} className="inline-icon" /> No evaluation fee was spent. You'll only fund the AI evaluation (a small ETH prepay) if you trigger it later.
+                        <Hourglass size={14} className="inline-icon" /> No evaluation fee was spent. You'll only fund the AI evaluation (the round prepay plus the hunter bond) if you trigger it later.
                       </p>
                     </>
                   ) : (

@@ -1,10 +1,12 @@
 import { test, expect } from '@playwright/test';
 import { ethers } from 'ethers';
+import escrowAbi from '../../../onchain/abi/BountyEscrow.json' with { type: 'json' };
 
 // A passing submission held up by an earlier one nobody finalized (2026-10-18, mainnet
 // bounty 255: sub 1 passed and sat at AWAIT_EARLIER behind sub 0, whose failing result
 // had been in for hours). Claim must offer to resolve sub 0 first, then claim sub 1.
-// The chain is a small simulator behind both the read RPC and the mock wallet.
+// The chain is a small simulator of the v2 escrow (item 12's rounds) behind both the read RPC and
+// the mock wallet: submission status 1 = PendingVerdikta, 6 = AwaitingRerun; Q = 3, R = 1, N = 4.
 
 const ESCROW = '0x1111111111111111111111111111111111111111';
 const AGG = '0x2222222222222222222222222222222222222222';
@@ -13,28 +15,18 @@ const LOSER = '0x4c72000000000000000000000000000000000002';
 const CREATOR = '0xc0ffee0000000000000000000000000000000003';
 const BOUNTY = 255;
 
-const SUB = 'tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)';
-const BOUNTY_T = 'tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)';
+// The v2 escrow + lens ABI (the same merged JSON the site uses) and the aggregator calls the
+// site may send (closeCommits / promote) or read.
 const iface = new ethers.Interface([
-  `function getBounty(uint256) view returns (${BOUNTY_T})`,
-  `function getSubmission(uint256, uint256) view returns (${SUB})`,
-  `function getSubmissions(uint256) view returns (${SUB}[])`,
-  'function pendingSubmissionIds(uint256) view returns (uint256[])',
-  'function nextAction(uint256, uint256) view returns (string)',
-  'function getEffectiveBountyStatus(uint256) view returns (string)',
-  'function submissionCount(uint256) view returns (uint256)',
-  'function bountyCount() view returns (uint256)',
-  'function activeEvaluations(uint256) view returns (uint256)',
-  'function withdrawable(address) view returns (uint256)',
-  'function canBeClosed(uint256) view returns (bool)',
-  'function verdikta() view returns (address)',
-  'function finalizeSubmission(uint256, uint256)',
-  'function failTimedOutSubmission(uint256, uint256)',
-  'function closeExpiredBounty(uint256)',
-  'function getEvaluation(bytes32) view returns (uint256[], string, bool)',
-  'function getAggregationStatus(bytes32) view returns (bool, bool, bool, uint256, uint256, uint256, uint256, uint256, address, uint256)',
-  'function responseTimeoutSeconds() view returns (uint256)',
+  ...escrowAbi.filter((e) => e.type === 'function'),
+  'function getRoundInfo(bytes32) view returns (uint8, uint256, bytes32, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256)',
+  'function closeCommits(bytes32)',
+  'function promote(bytes32)',
+  'function maxOracleFee() view returns (uint256)',
+  'function N() view returns (uint8)',
 ]);
+const PREPAY = ethers.parseEther('0.0003');
+const RERUN_WINDOW = 7200;
 const revert = (reason) => ({ code: 3, message: `execution reverted: ${reason}`,
   data: '0x08c379a0' + ethers.AbiCoder.defaultAbiCoder().encode(['string'], [reason]).slice(2) });
 
@@ -50,22 +42,32 @@ function makeChain({ subs, deadlineOffset = 86400, creator = CREATOR }) {
     block: 100,
   };
   const passes = (s) => s.scores && s.scores[1] >= 80;
-  const pending = () => state.subs.map((s, i) => (s.status === 1 ? i : -1)).filter((i) => i >= 0);
+  // Priority holders: in evaluation (1) or awaiting a re-run (6)
+  const pending = () => state.subs.map((s, i) => (s.status === 1 || s.status === 6 ? i : -1)).filter((i) => i >= 0);
   const earlierByOther = (id) => pending().some((j) => j < id && state.subs[j].hunter !== state.subs[id].hunter);
+  const pastDeadline = () => Date.now() / 1000 >= state.deadline;
   const nextAction = (id) => {
     const s = state.subs[id];
+    if (s.status === 6) return pastDeadline() || Date.now() / 1000 > s.rerunDeadline ? 'EXPIRE_RERUN' : 'RERUN';
     if (s.status !== 1) return 'DONE';
-    if (!s.scores) return s.settled ? 'FORCE_FAIL' : 'AWAIT_ORACLE';
+    if (!s.scores) return s.settled ? 'CLOSE_FAILED' : 'AWAIT_ORACLE';
     return state.bountyStatus === 0 && passes(s) && earlierByOther(id) ? 'AWAIT_EARLIER' : 'FINALIZE';
   };
   const subTuple = (s) => [s.hunter, 'QmHunterCid' + 'x'.repeat(35), ethers.ZeroAddress, s.aggId, s.status,
-    s.status === 1 ? 0 : s.scores?.[1] ?? 0, s.status === 1 ? 0 : s.scores?.[0] ?? 0, now - 7200, 0, 0n, 0, s.hunter];
+    s.status === 1 ? 0 : s.scores?.[1] ?? 0, s.status === 1 ? 0 : s.scores?.[0] ?? 0, now - 7200, 0, PREPAY, 0, s.hunter,
+    s.hunter, 0n, s.rerunDeadline || 0, s.rounds || 1, s.scores ? (passes(s) ? 3 : 0) : 0];
   const bountyTuple = () => [creator, 'QmEval' + 'e'.repeat(40), 128, 80, ethers.parseEther('0.01'), now - 86400 * 2,
     state.deadline, state.bountyStatus, ethers.ZeroAddress, state.subs.length, ethers.ZeroAddress, 0n,
-    ethers.parseEther('0.01'), 0, [0n, 0n, 0n, 0n]];
+    ethers.parseEther('0.01'), 0, [0n, 0n, 0n, 0n, 0n, false], 0, 3, 1, 0n];
+  // getOracleResult: (started, hasResult, phase, outcome, rounds, passCount, deadline, requestTime, scores, justificationCids)
+  const oracleResult = (s) => {
+    if (s.status !== 1) return [true, false, 0, 0, s.rounds || 1, 0, 0, 0, [], ''];
+    if (s.scores) return [true, true, 7, passes(s) ? 2 : 4, s.rounds || 1, passes(s) ? 3 : 0, now + 600, now - 7200, s.scores.map((x) => x * 10000), 'QmJust'];
+    return [true, false, s.settled ? 8 : 3, s.settled ? 1 : 0, s.rounds || 1, 0, now + 600, now - 600, [], ''];
+  };
 
-  // finalize / force-fail / close: the contract's rules, enough of them for these flows.
-  function exec(name, args, { write }) {
+  // finalize / closeFailedRound / rerun / expireRerun / close: the contract's rules, enough of them for these flows.
+  function exec(name, args, { write, value = 0n }) {
     const id = args.length > 1 ? Number(args[1]) : null;
     const s = id != null ? state.subs[id] : null;
     if (name === 'finalizeSubmission') {
@@ -73,16 +75,31 @@ function makeChain({ subs, deadlineOffset = 86400, creator = CREATOR }) {
       if (!s.scores) throw revert('Verdikta not ready');
       if (state.bountyStatus === 0 && passes(s) && earlierByOther(id)) throw revert('earlier submission pending - retry after it resolves');
       if (write) {
-        if (!passes(s)) s.status = 2;
+        if (!passes(s)) s.status = 2;   // hard fail (0 of 4 at the threshold, R = 1)
         else if (state.bountyStatus === 0) { s.status = 3; state.bountyStatus = 1; }
         else s.status = 4;
       }
       return '0x';
     }
-    if (name === 'failTimedOutSubmission') {
+    if (name === 'closeFailedRound') {
       if (s.status !== 1) throw revert('not pending');
       if (s.scores) throw revert('result available - use finalizeSubmission');
-      if (!s.settled) throw revert('evaluation not settled');
+      if (!s.settled) throw revert('round still open');
+      if (write) {
+        if (pastDeadline()) s.status = 2;
+        else { s.status = 6; s.rerunDeadline = Math.floor(Date.now() / 1000) + RERUN_WINDOW; }
+      }
+      return '0x';
+    }
+    if (name === 'rerunSubmission') {
+      if (s.status !== 6) throw revert('not awaiting rerun');
+      if (BigInt(value) !== PREPAY) throw revert('wrong eth amount');
+      if (write) { s.status = 1; s.settled = false; s.rounds = (s.rounds || 1) + 1; s.rerunDeadline = 0; }
+      return '0x';
+    }
+    if (name === 'expireRerun') {
+      if (s.status !== 6) throw revert('not awaiting rerun');
+      if (!pastDeadline() && Date.now() / 1000 <= s.rerunDeadline) throw revert('rerun window open');
       if (write) s.status = 2;
       return '0x';
     }
@@ -111,18 +128,14 @@ function makeChain({ subs, deadlineOffset = 86400, creator = CREATOR }) {
       case 'activeEvaluations': return enc([pending().length]);
       case 'withdrawable': return enc([0]);
       case 'canBeClosed': return enc([state.bountyStatus === 0 && Date.now() / 1000 > state.deadline && !pending().length]);
-      case 'verdikta': return enc([AGG]);
-      case 'responseTimeoutSeconds': return enc([300]);
-      case 'getEvaluation': {
-        const s = state.subs.find((x) => x.aggId === args[0]);
-        return enc([s?.scores || [], s?.scores ? 'QmJust' : '', !!s?.scores]);
-      }
-      case 'getAggregationStatus': {
-        const s = state.subs.find((x) => x.aggId === args[0]);
-        const done = !!s?.scores || !!s?.settled;
-        return enc([done, !!s?.settled && !s?.scores, true, 6, 6, s?.scores ? 4 : 0, 3, 2, ESCROW, now - 7200]);
-      }
-      default: return exec(name, args, { write: false });
+      case 'aggregatorOf': case 'aggregators': return enc([AGG]);
+      case 'aggregatorCount': return enc([1]);
+      case 'requiredPrepay': case 'startValue': return enc([PREPAY]);
+      case 'MAX_ROUNDS': return enc([6]);
+      case 'maxOracleFee': return enc([ethers.parseEther('0.0004')]);
+      case 'N': return enc([4]);
+      case 'getOracleResult': return enc([oracleResult(state.subs[Number(args[1])])]);
+      default: return exec(name, args, { write: false, value: BigInt(tx.value || 0) });
     }
   }
 
@@ -144,10 +157,10 @@ function makeChain({ subs, deadlineOffset = 86400, creator = CREATOR }) {
       case 'eth_sendTransaction': {
         const tx = params[0];
         const { name, args } = iface.parseTransaction({ data: tx.data });
-        exec(name, args, { write: true });
+        exec(name, args, { write: true, value: BigInt(tx.value || 0) });
         state.block += 1;
         const hash = ethers.keccak256(ethers.toUtf8Bytes(`tx${state.sent.length}`));
-        state.sent.push(`${name}(${args.map(String).join(',')})`);
+        state.sent.push(`${name}(${args.map(String).join(',')})${BigInt(tx.value || 0) ? `{${ethers.formatEther(BigInt(tx.value))}}` : ''}`);
         const base = { hash, from: state.from, to: ESCROW, blockNumber: ethers.toBeHex(state.block), blockHash: ethers.ZeroHash,
           transactionIndex: '0x0' };
         state.receipts.set(hash, {
@@ -165,15 +178,18 @@ function makeChain({ subs, deadlineOffset = 86400, creator = CREATOR }) {
     }
   }
 
-  const localStatus = (s) => (s.status === 1 ? (s.scores ? (passes(s) ? 'ACCEPTED_PENDING_CLAIM' : 'REJECTED_PENDING_FINALIZATION') : 'PENDING_EVALUATION')
-    : s.status === 2 ? 'REJECTED' : 'APPROVED');
+  const localStatus = (s) => (s.status === 1
+    ? (s.scores ? (passes(s) ? 'ACCEPTED_PENDING_CLAIM' : 'REJECTED_PENDING_FINALIZATION') : s.settled ? 'NO_RESULT_PENDING_CLOSE' : 'PENDING_EVALUATION')
+    : s.status === 6 ? 'AWAITING_RERUN' : s.status === 2 ? 'REJECTED' : 'APPROVED');
   const job = () => ({
     jobId: BOUNTY, title: 'Bounty 255', description: 'Check three claims', creator, bountyAmount: 0.01, bountyAmountWei: '10000000000000000',
     threshold: 80, classId: 128, evaluationCid: 'QmEval' + 'e'.repeat(40), status: ['OPEN', 'AWARDED', 'CLOSED'][state.bountyStatus],
     submissionCloseTime: state.deadline, createdAt: Math.floor(Date.now() / 1000) - 86400 * 2, onChain: true, syncedFromBlockchain: true,
     contractAddress: ESCROW, submissionCount: state.subs.length, publicSubmissions: true,
+    decisionSettings: { bountyClass: 'small', jury: 0, quota: 3, forfeitLine: 1, bond: '0' },
     submissions: state.subs.map((s, i) => ({ submissionId: i, onChainSubmissionId: i, hunter: s.hunter, status: localStatus(s),
-      onChainStatus: ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid'][s.status],
+      onChainStatus: ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval', 'AwaitingRerun'][s.status],
+      rounds: s.rounds || 1, rerunDeadline: s.rerunDeadline || null, bondHeldWei: '0',
       submittedAt: Math.floor(Date.now() / 1000) - 7200, verdiktaAggId: s.aggId, hunterCid: 'QmHunterCid' + 'x'.repeat(35),
       acceptance: s.scores?.[1] ?? null, rejection: s.scores?.[0] ?? null })),
   });
@@ -247,4 +263,28 @@ test('closing an expired bounty resolves submissions the site labels *_PENDING_*
   await page.getByRole('button', { name: /Close (Expired )?Bounty/ }).first().click();
   await expect.poll(() => chain.state.sent, { timeout: 20000 })
     .toEqual(['finalizeSubmission(255,0)', 'finalizeSubmission(255,1)', 'closeExpiredBounty(255)']);
+});
+
+test('a round with no result: close it, then the hunter re-runs it with the round prepay', async ({ page }) => {
+  const chain = makeChain({ subs: [{ hunter: WINNER, scores: null, settled: true }] });
+  await openBounty(page, chain, WINNER);
+
+  await page.getByRole('button', { name: /Close failed round/ }).first().click();
+  await expect.poll(() => chain.state.sent).toEqual(['closeFailedRound(255,0)']);
+  expect(chain.state.subs[0].status).toBe(6);   // AwaitingRerun
+
+  await expect(page.getByText(/Re-run window:/).first()).toBeVisible({ timeout: 20000 });
+  await page.getByRole('button', { name: /Re-run \(round 2 of 6\)/ }).first().click();
+  await expect.poll(() => chain.state.sent).toEqual(['closeFailedRound(255,0)', 'rerunSubmission(255,0){0.0003}']);
+  expect(chain.state.subs[0].status).toBe(1);
+});
+
+test('closing an expired bounty expires a re-run that can no longer happen', async ({ page }) => {
+  const chain = makeChain({ deadlineOffset: -3600,
+    subs: [{ hunter: LOSER, scores: null, status: 6, rerunDeadline: Math.floor(Date.now() / 1000) + 600 }] });
+  await openBounty(page, chain, CREATOR);
+
+  await page.getByRole('button', { name: /Close (Expired )?Bounty/ }).first().click();
+  await expect.poll(() => chain.state.sent, { timeout: 20000 })
+    .toEqual(['expireRerun(255,0)', 'closeExpiredBounty(255)']);
 });

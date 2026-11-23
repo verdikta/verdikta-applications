@@ -103,6 +103,9 @@ const BOUNTY_STATUS_DESCRIPTIONS = {
   Orphaned: 'Bounty has no associated work products or submissions'
 };
 
+// The escrow's juries, by aggregator index (shared/classPresets.js JURIES)
+const JURY_NAMES = ['small', 'medium', 'large', 'jumbo'];
+
 // Submission status descriptions for tooltips
 const SUBMISSION_STATUS_DESCRIPTIONS = {
   ApprovedPaid: 'Submission passed evaluation and payment has been completed',
@@ -110,7 +113,7 @@ const SUBMISSION_STATUS_DESCRIPTIONS = {
   Rejected: 'Submission did not meet the evaluation threshold',
   Evaluating: 'Submission is on-chain and waiting for AI jury evaluation',
   Prepared: 'Submission is ready but not yet submitted to the blockchain',
-  Timeout: 'Evaluation timed out before receiving enough arbiter responses',
+  Timeout: 'No result: the round ended without enough arbiter responses (closed as failed, or a re-run was not taken in time)',
   Unknown: 'Submission has an unrecognized status'
 };
 
@@ -899,12 +902,19 @@ function Analytics() {
               <div className="health-details">
                 {data?.system?.verdikta?.configured ? (
                   <div className="contract-addresses">
-                    {data.system.verdikta.aggregatorAddress && (
-                      <div className="contract-row">
-                        <span className="contract-label">Verdikta Aggregator:</span>
-                        <code className="address">{data.system.verdikta.aggregatorAddress}</code>
-                      </div>
-                    )}
+                    {Array.isArray(data.system.verdikta.aggregators) && data.system.verdikta.aggregators.length > 0
+                      ? data.system.verdikta.aggregators.map((addr, i) => (
+                        <div className="contract-row" key={addr}>
+                          <span className="contract-label">Verdikta Aggregator (jury {i}{JURY_NAMES[i] ? `, ${JURY_NAMES[i]}` : ''}):</span>
+                          <code className="address">{addr}</code>
+                        </div>
+                      ))
+                      : data.system.verdikta.aggregatorAddress && (
+                        <div className="contract-row">
+                          <span className="contract-label">Verdikta Aggregator (jury 0):</span>
+                          <code className="address">{data.system.verdikta.aggregatorAddress}</code>
+                        </div>
+                      )}
                     {data.system.verdikta.keeperAddress && (
                       <div className="contract-row">
                         <span className="contract-label">Reputation Keeper:</span>
@@ -965,19 +975,22 @@ function Analytics() {
               <div className="health-card wide">
                 <div className="health-header">
                   <span className="health-status healthy"><Zap size={16} /></span>
-                  <span className="health-title">Aggregator Configuration</span>
+                  <span className="health-title">
+                    Aggregator Configuration (jury {data.system.aggregatorConfig.jury ?? 0}
+                    {JURY_NAMES[data.system.aggregatorConfig.jury ?? 0] ? `, ${JURY_NAMES[data.system.aggregatorConfig.jury ?? 0]}` : ''})
+                  </span>
                 </div>
                 <div className="health-details config-grid">
                   <div className="config-item">
-                    <span className="config-label">Commit Polls (K)</span>
+                    <span className="config-label">Jurors Drawn (K)</span>
                     <span className="config-value">{data.system.aggregatorConfig.commitOraclesToPoll}</span>
                   </div>
                   <div className="config-item">
-                    <span className="config-label">Reveals (M)</span>
+                    <span className="config-label">Commits Needed (M)</span>
                     <span className="config-value">{data.system.aggregatorConfig.oraclesToPoll}</span>
                   </div>
                   <div className="config-item">
-                    <span className="config-label">Required (N)</span>
+                    <span className="config-label">Reveals Counted (N)</span>
                     <span className="config-value">{data.system.aggregatorConfig.requiredResponses}</span>
                   </div>
                   <div className="config-item">
@@ -989,9 +1002,21 @@ function Analytics() {
                     <span className="config-value">{data.system.aggregatorConfig.bonusMultiplier}x</span>
                   </div>
                   <div className="config-item">
-                    <span className="config-label">Timeout</span>
+                    <span className="config-label">Round Timeout</span>
                     <span className="config-value">{data.system.aggregatorConfig.responseTimeoutSeconds}s</span>
                   </div>
+                  {data.system.aggregatorConfig.tPlus != null && (
+                    <div className="config-item">
+                      <span className="config-label">Commit Grace (T+)</span>
+                      <span className="config-value">{data.system.aggregatorConfig.tPlus}s</span>
+                    </div>
+                  )}
+                  {data.system.aggregatorConfig.revealWindow != null && (
+                    <div className="config-item">
+                      <span className="config-label">Reveal Window</span>
+                      <span className="config-value">{data.system.aggregatorConfig.revealWindow}s</span>
+                    </div>
+                  )}
                   <div className="config-item">
                     <span className="config-label">Max Oracle Fee</span>
                     <span className="config-value">{data.system.aggregatorConfig.maxOracleFee} ETH</span>

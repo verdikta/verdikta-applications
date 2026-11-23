@@ -75,6 +75,14 @@ export const SubmissionStatus = {
   // Oracle evaluated, awaiting on-chain finalization
   ACCEPTED_PENDING_CLAIM: 'ACCEPTED_PENDING_CLAIM',
   REJECTED_PENDING_FINALIZATION: 'REJECTED_PENDING_FINALIZATION',
+  // v2 (item 12's Q-of-N rule): a soft fail (R..Q-1 arbiters at the threshold) or a round that
+  // ended with no result; finalize / closeFailedRound then puts the submission in AwaitingRerun.
+  SOFT_FAIL_PENDING_FINALIZATION: 'SOFT_FAIL_PENDING_FINALIZATION',
+  NO_RESULT_PENDING_CLOSE: 'NO_RESULT_PENDING_CLOSE',
+
+  // v2: may re-run (2-hour window, up to 6 rounds), keeping its place and bond
+  AWAITING_RERUN: 'AWAITING_RERUN',
+  AWAITING_RERUN_ONCHAIN: 'AwaitingRerun',
 
   // Creator approval window
   PENDING_CREATOR_APPROVAL: 'PendingCreatorApproval',
@@ -142,9 +150,30 @@ const SUBMISSION_STATUS_CONFIG = {
   // Oracle evaluated, below threshold, awaiting on-chain finalization
   rejected_pending_finalization: {
     label: 'Rejected \u2014 Pending Finalization',
-    description: 'AI evaluation did not meet the threshold. Awaiting on-chain finalization.',
+    description: 'Hard fail: fewer arbiters than the forfeit line (R) scored at the threshold. Finalizing fails it and the hunter bond goes to the creator.',
     badgeClass: 'status-rejected',
     icon: IconName.X,
+  },
+  // v2: soft fail — finalize puts it in AwaitingRerun
+  soft_fail_pending_finalization: {
+    label: 'Soft Fail \u2014 Pending Finalization',
+    description: 'Some arbiters scored it at the threshold, but fewer than the quota (Q). Finalizing keeps the bond and opens a 2-hour window to re-run with a fresh jury.',
+    badgeClass: 'status-pending',
+    icon: IconName.REFRESH,
+  },
+  // v2: the round ended with no result (not the hunter's fault)
+  no_result_pending_close: {
+    label: 'No Result \u2014 Close Round',
+    description: 'The round ended without a result (too few commits or reveals, or it was never drawn). Closing it refunds what is left of the prepay; the submission keeps its place and bond and may re-run.',
+    badgeClass: 'status-pending',
+    icon: IconName.ALERT,
+  },
+  // v2: awaiting a re-run
+  awaiting_rerun: {
+    label: 'Awaiting Re-run',
+    description: 'Soft fail or no result: the hunter (or the bond funder) may re-run it with a fresh jury within 2 hours (up to 6 rounds), keeping its place and bond. After the window anyone can expire it and the bond goes back.',
+    badgeClass: 'status-pending',
+    icon: IconName.REFRESH,
   },
   // Success states
   success: {
@@ -257,6 +286,15 @@ function getSubmissionStatusCategory(status, onChainStatus) {
   if (normalizedStatus === 'REJECTED_PENDING_FINALIZATION') {
     return 'rejected_pending_finalization';
   }
+  if (normalizedStatus === 'SOFT_FAIL_PENDING_FINALIZATION') {
+    return 'soft_fail_pending_finalization';
+  }
+  if (normalizedStatus === 'NO_RESULT_PENDING_CLOSE') {
+    return 'no_result_pending_close';
+  }
+  if (normalizedStatus === 'AWAITING_RERUN' || normalizedStatus === 'AwaitingRerun') {
+    return 'awaiting_rerun';
+  }
   if (SUCCESS_STATUSES.includes(normalizedStatus)) {
     return 'success';
   }
@@ -327,8 +365,42 @@ export function isSubmissionOnChain(status) {
          s === 'PENDING_EVALUATION' ||
          s === SubmissionStatus.PENDING_CREATOR_APPROVAL ||
          s === SubmissionStatus.ACCEPTED_PENDING_CLAIM ||
-         s === SubmissionStatus.REJECTED_PENDING_FINALIZATION;
+         s === SubmissionStatus.REJECTED_PENDING_FINALIZATION ||
+         s === SubmissionStatus.SOFT_FAIL_PENDING_FINALIZATION ||
+         s === SubmissionStatus.NO_RESULT_PENDING_CLOSE ||
+         s === SubmissionStatus.AWAITING_RERUN ||
+         s === SubmissionStatus.AWAITING_RERUN_ONCHAIN;
 }
+
+/** v2 local statuses whose round is in flight on-chain (PendingVerdikta). */
+export const IN_FLIGHT_STATUSES = [
+  'PENDING_EVALUATION', 'PendingVerdikta', 'ACCEPTED_PENDING_CLAIM', 'REJECTED_PENDING_FINALIZATION',
+  'SOFT_FAIL_PENDING_FINALIZATION', 'NO_RESULT_PENDING_CLOSE',
+];
+
+/** Is the submission awaiting a re-run (v2, on-chain AwaitingRerun)? */
+export function isAwaitingRerun(sub) {
+  return sub?.status === 'AWAITING_RERUN' || sub?.onChainStatus === 'AwaitingRerun';
+}
+
+/** Round phase labels (v2 aggregator getRoundInfo / lens getOracleResult phase). */
+export const ROUND_PHASE_LABELS = {
+  0: 'Not started', 1: 'Drawing jury', 2: 'Beacons', 3: 'Commit', 4: 'Closing commits',
+  5: 'Reveal', 6: 'Final', 7: 'Settled', 8: 'Failed', 9: 'Cancelled',
+};
+/** The round timeline steps shown per in-flight submission (phase number -> step). */
+export const ROUND_TIMELINE = [
+  { phase: 1, label: 'Draw' },
+  { phase: 2, label: 'Beacons', beaconsOnly: true },
+  { phase: 3, label: 'Commit' },
+  { phase: 4, label: 'Close' },
+  { phase: 5, label: 'Reveal' },
+  { phase: 6, label: 'Result' },
+];
+/** Item 12's outcome names (lens getOracleResult.outcome). */
+export const ROUND_OUTCOME_LABELS = {
+  not_ready: 'In progress', no_result: 'No result', pass: 'Pass', soft_fail: 'Soft fail', hard_fail: 'Hard fail',
+};
 
 /**
  * Check if submission status is successful

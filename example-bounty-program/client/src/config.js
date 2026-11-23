@@ -17,7 +17,10 @@ const bountyEscrowAddress = network === 'base'
   ? requireEnv('VITE_BOUNTY_ESCROW_ADDRESS_BASE')
   : requireEnv('VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA');
 
-const verdiktaAggregatorAddress = requireEnv('VITE_VERDIKTA_AGGREGATOR_ADDRESS_' + (network === 'base' ? 'BASE' : 'BASE_SEPOLIA'));
+// v2: every bounty's rounds run on its jury's aggregator, read from the escrow
+// (aggregatorOf(bountyId), aggregators(i)). This optional address is display-only (the
+// Blockchain page); leave it empty rather than pointing at a v1 aggregator.
+const verdiktaAggregatorAddress = import.meta.env['VITE_VERDIKTA_AGGREGATOR_ADDRESS_' + (network === 'base' ? 'BASE' : 'BASE_SEPOLIA')] || null;
 
 export const config = {
   // API Configuration - use relative URL so requests go through Nginx proxy
@@ -45,13 +48,15 @@ export const config = {
   // They prefill the "Oracle settings (advanced)" group of the create wizard.
   // Canonical unit is WEI. Mirror of server config's submissionDefaults (the two
   // codebases can't share a module). Contract bounds: maxOracleFee > 0 and <=
-  // the aggregator ceiling (0.0004 ETH); estimatedBaseCost < maxOracleFee;
-  // 1 <= maxFeeBasedScaling <= 1000; 0 <= alpha <= 1000.
+  // the jury aggregator's live ceiling (maxOracleFee()); estimatedBaseCost < maxOracleFee;
+  // 1 <= maxFeeBasedScaling <= 1000; 0 <= alpha <= 1000. v2 adds the fee floor
+  // (minOracleFee; the size classes in shared/classPresets.js set it) and withBeacons.
   submissionDefaults: {
     maxOracleFeeWei: '20000000000000',      // 0.00002 ETH per oracle call
     estimatedBaseCostWei: '10000000000000', // 0.00001 ETH base cost per evaluation
     maxFeeBasedScaling: '3',                // x-factor cap on fee-based boost (>= 1)
     alpha: 500,                             // timeliness-vs-quality blend (0-1000)
+    minOracleFeeWei: '0',                   // v2 fee floor (0 = no floor; classes set their own)
   },
 
   // Network Details

@@ -3,7 +3,8 @@ import { validateBountyWindows } from '../utils/bountyWindows';
 import { effectiveBountyAmountEth } from '../utils/effectiveBountyAmount';
 import { pastedJsonText } from '../utils/pastedJson';
 import { DEFAULT_SUBMISSION_WINDOW_HOURS, campaignFromSearch, campaignEligibility } from '../utils/campaignCreate';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { CLASS_PRESETS, MAX_ROUNDS, RERUN_WINDOW_SECONDS, presetByKey, presetForBounty, classDefaults, validateDecision, decisionFromForm, exceedsClass, formatUsd } from '../utils/bountyClass';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import {
   PlusCircle,
@@ -21,13 +22,14 @@ import {
   Settings,
   ChevronDown,
   Upload,
+  Scale,
 } from 'lucide-react';
 import { ethers } from 'ethers';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
-import { getContractService, ORACLE_MAX_ALPHA, ORACLE_MAX_FEE_SCALING, ORACLE_FEE_CEILING_WEI } from '../services/contractService';
+import { getContractService, ORACLE_MAX_ALPHA, ORACLE_MAX_FEE_SCALING } from '../services/contractService';
 import { config, currentNetwork } from '../config';
 import { walletEnvironment, withTimeout } from '../services/injectedProvider';
 import { classifyCreateFailure, describeCreateFailure, accountTypeFromCode } from '../utils/createFailure';
@@ -49,7 +51,6 @@ const ORACLE_DEFAULTS = {
   oracleEstimatedBaseCostEth: ethers.formatEther(config.submissionDefaults.estimatedBaseCostWei),
   oracleMaxFeeBasedScaling: String(config.submissionDefaults.maxFeeBasedScaling),
 };
-const ORACLE_FEE_CEILING_ETH = ethers.formatEther(ORACLE_FEE_CEILING_WEI);
 // The rubric templates of a mutual wager: a game (mutual-wager-v3) or a question (mutual-wager-v5).
 const WAGER_TEMPLATES = ['mutualWager', 'questionWager'];
 
@@ -64,7 +65,6 @@ function validateOracleSettings(f) {
   try { baseWei = ethers.parseEther(String(f.oracleEstimatedBaseCostEth || '0').trim() || '0'); }
   catch { return 'Estimated base cost must be a decimal ETH amount (e.g. 0.00001)'; }
   if (feeWei <= 0n) return 'Max oracle fee must be greater than 0';
-  if (feeWei > ORACLE_FEE_CEILING_WEI) return `Max oracle fee must be at most ${ORACLE_FEE_CEILING_ETH} ETH (aggregator ceiling)`;
   if (baseWei < 0n) return 'Estimated base cost must be >= 0';
   if (baseWei >= feeWei) return 'Estimated base cost must be below the max oracle fee';
   const alpha = Number(f.oracleAlpha);
@@ -169,6 +169,28 @@ function CreateBounty({ walletState }) {
   });
   // "Oracle settings (advanced)" group is collapsed by default.
   const [showOracleSettings, setShowOracleSettings] = useState(false);
+
+  // Bounty size class (v2, shared/classPresets.js): null follows the payout (the smallest class
+  // offered for its USD value); a key is the creator's own pick. `decisionOverrides` holds the
+  // advanced fields the creator changed (quota, forfeitLine, bondEth, feeFloorEth, withBeacons);
+  // the rest come from the class. Changing the class clears them.
+  const [pickedClassKey, setPickedClassKey] = useState(null);
+  const [decisionOverrides, setDecisionOverrides] = useState({});
+  const [showClassAdvanced, setShowClassAdvanced] = useState(false);
+  const payoutUsd = (() => {
+    const eth = parseFloat(effectiveBountyAmountEth(formData));
+    return formData.ethPriceUSD > 0 && Number.isFinite(eth) ? eth * formData.ethPriceUSD : null;
+  })();
+  const autoClassKey = payoutUsd != null && payoutUsd > 0 ? presetForBounty(payoutUsd).key : 'small';
+  const classKey = pickedClassKey || autoClassKey;
+  const bountyClass = presetByKey(classKey);
+  const decisionForm = useMemo(
+    () => ({ ...classDefaults(classKey, formData.ethPriceUSD), ...decisionOverrides }),
+    [classKey, formData.ethPriceUSD, decisionOverrides]
+  );
+  const decisionError = validateDecision(decisionForm, classKey);
+  const pickClass = (key) => { setPickedClassKey(key); setDecisionOverrides({}); };
+  const setDecisionField = (field, value) => setDecisionOverrides((prev) => ({ ...prev, [field]: value }));
 
   // ---------- helpers ----------
   const messageFromAxios = (err) => {
@@ -298,6 +320,21 @@ function CreateBounty({ walletState }) {
             } catch { return {}; }
           })() : {}),
         }));
+        // v2 decision settings (class, Q, R, bond, fee floor, beacons) — copied as an explicit pick
+        if (job.decisionSettings && presetByKey(job.decisionSettings.bountyClass)) {
+          try {
+            const d = job.decisionSettings;
+            const o = job.oracleSettings || {};
+            setPickedClassKey(d.bountyClass);
+            setDecisionOverrides({
+              quota: String(d.quota),
+              forfeitLine: String(d.forfeitLine ?? 0),
+              bondEth: ethers.formatEther(String(d.bond ?? '0')),
+              ...(o.minOracleFee != null ? { feeFloorEth: ethers.formatEther(String(o.minOracleFee)) } : {}),
+              ...(o.withBeacons != null ? { withBeacons: Boolean(o.withBeacons) } : {}),
+            });
+          } catch { /* keep the class defaults */ }
+        }
         // Surface the copied oracle settings if they differ from the defaults
         if (job.oracleSettings && job.oracleSettings.maxOracleFee != null) {
           const o = job.oracleSettings;
@@ -887,6 +924,8 @@ function CreateBounty({ walletState }) {
 
     const oracleError = validateOracleSettings(formData);
     if (oracleError) { setShowOracleSettings(true); toast.warning(`Oracle settings: ${oracleError}`); return; }
+    if (decisionError) { setShowClassAdvanced(true); toast.warning(`Bounty size class: ${decisionError}`); return; }
+    const decision = decisionFromForm(decisionForm, classKey);
     const oracleSettings = {
       maxOracleFee: String(formData.oracleMaxOracleFeeEth).trim(),          // decimal ETH
       alpha: parseInt(formData.oracleAlpha, 10),
@@ -1013,6 +1052,15 @@ function CreateBounty({ walletState }) {
         oracleAlpha: oracleSettings.alpha,
         oracleEstimatedBaseCost: oracleSettings.estimatedBaseCost,
         oracleMaxFeeBasedScaling: oracleSettings.maxFeeBasedScaling,
+        // v2 decision settings (the size class and the creator's overrides). An empty bond or
+        // fee floor is left out: the server converts the class's USD figure at its ETH price.
+        bountyClass: decision.bountyClass,
+        jury: decision.jury,
+        quota: decision.quota,
+        forfeitLine: decision.forfeitLine,
+        ...(decision.bond !== undefined ? { bond: decision.bond } : {}),
+        ...(decision.minOracleFee !== undefined ? { oracleMinOracleFee: decision.minOracleFee } : {}),
+        oracleWithBeacons: decision.withBeacons,
         rubricSource,
       });
 
@@ -1064,7 +1112,13 @@ function CreateBounty({ walletState }) {
         } : {}),
         // Prefer the settings the server persisted (already wei-normalised) so the
         // on-chain struct matches the API record exactly; fall back to the form values.
-        oracle: job.oracleSettings && job.oracleSettings.maxOracleFee != null ? job.oracleSettings : oracleSettings,
+        oracle: job.oracleSettings && job.oracleSettings.maxOracleFee != null
+          ? job.oracleSettings
+          : { ...oracleSettings, minOracleFee: decision.minOracleFee, withBeacons: decision.withBeacons },
+        // Likewise the v2 decision settings (bond in wei as the server resolved it).
+        decision: job.decisionSettings && job.decisionSettings.quota != null
+          ? job.decisionSettings
+          : { jury: decision.jury, quota: decision.quota, forfeitLine: decision.forfeitLine, bond: decision.bond },
         onStep: (next, data) => {
           step = next;
           if (next === 'send') report('sign_requested', { step: next });
@@ -1540,6 +1594,202 @@ function CreateBounty({ walletState }) {
               </label>
             </div>
 
+            {/* Bounty size class (v2): the jury, the pass rule and the hunter bond */}
+            <div className="feature-card enabled class-picker">
+              <div className="feature-card-header">
+                <Scale size={20} className="feature-card-icon" />
+                <div className="feature-card-text">
+                  <div className="feature-card-title">Bounty size class</div>
+                  <div className="feature-card-desc">
+                    How big a jury judges each submission, how many of its arbiters must agree, and what a hunter
+                    puts at stake. Bigger bounties get bigger juries, which are harder to sway.
+                    {pickedClassKey
+                      ? ' You picked this class.'
+                      : ` Chosen from the payout${payoutUsd != null ? ` (≈ ${formatUsd(payoutUsd.toFixed(2))})` : ''}; pick another if you like.`}
+                  </div>
+                </div>
+              </div>
+              <div className="feature-card-body">
+                <div className="class-picker-options" role="radiogroup" aria-label="Bounty size class">
+                  {CLASS_PRESETS.map((c) => (
+                    <label key={c.key} className={`class-picker-option ${c.key === classKey ? 'selected' : ''}`}>
+                      <input
+                        type="radio"
+                        name="bountyClass"
+                        value={c.key}
+                        checked={c.key === classKey}
+                        onChange={() => pickClass(c.key)}
+                      />
+                      <span className="class-picker-name">{c.name}</span>
+                      <span className="class-picker-sub">up to {formatUsd(c.offeredUpToUsd)}</span>
+                    </label>
+                  ))}
+                  {pickedClassKey && (
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => pickClass(null)}>
+                      Follow the payout
+                    </button>
+                  )}
+                </div>
+
+                {bountyClass && (
+                  <table className="class-picker-table">
+                    <tbody>
+                      <tr>
+                        <th>Jury</th>
+                        <td>
+                          {bountyClass.K} arbiters drawn, the first {bountyClass.M} commits kept, {bountyClass.N} scores counted
+                          (K/M/N = {bountyClass.K}/{bountyClass.M}/{bountyClass.N}; cluster P = {bountyClass.P})
+                        </td>
+                      </tr>
+                      <tr>
+                        <th>Pass rule</th>
+                        <td>Q = {decisionForm.quota} of {bountyClass.N}; forfeit line R = {decisionForm.forfeitLine}</td>
+                      </tr>
+                      <tr>
+                        <th>Hunter bond</th>
+                        <td>
+                          {decisionOverrides.bondEth !== undefined
+                            ? `${decisionForm.bondEth || '0'} ETH (your setting)`
+                            : <>
+                                {formatUsd(bountyClass.bondUsd)}
+                                {decisionForm.bondEth !== '' ? ` (${decisionForm.bondEth} ETH)` : ' (converted at the server\'s ETH price)'}
+                              </>}
+                        </td>
+                      </tr>
+                      <tr>
+                        <th>Fee floor</th>
+                        <td>
+                          {decisionOverrides.feeFloorEth !== undefined
+                            ? `${decisionForm.feeFloorEth || '0'} ETH per arbiter (your setting)`
+                            : <>
+                                {bountyClass.feeFloorUsd > 0 ? `${formatUsd(bountyClass.feeFloorUsd)} per arbiter` : 'none (the arbiters\' posted fees)'}
+                                {bountyClass.feeFloorUsd > 0 && decisionForm.feeFloorEth !== '' ? ` (${decisionForm.feeFloorEth} ETH)` : ''}
+                              </>}
+                        </td>
+                      </tr>
+                      <tr>
+                        <th>Beacons</th>
+                        <td>{decisionForm.withBeacons ? 'yes — two independent beacons seed the jury draw' : 'no'}</td>
+                      </tr>
+                      <tr>
+                        <th>Cost per round</th>
+                        <td>about {formatUsd(bountyClass.costPerRoundUsd)} in arbiter fees, paid by the hunter (unspent ETH comes back)</td>
+                      </tr>
+                      <tr>
+                        <th>Offered up to</th>
+                        <td>{formatUsd(bountyClass.offeredUpToUsd)} payout</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                )}
+
+                {payoutUsd != null && exceedsClass(payoutUsd, classKey) && (
+                  <div className="escrow-preview" style={{ color: '#b00020' }}>
+                    <AlertTriangle size={14} className="inline-icon" /> Your payout (≈ {formatUsd(payoutUsd.toFixed(2))}) is above
+                    what the {bountyClass.name} class is offered for ({formatUsd(bountyClass.offeredUpToUsd)}). Its jury may be
+                    cheap enough to sway for a prize this size — pick a larger class.
+                  </div>
+                )}
+
+                <div className="class-picker-explain">
+                  <p>
+                    <strong>Q (quota):</strong> a submission passes when at least Q of the jury's {bountyClass?.N ?? 'N'} counted
+                    arbiters each score it at or above your threshold. Then the hunter is paid and gets the bond back.
+                  </p>
+                  <p>
+                    <strong>R (forfeit line):</strong> if fewer than R arbiters score it at the threshold, it is a clear fail and the
+                    hunter's bond goes to you. From R to Q−1 is a near miss (soft fail): the hunter may re-run it with a fresh jury
+                    within {Math.round(RERUN_WINDOW_SECONDS / 3600)} hours, up to {MAX_ROUNDS} rounds, keeping their place in line.
+                    A round with no result is never the hunter's fault and can always be re-run.
+                  </p>
+                  <p>
+                    <strong>Bond:</strong> ETH the hunter attaches when starting an evaluation, on top of the arbiter fees. It is
+                    returned on a pass, a no-result or an unused re-run, and paid to you only on a clear fail — it makes spamming
+                    weak submissions expensive.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setShowClassAdvanced((v) => !v)}
+                  aria-expanded={showClassAdvanced}
+                >
+                  {showClassAdvanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Adjust Q, R, bond, fee floor, beacons
+                </button>
+
+                {showClassAdvanced && (
+                  <>
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label htmlFor="classQuota">Quota Q (1–{bountyClass?.N})</label>
+                        <input
+                          type="number"
+                          id="classQuota"
+                          min="1"
+                          max={bountyClass?.N}
+                          value={decisionForm.quota}
+                          onChange={(e) => setDecisionField('quota', e.target.value)}
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label htmlFor="classForfeitLine">Forfeit line R (0–Q)</label>
+                        <input
+                          type="number"
+                          id="classForfeitLine"
+                          min="0"
+                          max={decisionForm.quota}
+                          value={decisionForm.forfeitLine}
+                          onChange={(e) => setDecisionField('forfeitLine', e.target.value)}
+                        />
+                        <small className="helper-text">0 means a bond is never forfeited.</small>
+                      </div>
+                    </div>
+                    <div className="form-row">
+                      <div className="form-group">
+                        <label htmlFor="classBondEth">Hunter bond (ETH)</label>
+                        <input
+                          type="text"
+                          id="classBondEth"
+                          value={decisionForm.bondEth}
+                          placeholder="from the class"
+                          onChange={(e) => setDecisionField('bondEth', e.target.value)}
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label htmlFor="classFeeFloorEth">Fee floor (ETH per arbiter)</label>
+                        <input
+                          type="text"
+                          id="classFeeFloorEth"
+                          value={decisionForm.feeFloorEth}
+                          placeholder="from the class"
+                          onChange={(e) => setDecisionField('feeFloorEth', e.target.value)}
+                        />
+                        <small className="helper-text">Every arbiter (and beacon) is paid at least this. 0 = no floor.</small>
+                      </div>
+                    </div>
+                    <label className="class-picker-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(decisionForm.withBeacons)}
+                        onChange={(e) => setDecisionField('withBeacons', e.target.checked)}
+                      />
+                      {' '}Use beacons to seed the jury draw (needs a second draw; adds two beacon fees per round)
+                    </label>
+                    {decisionError
+                      ? <div className="escrow-preview" style={{ color: '#b00020' }}><AlertTriangle size={14} className="inline-icon" /> {decisionError}</div>
+                      : Object.keys(decisionOverrides).length > 0 && (
+                        <div className="escrow-preview">
+                          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDecisionOverrides({})}>
+                            Reset to the class defaults
+                          </button>
+                        </div>
+                      )}
+                  </>
+                )}
+              </div>
+            </div>
+
             {/* Oracle settings (advanced) — creator-chosen, collapsed by default */}
             <div className={`feature-card ${showOracleSettings ? 'enabled' : ''}`}>
               <div
@@ -1578,7 +1828,7 @@ function CreateBounty({ walletState }) {
                       />
                       <small className="helper-text">
                         Arbiters priced above this are ineligible. Sizes the hunter's ETH prepay. Must be &gt; 0 and
-                        at most {ORACLE_FEE_CEILING_ETH} ETH.
+                        at most the jury aggregator's live ceiling (its maxOracleFee()).
                       </small>
                     </div>
                     <div className="form-group">

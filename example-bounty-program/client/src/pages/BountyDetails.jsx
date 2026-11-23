@@ -45,6 +45,8 @@ import {
   IconName,
 } from '../utils/statusDisplay';
 import JustificationDisplay from '../components/JustificationDisplay';
+import RoundPanel from '../components/RoundPanel';
+import { ROUND_ACTION_LABELS, fmtEth } from '../utils/roundDisplay';
 import { formatUsd, fetchEthUsdPrice } from '../utils/usd';
 import './BountyDetails.css';
 
@@ -69,12 +71,9 @@ const CONFIG = {
   INITIAL_LOAD_MAX_RETRIES: 20,
   INITIAL_LOAD_RETRY_DELAY_MS: 3000,
 
-  // Typical time (minutes) after which an unanswered evaluation is force-failable.
-  // DISPLAY ONLY. The contract's failTimedOutSubmission has NO timer: it succeeds iff
-  // the aggregator holds no result AND the round is settled (isComplete, or
-  // responseTimeoutSeconds ≈ 5 min elapsed since start). The actual gate used by the
-  // buttons and the resolve-and-close flow is contractService.getForceFailEligibility()
-  // (see forceFailEligibility state below).
+  // Typical length (minutes) of a v2 round (draw, commit, reveal). DISPLAY ONLY: every
+  // round button follows the escrow lens's nextAction (contractService.getRoundState,
+  // the roundStates map below), never a local timer.
   SUBMISSION_TIMEOUT_MINUTES: 10,
 
   // How often to update the live timer display (1 second)
@@ -194,12 +193,10 @@ function BountyDetails({ walletState }) {
   // Stores: { attempts, maxAttempts }
   const [pollingSubmissions, setPollingSubmissions] = useState(new Map());
 
-  // Force-fail eligibility per submissionId, read from the aggregator with the SAME
-  // rule as BountyEscrow.failTimedOutSubmission (no local timer):
-  //   eligible iff getEvaluation(aggId).exists === false
-  //            AND (getAggregationStatus(aggId).isComplete OR now >= start + responseTimeoutSeconds)
-  // Shape: { eligible, hasResult, settled, secondsUntilTimeout, reason, hint }
-  const [forceFailEligibility, setForceFailEligibility] = useState(new Map());
+  // v2 round state per submissionId, from the escrow's lens (getOracleResult + nextAction;
+  // contractService.getCloseFailedEligibility): { nextAction, phase, outcome, passCount, rounds,
+  // deadline, rerunDeadline, bondHeld, eligible (CLOSE_FAILED now), hasResult, hint }.
+  const [roundStates, setRoundStates] = useState(new Map());
 
   // Evaluation results derived from backend submission status (no direct on-chain polling).
   // The server sync service detects oracle completion and sets status to
@@ -392,45 +389,38 @@ function BountyDetails({ walletState }) {
   }, [bountyId]);
 
   /**
-   * Refresh force-fail eligibility for every on-chain pending submission by reading
-   * the aggregator (read-only RPC; no wallet needed). Replaces the old
-   * "age > SUBMISSION_TIMEOUT_MINUTES" heuristic.
+   * Refresh the v2 round state of every on-chain submission from the escrow lens
+   * (read-only RPC; no wallet needed): getOracleResult + nextAction.
    */
-  const refreshForceFailEligibility = useCallback(async (subs) => {
+  const refreshRoundStates = useCallback(async (subs) => {
     const onChainId = getOnChainBountyId();
     if (onChainId == null) return;
     const pending = (subs || []).filter(s =>
       isSubmissionOnChain(s.status) || isSubmissionOnChain(s.onChainStatus)
     );
     if (pending.length === 0) {
-      setForceFailEligibility(prev => (prev.size ? new Map() : prev));
+      setRoundStates(prev => (prev.size ? new Map() : prev));
       return;
     }
     const contractService = getContractService();
     const next = new Map();
-    const zero = /^0x0+$/;
-    for (const s of pending) {
+    await Promise.all(pending.map(async (s) => {
       const subId = s.onChainSubmissionId ?? s.submissionId;
       try {
-        let aggId = s.verdiktaAggId;
-        if (!aggId || zero.test(aggId)) {
-          const chainSub = await contractService.getSubmission(onChainId, subId);
-          if (chainSub.status !== 'PendingVerdikta') continue;
-          aggId = chainSub.verdiktaAggId;
-        }
-        next.set(s.submissionId, await contractService.getForceFailEligibility(aggId));
+        const st = await contractService.getCloseFailedEligibility(onChainId, subId);
+        if (!st.error) next.set(s.submissionId, st);
       } catch (e) {
-        // leave unknown — buttons stay conservative (no force-fail offered)
+        // leave unknown — buttons stay conservative (no round step offered)
       }
-    }
-    if (isMountedRef.current) setForceFailEligibility(next);
+    }));
+    if (isMountedRef.current) setRoundStates(next);
   }, [getOnChainBountyId]);
 
   // Refresh eligibility whenever the submission list changes (load / sync).
   useEffect(() => {
     if (!submissions || submissions.length === 0) return;
-    refreshForceFailEligibility(submissions);
-  }, [submissions, refreshForceFailEligibility]);
+    refreshRoundStates(submissions);
+  }, [submissions, refreshRoundStates]);
 
   // ============================================================================
   // DATA LOADING (with on-chain status verification)
@@ -697,10 +687,10 @@ function BountyDetails({ walletState }) {
         }
       }
 
-      // Re-read the aggregator gate so force-fail buttons appear as soon as the
-      // round settles (no status change needed for that).
+      // Re-read the round states so round-step buttons appear as soon as the
+      // round moves on (no status change needed for that).
       if (isMountedRef.current) {
-        try { await refreshForceFailEligibility(currentSubs); } catch (_) { /* ignore */ }
+        try { await refreshRoundStates(currentSubs); } catch (_) { /* ignore */ }
       }
 
       // Reload if any status changed
@@ -715,7 +705,7 @@ function BountyDetails({ walletState }) {
         autoRefreshIntervalRef.current = null;
       }
     };
-  }, [job?.jobId, job?.status, submissions, loadJobDetails, refreshForceFailEligibility]);
+  }, [job?.jobId, job?.status, submissions, loadJobDetails, refreshRoundStates]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1205,7 +1195,7 @@ function BountyDetails({ walletState }) {
         const waiting = blockers.filter(b => !b.resolvable);
         const later = (msg) => Object.assign(new Error(msg), { retryable: true });
         if (waiting.length) {
-          throw later(`it passed and the result is kept, but earlier submission(s) ${ids(waiting)} by another hunter are still being evaluated and are paid first if they pass. Retry after they resolve (a round times out about 5 minutes after it starts).`);
+          throw later(`it passed and the result is kept, but earlier submission(s) ${ids(waiting)} by another hunter are still being evaluated (or awaiting a re-run) and are paid first if they pass. Retry after they resolve.`);
         }
         if (blockers.length) {
           const resolveFirst = window.confirm(
@@ -1316,91 +1306,77 @@ function BountyDetails({ walletState }) {
     }
   };
 
-  const handleFailTimedOutSubmission = async (submissionId) => {
+  // v2 round steps (item 12): DRAW, CLOSE_COMMITS / PROMOTE (on the bounty's aggregator),
+  // CLOSE_FAILED, EXPIRE_RERUN (anyone may send them) and RERUN (hunter or bond funder, attaches
+  // requiredPrepay). Each is offered only when the lens's nextAction names it, and re-checked live.
+  const handleRoundAction = async (submissionId, action) => {
     if (!walletState.isConnected) {
       toast.warning('Please connect your wallet first');
       return;
     }
-
     const onChainId = getOnChainBountyId();
     if (onChainId == null) {
       toast.warning('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
       return;
     }
+    const sub = submissionsRef.current?.find(s => s.submissionId === submissionId);
+    const subId = sub?.onChainSubmissionId ?? submissionId;
+    const contractService = getContractService();
 
-    // Aggregator-state gate (the contract has no timer). Read live so a stale
-    // cache can't hand the user a transaction that reverts.
-    let gate = forceFailEligibility.get(submissionId) || null;
-    try {
-      const contractService = getContractService();
-      const chainSub = await contractService.getSubmission(onChainId, submissionId);
-      if (chainSub.status !== 'PendingVerdikta') {
-        toast.info(`Submission #${submissionId} is ${chainSub.status} on-chain — nothing to force-fail. Refreshing…`);
-        loadJobDetails(true);
-        return;
-      }
-      gate = await contractService.getForceFailEligibility(chainSub.verdiktaAggId);
-    } catch (e) {
-      console.warn('Force-fail pre-check failed, using cached eligibility:', e.message);
-    }
-    if (gate?.hasResult) {
-      toast.warning(`Submission #${submissionId}: the oracle produced a result — finalize it instead of force-failing.`);
-      return;
-    }
-    if (gate && !gate.eligible) {
-      toast.warning(`Submission #${submissionId} cannot be force-failed yet: ${gate.hint || gate.reason}`);
+    // Live gate: the state may have moved on (the keeper often sends these steps itself).
+    let live = null;
+    try { live = await contractService.getRoundState(onChainId, subId); } catch { /* fall through */ }
+    if (live && !live.error && live.nextAction !== action) {
+      toast.info(`Submission #${submissionId}: the round moved on — next step is now "${ROUND_ACTION_LABELS[live.nextAction] || live.nextAction}". Refreshing…`);
+      refreshRoundStates(submissionsRef.current);
       return;
     }
 
-    const confirmed = window.confirm(
-      `Force-fail submission #${submissionId}?\n\n` +
-      'The aggregator round for this submission has settled with no oracle result.\n' +
-      'This action will:\n' +
-      '• Mark the submission as Failed (timeout)\n' +
-      '• Refund the unspent ETH prepay to whoever funded the evaluation\n' +
-      '• Allow the bounty to be closed\n\n' +
-      'This requires a blockchain transaction that you must sign.'
-    );
-    if (!confirmed) return;
+    let confirmMsg;
+    let prepay = null;
+    if (action === 'RERUN') {
+      try { prepay = await contractService.getRequiredPrepay(onChainId); } catch { /* shown as unknown */ }
+      confirmMsg =
+        `Re-run submission #${submissionId} (round ${(live?.rounds ?? 0) + 1} of 6)?\n\n` +
+        `A new round with a fresh jury. You attach the round prepay of ${prepay != null ? fmtEth(prepay) : '?'} ETH ` +
+        '(requiredPrepay; the unspent part comes back to you). The submission keeps its place in the payout queue and its bond.';
+    } else if (action === 'CLOSE_FAILED') {
+      confirmMsg =
+        `Close the failed round of submission #${submissionId}?\n\n` +
+        'The round has no result and can get none. Closing it refunds what is left of the prepay to whoever funded the round; ' +
+        'the submission keeps its place and bond and may re-run within 2 hours (or fails with the bond returned if it cannot).';
+    } else if (action === 'EXPIRE_RERUN') {
+      confirmMsg =
+        `Expire the re-run of submission #${submissionId}?\n\n` +
+        'Its re-run window has closed (or it can no longer re-run). This marks it Failed, returns the bond to its funder and frees its place in the payout queue.';
+    } else {
+      confirmMsg =
+        `${ROUND_ACTION_LABELS[action] || action} for submission #${submissionId}?\n\n` +
+        'This moves the evaluation round on. Anyone may send it (the site\'s keeper usually does).';
+    }
+    if (!window.confirm(confirmMsg + '\n\nThis requires a blockchain transaction that you must sign.')) return;
 
     try {
       setFailingSubmissions(prev => new Set(prev).add(submissionId));
       setError(null);
-
-      const contractService = getContractService();
       if (!contractService.isConnected()) await contractService.connect();
-
-      const result = await contractService.failTimedOutSubmission(onChainId, submissionId);
-
-      // Poll for backend to sync
+      const result = action === 'RERUN'
+        ? await contractService.rerunSubmission(onChainId, subId)
+        : await contractService.roundStep(onChainId, subId, action);
+      toast.success(`${ROUND_ACTION_LABELS[action] || action}: submission #${submissionId}. TX: ${result.txHash?.slice(0, 10)}...`);
       const currentJobId = jobRef.current?.jobId || job?.jobId;
-      await pollForCondition(
-        async () => {
-          const response = await apiService.getJob(currentJobId, false);
-          const sub = response.job?.submissions?.find(s => s.submissionId === submissionId);
-          return sub && !isPendingStatus(sub.status);
-        },
-        { maxAttempts: 10 }
-      );
-
-      toast.success(`Submission #${submissionId} marked as failed (timeout). ETH prepay refunded.`);
-
-      setRetryCount(0);
-      await loadJobDetails();
+      try { await apiService.refreshSubmission(currentJobId, submissionId); } catch { /* the sync catches up */ }
+      await refreshRoundStates(submissionsRef.current);
+      await loadJobDetails(true);
     } catch (err) {
-      console.error('❌ Error failing timed-out submission:', err);
-      if (err.shouldFinalize) {
-        toast.warning(`Submission #${submissionId}: ${err.message}`);
-        refreshForceFailEligibility(submissionsRef.current);
-        return;
-      }
-      if (err.retryable) {
+      console.error(`Error in round step ${action}:`, err);
+      if (err.shouldFinalize || err.retryable) {
         toast.info(`Submission #${submissionId}: ${err.message}`);
-        refreshForceFailEligibility(submissionsRef.current);
+        refreshRoundStates(submissionsRef.current);
         return;
       }
-      setError(err.message || 'Failed to mark submission as timed-out');
-      toast.error(`Failed to timeout submission #${submissionId}: ${err.message}`);
+      setError(err.message || `Failed: ${action}`);
+      toast.error(`Submission #${submissionId}: ${err.message}`);
     } finally {
       setFailingSubmissions(prev => {
         const next = new Set(prev);
@@ -1409,6 +1385,9 @@ function BountyDetails({ walletState }) {
       });
     }
   };
+
+  // v1 name kept for the panels' onFailTimeout prop: closes a round that ended with no result.
+  const handleFailTimedOutSubmission = (submissionId) => handleRoundAction(submissionId, 'CLOSE_FAILED');
 
   const handleCancelSubmission = async (submissionId) => {
     const confirmed = window.confirm(
@@ -1521,20 +1500,23 @@ function BountyDetails({ walletState }) {
         return;
       }
 
-      // The evaluation is funded by attaching ETH (msg.value = ethMaxBudget). No ERC20 approval;
-      // any unspent prepay is refunded to the hunter when the result finalizes.
-      const ethMaxBudget = chainSub.ethMaxBudget;
-      const ethAmount = (Number(ethMaxBudget) / 1e18).toFixed(4);
+      // v2: start attaches startValue = the round prepay (requiredPrepay) + the hunter bond, read live.
+      const sv = await contractService.getStartValue(onChainId);
 
       const confirmMsg =
         `Start evaluation for submission #${submissionId}?\n\n` +
-        `You will attach a prepay of ${ethAmount} ETH to fund the Verdikta oracle evaluation ` +
-        `(unspent ETH is refunded to the hunter when it finalizes).\n\n` +
+        `You will attach ${fmtEth(sv.startValue)} ETH:\n` +
+        `• ${fmtEth(sv.prepay)} ETH round prepay — pays the jury; the unspent part comes back to you.\n` +
+        (sv.bond > 0n
+          ? `• ${fmtEth(sv.bond)} ETH hunter bond — returned on a pass, a no-result round or an expired re-run; ` +
+            'forfeited to the creator on a hard fail (fewer arbiters than the forfeit line scored it at the threshold).\n'
+          : '• no hunter bond on this bounty.\n') +
+        '\nAfter the start the jury is drawn (anyone may send the draw; the site\'s keeper usually does).\n\n' +
         'This action requires a blockchain transaction that you must sign.';
 
       if (!window.confirm(confirmMsg)) return;
 
-      const result = await contractService.startPreparedSubmission(onChainId, submissionId, ethMaxBudget);
+      const result = await contractService.startPreparedSubmission(onChainId, submissionId);
 
       // Sync backend status
       const currentJobId = jobRef.current?.jobId || job?.jobId;
@@ -1554,7 +1536,7 @@ function BountyDetails({ walletState }) {
       if (msg.includes('submitted too late') || msg.includes('deadline')) {
         toast.error('Cannot start: the bounty submission deadline has passed.');
       } else if (msg.includes('insufficient funds') || msg.includes('wrong eth amount') || msg.includes('Incorrect ETH')) {
-        toast.error('Could not fund the evaluation. Ensure you have enough ETH for the prepay and gas, then try again.');
+        toast.error('Could not fund the evaluation. Ensure you have enough ETH for the prepay, the hunter bond and gas, then try again.');
       } else if (msg.includes('evaluation slots full') || msg.includes('evaluations in flight')) {
         // Concurrency cap (MAX_ACTIVE_EVALUATIONS): retry later, the submission is not lost.
         toast.warning('This bounty already has the maximum number of evaluations in flight. Retry in a few minutes, once any of them resolves — your submission is kept.');
@@ -1725,7 +1707,8 @@ function BountyDetails({ walletState }) {
     // REJECTED_PENDING_FINALIZATION and is still pending on-chain.
     const isLocallyPending = (s) => {
       const status = (s.status || s.onChainStatus || '').toUpperCase();
-      return ['PENDINGVERDIKTA', 'PENDING_EVALUATION', 'ACCEPTED_PENDING_CLAIM', 'REJECTED_PENDING_FINALIZATION'].includes(status);
+      return ['PENDINGVERDIKTA', 'PENDING_EVALUATION', 'ACCEPTED_PENDING_CLAIM', 'REJECTED_PENDING_FINALIZATION',
+        'SOFT_FAIL_PENDING_FINALIZATION', 'NO_RESULT_PENDING_CLOSE', 'AWAITING_RERUN', 'AWAITINGRERUN'].includes(status);
     };
     let pendingToResolve;
     try {
@@ -1744,17 +1727,15 @@ function BountyDetails({ walletState }) {
       for (const sub of pendingToResolve) {
         const subId = sub.onChainSubmissionId ?? sub.submissionId;
         const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt).toFixed(0) : '?';
-        const gate = forceFailEligibility.get(sub.submissionId);
+        const gate = roundStates.get(sub.submissionId);
         confirmMessage += `  - Submission #${subId} (${ageMin} min old)`;
-        confirmMessage += gate?.hasResult
-          ? ' — oracle result ready (will finalize)\n'
-          : gate?.eligible
-            ? ' — round settled with no result (will force-fail)\n'
-            : ' — still in evaluation (will retry finalize; force-fail only once the round settles)\n';
+        confirmMessage += gate?.nextAction
+          ? ` — next step: ${ROUND_ACTION_LABELS[gate.nextAction] || gate.nextAction}\n`
+          : ' — state unknown (will ask the contract)\n';
       }
-      confirmMessage += '\nFor each, we will first try to pull oracle results (finalize).\n';
-      confirmMessage += 'Only if the aggregator round has settled with no result will we force-fail it.\n';
-      const maxTx = pendingToResolve.length + 1; // +1 for close
+      confirmMessage += '\nFor each, we follow the contract\'s next action: finalize a result, close a round that ended\n';
+      confirmMessage += 'with no result, or expire a re-run that can no longer happen (the bond goes back).\n';
+      const maxTx = pendingToResolve.length * 2 + 1; // finalize/close + expire, +1 for close
       confirmMessage += `Up to ${maxTx} transaction(s) may be required.\n\n`;
     }
     confirmMessage += 'This action requires blockchain transaction(s) that you must sign.';
@@ -1770,7 +1751,7 @@ function BountyDetails({ walletState }) {
       if (!contractService.isConnected()) await contractService.connect();
 
       // ====================================================================
-      // PHASE 1 — Resolve each pending submission (finalize or force-fail)
+      // PHASE 1 — Resolve each pending submission (follow nextAction: finalize, close, expire)
       // ====================================================================
       const resolvedIds = [];
       const unresolvedIds = [];
@@ -1782,72 +1763,53 @@ function BountyDetails({ walletState }) {
           setClosingMessage(`Checking submission ${i + 1}/${pendingToResolve.length} (#${subId})...`);
 
           try {
-            // Check actual on-chain status first
-            const onChainSub = await contractService.getSubmission(onChainId, subId);
-            if (onChainSub.status !== 'PendingVerdikta') {
-              console.log(`Submission #${subId} already ${onChainSub.status} on-chain, skipping`);
-              toast.info(`Submission #${subId} already ${onChainSub.status}`);
-              resolvedIds.push(subId);
-              continue;
-            }
-
-            // Try finalize via dry-run first
-            setClosingMessage(`Finalizing submission ${i + 1}/${pendingToResolve.length} (#${subId})...`);
-            const finalizeResult = await contractService.tryFinalizeSubmission(onChainId, subId);
-
-            if (finalizeResult.success) {
-              toast.info(`Finalized submission #${subId}`);
-              resolvedIds.push(subId);
-              continue;
-            }
-
-            if (finalizeResult.reason === 'already_terminal') {
-              toast.info(`Submission #${subId} already resolved`);
-              resolvedIds.push(subId);
-              continue;
-            }
-
-            if (finalizeResult.reason === 'user_rejected') {
-              toast.warning(`Skipped submission #${subId} (transaction rejected)`);
-              unresolvedIds.push(subId);
-              continue;
-            }
-
-            if (finalizeResult.reason === 'earlier_pending') {
-              // Windowed priority — a result exists and is kept; retry after the earlier one resolves.
-              toast.warning(`Submission #${subId}: an earlier submission by another hunter is still unresolved — retry after it resolves`);
-              unresolvedIds.push(subId);
-              continue;
-            }
-
-            // Finalize failed (no oracle result) — force-fail ONLY if the aggregator
-            // round is settled with no result (the contract's own rule; no timer).
-            const gate = await contractService.getForceFailEligibility(onChainSub.verdiktaAggId);
-            if (gate.hasResult) {
-              toast.warning(`Submission #${subId}: the oracle has a result — finalize it (retry in a moment)`);
-              unresolvedIds.push(subId);
-              continue;
-            }
-            if (!gate.eligible) {
-              toast.warning(`Submission #${subId} cannot be force-failed yet: ${gate.hint || gate.reason}`);
-              unresolvedIds.push(subId);
-              continue;
-            }
-
-            setClosingMessage(`Force-failing submission ${i + 1}/${pendingToResolve.length} (#${subId}) (round settled, no result)...`);
-            try {
-              await contractService.failTimedOutSubmission(onChainId, subId);
-              toast.info(`Force-failed submission #${subId} via timeout`);
-              resolvedIds.push(subId);
-            } catch (failErr) {
-              if (failErr.code === 'ACTION_REJECTED' || failErr.message?.includes('rejected by user')) {
-                toast.warning(`Skipped force-fail for submission #${subId} (transaction rejected)`);
-              } else {
-                console.warn(`Force-fail failed for submission #${subId}:`, failErr.message);
-                toast.warning(`Could not force-fail submission #${subId}: ${failErr.message}`);
+            // v2: ask the lens what succeeds now and follow it, a few steps at most
+            // (e.g. CLOSE_FAILED, then EXPIRE_RERUN once the deadline has passed).
+            let done = false;
+            for (let step = 0; step < 4 && !done; step++) {
+              const onChainSub = await contractService.getSubmission(onChainId, subId);
+              if (onChainSub.status !== 'PendingVerdikta' && onChainSub.status !== 'AwaitingRerun') {
+                if (step === 0) toast.info(`Submission #${subId} already ${onChainSub.status}`);
+                resolvedIds.push(subId);
+                done = true;
+                break;
               }
-              unresolvedIds.push(subId);
+              const action = await contractService.getNextAction(onChainId, subId);
+              if (action === 'FINALIZE') {
+                setClosingMessage(`Finalizing submission ${i + 1}/${pendingToResolve.length} (#${subId})...`);
+                const finalizeResult = await contractService.tryFinalizeSubmission(onChainId, subId);
+                if (finalizeResult.reason === 'user_rejected') {
+                  toast.warning(`Skipped submission #${subId} (transaction rejected)`);
+                  break;
+                }
+                if (finalizeResult.reason === 'earlier_pending') {
+                  toast.warning(`Submission #${subId}: an earlier submission by another hunter is still unresolved — retry after it resolves`);
+                  break;
+                }
+                if (!finalizeResult.success && finalizeResult.reason !== 'already_terminal') {
+                  toast.warning(`Could not finalize submission #${subId}: ${finalizeResult.message || finalizeResult.reason}`);
+                  break;
+                }
+                toast.info(`Finalized submission #${subId}`);
+                continue;   // a soft fail may now await a re-run: re-read
+              }
+              if (['CLOSE_FAILED', 'EXPIRE_RERUN', 'DRAW', 'CLOSE_COMMITS', 'PROMOTE'].includes(action)) {
+                setClosingMessage(`${ROUND_ACTION_LABELS[action]} for submission ${i + 1}/${pendingToResolve.length} (#${subId})...`);
+                try {
+                  await contractService.roundStep(onChainId, subId, action);
+                  toast.info(`${ROUND_ACTION_LABELS[action]}: submission #${subId}`);
+                } catch (stepErr) {
+                  toast.warning(`Submission #${subId}: ${stepErr.message}`);
+                  break;
+                }
+                // DRAW / CLOSE_COMMITS / PROMOTE only move the round on; its result comes later.
+                if (!['CLOSE_FAILED', 'EXPIRE_RERUN'].includes(action)) break;
+                continue;
+              }
+              toast.warning(`Submission #${subId} cannot be resolved yet (${ROUND_ACTION_LABELS[action] || action})`);
+              break;
             }
+            if (!done) unresolvedIds.push(subId);
           } catch (err) {
             console.warn(`Error resolving submission #${subId}:`, err.message);
             toast.warning(`Could not resolve submission #${subId}: ${err.message}`);
@@ -1869,7 +1831,7 @@ function BountyDetails({ walletState }) {
           const subId = sub.onChainSubmissionId ?? sub.submissionId;
           try {
             const onChainSub = await contractService.getSubmission(onChainId, subId);
-            if (onChainSub.status === 'PendingVerdikta') {
+            if (onChainSub.status === 'PendingVerdikta' || onChainSub.status === 'AwaitingRerun') {
               stillPending.push(subId);
             }
           } catch (err) {
@@ -1879,7 +1841,7 @@ function BountyDetails({ walletState }) {
         }
 
         if (stillPending.length > 0) {
-          const msg = `Cannot close bounty: submission(s) #${stillPending.join(', #')} are still PendingVerdikta on-chain. Wait for their aggregator round to settle (about 5 minutes after start) or for the oracle result, then retry.`;
+          const msg = `Cannot close bounty: submission(s) #${stillPending.join(', #')} are still in evaluation or awaiting a re-run on-chain. Wait for their round's result (or the end of the re-run window), then retry — each step is shown on the submission.`;
           toast.error(msg);
           setError(msg);
           return;
@@ -2267,6 +2229,7 @@ function BountyDetails({ walletState }) {
                   isPreviewing={previewingSubmissions.size > 0}
                   onFinalize={handleFinalizeSubmission}
                   onFailTimeout={handleFailTimedOutSubmission}
+                  onRoundAction={handleRoundAction}
                   onRecoverRefund={handleRecoverRefund}
                   recoveringSubmissions={recoveringSubmissions}
                   onCancel={handleCancelSubmission}
@@ -2279,7 +2242,7 @@ function BountyDetails({ walletState }) {
                   approvingSubmissions={approvingSubmissions}
                   pollingSubmissions={pollingSubmissions}
                   evaluationResults={evaluationResults}
-                  forceFailEligibility={forceFailEligibility}
+                  roundStates={roundStates}
                   disableActions={disableActionsForMissingId}
                   timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
                   walletState={walletState}
@@ -2296,7 +2259,7 @@ function BountyDetails({ walletState }) {
                 <>
                   {hasActiveSubmissions && (
                     <div className="alert alert-info" style={{ marginBottom: '0.75rem' }}>
-                      {pendingSubmissions.length} pending submission(s) will be resolved (finalize or force-fail) before closing.
+                      {pendingSubmissions.length} pending submission(s) will be resolved (finalize, close a failed round or expire a re-run) before closing.
                     </div>
                   )}
                   <button
@@ -2691,7 +2654,7 @@ function BountyDetails({ walletState }) {
               startingSubmissions={startingSubmissions}
               pollingSubmissions={pollingSubmissions}
               evaluationResults={evaluationResults}
-              forceFailEligibility={forceFailEligibility}
+              roundStates={roundStates}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
               toast={toast}
             />
@@ -2711,6 +2674,7 @@ function BountyDetails({ walletState }) {
                 jobId={bountyId}
                 walletState={walletState}
                 onFailTimeout={handleFailTimedOutSubmission}
+                onRoundAction={handleRoundAction}
                   onRecoverRefund={handleRecoverRefund}
                   recoveringSubmissions={recoveringSubmissions}
                 onFinalize={handleFinalizeSubmission}
@@ -2729,7 +2693,7 @@ function BountyDetails({ walletState }) {
                 isPolling={pollingSubmissions.has(submission.submissionId)}
                 pollingState={pollingSubmissions.get(submission.submissionId)}
                 evaluationResult={evaluationResults.get(submission.submissionId)}
-                forceFail={forceFailEligibility.get(submission.submissionId)}
+                roundState={roundStates.get(submission.submissionId)}
                 disableActions={disableActionsForMissingId}
                 getSubmissionAge={getSubmissionAge}
                 timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
@@ -3141,6 +3105,7 @@ function PendingSubmissionsPanel({
   isPreviewing,
   onFinalize,
   onFailTimeout,
+  onRoundAction,
   onRecoverRefund,
   recoveringSubmissions,
   onCancel,
@@ -3153,7 +3118,7 @@ function PendingSubmissionsPanel({
   approvingSubmissions,
   pollingSubmissions,
   evaluationResults,
-  forceFailEligibility,
+  roundStates,
   disableActions,
   timeoutMinutes,
   walletState,
@@ -3176,10 +3141,12 @@ function PendingSubmissionsPanel({
         const now = Math.floor(Date.now() / 1000);
         const windowOpen = isPendingCreatorApproval && windowEnd > now;
         const windowExpired = isPendingCreatorApproval && windowEnd > 0 && windowEnd <= now;
-        // Force-fail only when the aggregator round is settled with no result (the
-        // contract's own rule — there is no timer). Never for Prepared / PendingCreatorApproval.
-        const gate = forceFailEligibility?.get(s.submissionId);
-        const canTimeout = isOnChain && !isPendingCreatorApproval && gate?.eligible === true;
+        // v2: the lens's nextAction decides which round step (if any) is offered.
+        // Never for Prepared / PendingCreatorApproval.
+        const gate = roundStates?.get(s.submissionId);
+        const canTimeout = isOnChain && !isPendingCreatorApproval && gate?.nextAction === 'CLOSE_FAILED';
+        const stepAction = isOnChain && !isPendingCreatorApproval &&
+          ['DRAW', 'CLOSE_COMMITS', 'PROMOTE', 'RERUN', 'EXPIRE_RERUN'].includes(gate?.nextAction) ? gate.nextAction : null;
         const isFailing = failingSubmissions.has(s.submissionId);
         const isFinalizing = finalizingSubmissions.has(s.submissionId);
         const isApproving = approvingSubmissions?.has(s.submissionId);
@@ -3379,28 +3346,40 @@ function PendingSubmissionsPanel({
                   className="btn btn-warning btn-sm"
                   style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
                 >
-                  {isFailing ? '⏳ Failing...' : '⏱️ Force Fail'}
+                  {isFailing ? '⏳ Closing...' : '✖ Close failed round'}
+                </button>
+              )}
+
+              {stepAction && onRoundAction && (!(stepAction === 'RERUN') ||
+                [s.hunter, s.bondFunder].some(a => a && a.toLowerCase() === walletState?.address?.toLowerCase())) && (
+                <button
+                  onClick={() => onRoundAction(s.submissionId, stepAction)}
+                  disabled={isFailing || disableActions}
+                  className="btn btn-primary btn-sm"
+                  style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}
+                >
+                  {isFailing ? '⏳ Sending...' : ROUND_ACTION_LABELS[stepAction]}
                 </button>
               )}
             </div>
 
-            {!canTimeout && !evalResult?.ready && isOnChain && !isPendingCreatorApproval && (
+            {!canTimeout && !stepAction && !evalResult?.ready && isOnChain && !isPendingCreatorApproval && (
               <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.5rem' }}>
                 {gate?.hasResult
-                  ? '✅ Oracle result available — finalize to record it'
-                  : gate?.secondsUntilTimeout != null && gate.secondsUntilTimeout > 0
-                    ? `⏳ Force-fail available in ${(gate.secondsUntilTimeout / 60).toFixed(1)} min if the oracle does not respond`
-                    : gate?.reason === 'no_agg_id'
-                      ? '⏳ Evaluation not started yet'
-                      : '⏳ Waiting for the aggregator round to settle…'}
+                  ? '✅ Jury result available — finalize to record it'
+                  : gate?.reason === 'no_agg_id'
+                    ? '⏳ Evaluation not started yet'
+                    : gate?.nextAction
+                      ? `⏳ ${ROUND_ACTION_LABELS[gate.nextAction] || gate.nextAction}${gate.phaseName ? ` (round phase: ${gate.phaseName})` : ''}`
+                      : '⏳ Reading the round state…'}
               </div>
             )}
           </div>
         );
       })}
       <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: '#666' }}>
-        💡 Auto-checking every 20 seconds. A submission can be force-failed once its oracle round settles with no
-        result (about {timeoutMinutes} minutes after it was started at the latest).
+        💡 Auto-checking every 20 seconds. A round is drawn, committed and revealed (typically within {timeoutMinutes} minutes);
+        each step is offered here when the contract says it is due — anyone may send it.
       </p>
     </div>
   );
@@ -3428,7 +3407,7 @@ function ExpiredBountyActions({
   startingSubmissions,
   pollingSubmissions,
   evaluationResults,
-  forceFailEligibility,
+  roundStates,
   timeoutMinutes,
   toast
 }) {
@@ -3466,25 +3445,25 @@ function ExpiredBountyActions({
                 {pendingSubmissions.map(sub => {
                   const subId = sub.onChainSubmissionId ?? sub.submissionId;
                   const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt) : 0;
-                  const gate = forceFailEligibility?.get(sub.submissionId);
-                  const canTimeout = gate?.eligible === true;
+                  const gate = roundStates?.get(sub.submissionId);
                   const evalResult = evaluationResults?.get(sub.submissionId);
+                  const next = gate?.nextAction;
                   return (
                     <li key={subId} style={{ marginBottom: '0.25rem' }}>
                       <strong>#{subId}</strong> — {ageMin.toFixed(0)} min old
                       {evalResult?.ready || gate?.hasResult
-                        ? <span style={{ color: '#2e7d32' }}> (oracle results available — will finalize)</span>
-                        : canTimeout
-                          ? <span style={{ color: '#e65100' }}> (round settled with no result — will force-fail)</span>
-                          : <span style={{ color: '#666' }}> (round still open{gate?.secondsUntilTimeout > 0 ? ` — settles in ~${Math.ceil(gate.secondsUntilTimeout / 60)} min` : ''}; will retry finalize)</span>
+                        ? <span style={{ color: '#2e7d32' }}> (jury result available — will finalize)</span>
+                        : next === 'CLOSE_FAILED' || next === 'EXPIRE_RERUN'
+                          ? <span style={{ color: '#e65100' }}> ({next === 'CLOSE_FAILED' ? 'round ended with no result — will close it' : 'cannot re-run any more — will expire it, returning the bond'})</span>
+                          : <span style={{ color: '#666' }}> ({next ? (ROUND_ACTION_LABELS[next] || next).toLowerCase() : 'round still open'}; will retry)</span>
                       }
                     </li>
                   );
                 })}
               </ul>
               <div style={{ fontSize: '0.85rem', color: '#555', marginBottom: '0.75rem' }}>
-                For each submission, we first try to pull oracle results (finalize). Only submissions whose
-                aggregator round has settled with no result are force-failed — the contract has no timer.
+                For each submission we follow the contract's next action: finalize a result, close a round that
+                ended with no result, or expire a re-run (the bond goes back). Rounds still in progress must finish first.
               </div>
             </div>
           )}
@@ -3551,6 +3530,7 @@ function SubmissionCard({
   jobId,
   walletState,
   onFailTimeout,
+  onRoundAction,
   onRecoverRefund,
   recoveringSubmissions,
   onFinalize,
@@ -3569,7 +3549,7 @@ function SubmissionCard({
   isPolling,
   pollingState,
   evaluationResult,
-  forceFail,
+  roundState,
   disableActions,
   getSubmissionAge,
   timeoutMinutes,
@@ -3585,7 +3565,8 @@ function SubmissionCard({
   const isPrepared = submission.status === 'Prepared' || submission.status === 'PREPARED';
   const isApproved = submission.status === 'APPROVED' || submission.status === 'ACCEPTED' || submission.status === 'PassedPaid' || submission.status === 'ACCEPTED_PENDING_CLAIM';
   const isRejected = submission.status === 'REJECTED' || submission.status === 'Failed' || submission.status === 'REJECTED_PENDING_FINALIZATION';
-  const needsFinalization = submission.status === 'ACCEPTED_PENDING_CLAIM' || submission.status === 'REJECTED_PENDING_FINALIZATION';
+  const isSoftFailPending = submission.status === 'SOFT_FAIL_PENDING_FINALIZATION';
+  const needsFinalization = submission.status === 'ACCEPTED_PENDING_CLAIM' || submission.status === 'REJECTED_PENDING_FINALIZATION' || isSoftFailPending;
   const isAcceptedPendingClaim = submission.status === 'ACCEPTED_PENDING_CLAIM';
   const isPendingCreatorApproval = submission.status === 'PendingCreatorApproval';
   const isCreator = walletState.isConnected && walletState.address?.toLowerCase() === job?.creator?.toLowerCase();
@@ -3615,9 +3596,10 @@ function SubmissionCard({
     : null;
   const winningSubmissionId = winningSubmission?.submissionId ?? winningSubmission?.onChainSubmissionId;
   const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;
-  // Force-fail only when the aggregator round is settled with no result (the
-  // contract's rule; no timer) and the submission is actually on-chain (not Prepared).
-  const canTimeout = isOnChain && forceFail?.eligible === true;
+  // v2: closing a failed round (and every other round step) is offered by RoundPanel only
+  // when the lens's nextAction names it; finalize is hidden while CLOSE_FAILED is the step.
+  const canTimeout = isOnChain && roundState?.nextAction === 'CLOSE_FAILED';
+  const showRoundPanel = !bountyTerminal && (isOnChain || isSubmissionOnChain(submission.onChainStatus)) && !isPendingCreatorApproval;
   // Only allow finalize for on-chain submissions (not Prepared)
   const canFinalize = isOnChain && !isPolling;
   const hasEvalReady = evaluationResult?.ready;
@@ -4105,37 +4087,6 @@ function SubmissionCard({
             </button>
           )}
 
-          {/* Show timeout button when eligible - but NOT if evaluation is ready */}
-          {canTimeout && !hasEvalReady && (
-            <>
-              <div style={{
-                fontSize: '0.8rem',
-                color: '#e65100',
-                textAlign: 'center',
-                padding: '0.5rem',
-                backgroundColor: '#fff3e0',
-                borderRadius: '4px',
-                marginBottom: '0.25rem'
-              }}>
-                ⚠️ The oracle round settled with no result ({ageMinutes.toFixed(0)} min since submission).
-                Use the button below to mark as failed and refund the ETH prepay.
-              </div>
-              <button
-                onClick={() => onFailTimeout(submission.submissionId)}
-                disabled={isFailing || disableActions}
-                className="btn btn-warning"
-                style={{
-                  fontSize: '1rem',
-                  padding: '0.75rem 1rem',
-                  width: '100%',
-                  fontWeight: 'bold'
-                }}
-              >
-                {isFailing ? '⏳ Marking as Failed...' : `⏱️ Fail Timed-Out Submission (${ageMinutes.toFixed(0)} min stuck)`}
-              </button>
-            </>
-          )}
-          
           {/* Deferred oracle-prepay refund: the resolving tx could not recover it; retry here */}
           {isOnChain && submission.refundDeferred && (
             <>
@@ -4159,17 +4110,21 @@ function SubmissionCard({
             </>
           )}
 
-          {/* Show countdown only if timeout not yet available and eval not ready */}
-          {!canTimeout && !hasEvalReady && isOnChain && (
-            <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'center' }}>
-              {forceFail?.hasResult
-                ? 'Oracle result available — finalize to record it'
-                : forceFail?.secondsUntilTimeout != null && forceFail.secondsUntilTimeout > 0
-                  ? `Force-fail available in ${(forceFail.secondsUntilTimeout / 60).toFixed(1)} min if the oracle does not respond`
-                  : `Waiting for the aggregator round to settle (typically within ${timeoutMinutes} min)…`}
-            </div>
-          )}
         </div>
+      )}
+
+      {/* v2 round: timeline, Q-of-N outcome, bond, re-run window and the step that moves it on */}
+      {showRoundPanel && (
+        <RoundPanel
+          submission={submission}
+          roundState={roundState}
+          job={job}
+          walletState={walletState}
+          onRoundAction={onRoundAction}
+          busy={isFailing}
+          disableActions={disableActions}
+          threshold={threshold}
+        />
       )}
 
       {/* Claim/Finalize button for submissions awaiting on-chain finalization (hidden if bounty terminal) */}
@@ -4187,7 +4142,9 @@ function SubmissionCard({
           }}>
             {isAcceptedPendingClaim
               ? '🎉 This submission passed! Claim your bounty below.'
-              : 'Evaluation complete. Finalize to update on-chain status and refund the unspent ETH prepay.'}
+              : isSoftFailPending
+                ? 'Soft fail: fewer arbiters than the quota scored it at the threshold. Finalize to record it — the bond stays held and a 2-hour re-run window opens.'
+                : 'Evaluation complete. Finalize to update on-chain status and refund the unspent ETH prepay (a hard fail forfeits the hunter bond to the creator).'}
           </div>
           <button
             onClick={() => onFinalize(submission.submissionId)}

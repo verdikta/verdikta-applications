@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
   <title>FAQ: fees, payouts and refunds | Verdikta Bounties</title>
-  <meta name="description" content="Verdikta Bounties fees and settlement terms: no platform fee; creators fund the bounty and pay gas; hunters prepay about 0.00024 ETH per evaluation to the AI jury; the first passing submission is paid in full; unclaimed bounties are refunded in full after the deadline.">
+  <meta name="description" content="Verdikta Bounties fees and settlement terms: no platform fee; creators fund the bounty and pay gas; hunters prepay the AI jury per evaluation round and post a refundable bond; the first passing submission is paid in full; unclaimed bounties are refunded in full after the deadline.">
   <link rel="canonical" href="https://bounties.verdikta.org/learn/faq/">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/learn/learn.css">
   <meta property="og:type" content="article">
   <meta property="og:title" content="Verdikta Bounties FAQ: fees, payouts and refunds">
-  <meta property="og:description" content="No platform fee. Hunters prepay about 0.00024 ETH per evaluation. First passing submission is paid in full; unclaimed bounties are refunded in full.">
+  <meta property="og:description" content="No platform fee. Hunters prepay the AI jury per round and post a refundable bond. First passing submission is paid in full; unclaimed bounties are refunded in full.">
   <meta property="og:url" content="https://bounties.verdikta.org/learn/faq/">
   <!-- FAQPAGE_JSONLD: generated from the questions below; keep the two in sync when editing. -->
   <script type="application/ld+json">
@@ -74,7 +74,7 @@
       "name": "What does it cost to submit work?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Each evaluation needs an oracle prepay in ETH, attached when the evaluation starts. With the default settings it is 0.00024 ETH; a creator who sets the highest allowed oracle fee raises it to as much as 0.0048 ETH. The exact amount is shown on the bounty before you submit (the contract's requiredPrepay). Add gas for three transactions (prepare, start, finalize), about 0.00004 ETH in total in the worked example."
+        "text": "Starting an evaluation attaches the bounty's start value in ETH (the contract's startValue): the round prepay that pays the jury (requiredPrepay) plus the hunter bond the creator set for the bounty's size class (none for Bondless Small). Both are shown on the bounty before you submit; the prepay depends on the jury size and fee floor. Add gas for the prepare, start and finalize transactions."
       }
     },
     {
@@ -82,7 +82,7 @@
       "name": "Where does the prepay go, and is any of it refunded?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "It pays the arbiters who run the jury models. Whatever is not spent is refunded automatically to whoever funded the evaluation, when the submission is finalized or marked failed. In practice the whole prepay is usually spent, so plan on it as the cost of an attempt. A larger part comes back when a round times out without a verdict."
+        "text": "It pays the arbiters who run the jury models. Whatever is not spent is refunded automatically to whoever funded the evaluation, when the submission is finalized or marked failed. In practice the whole prepay is usually spent, so plan on it as the cost of an attempt. A larger part comes back when a round ends without a verdict."
       }
     },
     {
@@ -90,7 +90,7 @@
       "name": "If my submission fails, do I get the prepay back?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "No, not the part that was spent: the arbiters did the evaluation. You can submit again, with a new prepay, as long as the bounty is open and the deadline has not passed."
+        "text": "Not the part of the prepay that was spent: the arbiters did the evaluation. The bond depends on how it failed. A soft fail (some arbiters, but fewer than the quota Q, scored it at the threshold) keeps the bond and lets you re-run within 2 hours with a fresh jury, up to 6 rounds, for a new round prepay. A hard fail (fewer than the forfeit line R) sends the bond to the creator. You can also submit again as long as the bounty is open."
       }
     },
     {
@@ -146,7 +146,7 @@
       "name": "What if the jury never answers?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "The oracle round times out. Anyone can then mark the submission failed, which frees the bounty and refunds any unspent prepay. The hunter can submit again before the deadline."
+        "text": "The round ends with no result. Anyone can close it (closeFailedRound), which refunds what is left of the prepay; the submission keeps its place and its bond and may re-run within 2 hours. If it is not re-run, anyone can expire it and the bond goes back."
       }
     },
     {
@@ -209,12 +209,12 @@
 
   <main class="learn-main faq">
     <h1>FAQ: fees, payouts and refunds</h1>
-    <p class="meta">Last reviewed 24 October 2026 · Figures are for Base mainnet with the default oracle settings.</p>
+    <p class="meta">Last reviewed 24 October 2026 · Figures are for Base mainnet; v2 rounds (size classes, bonds and re-runs) from November 2026.</p>
 
     <div class="note">
       <p><strong>The short version.</strong> There is no platform fee. A creator pays the bounty
-      plus network gas. A hunter prepays an oracle fee for each evaluation, about 0.00024 ETH,
-      which goes to the AI jury's operators. The first submission that passes is paid the whole
+      plus network gas. A hunter prepays an oracle fee for each evaluation round, which goes to
+      the AI jury's operators, and posts a bond that comes back unless the jury hard-fails the work. The first submission that passes is paid the whole
       bounty. If nobody passes by the deadline, the creator gets the whole bounty back. Nobody can
       cancel or edit a bounty once it is funded.</p>
     </div>
@@ -267,11 +267,11 @@
 
     <h3 id="hunter-cost">What does it cost to submit work?</h3>
     <p>
-      Each evaluation needs an oracle prepay in ETH, attached when the evaluation starts. With the
-      default settings it is 0.00024 ETH; a creator who sets the highest allowed oracle fee raises
-      it to as much as 0.0048 ETH. The exact amount is shown on the bounty before you submit (the
-      contract's <code>requiredPrepay</code>). Add gas for three transactions (prepare, start, finalize),
-      about 0.00004 ETH in total in the worked example.
+      Starting an evaluation attaches the bounty's start value in ETH (the contract's
+      <code>startValue</code>): the round prepay that pays the jury (<code>requiredPrepay</code>) plus
+      the hunter bond the creator set for the bounty's size class (none for Bondless Small). Both are
+      shown on the bounty before you submit; the prepay depends on the jury size and fee floor. Add gas
+      for the prepare, start and finalize transactions.
     </p>
 
     <h3 id="prepay-goes">Where does the prepay go, and is any of it refunded?</h3>
@@ -279,13 +279,16 @@
       It pays the arbiters who run the jury models. Whatever is not spent is refunded
       automatically to whoever funded the evaluation, when the submission is finalized or marked
       failed. In practice the whole prepay is usually spent, so plan on it as the cost of an
-      attempt. A larger part comes back when a round times out without a verdict.
+      attempt. A larger part comes back when a round ends without a verdict.
     </p>
 
     <h3 id="fail-refund">If my submission fails, do I get the prepay back?</h3>
     <p>
-      No, not the part that was spent: the arbiters did the evaluation. You can submit again,
-      with a new prepay, as long as the bounty is open and the deadline has not passed.
+      Not the part of the prepay that was spent: the arbiters did the evaluation. The bond
+      depends on how it failed. A soft fail (some arbiters, but fewer than the quota Q, scored it at
+      the threshold) keeps the bond and lets you re-run within 2 hours with a fresh jury, up to 6
+      rounds, for a new round prepay. A hard fail (fewer than the forfeit line R) sends the bond to
+      the creator. You can also submit again as long as the bounty is open.
     </p>
 
     <h2 id="settlement">Payouts and settlement</h2>
@@ -336,8 +339,10 @@
 
     <h3 id="no-verdict">What if the jury never answers?</h3>
     <p>
-      The oracle round times out. Anyone can then mark the submission failed, which frees the
-      bounty and refunds any unspent prepay. The hunter can submit again before the deadline.
+      The round ends with no result, which is not the hunter's fault. Anyone can close it
+      (<code>closeFailedRound</code>), which refunds what is left of the prepay; the submission keeps
+      its place and its bond and may re-run within 2 hours. If it is not re-run, anyone can expire it
+      and the bond goes back.
     </p>
 
     <h3 id="appeal">Can I appeal a verdict?</h3>

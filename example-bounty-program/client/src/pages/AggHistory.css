@@ -313,6 +313,23 @@
   flex-shrink: 0;
 }
 
+.agg-history .failure-line .icon-ok {
+  color: var(--success);
+  flex-shrink: 0;
+}
+
+/* v2: a late reveal, an "off" quality score */
+.agg-history .icon-warn {
+  color: var(--warning, #d97706);
+  flex-shrink: 0;
+}
+
+.agg-history .slots-table .icon-ok,
+.agg-history .slots-table .icon-fail,
+.agg-history .slots-table .icon-warn {
+  text-transform: none;
+}
+
 .agg-history .jobid-cell {
   display: inline-flex;
   align-items: center;

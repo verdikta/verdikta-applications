@@ -161,7 +161,12 @@ test.describe('maker actions', () => {
     expect(options).not.toContain(String(elsewhere.listingId));
     expect(options).not.toContain(String(first.listingId));
     await pick.selectOption(String(successor.listingId));
-    await shot(page, 'roll-forward', { target: page.getByTestId('roll-forward') });
+    // node P38: what a maker does before publishing a fix, above the picker; each line is one line of the page's text
+    const panel = page.getByTestId('roll-forward');
+    expect(await panel.getByTestId('roll-fix-keep').innerText()).toBe(STRINGS.roll.fix.keep);
+    expect((await panel.getByTestId('roll-fix-order').innerText()).split('\n')).toEqual([STRINGS.roll.fix.noClaim, STRINGS.roll.fix.claimPending]);
+    expect(wordingProblems(await panel.innerText())).toEqual([]);
+    await shot(page, 'roll-forward', { target: panel });
     await page.getByRole('button', { name: fill(STRINGS.roll.button, { id: successor.listingId }) }).click();
     await expect(page.getByTestId('rolled')).toBeVisible({ timeout: 30_000 });
 

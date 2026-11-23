@@ -49,18 +49,31 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend)
 const COLORS = {
   active: '#22c55e',
   new: '#8b5cf6',
-  unresponsive: '#f59e0b',
+  atRisk: '#f59e0b',
+  frozen: '#0ea5e9',
   blocked: '#ef4444',
   inactive: '#6b7280'
 };
 
-// Arbiter status descriptions for tooltips
+// v2 arbiter statuses (derived server-side from the keeper's flags, blocks,
+// liveness freeze and scores — see server/utils/arbiterStatus.js), in display order.
+const STATUS_ORDER = [
+  { key: 'active', label: 'Active' },
+  { key: 'new', label: 'New' },
+  { key: 'atRisk', label: 'At risk' },
+  { key: 'frozen', label: 'Frozen' },
+  { key: 'blocked', label: 'Blocked' },
+  { key: 'inactive', label: 'Inactive' },
+];
+
+// Arbiter status descriptions for tooltips (keyed by label)
 const ARBITER_STATUS_DESCRIPTIONS = {
-  Active: 'Registered, responding normally, available for selection, and called three or more times',
-  New: 'Arbiters that have been called fewer than three times',
-  Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or sustained score decline (140+ points in last 8 updates)',
-  Blocked: 'Temporarily locked due to severe performance issues (timeliness or quality score below threshold)',
-  Inactive: 'Not currently registered or has been deactivated in the contract'
+  Active: 'Registered, staked, answering health calls, and selectable; both scores have moved from their start',
+  New: 'Selectable but never scored: quality and timeliness are still at their starting value',
+  'At risk': 'Selectable, but a quality or timeliness score is at or below the keeper\'s major penalty: one more major miss reaches 0 and blocks it',
+  Frozen: 'Not selectable until it answers a health call: a call went unanswered past the keeper\'s deadline, or it was registered without a hash-chain head (from this site) and its node has not re-synced yet',
+  Blocked: 'Not selectable: a score reached 0 (blocked for the lock duration, doubling per offense), or banned after the maximum number of offenses',
+  Inactive: 'Registered but not selectable: paused by its owner, exiting (unbonding), under-staked, or posting a fee above the aggregator\'s maximum'
 };
 
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
@@ -69,7 +82,7 @@ const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
 const rateColor = (pct) => {
   if (pct == null) return COLORS.inactive;
   if (pct >= 80) return COLORS.active;
-  if (pct >= 40) return COLORS.unresponsive;
+  if (pct >= 40) return COLORS.atRisk;
   return COLORS.blocked;
 };
 
@@ -94,7 +107,7 @@ const health24Cache = {}; // network → 24-hour oracle-health data
 const ALERT_STATE = {
   ok:       { color: COLORS.active,       label: 'Healthy',        desc: 'Watchdog heartbeating; all node health checks passing' },
   alerting: { color: COLORS.blocked,      label: 'Alerting',       desc: 'The node\'s watchdog is reporting an active problem' },
-  stale:    { color: COLORS.unresponsive, label: 'Not reporting',  desc: 'Watchdog heartbeats stopped — the node or its machine may be down' },
+  stale:    { color: COLORS.atRisk, label: 'Not reporting',  desc: 'Watchdog heartbeats stopped — the node or its machine may be down' },
 };
 
 // Seconds → compact human uptime ("12d 4h", "3h 20m", "45m").
@@ -156,8 +169,10 @@ function OperatorRow({ o, windowLabel, alert }) {
         <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
           {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}
         </td>
+        <td>{o.promoted ?? '—'}</td>
         <td style={{ color: rateColor(o.revealRatePct), fontWeight: 600 }}>
           {o.reveals}{o.revealRatePct == null ? '' : ` (${o.revealRatePct}%)`}
+          {o.lateReveals ? <span className="gas-muted" title="Reveals that arrived after the round finalized: classified, but not counted in the result"> · {o.lateReveals} late</span> : ''}
         </td>
         <td>
           {blame > 0 ? (
@@ -175,7 +190,7 @@ function OperatorRow({ o, windowLabel, alert }) {
       </tr>
       {open && blame > 0 && (
         <tr className="blame-detail-row">
-          <td colSpan={6}>
+          <td colSpan={7}>
             <div className="blame-detail">
               <span className="blame-detail-label">
                 Responsible for {aggIds.length} failed evaluation{aggIds.length === 1 ? '' : 's'}:
@@ -220,7 +235,7 @@ const ScanFailedBanner = ({ hData }) => (
 
 const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsByOp = {}) => (
   <section className="analytics-section">
-    <h2 title="Per-operator commit and reveal reliability across recent evaluations. Commit rate = commits ÷ times polled; reveal rate = reveals ÷ commits. A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Operator Reliability · {windowLabel}</h2>
+    <h2 title="Per-operator commit and reveal reliability across recent evaluations. Commit rate = commits ÷ times drawn; reveal rate = reveals ÷ times promoted (only promoted commits are asked to reveal). A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Operator Reliability · {windowLabel}</h2>
     <div className="section-content">
       {hLoading && !hData ? (
         <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
@@ -235,10 +250,11 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsBy
               <tr>
                 <th>Operator</th>
                 <th className="tooltip-header" title="Number of arbiters (registered jobIds) currently backed by this operator contract">Arbiters</th>
-                <th className="tooltip-header" title="Times this operator was polled (OracleSelected) across the window">Polled</th>
-                <th className="tooltip-header" title="Commits received, and commits ÷ times polled">Commits</th>
-                <th className="tooltip-header" title="Reveals recorded, and reveals ÷ commits. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
-                <th className="tooltip-header" title="Times this operator's arbiters were to blame for a failed/timed-out evaluation. An eval needs 4 commits then 3 reveals; when it fails, each (operator, jobId) slot that didn't commit — or that committed but didn't reveal — is charged here. Rounds where no arbiter committed are treated as likely malformed requests and not charged.">Blameworthy</th>
+                <th className="tooltip-header" title="Times one of this operator's arbiters was drawn into a jury and sent the commit request">Drawn</th>
+                <th className="tooltip-header" title="Commits received, and commits ÷ times drawn">Commits</th>
+                <th className="tooltip-header" title="Times one of its commits was promoted (asked to reveal). Each round promotes M of the commits at random.">Promoted</th>
+                <th className="tooltip-header" title="Reveals received, and reveals ÷ times promoted. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
+                <th className="tooltip-header" title={`Times this operator's arbiters were to blame for a failed round. A round needs ${hData?.requirements?.M ?? 'M'} commits, then ${hData?.requirements?.N ?? 'N'} reveals from the promoted commits; when it fails, each (operator, jobId) slot that didn't commit — or that was promoted but didn't reveal — is charged here. Rounds where no arbiter committed are treated as likely malformed requests and not charged, nor are rounds that failed before or outside the arbiters' part (no jury drawable, beacon quorum missed, commit window never closed).`}>Blameworthy</th>
               </tr>
             </thead>
             <tbody>
@@ -913,7 +929,8 @@ function Analytics() {
     datasets: [
       { label: 'Fulfilled', data: trend.map(d => d.fulfilled), backgroundColor: COLORS.active, stack: 's' },
       { label: 'Failed', data: trend.map(d => d.failed), backgroundColor: COLORS.blocked, stack: 's' },
-      { label: 'Likely malformed', data: trend.map(d => d.malformed || 0), backgroundColor: COLORS.inactive, stack: 's' }
+      { label: 'Likely malformed', data: trend.map(d => d.malformed || 0), backgroundColor: COLORS.inactive, stack: 's' },
+      { label: 'Not drawn', data: trend.map(d => d.notDrawn || 0), backgroundColor: COLORS.frozen, stack: 's' }
     ]
   } : null;
   const dailyChartOptions = {
@@ -990,13 +1007,9 @@ function Analytics() {
   const chartOwners = ownersData?.owners || [];
   const arbiterChartData = chartOwners.length ? {
     labels: chartOwners.map(o => (o.owner ? shortAddr(o.owner) : 'Unknown')),
-    datasets: [
-      { label: 'Active', data: chartOwners.map(o => o.active ?? 0), backgroundColor: COLORS.active },
-      { label: 'New', data: chartOwners.map(o => o.new ?? 0), backgroundColor: COLORS.new },
-      { label: 'Unresponsive', data: chartOwners.map(o => o.unresponsive ?? 0), backgroundColor: COLORS.unresponsive },
-      { label: 'Blocked', data: chartOwners.map(o => o.blocked ?? 0), backgroundColor: COLORS.blocked },
-      { label: 'Inactive', data: chartOwners.map(o => o.inactive ?? 0), backgroundColor: COLORS.inactive }
-    ]
+    datasets: STATUS_ORDER.map(({ key, label }) => ({
+      label, data: chartOwners.map(o => o[key] ?? 0), backgroundColor: COLORS[key]
+    }))
   } : null;
 
   const arbiterChartOptions = {
@@ -1138,7 +1151,9 @@ function Analytics() {
 
       {/* Arbiter Availability Section */}
       <section className="analytics-section">
-        <h2 title="Six non-blocked arbiter queries will be made, with duplicate selection if necessary, and four must respond."><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
+        <h2 title={data?.system?.aggregatorConfig
+          ? `Each request draws a jury of ${data?.system?.aggregatorConfig.K} distinct selectable arbiters (no duplicates: the draw fails if fewer are eligible). ${data?.system?.aggregatorConfig.M} must commit, ${data?.system?.aggregatorConfig.M} commits are promoted to reveal, and ${data?.system?.aggregatorConfig.N} reveals finalize the result.`
+          : 'Arbiters per owner, by status'}><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
         {!data?.arbiters?.verdiktaConnected && (
           <div className="info-banner">
             <AlertTriangle size={16} />
@@ -1155,26 +1170,12 @@ function Analytics() {
               <div className="chart-container chart-bar">
                 <Bar data={arbiterChartData} options={arbiterChartOptions} />
                 <div className="custom-legend">
-                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Active}>
-                    <span className="legend-color" style={{ backgroundColor: COLORS.active }}></span>
-                    Active
-                  </span>
-                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.New}>
-                    <span className="legend-color" style={{ backgroundColor: COLORS.new }}></span>
-                    New
-                  </span>
-                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive}>
-                    <span className="legend-color" style={{ backgroundColor: COLORS.unresponsive }}></span>
-                    Unresponsive
-                  </span>
-                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Blocked}>
-                    <span className="legend-color" style={{ backgroundColor: COLORS.blocked }}></span>
-                    Blocked
-                  </span>
-                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Inactive}>
-                    <span className="legend-color" style={{ backgroundColor: COLORS.inactive }}></span>
-                    Inactive
-                  </span>
+                  {STATUS_ORDER.map(({ key, label }) => (
+                    <span key={key} className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS[label]}>
+                      <span className="legend-color" style={{ backgroundColor: COLORS[key] }}></span>
+                      {label}
+                    </span>
+                  ))}
                 </div>
               </div>
             </>
@@ -1186,7 +1187,7 @@ function Analytics() {
           )}
           {data?.arbiters?.totalOracles != null && (
             <div className="stat-highlight">
-              <strong>{data.arbiters.totalOracles}</strong> total registered oracles
+              <strong>{data.arbiters.totalOracles}</strong> registered arbiters
             </div>
           )}
         </div>
@@ -1194,7 +1195,7 @@ function Analytics() {
 
       {/* Oracle Eval Success Rate Section */}
       <section className="analytics-section">
-        <h2 title="Share of oracle evaluation requests that completed successfully (a FulfillAIEvaluation event) over the look-back window. The rest failed or timed out without enough commits/reveals. Rounds where no arbiter committed at all are counted separately as likely malformed and excluded from the success rate."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
+        <h2 title="Share of decided oracle evaluation rounds that completed successfully (a FulfillAIEvaluation event) over the look-back window; the rest failed at settlement without enough commits or reveals. Rounds where no arbiter committed are counted separately as likely malformed, rounds that never reached the arbiters as not drawn, and rounds still running are not yet counted."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
         <div className="section-content">
           {healthLoading && !healthData ? (
             <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
@@ -1221,7 +1222,7 @@ function Analytics() {
                 </div>
                 <div className="health-stat">
                   <span className="health-stat-value" style={{ color: COLORS.blocked }}>{healthData.success.unfulfilled}</span>
-                  <span className="health-stat-label">Failed / timed out</span>
+                  <span className="health-stat-label">Failed</span>
                 </div>
                 <div
                   className="health-stat"
@@ -1230,8 +1231,15 @@ function Analytics() {
                   <span className="health-stat-value" style={{ color: COLORS.inactive }}>{healthData.success.likelyMalformed ?? 0}</span>
                   <span className="health-stat-label">Likely malformed</span>
                 </div>
+                <div
+                  className="health-stat"
+                  title="Rounds that never reached the arbiters: no jury could be drawn (fewer eligible arbiters than the jury size), the beacon quorum was missed, or the round was cancelled undrawn. Not counted in the success rate."
+                >
+                  <span className="health-stat-value" style={{ color: COLORS.frozen }}>{healthData.success.notDrawn ?? 0}</span>
+                  <span className="health-stat-label">Not drawn</span>
+                </div>
                 {dailyChartData && (
-                  <div className="health-chart" title={`Fulfilled (green) vs failed (red) vs likely malformed (grey) evaluations per day — last ${healthData.windowDays} days`}>
+                  <div className="health-chart" title={`Fulfilled (green) vs failed (red) vs likely malformed (grey) vs not drawn (blue) evaluations per day — last ${healthData.windowDays} days`}>
                     <div className="health-chart-canvas"><Bar data={dailyChartData} options={dailyChartOptions} /></div>
                     <span className="health-stat-label">{healthData.windowDays}-day trend</span>
                   </div>
@@ -1239,7 +1247,7 @@ function Analytics() {
               </div>
               <p className="health-footnote">
                 Last {healthData.windowDays} days (blocks {healthData.fromBlock.toLocaleString()}–{healthData.toBlock.toLocaleString()}).
-                {healthData.partial ? ` Partial scan — ${healthData.chunkErrors} of ${healthData.totalChunks} log queries failed, so some activity is missing.` : ''} Very recent requests may still be in progress.
+                {healthData.partial ? ` Partial scan — ${healthData.chunkErrors} of ${healthData.totalChunks} log queries failed, so some activity is missing.` : ''} {healthData.success.inProgress ? ` ${healthData.success.inProgress} round${healthData.success.inProgress === 1 ? ' is' : 's are'} still in progress and not yet counted.` : ''}
               </p>
             </>
           ) : (
@@ -1328,10 +1336,9 @@ function Analytics() {
                   <tr>
                     <th>Owner</th>
                     <th>Arbiters</th>
-                    <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.Active}>Active</th>
-                    <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.New}>New</th>
-                    <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive}>Unresponsive</th>
-                    <th className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS.Blocked}>Blocked</th>
+                    {STATUS_ORDER.map(({ key, label }) => (
+                      <th key={key} className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS[label]}>{label}</th>
+                    ))}
                     <th className="tooltip-header" title="Average quality score across this owner's arbiters">Avg Quality</th>
                     <th className="tooltip-header" title="Average timeliness score across this owner's arbiters">Avg Timeliness</th>
                     <th className="tooltip-header" title="ETH currently claimable by this owner (ethOwed on the aggregator, aggregated across their operators)"><Coins size={13} className="inline-icon" /> Claimable ETH</th>
@@ -1350,10 +1357,9 @@ function Analytics() {
                         )}
                       </td>
                       <td><strong>{o.arbiters}</strong>{o.operators > 1 ? ` (${o.operators} operators)` : ''}</td>
-                      <td style={{ color: COLORS.active, fontWeight: 600 }}>{o.active ?? '-'}</td>
-                      <td style={{ color: COLORS.new, fontWeight: 600 }}>{o.new ?? '-'}</td>
-                      <td style={{ color: COLORS.unresponsive, fontWeight: 600 }}>{o.unresponsive ?? '-'}</td>
-                      <td style={{ color: COLORS.blocked, fontWeight: 600 }}>{o.blocked ?? '-'}</td>
+                      {STATUS_ORDER.map(({ key }) => (
+                        <td key={key} style={{ color: COLORS[key], fontWeight: 600 }}>{o[key] ?? '-'}</td>
+                      ))}
                       <td>{o.avgQualityScore}</td>
                       <td>{o.avgTimelinessScore}</td>
                       <td>{o.claimableEth ?? '—'}</td>
@@ -1487,28 +1493,36 @@ function Analytics() {
                 </div>
                 <div className="health-details config-grid">
                   <div className="config-item">
-                    <span className="config-label">Commit Polls (K)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.commitOraclesToPoll}</span>
+                    <span className="config-label">Jury (K)</span>
+                    <span className="config-value">{data.system.aggregatorConfig.K}</span>
                   </div>
                   <div className="config-item">
-                    <span className="config-label">Reveals (M)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.oraclesToPoll}</span>
+                    <span className="config-label">Commits needed / promoted (M)</span>
+                    <span className="config-value">{data.system.aggregatorConfig.M}</span>
                   </div>
                   <div className="config-item">
-                    <span className="config-label">Required (N)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.requiredResponses}</span>
+                    <span className="config-label">Early close (M+)</span>
+                    <span className="config-value">{data.system.aggregatorConfig.mPlus}</span>
+                  </div>
+                  <div className="config-item">
+                    <span className="config-label">Reveals to finalize (N)</span>
+                    <span className="config-value">{data.system.aggregatorConfig.N}</span>
                   </div>
                   <div className="config-item">
                     <span className="config-label">Cluster (P)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.clusterSize}</span>
+                    <span className="config-value">{data.system.aggregatorConfig.P}</span>
                   </div>
                   <div className="config-item">
                     <span className="config-label">Bonus Multiplier</span>
                     <span className="config-value">{data.system.aggregatorConfig.bonusMultiplier}x</span>
                   </div>
                   <div className="config-item">
-                    <span className="config-label">Timeout</span>
+                    <span className="config-label">Round timeout</span>
                     <span className="config-value">{data.system.aggregatorConfig.responseTimeoutSeconds}s</span>
+                  </div>
+                  <div className="config-item">
+                    <span className="config-label">Commit window (T+)</span>
+                    <span className="config-value">{data.system.aggregatorConfig.tPlus ?? '—'}s</span>
                   </div>
                   <div className="config-item">
                     <span className="config-label">Max Oracle Fee</span>

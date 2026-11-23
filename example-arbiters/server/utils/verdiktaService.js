@@ -1,16 +1,27 @@
 /**
  * Verdikta Service
- * Read-only access to the ReputationAggregator and ReputationKeeper contracts
+ * Read-only access to the v2 ReputationAggregator and ReputationKeeper contracts
  * for arbiter/oracle analytics. One instance is cached per network so the UI
  * can toggle between Base Sepolia and Base mainnet.
  *
- * Ported (trimmed) from example-bounty-program. Only the analytics surface is
- * kept — the aggregation-history queries and their event ABIs are omitted.
+ * v2 notes (see dispatcher/reputationBasedAggregator/MIGRATION.md):
+ *  - arbiters are keyed by keyOf(oracle, jobId); the keeper has no index getter,
+ *    so the registry is rebuilt from its ArbiterRegistered / ArbiterRemoved logs
+ *    (scanned incrementally) and each key is read with getArbiter / arbiterClasses /
+ *    isFrozen. Status derivation is in utils/arbiterStatus.js;
+ *  - rounds are read with getRoundInfo / getSlot and the v2 events; outcome and
+ *    blame are in utils/roundModel.js.
  */
 
 const { ethers } = require('ethers');
 const logger = require('./logger');
-const { networks, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, getLogScanRpc, getReceiptRpcUrl, funding } = require('../config');
+const { networks, normalizeNetwork, getContractsConfig, getRpcUrl, getArchiveRpcUrl, getLogScanRpc, getReceiptRpcUrl, funding } = require('../config');
+const {
+  STATUSES, DEFAULT_POINTS, DEFAULT_CALL_DEADLINE, deriveStatus, exitState, flagNames, emptyTally, reduceRegistry,
+} = require('./arbiterStatus');
+const {
+  PHASE, PHASE_NAMES, QCODE_NAMES, SKIP_REASONS, decodeSlotFlags, mPlus, describeRound,
+} = require('./roundModel');
 const GasReceiptStore = require('./gasReceiptStore');
 
 /**
@@ -87,59 +98,60 @@ function summarizeGas(records) {
   };
 }
 
-// ReputationAggregator ABI — view functions needed for analytics.
+
+// v2 ReputationAggregator: config views, the round/slot views and the ETH ledger.
 const AGGREGATOR_ABI = [
-  "function reputationKeeper() view returns (address)",
-  // ETH pull-payment ledger: arbiter owners' earned ETH (base + bonus), claimed via
-  // withdrawEth(). Replaces per-operator LINK (operator.withdrawable) as the live
-  // "claimable" figure under the ETH-funded aggregator.
+  "function keeper() view returns (address)",
+  // ETH pull-payment ledger: arbiter owners' base fees and bonuses, anyone's draw /
+  // promote rewards and beacon payments, and requesters' refunds. Claimed via withdrawEth().
   "function ethOwed(address) view returns (uint256)",
-  "function commitOraclesToPoll() view returns (uint256)",
-  "function oraclesToPoll() view returns (uint256)",
-  "function requiredResponses() view returns (uint256)",
-  "function clusterSize() view returns (uint256)",
-  "function bonusMultiplier() view returns (uint256)",
-  "function responseTimeoutSeconds() view returns (uint256)",
+  "function K() view returns (uint8)",
+  "function M() view returns (uint8)",
+  "function N() view returns (uint8)",
+  "function P() view returns (uint8)",
+  "function bonusMultiplier() view returns (uint8)",
+  "function responseTimeoutSeconds() view returns (uint40)",
+  "function tPlus() view returns (uint40)",
+  "function revealWindow() view returns (uint40)",
   "function maxOracleFee() view returns (uint256)",
-  "function getContractConfig() view returns (address oracleAddr, address linkAddr, bytes32 jobId, uint256 fee)",
-  // Extended config surfaced on the /contracts page.
-  "function maxLikelihoodLength() view returns (uint256)",
-  "function lastEntropyBlock() view returns (uint256)",
-  "function MAX_CID_COUNT() view returns (uint256)",
-  "function MAX_CID_LENGTH() view returns (uint256)",
-  "function MAX_ADDENDUM_LENGTH() view returns (uint256)",
-  // Reputation score deltas (per response outcome).
-  "function clusteredTimelinessScore() view returns (int8)",
-  "function clusteredQualityScore() view returns (int8)",
-  "function selectedTimelinessScore() view returns (int8)",
-  "function selectedQualityScore() view returns (int8)",
-  "function revealedTimelinessScore() view returns (int8)",
-  "function revealedQualityScore() view returns (int8)",
-  "function committedTimelinessScore() view returns (int8)",
-  "function committedQualityScore() view returns (int8)"
+  "function drawRewardFees() view returns (uint8)",
+  "function promoteRewardFees() view returns (uint8)",
+  "function requesterDrawPriority() view returns (uint40)",
+  "function settlePerRequest() view returns (uint8)",
+  "function dispatchGas() view returns (uint32)",
+  "function spreadFloor() view returns (uint256)",
+  "function roundCount() view returns (uint256)",
+  "function treasury() view returns (address)",
+  "function beacons() view returns (address)",
+  "function paused() view returns (bool)",
+  "function getRoundInfo(bytes32 aggId) view returns (uint8 phase, uint256 requestBlock, bytes32 sealedHash, uint256 closeBlock, uint256 received, uint256 baseFees, uint256 bonuses, uint256 rewards, uint256 deadline, uint256 windowEnd, uint256 commits, uint256 requestTime)",
+  "function getSlot(bytes32 aggId, uint256 i) view returns (tuple(address oracle, uint96 fee, bytes32 key, address payee, uint40 committedAt, uint8 flags, uint8 qcode, bytes32 commitHash))",
 ];
 
-// ReputationKeeper ABI — oracle data.
-// Note: registeredOracles auto-getter doesn't return classes array - must use getOracleClasses separately
+// v2 ReputationKeeper: arbiters keyed by keyOf(oracle, jobId). There is no index
+// getter; the registry is rebuilt from ArbiterRegistered / ArbiterRemoved logs.
 const KEEPER_ABI = [
-  "function getRegisteredOraclesCount() view returns (uint256)",
-  "function registeredOracles(uint256 index) view returns (address oracle, bytes32 jobId)",
-  "function getOracleInfo(address _oracle, bytes32 _jobId) view returns (bool isActive, int256 qualityScore, int256 timelinessScore, uint256 callCount, bytes32 jobId, uint256 fee, uint256 stakeAmount, uint256 lockedUntil, bool blocked)",
-  "function getOracleClasses(uint256 index) view returns (uint64[])",
-  "function getRecentScores(address _oracle, bytes32 _jobId) view returns (tuple(int256 qualityScore, int256 timelinessScore)[])",
-  "function mildThreshold() view returns (int256)",
-  "function severeThreshold() view returns (int256)",
+  "event ArbiterRegistered(bytes32 indexed key, address indexed oracle, bytes32 jobId, uint256 fee)",
+  "event ArbiterRemoved(bytes32 indexed key, uint256 refunded)",
+  "function keyOf(address oracle, bytes32 jobId) pure returns (bytes32)",
+  "function getArbiter(bytes32 key) view returns (tuple(address oracle, uint256 quality, uint256 timeliness, uint256 offenses, uint256 flags, uint256 blockedUntil, uint256 fee, uint256 callSentAt, uint256 callAnsweredAt, uint256 stake, uint256 checkpoints, uint256 exitAt))",
+  "function arbiterClasses(bytes32 key) view returns (uint64[])",
+  "function isFrozen(bytes32 key) view returns (bool)",
+  "function jobIdOf(bytes32 key) view returns (bytes32)",
   "function verdiktaToken() view returns (address)",
-  // Extended config + live counters surfaced on the /contracts page.
-  "function selectionCounter() view returns (uint256)",
-  "function STAKE_REQUIREMENT() view returns (uint256)",
-  "function lockDurationConfig() view returns (uint256)",
-  "function slashAmountConfig() view returns (uint256)",
-  "function shortlistSize() view returns (uint256)",
-  "function minScoreForSelection() view returns (uint256)",
-  "function maxScoreForSelection() view returns (uint256)",
-  "function maxScoreHistory() view returns (uint256)",
-  "function entropyBlock() view returns (uint256)"
+  "function owner() view returns (address)",
+  "function stakeRequirement() view returns (uint256)",
+  "function lockDuration() view returns (uint40)",
+  "function decayPeriod() view returns (uint40)",
+  "function callDeadline() view returns (uint40)",
+  "function unbondingPeriod() view returns (uint40)",
+  "function maxOffenses() view returns (uint8)",
+  "function burnPerBlock() view returns (uint96)",
+  "function burnOnBan() view returns (bool)",
+  "function shortlistSize() view returns (uint16)",
+  "function maxScan() view returns (uint16)",
+  "function liveRandom() view returns (uint8)",
+  "function points() view returns (uint16 gain, uint16 minor, uint16 major, uint16 fail, uint16 nocommit, uint16 start, uint16 cap)",
 ];
 
 // Minimal ERC-20 ABI for token metadata (wVDKA, LINK). Each getter is read
@@ -170,42 +182,38 @@ const ORACLE_EVENTS_ABI = [
   "event OracleResponse(bytes32 indexed requestId)"
 ];
 
-// ReputationAggregator lifecycle events — used by the oracle-health panel to
-// derive per-operator commit/reveal reliability and the network eval success
-// rate from log history (no view function exposes these aggregate stats).
+// v2 ReputationAggregator round events. Every one has the round id as its
+// first, indexed argument, so one OR'd topic0 filter (optionally with topic1 =
+// aggId) fetches a round's whole history. The v1 reveal diagnostics
+// (RevealHashMismatch …), OracleSelected, RevealRequestDispatched and
+// NewOracleResponseRecorded no longer exist: which arbiter sits in a slot, and
+// what it did, is read from getSlot().
 const AGG_EVENT_ABI = [
   "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
-  "event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)",
-  "event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)",
-  "event RevealRequestDispatched(bytes32 indexed aggRequestId, uint256 pollIndex, bytes16 commitHash)",
-  "event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)",
-  "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
+  "event RequestFunded(bytes32 indexed aggRequestId, address indexed requester, uint256 fromCredit, uint256 fromValue)",
+  "event SeedSealed(bytes32 indexed aggRequestId, bytes32 blockHash)",
+  "event JuryDrawn(bytes32 indexed aggRequestId, address indexed drawer, uint256 reward)",
+  "event BeaconStageStarted(bytes32 indexed aggRequestId, uint256 beacons)",
+  "event BeaconPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount)",
+  "event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, bytes32 commitHash)",
+  "event CommitWindowClosed(bytes32 indexed aggRequestId, uint256 closeBlock)",
+  "event CommitPhaseComplete(bytes32 indexed aggRequestId, uint256 promoted)",
+  "event RevealReceived(bytes32 indexed aggRequestId, uint256 pollIndex, bool late, uint8 qcode)",
+  "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, string justifications)",
+  "event EvaluationFailed(bytes32 indexed aggRequestId, uint8 phase)",
+  "event RoundSettled(bytes32 indexed aggRequestId, bool failed)",
+  "event RoundCancelled(bytes32 indexed aggRequestId, uint256 toTreasury)",
+  "event BasePayment(bytes32 indexed aggRequestId, uint256 pollIndex, address indexed payee, uint256 amount)",
+  "event BonusPayment(bytes32 indexed aggRequestId, uint256 pollIndex, address indexed payee, uint256 amount)",
+  "event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount)",
+  "event SlotSkipped(bytes32 indexed aggRequestId, uint256 pollIndex, uint8 reason)",
+];
+// The subset the oracle-health scan needs.
+const HEALTH_EVENTS = [
+  'RequestAIEvaluation', 'JuryDrawn', 'CommitReceived', 'CommitPhaseComplete', 'RevealReceived',
+  'FulfillAIEvaluation', 'EvaluationFailed', 'RoundSettled', 'RoundCancelled',
 ];
 
-// Full per-aggregation lifecycle surface, for the agg-history drill-down (the
-// blow-by-blow of one evaluation: requirements, per-slot commit/reveal outcome,
-// failure reasons, and final fulfillment). Mirrors example-bounty-program's
-// agg-history so the same picture renders here. The getAggregationStatus view is
-// the ETH aggregator's named status getter (the legacy auto-getter is gone).
-const AGG_HISTORY_ABI = [
-  "function commitOraclesToPoll() view returns (uint256)",
-  "function oraclesToPoll() view returns (uint256)",
-  "function requiredResponses() view returns (uint256)",
-  "function maxLikelihoodLength() view returns (uint256)",
-  "function getAggregationStatus(bytes32 aggId) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredN, uint256 clusterP, address requester, uint256 startTimestamp)",
-  "event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)",
-  "event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)",
-  "event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)",
-  "event RevealRequestDispatched(bytes32 indexed aggRequestId, uint256 pollIndex, bytes16 commitHash)",
-  "event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)",
-  "event RevealHashMismatch(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, bytes16 expectedHash, bytes16 gotHash)",
-  "event InvalidRevealFormat(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, string badCid)",
-  "event RevealTooManyScores(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength, uint256 maxAllowed)",
-  "event RevealWrongScoreCount(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength, uint256 expectedLength)",
-  "event RevealTooFewScores(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address operator, uint256 responseLength)",
-  "event EvaluationFailed(bytes32 indexed aggRequestId, string phase)",
-  "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
-];
 // One log query may stall this long before it's treated as failed. ethers'
 // default is 300s: a gateway that accepts the connection and then never answers
 // (how some throttle, rather than rejecting) would otherwise pin an analytics
@@ -213,25 +221,39 @@ const AGG_HISTORY_ABI = [
 const LOG_REQUEST_TIMEOUT_MS = 15_000;
 const LOG_CHUNK_RETRIES = 2;   // a stalled chunk costs timeout × attempts
 
-// Agg-history scan tuning (blocks). Windows are bounded so a drill-down never
-// runs an unbounded full-history scan.
-const AGGH_REQ_SEARCH_MARGIN = 7500;     // ± window around the estimated request block
-const AGGH_EVENT_WINDOW = 8000;          // blocks after the request to collect lifecycle events
-const AGGH_RECENT_FALLBACK_BLOCKS = 250000; // bounded look-back when the timestamp anchor is unavailable
+// Agg-history scan bounds (blocks). The request block is exact (getRoundInfo),
+// so only the end of a round's history has to be estimated.
+const AGGH_MAX_SCAN_BLOCKS = 100_000;   // never scan more than this after the request
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const DEFAULT_BLOCK_SECONDS = 2;        // Base; measured from headers when possible
+
+class NotConfiguredError extends Error {
+  constructor(network) {
+    super(`The v2 Verdikta aggregator is not configured for ${network} yet (see server/config.js)`);
+    this.code = 'NOT_CONFIGURED';
+  }
+}
 
 class VerdiktaService {
   constructor(providerUrl, aggregatorAddress, options = {}) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
-    this.aggregatorAddress = aggregatorAddress;
-    this.aggregator = new ethers.Contract(aggregatorAddress, AGGREGATOR_ABI, this.provider);
-    this.reputationKeeper = null;
-    this.keeperAddress = null;
-
     // Network identity (used in logging / data paths).
     this.networkKey = options.networkKey || 'base-sepolia';
+    // null while the v2 deployment is unknown (config placeholder): every chain
+    // read then fails with NotConfiguredError instead of hitting a v1 contract.
+    this.aggregatorAddress = aggregatorAddress || null;
+    this.aggregator = aggregatorAddress
+      ? new ethers.Contract(aggregatorAddress, AGGREGATOR_ABI, this.provider)
+      : null;
+    this.reputationKeeper = null;
+    this.keeperAddress = null;
+    this.linkTokenAddress = options.linkTokenAddress || null;
 
-    // Aggregator deployment block — lower bound for event scans.
+    // Event-scan floors: the aggregator's deploy block (round events) and the
+    // keeper's (registry events; the keeper predates the aggregator).
     this.aggregatorFromBlock = options.aggregatorFromBlock || 0;
+    this.keeperFromBlock = options.keeperFromBlock || this.aggregatorFromBlock || 0;
 
     // Endpoint for historical eth_getLogs, plus the largest block range it will
     // serve in one query — see config.getLogScanRpc(). The two travel together:
@@ -250,10 +272,21 @@ class VerdiktaService {
     // In-memory caches that let the by-class, by-owner and My Arbiters paths
     // share work. getAllOracles is the heavy enumeration; owner() is static.
     this._oraclesCache = null;          // { data, ts }
+    this._registryScan = null;          // { toBlock, events: [] } — keeper logs scanned so far
+    this._registryPromise = null;       // in-flight incremental scan (shared)
+    this._statusCtx = null;             // { value, ts } — keeper/aggregator config status derivation needs
+    this._slotCache = new Map();        // aggIdLower → slots (only for settled/cancelled rounds: final)
+    this._blockSeconds = null;          // { value, ts }
     this._ownerMap = {};                // { operatorLower: { owner, ts } }
     this._senderMap = {};               // { operatorLower: { senders: [addr], ts } }
     this._gasPrice = null;              // { value: bigint, ts }
     this._jobSenderCache = {};          // { operatorLower: { map, ts } }
+  }
+
+  /** The aggregator contract, or throw NotConfiguredError (placeholder address). */
+  _agg() {
+    if (!this.aggregator) throw new NotConfiguredError(this.networkKey);
+    return this.aggregator;
   }
 
   /** Provider for historical log scans. Falls back to the read RPC. */
@@ -280,17 +313,18 @@ class VerdiktaService {
     return this._receiptProvider;
   }
 
+
   /**
-   * Get ReputationKeeper contract instance (lazy-loaded)
+   * Get ReputationKeeper contract instance (lazy-loaded from aggregator.keeper()).
    */
   async getReputationKeeper() {
     if (!this.reputationKeeper) {
       try {
-        this.keeperAddress = await withRetry(() => this.aggregator.reputationKeeper());
+        this.keeperAddress = await withRetry(() => this._agg().keeper());
         this.reputationKeeper = new ethers.Contract(this.keeperAddress, KEEPER_ABI, this.provider);
-        logger.info('ReputationKeeper loaded', { address: this.keeperAddress });
+        logger.info('ReputationKeeper loaded', { network: this.networkKey, address: this.keeperAddress });
       } catch (error) {
-        logger.error('Failed to get ReputationKeeper address', { msg: error.message });
+        logger.error('Failed to get ReputationKeeper address', { network: this.networkKey, msg: error.message });
         throw error;
       }
     }
@@ -298,380 +332,354 @@ class VerdiktaService {
   }
 
   /**
-   * Get aggregator configuration
+   * Seconds per block, measured from two headers ~10k blocks apart (cached 1 h).
+   * The timing and daily-bucket maths use it instead of assuming Base's 2 s.
+   */
+  async getBlockSeconds() {
+    if (this._blockSeconds && Date.now() - this._blockSeconds.ts < 3600_000) return this._blockSeconds.value;
+    let value = DEFAULT_BLOCK_SECONDS;
+    try {
+      const latest = await withRetry(() => this.provider.getBlockNumber());
+      const span = Math.min(10_000, latest);
+      if (span > 0) {
+        const [a, b] = await Promise.all([
+          withRetry(() => this.provider.getBlock(latest - span)),
+          withRetry(() => this.provider.getBlock(latest)),
+        ]);
+        if (a && b && b.timestamp > a.timestamp) value = (Number(b.timestamp) - Number(a.timestamp)) / span;
+      }
+    } catch (err) {
+      logger.warn('block time measurement failed; assuming 2 s', { network: this.networkKey, msg: err.message });
+    }
+    this._blockSeconds = { value, ts: Date.now() };
+    return value;
+  }
+
+  /**
+   * Aggregator configuration (v2 getters). K arbiters are drawn per round; the
+   * commit phase closes at M+ = M + ceil((K − M) / 2) commits (or after T+ with
+   * at least M); M commits are promoted; the N-th reveal finalizes; the P closest
+   * reveals form the cluster and earn the bonus.
    */
   async getAggregatorConfig() {
+    const agg = this._agg();
     try {
-      const [
-        commitOraclesToPoll,
-        oraclesToPoll,
-        requiredResponses,
-        clusterSize,
-        bonusMultiplier,
-        responseTimeoutSeconds,
-        maxOracleFee
-      ] = await Promise.all([
-        withRetry(() => this.aggregator.commitOraclesToPoll()),
-        withRetry(() => this.aggregator.oraclesToPoll()),
-        withRetry(() => this.aggregator.requiredResponses()),
-        withRetry(() => this.aggregator.clusterSize()),
-        withRetry(() => this.aggregator.bonusMultiplier()),
-        withRetry(() => this.aggregator.responseTimeoutSeconds()),
-        withRetry(() => this.aggregator.maxOracleFee())
+      const [K, M, N, P, bonusMultiplier, responseTimeoutSeconds, maxOracleFee] = await Promise.all([
+        withRetry(() => agg.K()),
+        withRetry(() => agg.M()),
+        withRetry(() => agg.N()),
+        withRetry(() => agg.P()),
+        withRetry(() => agg.bonusMultiplier()),
+        withRetry(() => agg.responseTimeoutSeconds()),
+        withRetry(() => agg.maxOracleFee()),
       ]);
-
-      // Extended config (newer getters). Fetched tolerantly — a deployment
-      // missing any one yields null for that field rather than failing the page.
+      // The rest is read tolerantly: a missing getter yields null, not a failed page.
       const num = (fn) => withRetry(fn).then((v) => Number(v)).catch(() => null);
+      const str = (fn) => withRetry(fn).then((v) => String(v)).catch(() => null);
       const [
-        maxLikelihoodLength, lastEntropyBlock,
-        maxCidCount, maxCidLength, maxAddendumLength,
-        cT, cQ, sT, sQ, rT, rQ, mT, mQ
+        tPlus, revealWindow, drawRewardFees, promoteRewardFees, requesterDrawPriority,
+        settlePerRequest, dispatchGas, spreadFloor, roundCount, treasury, beacons, paused,
       ] = await Promise.all([
-        num(() => this.aggregator.maxLikelihoodLength()),
-        num(() => this.aggregator.lastEntropyBlock()),
-        num(() => this.aggregator.MAX_CID_COUNT()),
-        num(() => this.aggregator.MAX_CID_LENGTH()),
-        num(() => this.aggregator.MAX_ADDENDUM_LENGTH()),
-        num(() => this.aggregator.clusteredTimelinessScore()),
-        num(() => this.aggregator.clusteredQualityScore()),
-        num(() => this.aggregator.selectedTimelinessScore()),
-        num(() => this.aggregator.selectedQualityScore()),
-        num(() => this.aggregator.revealedTimelinessScore()),
-        num(() => this.aggregator.revealedQualityScore()),
-        num(() => this.aggregator.committedTimelinessScore()),
-        num(() => this.aggregator.committedQualityScore())
+        num(() => agg.tPlus()),
+        num(() => agg.revealWindow()),
+        num(() => agg.drawRewardFees()),
+        num(() => agg.promoteRewardFees()),
+        num(() => agg.requesterDrawPriority()),
+        num(() => agg.settlePerRequest()),
+        num(() => agg.dispatchGas()),
+        num(() => agg.spreadFloor()),
+        num(() => agg.roundCount()),
+        str(() => agg.treasury()),
+        str(() => agg.beacons()),
+        withRetry(() => agg.paused()).then(Boolean).catch(() => null),
       ]);
-
+      const k = Number(K), m = Number(M);
       return {
-        commitOraclesToPoll: Number(commitOraclesToPoll),
-        oraclesToPoll: Number(oraclesToPoll),
-        requiredResponses: Number(requiredResponses),
-        clusterSize: Number(clusterSize),
+        K: k,
+        M: m,
+        N: Number(N),
+        P: Number(P),
+        mPlus: mPlus(k, m),
         bonusMultiplier: Number(bonusMultiplier),
         responseTimeoutSeconds: Number(responseTimeoutSeconds),
+        tPlus,
+        revealWindow,
         maxOracleFee: ethers.formatEther(maxOracleFee),
-        maxLikelihoodLength,
-        lastEntropyBlock,
-        inputLimits: { maxCidCount, maxCidLength, maxAddendumLength },
-        // Per-outcome reputation score changes (timeliness/quality).
-        scoreDeltas: {
-          clustered: { timeliness: cT, quality: cQ },
-          selected: { timeliness: sT, quality: sQ },
-          revealed: { timeliness: rT, quality: rQ },
-          committed: { timeliness: mT, quality: mQ }
-        }
+        maxOracleFeeWei: maxOracleFee.toString(),
+        drawRewardFees,
+        promoteRewardFees,
+        requesterDrawPriority,
+        settlePerRequest,
+        dispatchGas,
+        spreadFloor,
+        roundCount,
+        treasury,
+        beacons: beacons && beacons !== ZERO_ADDRESS ? beacons : null,
+        paused,
       };
     } catch (error) {
-      logger.error('Failed to get aggregator config', { msg: error.message });
+      logger.error('Failed to get aggregator config', { network: this.networkKey, msg: error.message });
       throw error;
     }
   }
 
   /**
-   * Extended ReputationKeeper config + live counters for the /contracts page:
-   * stake requirement, penalty (lock/slash) config, selection-algorithm tuning,
-   * and the live selection-round counter. Each field is read tolerantly.
+   * ReputationKeeper config for the /contracts page: stake, penalties (Table 2),
+   * liveness, selection tuning and the score points (Table 1). Each field is
+   * read tolerantly (null on failure).
    */
   async getKeeperConfig() {
     const keeper = await this.getReputationKeeper();
     const num = (fn) => withRetry(fn).then((v) => Number(v)).catch(() => null);
     const ether = (fn) => withRetry(fn).then((v) => ethers.formatEther(v)).catch(() => null);
     const [
-      selectionCounter, stakeRequirement, lockDurationSeconds, slashAmount,
-      shortlistSize, minScoreForSelection, maxScoreForSelection, maxScoreHistory, entropyBlock
+      stakeRequirement, lockDurationSeconds, decayPeriodSeconds, callDeadlineSeconds, unbondingPeriodSeconds,
+      maxOffenses, burnPerBlock, burnOnBan, shortlistSize, maxScan, liveRandom, points, owner,
     ] = await Promise.all([
-      num(() => keeper.selectionCounter()),
-      ether(() => keeper.STAKE_REQUIREMENT()),
-      num(() => keeper.lockDurationConfig()),
-      ether(() => keeper.slashAmountConfig()),
+      ether(() => keeper.stakeRequirement()),
+      num(() => keeper.lockDuration()),
+      num(() => keeper.decayPeriod()),
+      num(() => keeper.callDeadline()),
+      num(() => keeper.unbondingPeriod()),
+      num(() => keeper.maxOffenses()),
+      ether(() => keeper.burnPerBlock()),
+      withRetry(() => keeper.burnOnBan()).then(Boolean).catch(() => null),
       num(() => keeper.shortlistSize()),
-      num(() => keeper.minScoreForSelection()),
-      num(() => keeper.maxScoreForSelection()),
-      num(() => keeper.maxScoreHistory()),
-      num(() => keeper.entropyBlock())
+      num(() => keeper.maxScan()),
+      num(() => keeper.liveRandom()),
+      withRetry(() => keeper.points()).then((p) => ({
+        gain: Number(p.gain), minor: Number(p.minor), major: Number(p.major), fail: Number(p.fail),
+        nocommit: Number(p.nocommit), start: Number(p.start), cap: Number(p.cap),
+      })).catch(() => null),
+      withRetry(() => keeper.owner()).then(String).catch(() => null),
     ]);
     return {
-      selectionCounter, stakeRequirement, lockDurationSeconds, slashAmount,
-      shortlistSize, minScoreForSelection, maxScoreForSelection, maxScoreHistory, entropyBlock
+      stakeRequirement, lockDurationSeconds, decayPeriodSeconds, callDeadlineSeconds, unbondingPeriodSeconds,
+      maxOffenses, burnPerBlock, burnOnBan, shortlistSize, maxScan, liveRandom, points, owner,
     };
   }
 
   /**
-   * Get total registered oracle count
+   * What status derivation needs from the contracts (points, callDeadline, the
+   * aggregator's fee ceiling), plus the stake requirement and unbonding period
+   * for the My Arbiters UI. Cached 5 min; falls back to the keeper defaults.
+   */
+  async _getStatusCtx() {
+    if (this._statusCtx && Date.now() - this._statusCtx.ts < 300_000) return this._statusCtx.value;
+    const keeper = await this.getReputationKeeper();
+    const [points, callDeadline, stakeRequirement, unbondingPeriod, maxOracleFee] = await Promise.all([
+      withRetry(() => keeper.points()).then((p) => ({
+        gain: Number(p.gain), minor: Number(p.minor), major: Number(p.major), fail: Number(p.fail),
+        nocommit: Number(p.nocommit), start: Number(p.start), cap: Number(p.cap),
+      })).catch(() => DEFAULT_POINTS),
+      withRetry(() => keeper.callDeadline()).then(Number).catch(() => DEFAULT_CALL_DEADLINE),
+      withRetry(() => keeper.stakeRequirement()).catch(() => null),
+      withRetry(() => keeper.unbondingPeriod()).then(Number).catch(() => null),
+      withRetry(() => this._agg().maxOracleFee()).catch(() => null),
+    ]);
+    const value = { points, callDeadline, stakeRequirementWei: stakeRequirement, unbondingPeriod, maxOracleFeeWei: maxOracleFee };
+    this._statusCtx = { value, ts: Date.now() };
+    return value;
+  }
+
+  /**
+   * The keeper's ArbiterRegistered / ArbiterRemoved logs, scanned incrementally
+   * from keeperFromBlock (only new blocks after the first call). A failed chunk
+   * fails the whole call without advancing, so the registry is never built from
+   * a partial history.
+   * @returns {Promise<Array>} decoded events (see arbiterStatus.reduceRegistry)
+   */
+  async _getRegistryEvents() {
+    if (this._registryPromise) return this._registryPromise;
+    this._registryPromise = (async () => {
+      const keeper = await this.getReputationKeeper();
+      const provider = this._getLogProvider();
+      const iface = keeper.interface;
+      const regTopic = iface.getEvent('ArbiterRegistered').topicHash;
+      const remTopic = iface.getEvent('ArbiterRemoved').topicHash;
+      const latest = await withRetry(() => provider.getBlockNumber());
+      const prev = this._registryScan;
+      const from = prev ? prev.toBlock + 1 : this.keeperFromBlock;
+      const events = prev ? [...prev.events] : [];
+      if (from <= latest) {
+        const ranges = [];
+        for (let start = from; start <= latest; start += this.logMaxChunk) {
+          ranges.push({ start, end: Math.min(start + this.logMaxChunk - 1, latest) });
+        }
+        const found = [];
+        await mapWithConcurrency(ranges, 4, async ({ start, end }) => {
+          const logs = await withRetry(() => provider.getLogs({
+            address: this.keeperAddress, topics: [[regTopic, remTopic]], fromBlock: start, toBlock: end,
+          }), { retries: LOG_CHUNK_RETRIES });
+          for (const log of logs) {
+            let p;
+            try { p = iface.parseLog({ topics: log.topics, data: log.data }); } catch { continue; }
+            found.push({
+              name: p.name,
+              key: String(p.args.key),
+              oracle: p.name === 'ArbiterRegistered' ? ethers.getAddress(p.args.oracle) : undefined,
+              jobId: p.name === 'ArbiterRegistered' ? String(p.args.jobId) : undefined,
+              fee: p.name === 'ArbiterRegistered' ? p.args.fee : undefined,
+              blockNumber: log.blockNumber,
+              logIndex: log.index,
+            });
+          }
+        });
+        events.push(...found);
+        if (!prev) logger.info('keeper registry scanned', { network: this.networkKey, fromBlock: from, toBlock: latest, events: found.length, chunks: ranges.length });
+      }
+      this._registryScan = { toBlock: latest, events };
+      return events;
+    })();
+    try {
+      return await this._registryPromise;
+    } finally {
+      this._registryPromise = null;
+    }
+  }
+
+  /** Live (registered, not removed) arbiters from the keeper logs: Map keyLower → entry. */
+  async getRegistry() {
+    return reduceRegistry(await this._getRegistryEvents());
+  }
+
+  /**
+   * Total registered arbiters (live keys in the keeper's logs).
    */
   async getOracleCount() {
     try {
-      const keeper = await this.getReputationKeeper();
-      const count = await withRetry(() => keeper.getRegisteredOraclesCount());
-      return Number(count);
+      return (await this.getRegistry()).size;
     } catch (error) {
-      logger.error('Failed to get oracle count', { msg: error.message });
+      logger.error('Failed to get arbiter count', { network: this.networkKey, msg: error.message });
       throw error;
     }
   }
 
   /**
-   * Get oracle identity at index
+   * Read one arbiter's live state: getArbiter + arbiterClasses + isFrozen, and
+   * derive its display status (utils/arbiterStatus.deriveStatus).
    */
-  async getOracleAtIndex(index) {
+  async _readArbiter(entry, ctx, now) {
     const keeper = await this.getReputationKeeper();
-    // Get oracle address and jobId (auto-getter doesn't return classes array)
-    const [oracle, jobId] = await withRetry(() => keeper.registeredOracles(index));
-    // Get classes separately
-    const classes = await withRetry(() => keeper.getOracleClasses(index));
-    return {
-      oracle,
-      jobId,
-      classes: classes.map(c => Number(c))
+    const [a, classes, frozen] = await Promise.all([
+      withRetry(() => keeper.getArbiter(entry.key)),
+      withRetry(() => keeper.arbiterClasses(entry.key)),
+      withRetry(() => keeper.isFrozen(entry.key)).catch(() => null),
+    ]);
+    const rec = {
+      key: entry.key,
+      oracle: ethers.getAddress(a.oracle),
+      jobId: entry.jobId,
+      classes: classes.map((c) => Number(c)),
+      qualityScore: Number(a.quality),
+      timelinessScore: Number(a.timeliness),
+      offenses: Number(a.offenses),
+      flags: Number(a.flags),
+      flagNames: flagNames(a.flags),
+      blockedUntil: Number(a.blockedUntil),
+      fee: ethers.formatEther(a.fee),
+      feeWei: a.fee.toString(),
+      callSentAt: Number(a.callSentAt),
+      callAnsweredAt: Number(a.callAnsweredAt),
+      stake: ethers.formatEther(a.stake),
+      stakeWei: a.stake.toString(),
+      exitAt: Number(a.exitAt),
+      frozen: frozen == null ? null : Boolean(frozen),
+      registeredBlock: entry.registeredBlock,
     };
+    const st = deriveStatus(
+      { flags: rec.flags, quality: rec.qualityScore, timeliness: rec.timelinessScore, offenses: rec.offenses,
+        blockedUntil: rec.blockedUntil, callSentAt: rec.callSentAt, feeWei: a.fee, frozen: rec.frozen },
+      { now, points: ctx.points, callDeadline: ctx.callDeadline, maxOracleFeeWei: ctx.maxOracleFeeWei },
+    );
+    rec.status = st.status;
+    rec.statusReasons = st.reasons;
+    rec.selectable = st.selectable;
+    rec.exit = exitState(rec, now);
+    rec.understakedBy = ctx.stakeRequirementWei != null && a.stake < ctx.stakeRequirementWei
+      ? ethers.formatEther(ctx.stakeRequirementWei - a.stake)
+      : null;
+    return rec;
   }
 
   /**
-   * Get detailed oracle info
-   */
-  async getOracleInfo(oracleAddress, jobId) {
-    try {
-      const keeper = await this.getReputationKeeper();
-      const info = await withRetry(() => keeper.getOracleInfo(oracleAddress, jobId));
-
-      return {
-        isActive: info.isActive,
-        qualityScore: Number(info.qualityScore),
-        timelinessScore: Number(info.timelinessScore),
-        callCount: Number(info.callCount),
-        jobId: info.jobId,
-        fee: ethers.formatEther(info.fee),
-        stakeAmount: ethers.formatEther(info.stakeAmount),
-        lockedUntil: Number(info.lockedUntil),
-        blocked: info.blocked
-      };
-    } catch (error) {
-      logger.error('Failed to get oracle info', { oracle: oracleAddress, msg: error.message });
-      throw error;
-    }
-  }
-
-  /**
-   * Get recent score history for an oracle
-   */
-  async getRecentScores(oracleAddress, jobId) {
-    try {
-      const keeper = await this.getReputationKeeper();
-      const scores = await withRetry(() => keeper.getRecentScores(oracleAddress, jobId));
-      return scores.map(s => ({
-        qualityScore: Number(s.qualityScore),
-        timelinessScore: Number(s.timelinessScore)
-      }));
-    } catch (error) {
-      logger.warn('Failed to get recent scores', { oracle: oracleAddress, msg: error.message });
-      return [];
-    }
-  }
-
-  /**
-   * Get reputation thresholds from the keeper contract
-   */
-  async getThresholds() {
-    try {
-      const keeper = await this.getReputationKeeper();
-      const [mildThreshold, severeThreshold] = await Promise.all([
-        withRetry(() => keeper.mildThreshold()),
-        withRetry(() => keeper.severeThreshold())
-      ]);
-      return {
-        mildThreshold: Number(mildThreshold),
-        severeThreshold: Number(severeThreshold)
-      };
-    } catch (error) {
-      logger.warn('Failed to get thresholds, using defaults', { msg: error.message });
-      return { mildThreshold: -300, severeThreshold: -900 };
-    }
-  }
-
-  /**
-   * Analyze recent scores to determine if an oracle is unresponsive
-   * An oracle is considered unresponsive if:
-   * 1. Current timeliness score is significantly negative
-   * 2. Recent timeliness scores show declining trend
-   * 3. Most recent scores show rapid decline (missing responses)
-   */
-  analyzeResponsiveness(recentScores, currentTimelinessScore, thresholds) {
-    // Check 1: Current timeliness is significantly negative (below -60, i.e. 3+ missed responses)
-    // Each missed response gives -20, so -60 means at least 3 failures
-    if (currentTimelinessScore <= -60) {
-      return {
-        isUnresponsive: true,
-        reason: 'low_timeliness'
-      };
-    }
-
-    // If we have recent scores, analyze the trend
-    if (recentScores && recentScores.length >= 2) {
-      // Check 2: Count total declines in recent history (not just consecutive)
-      let declineCount = 0;
-      for (let i = 1; i < recentScores.length; i++) {
-        if (recentScores[i].timelinessScore < recentScores[i - 1].timelinessScore) {
-          declineCount++;
-        }
-      }
-
-      // If more than half of recent changes are declines, likely unresponsive
-      const declineRatio = declineCount / (recentScores.length - 1);
-      if (declineRatio >= 0.6 && currentTimelinessScore < 0) {
-        return {
-          isUnresponsive: true,
-          reason: 'declining_timeliness'
-        };
-      }
-
-      // Check 3: Sustained recent decline - look at last 8 scores.
-      // Max single-step drop is 20, so a 140-point net drop over 7 increments
-      // is equivalent to 7 consecutive declines (no zigzag possible).
-      if (recentScores.length >= 8) {
-        const last8 = recentScores.slice(-8);
-        const recentDrop = last8[0].timelinessScore - last8[last8.length - 1].timelinessScore;
-        if (recentDrop >= 140) {
-          return {
-            isUnresponsive: true,
-            reason: 'rapid_decline'
-          };
-        }
-      }
-    }
-
-    return { isUnresponsive: false, reason: null };
-  }
-
-  /**
-   * Get all oracles with their info (batched for efficiency).
+   * Every registered arbiter with its live state and status (batched).
    *
    * Memoized per service instance so the by-class, by-owner and My Arbiters
    * paths can share one registry walk. Pass { maxAgeMs: 0 } to force a fresh
-   * read (e.g. right after a deregister tx).
+   * read (e.g. right after an exit or registration tx).
+   *
+   * A key that can't be read (after retries) yields { key, oracle, error } rather
+   * than failing the whole dataset, so partial data still renders.
    */
   async getAllOracles({ maxAgeMs = 60000 } = {}) {
     if (this._oraclesCache && Date.now() - this._oraclesCache.ts < maxAgeMs) {
       return this._oraclesCache.data;
     }
     try {
-      const count = await this.getOracleCount();
-      logger.info('Fetching all oracles', { count });
-
-      const oracles = [];
-
-      // Small batches keep us under the public RPC's burst limits. A single
-      // index that can't be read (after retries) yields an error sentinel
-      // rather than failing the whole dataset, so partial data still renders.
-      const batchSize = 4;
-      for (let i = 0; i < count; i += batchSize) {
-        const batchEnd = Math.min(i + batchSize, count);
-        const batchPromises = [];
-
-        for (let j = i; j < batchEnd; j++) {
-          const index = j;
-          batchPromises.push(
-            this.getOracleAtIndex(index)
-              .then(o =>
-                Promise.all([
-                  this.getOracleInfo(o.oracle, o.jobId),
-                  this.getRecentScores(o.oracle, o.jobId)
-                ]).then(([info, recentScores]) => ({ ...o, ...info, recentScores }))
-              )
-              .catch(err => {
-                logger.warn('Failed to read oracle, skipping', { index, msg: err.message });
-                return { index, error: err.message };
-              })
-          );
-        }
-
-        const oraclesWithInfo = await Promise.all(batchPromises);
-        oracles.push(...oraclesWithInfo);
-      }
-
+      const [registry, ctx] = await Promise.all([this.getRegistry(), this._getStatusCtx()]);
+      const entries = [...registry.values()];
+      logger.info('Fetching all arbiters', { network: this.networkKey, count: entries.length });
+      const now = Math.floor(Date.now() / 1000);
+      // Small concurrency keeps us under the public RPC's burst limits.
+      const oracles = await mapWithConcurrency(entries, 4, (e) =>
+        this._readArbiter(e, ctx, now).catch((err) => {
+          logger.warn('Failed to read arbiter, skipping', { key: e.key, msg: err.message });
+          return { key: e.key, oracle: e.oracle, jobId: e.jobId, error: err.message };
+        }));
       this._oraclesCache = { data: oracles, ts: Date.now() };
       return oracles;
     } catch (error) {
-      logger.error('Failed to get all oracles', { msg: error.message });
+      logger.error('Failed to get all arbiters', { network: this.networkKey, msg: error.message });
       throw error;
     }
   }
 
   /**
-   * Get arbiter availability statistics per class
+   * Arbiter availability per class: status tallies (see arbiterStatus.STATUSES),
+   * average scores, distinct operators and the per-arbiter list.
    */
   async getArbiterAvailabilityByClass() {
     try {
-      const [oracles, thresholds] = await Promise.all([
-        this.getAllOracles(),
-        this.getThresholds()
-      ]);
+      const oracles = await this.getAllOracles();
       const byClass = {};
-      const now = Math.floor(Date.now() / 1000);
 
       for (const oracle of oracles) {
         if (oracle.error) continue;
-
-        // Determine if oracle is currently blocked
-        const isBlocked = oracle.blocked && oracle.lockedUntil > now;
-
-        // Analyze responsiveness based on recent scores
-        const responsiveness = this.analyzeResponsiveness(
-          oracle.recentScores,
-          oracle.timelinessScore,
-          thresholds
-        );
-
-        // Determine arbiter status - "new" if called fewer than 3 times
-        const isNew = oracle.callCount < 3;
-        let status;
-        if (!oracle.isActive) status = 'inactive';
-        else if (isBlocked) status = 'blocked';
-        else if (responsiveness.isUnresponsive) status = 'unresponsive';
-        else if (isNew) status = 'new';
-        else status = 'active';
-
         for (const classId of oracle.classes) {
           if (!byClass[classId]) {
             byClass[classId] = {
               classId,
-              active: 0,
-              new: 0,
-              blocked: 0,
-              inactive: 0,
-              unresponsive: 0,
+              ...emptyTally(),
               total: 0,
+              selectable: 0,
               avgQualityScore: 0,
               avgTimelinessScore: 0,
-              totalCallCount: 0,
               qualityScores: [],
               timelinessScores: [],
               operatorAddresses: new Set(),
               arbiterList: []
             };
           }
-
-          byClass[classId].total++;
-          // Track unique operator contract addresses
-          if (oracle.oracle) {
-            byClass[classId].operatorAddresses.add(oracle.oracle.toLowerCase());
-            byClass[classId].arbiterList.push({
-              address: oracle.oracle,
-              jobId: oracle.jobId,
-              classes: oracle.classes || [classId],
-              callCount: oracle.callCount,
-              qualityScore: oracle.qualityScore,
-              timelinessScore: oracle.timelinessScore,
-              fee: oracle.fee,
-              status
-            });
-          }
-
-          byClass[classId][status]++;
-
-          byClass[classId].totalCallCount += oracle.callCount;
-          byClass[classId].qualityScores.push(oracle.qualityScore);
-          byClass[classId].timelinessScores.push(oracle.timelinessScore);
+          const cls = byClass[classId];
+          cls.total++;
+          cls[oracle.status]++;
+          if (oracle.selectable) cls.selectable++;
+          cls.operatorAddresses.add(oracle.oracle.toLowerCase());
+          cls.arbiterList.push({
+            address: oracle.oracle,
+            jobId: oracle.jobId,
+            key: oracle.key,
+            classes: oracle.classes,
+            qualityScore: oracle.qualityScore,
+            timelinessScore: oracle.timelinessScore,
+            offenses: oracle.offenses,
+            fee: oracle.fee,
+            status: oracle.status,
+            statusReasons: oracle.statusReasons
+          });
+          cls.qualityScores.push(oracle.qualityScore);
+          cls.timelinessScores.push(oracle.timelinessScore);
         }
       }
 
@@ -679,17 +687,11 @@ class VerdiktaService {
       for (const classId of Object.keys(byClass)) {
         const cls = byClass[classId];
         if (cls.qualityScores.length > 0) {
-          cls.avgQualityScore = Math.round(
-            cls.qualityScores.reduce((a, b) => a + b, 0) / cls.qualityScores.length
-          );
-          cls.avgTimelinessScore = Math.round(
-            cls.timelinessScores.reduce((a, b) => a + b, 0) / cls.timelinessScores.length
-          );
+          cls.avgQualityScore = Math.round(cls.qualityScores.reduce((a, b) => a + b, 0) / cls.qualityScores.length);
+          cls.avgTimelinessScore = Math.round(cls.timelinessScores.reduce((a, b) => a + b, 0) / cls.timelinessScores.length);
         }
-        // Convert operator Set to count and list
         cls.operators = cls.operatorAddresses.size;
         cls.operatorList = Array.from(cls.operatorAddresses);
-        // Remove raw data from output
         delete cls.qualityScores;
         delete cls.timelinessScores;
         delete cls.operatorAddresses;
@@ -701,56 +703,36 @@ class VerdiktaService {
         timestamp: Date.now()
       };
     } catch (error) {
-      logger.error('Failed to get arbiter availability', { msg: error.message });
+      logger.error('Failed to get arbiter availability', { network: this.networkKey, msg: error.message });
       throw error;
     }
-  }
-
-  /**
-   * Derive a display status for an arbiter from its on-chain info, matching the
-   * logic used by the availability table.
-   */
-  _statusFor(oracle, thresholds, now) {
-    const isBlocked = oracle.blocked && oracle.lockedUntil > now;
-    const responsiveness = this.analyzeResponsiveness(
-      oracle.recentScores,
-      oracle.timelinessScore,
-      thresholds
-    );
-    if (!oracle.isActive) return 'inactive';
-    if (isBlocked) return 'blocked';
-    if (responsiveness.isUnresponsive) return 'unresponsive';
-    if (oracle.callCount < 3) return 'new';
-    return 'active';
   }
 
   /**
    * Arbiters owned by a given wallet, grouped by operator contract.
    *
    * Ownership is the operator contract's own `owner()` (Chainlink ConfirmedOwner)
-   * — the address that earns ETH (ethOwed on the aggregator) and may deregister.
-   * Claimable ETH is per-owner (returned once at the top level as claimableEth); the
-   * per-operator withdrawableLink is LEGACY (leftover old-aggregator LINK). Stake/lock
-   * state is reported per (oracle, jobId).
+   * — the address the keeper lets pause, re-fee, top up and exit the arbiter, and
+   * the one that earns ETH (ethOwed on the aggregator). Claimable ETH is per owner
+   * (returned once at the top level as claimableEth); the per-operator
+   * withdrawableLink is LEGACY (leftover old-aggregator LINK).
    *
-   * The keeper + aggregator addresses are returned so the client can build the
-   * deregister and withdrawEth txs.
+   * The keeper + aggregator addresses, the stake requirement and the unbonding
+   * period are returned so the client can build and explain the write txs.
    */
   async getOwnedArbiters(ownerAddress) {
     const target = String(ownerAddress).toLowerCase();
     // Ensure keeperAddress is resolved for the client write path.
     await this.getReputationKeeper();
 
-    const [oracles, thresholds] = await Promise.all([
-      // Force-fresh so the page reflects state right after a claim/deregister tx.
+    const [oracles, ctx] = await Promise.all([
+      // Force-fresh so the page reflects state right after a tx.
       this.getAllOracles({ maxAgeMs: 0 }),
-      this.getThresholds()
+      this._getStatusCtx(),
     ]);
 
-    // Distinct operator contracts (skip indexes that failed to read).
-    const operatorAddrs = [...new Set(
-      oracles.filter(o => !o.error && o.oracle).map(o => o.oracle)
-    )];
+    // Distinct operator contracts (skip keys that failed to read).
+    const operatorAddrs = [...new Set(oracles.filter(o => !o.error && o.oracle).map(o => o.oracle))];
 
     // Read owner() + withdrawable() per operator, tolerating failures so one
     // bad operator doesn't sink the whole list.
@@ -761,15 +743,10 @@ class VerdiktaService {
         withRetry(() => op.owner()).catch(() => null),
         withRetry(() => op.withdrawable()).catch(() => null)
       ]);
-      ownerInfo[addr.toLowerCase()] = {
-        owner: owner ? String(owner) : null,
-        withdrawable
-      };
+      ownerInfo[addr.toLowerCase()] = { owner: owner ? String(owner) : null, withdrawable };
     }));
 
-    const now = Math.floor(Date.now() / 1000);
     const byOperator = {};
-
     for (const oracle of oracles) {
       if (oracle.error || !oracle.oracle) continue;
       const info = ownerInfo[oracle.oracle.toLowerCase()];
@@ -779,24 +756,31 @@ class VerdiktaService {
         byOperator[oracle.oracle] = {
           operator: oracle.oracle,
           owner: info.owner,
-          withdrawableLink: info.withdrawable != null
-            ? ethers.formatEther(info.withdrawable)
-            : null,
+          withdrawableLink: info.withdrawable != null ? ethers.formatEther(info.withdrawable) : null,
           jobs: []
         };
       }
 
       byOperator[oracle.oracle].jobs.push({
+        key: oracle.key,
         jobId: oracle.jobId,
         classes: oracle.classes,
-        status: this._statusFor(oracle, thresholds, now),
-        isActive: oracle.isActive,
-        blocked: oracle.blocked,
-        lockedUntil: oracle.lockedUntil,
-        locked: oracle.lockedUntil > now,
-        stakeAmount: oracle.stakeAmount, // formatted ether string ("100.0")
+        status: oracle.status,
+        statusReasons: oracle.statusReasons,
+        selectable: oracle.selectable,
+        flags: oracle.flags,
+        flagNames: oracle.flagNames,
+        frozen: oracle.frozen,
+        blockedUntil: oracle.blockedUntil,
+        callSentAt: oracle.callSentAt,
+        exitAt: oracle.exitAt,
+        exit: oracle.exit,
+        stake: oracle.stake,           // formatted ether string ("100.0")
+        stakeWei: oracle.stakeWei,
+        understakedBy: oracle.understakedBy,
         fee: oracle.fee,
-        callCount: oracle.callCount,
+        feeWei: oracle.feeWei,
+        offenses: oracle.offenses,
         qualityScore: oracle.qualityScore,
         timelinessScore: oracle.timelinessScore
       });
@@ -833,15 +817,19 @@ class VerdiktaService {
       }));
     }
 
-    // Live claimable ETH is per-OWNER (ethOwed on the aggregator), aggregated across all
-    // the owner's operators — unlike the legacy per-operator LINK (withdrawableLink),
-    // which is retained on each operator card only for draining old-aggregator LINK.
+    // Live claimable ETH is per-OWNER (ethOwed on the aggregator): base fees and
+    // bonuses across all the owner's operators, plus any draw / promote rewards and
+    // requester refunds this wallet earned.
     const ethOwedWei = await this.getEthOwed(ownerAddress);
 
     return {
       owner: ownerAddress,
       keeperAddress: this.keeperAddress,
       aggregatorAddress: this.aggregatorAddress,
+      stakeRequirement: ctx.stakeRequirementWei != null ? ethers.formatEther(ctx.stakeRequirementWei) : null,
+      unbondingPeriodSeconds: ctx.unbondingPeriod,
+      callDeadlineSeconds: ctx.callDeadline,
+      maxOracleFee: ctx.maxOracleFeeWei != null ? ethers.formatEther(ctx.maxOracleFeeWei) : null,
       claimableEth: ethOwedWei != null ? ethers.formatEther(ethOwedWei) : null,
       operators: Object.values(byOperator),
       timestamp: Date.now()
@@ -1147,15 +1135,48 @@ class VerdiktaService {
     return senderByJob;
   }
 
+  // --- Round slots ----------------------------------------------------------
+
+  /**
+   * getSlot(aggId, i) for i < K, stopping at the first empty slot (an undrawn
+   * round has none). Slots of a settled or cancelled round no longer change, so
+   * those are cached; pass `final` to allow caching.
+   * @returns {Promise<Array<{index, oracle, fee, key, payee, committedAt, flags, qcode, commitHash}>>}
+   */
+  async _readSlots(aggId, K, { final = false } = {}) {
+    const ck = String(aggId).toLowerCase();
+    if (this._slotCache.has(ck)) return this._slotCache.get(ck);
+    const agg = this._agg();
+    const slots = [];
+    for (let i = 0; i < K; i++) {
+      const s = await withRetry(() => agg.getSlot(aggId, i));
+      if (!s.oracle || s.oracle === ZERO_ADDRESS) break;
+      slots.push({
+        index: i,
+        oracle: ethers.getAddress(s.oracle),
+        fee: ethers.formatEther(s.fee),
+        key: String(s.key),
+        payee: s.payee && s.payee !== ZERO_ADDRESS ? ethers.getAddress(s.payee) : null,
+        committedAt: Number(s.committedAt),
+        flags: Number(s.flags),
+        qcode: Number(s.qcode),
+        commitHash: String(s.commitHash),
+      });
+    }
+    if (final) this._slotCache.set(ck, slots);
+    return slots;
+  }
+
   // --- Oracle health (commit/reveal reliability + eval success rate) -------
   //
-  // No view function exposes aggregate commit/reveal stats, so we derive them
-  // from the aggregator's lifecycle events over a recent block window via the
-  // archive RPC. Per request the protocol polls K oracles (OracleSelected),
-  // waits for M commits (CommitReceived) to enter the reveal phase, then needs
-  // N reveals (NewOracleResponseRecorded) to fulfill (FulfillAIEvaluation).
-  // Tallying selected→committed→revealed per operator surfaces nodes that
-  // commit but never reveal — the failure mode that silently sinks evaluations.
+  // Derived from the aggregator's round events over a recent block window via
+  // the archive RPC, plus getSlot() for who sat in each slot and what it did
+  // (v2 events carry the slot index, not the operator). Per round the protocol
+  // draws K arbiters (JuryDrawn), closes the commit phase at M+ commits or after
+  // T+ with at least M, promotes M commits (CommitPhaseComplete), and finalizes
+  // at the N-th reveal (FulfillAIEvaluation). A failed round is settled with
+  // EvaluationFailed(phase) and charged to the arbiters that fell short (see
+  // utils/roundModel.describeRound).
 
   /**
    * @param {{ days?: number }} [opts] look-back window in days (default 14).
@@ -1163,77 +1184,31 @@ class VerdiktaService {
    *   `partial` flag if a chunk error cut the scan short.
    */
   async getOracleHealth({ days = 14 } = {}) {
+    const agg = this._agg();
     const provider = this._getLogProvider();
     const iface = new ethers.Interface(AGG_EVENT_ABI);
-    const topic = (name) => iface.getEvent(name).topicHash;
-    const T = {
-      request: topic('RequestAIEvaluation'),
-      selected: topic('OracleSelected'),
-      commit: topic('CommitReceived'),
-      revealReq: topic('RevealRequestDispatched'),
-      reveal: topic('NewOracleResponseRecorded'),
-      fulfill: topic('FulfillAIEvaluation'),
-    };
+    const topic0Or = [HEALTH_EVENTS.map((n) => iface.getEvent(n).topicHash)];
 
-    const latest = await withRetry(() => provider.getBlockNumber());
-    const windowBlocks = Math.max(1, Math.round(days * 43200)); // ~2s/block on Base
+    const [latest, blockSec, K, M, N] = await Promise.all([
+      withRetry(() => provider.getBlockNumber()),
+      this.getBlockSeconds(),
+      withRetry(() => agg.K()).then(Number),
+      withRetry(() => agg.M()).then(Number),
+      withRetry(() => agg.N()).then(Number),
+    ]);
+    const BLOCKS_PER_DAY = Math.round(86400 / blockSec);
+    const windowBlocks = Math.max(1, Math.round(days * BLOCKS_PER_DAY));
     const floor = Math.max(this.aggregatorFromBlock || 0, latest - windowBlocks);
-
     const CHUNK = this.logMaxChunk; // provider's per-query range cap (config.getLogScanRpc)
-    const parse = (log) => iface.parseLog({ topics: log.topics, data: log.data });
-    const ops = {}; // operatorLower → { operator, selected, commits, reveals }
-    const bump = (addr, field) => {
-      if (!addr) return;
-      const lower = addr.toLowerCase();
-      if (!ops[lower]) ops[lower] = { operator: ethers.getAddress(addr), selected: 0, commits: 0, reveals: 0 };
-      ops[lower][field]++;
-    };
-
-    // Per-evaluation, per-slot map for blame attribution. Each (aggRequestId,
-    // pollIndex) is one arbiter slot = an (operator, jobId) pairing. Commit and
-    // reveal events carry the same pollIndex, so they link back to the slot.
-    // When an evaluation never reaches FulfillAIEvaluation it failed/timed out,
-    // and we blame the arbiters that didn't do their part (see blame pass below).
-    const evals = {}; // aggIdLower → { fulfilled, slots: { pollIndexStr → { operator, committed, revealRequested, revealed } } }
-    const evalFor = (aggId) => {
-      const k = (aggId || '').toLowerCase();
-      if (!evals[k]) evals[k] = { fulfilled: false, requestBlock: null, slots: {} };
-      return evals[k];
-    };
-    const slotFor = (aggId, pollIndex, operator) => {
-      const ev = evalFor(aggId);
-      const pk = pollIndex == null ? '?' : pollIndex.toString();
-      // *Block fields feed the timing panel: commit latency = commitBlock −
-      // requestBlock; reveal latency = revealBlock − revealReqBlock (Base has a
-      // fixed 2s block time, so block deltas convert exactly to seconds).
-      if (!ev.slots[pk]) ev.slots[pk] = { operator: operator || null, committed: false, revealRequested: false, revealed: false, selectedBlock: null, commitBlock: null, revealReqBlock: null, revealBlock: null };
-      else if (operator && !ev.slots[pk].operator) ev.slots[pk].operator = operator;
-      return ev.slots[pk];
-    };
-
-    // Fetch all five event types in ONE getLogs per chunk via an OR'd topic0
-    // filter (the free archive gateway is slow/rate-limited, so 1 call/chunk
-    // beats 5), then dispatch each log by its decoded event name.
-    const topic0Or = [Object.values(T)];
-    let requests = 0, fulfilled = 0, scannedChunks = 0, partial = false;
-    // Gas tracking: collect the commit/reveal tx references seen during the scan
-    // so we can fetch their receipts afterward (gasUsed lives on the receipt, not
-    // the log). `fulfillTxHashes` flags reveal txs that also completed the round
-    // (emitted FulfillAIEvaluation) — their gas is inflated by aggregation work.
-    const commitRevealLogs = []; // { kind, txHash, operator, blockNumber }
-    const fulfillTxHashes = new Set();
-    // Daily buckets for the trend sparkline — one per day of the scan window.
-    // Index = days ago (0 = most recent ~24h). Bucketed by block offset
-    // (~43200 blocks/day on Base) so no per-event timestamp lookups are needed.
-    const BLOCKS_PER_DAY = 43200;
-    const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0, malformed: 0 }));
     const dayOff = (blk) => Math.floor((latest - blk) / BLOCKS_PER_DAY);
-    // Build the chunk list up-front, then fetch a few at a time. The chunk size
-    // is capped by the provider (10k on Infura), so a 14-day window is ~60
-    // queries — serial that is a minute of wall clock, and the background
-    // warmer (utils/oracleHealthLoader.js) re-runs it for every network ×
-    // window on a timer. Ordering doesn't matter: every tally below is a sum
-    // or an OR.
+    const inDays = (o) => o >= 0 && o < days;
+
+    // Build the chunk list up-front, then fetch a few at a time. A failed chunk
+    // is skipped, not fatal — one bad range shouldn't blank the whole window.
+    // `chunkErrors` and `scanError` are reported so the client can distinguish
+    // "the chain was quiet" from "we couldn't read the chain". Fail fast when
+    // nothing at all is getting through (a misconfigured range cap or a dead
+    // endpoint fails every chunk identically).
     const ranges = [];
     for (let to = latest; to >= floor; ) {
       const from = Math.max(floor, to - CHUNK + 1);
@@ -1241,18 +1216,9 @@ class VerdiktaService {
       if (from === floor) break;
       to = from - 1;
     }
-
-    // A failed chunk is skipped, not fatal — one bad range shouldn't blank the
-    // whole window. `chunkErrors` and `scanError` are reported so the client can
-    // distinguish "the chain was quiet" from "we couldn't read the chain".
-    //
-    // Fail fast when nothing at all is getting through: a misconfigured range
-    // cap or a dead endpoint fails every chunk identically, and each failure
-    // burns the full withRetry backoff, so pushing on would hang the request for
-    // minutes to learn what the first few chunks already proved.
     const CONCURRENCY = 5;
     const FAIL_FAST_AFTER = 5;
-    let chunkErrors = 0, scanError = null, aborted = false;
+    let scannedChunks = 0, chunkErrors = 0, scanError = null, aborted = false;
     const allLogs = [];
     await mapWithConcurrency(ranges, CONCURRENCY, async ({ from, to }) => {
       if (aborted) return;
@@ -1274,115 +1240,146 @@ class VerdiktaService {
         }
       }
     });
-    partial = chunkErrors > 0;
+    const partial = chunkErrors > 0;
     allLogs.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.index - b.index));
 
+    // Per-round event record.
+    const rounds = {}; // aggIdLower → { aggId, requestBlock, drawBlock, promoteBlock, fulfilled, failedPhase, cancelled, settled, commits: {i: {block, tx}}, reveals: {i: {block, tx, late}} }
+    const roundFor = (aggId) => {
+      const k = String(aggId).toLowerCase();
+      if (!rounds[k]) {
+        rounds[k] = { aggId: String(aggId), requestBlock: null, drawBlock: null, promoteBlock: null, fulfilled: false,
+          fulfillBlock: null, failedPhase: null, cancelled: false, settled: false, commits: {}, reveals: {} };
+      }
+      return rounds[k];
+    };
+    const fulfillTxHashes = new Set();
     for (const log of allLogs) {
       let p;
-      try { p = parse(log); } catch { continue; }
+      try { p = iface.parseLog({ topics: log.topics, data: log.data }); } catch { continue; }
+      const r = roundFor(p.args.aggRequestId);
       switch (p.name) {
-        case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; evalFor(p.args.aggRequestId).requestBlock = log.blockNumber; break; }
-        case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; fulfillTxHashes.add(log.transactionHash.toLowerCase()); evalFor(p.args.aggRequestId).fulfilled = true; break; }
-        case 'OracleSelected': { bump(p.args.oracle, 'selected'); const sl = slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.oracle); if (sl.selectedBlock == null) sl.selectedBlock = log.blockNumber; break; }
-        case 'CommitReceived': { bump(p.args.operator, 'commits'); const sl = slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator); sl.committed = true; if (sl.commitBlock == null) sl.commitBlock = log.blockNumber; commitRevealLogs.push({ kind: 'commit', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break; }
-        case 'RevealRequestDispatched': { const sl = slotFor(p.args.aggRequestId, p.args.pollIndex, null); sl.revealRequested = true; if (sl.revealReqBlock == null) sl.revealReqBlock = log.blockNumber; break; }
-        case 'NewOracleResponseRecorded': { bump(p.args.operator, 'reveals'); const sl = slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator); sl.revealed = true; if (sl.revealBlock == null) sl.revealBlock = log.blockNumber; commitRevealLogs.push({ kind: 'reveal', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break; }
+        case 'RequestAIEvaluation': r.requestBlock = log.blockNumber; break;
+        case 'JuryDrawn': r.drawBlock = log.blockNumber; break;
+        case 'CommitPhaseComplete': r.promoteBlock = log.blockNumber; break;
+        case 'CommitReceived':
+          r.commits[Number(p.args.pollIndex)] = { block: log.blockNumber, tx: log.transactionHash };
+          break;
+        case 'RevealReceived':
+          r.reveals[Number(p.args.pollIndex)] = { block: log.blockNumber, tx: log.transactionHash, late: Boolean(p.args.late) };
+          break;
+        case 'FulfillAIEvaluation':
+          r.fulfilled = true; r.fulfillBlock = log.blockNumber;
+          fulfillTxHashes.add(log.transactionHash.toLowerCase());
+          break;
+        case 'EvaluationFailed': r.failedPhase = Number(p.args.phase); break;
+        case 'RoundSettled': r.settled = true; break;
+        case 'RoundCancelled': r.cancelled = true; break;
       }
     }
 
-    // ---- Blame attribution. An evaluation needs 4 commits then 3 reveals to be
-    // fulfilled; one that never fulfilled (failed/timed out) is charged to the
-    // arbiter slots that fell short. The two stages are mutually exclusive: if
-    // the commit threshold wasn't met the round never reached the reveal stage,
-    // so only non-committers are blamed; otherwise the committers that failed to
-    // reveal are blamed. A slot is an (operator, jobId) arbiter, so an operator
-    // backing several slots in one round is docked once per blameworthy slot.
-    const COMMITS_REQUIRED = 4;
-    const REVEALS_REQUIRED = 3;
-    // operatorLower → { count, evals: { aggId → { stage, slots } } }. `count` is
-    // the total blameworthy slot instances (the Blameworthy column); `evals` lists
-    // the distinct failed aggIds this operator is responsible for (for the drill-down).
-    const blameByOp = {};
-    const dockBlame = (operator, aggId, stage) => {
-      if (!operator) return;
-      const k = operator.toLowerCase();
-      if (!blameByOp[k]) blameByOp[k] = { count: 0, evals: {} };
-      blameByOp[k].count++;
-      const e = blameByOp[k].evals[aggId] || (blameByOp[k].evals[aggId] = { stage, slots: 0 });
-      e.slots++;
+    // Only rounds requested inside the window are judged (the success basis);
+    // their slots come from getSlot (cached once final).
+    const judged = Object.values(rounds).filter((r) => r.requestBlock != null);
+    let slotReadErrors = 0;
+    await mapWithConcurrency(judged.filter((r) => r.drawBlock != null), 4, async (r) => {
+      try {
+        r.slots = await this._readSlots(r.aggId, K, { final: r.settled || r.cancelled });
+      } catch (err) {
+        slotReadErrors++;
+        r.slots = null;
+        logger.warn('oracle-health getSlot failed', { network: this.networkKey, aggId: r.aggId, msg: err.message });
+      }
+    });
+
+    // Phase as far as the events tell (the exact phase only matters for blame,
+    // which needs the settlement events: EvaluationFailed / RoundSettled).
+    const phaseOf = (r) => {
+      if (r.cancelled) return PHASE.CANCELLED;
+      if (r.failedPhase != null) return PHASE.FAILED;
+      if (r.fulfilled) return r.settled ? PHASE.SETTLED : PHASE.FINAL;
+      return r.drawBlock != null ? PHASE.COMMIT : PHASE.DRAW;
     };
-    // A round where NO selected arbiter committed is set aside as likely
-    // malformed rather than blamed: every arbiter rejecting the same request
-    // points at the request itself (e.g. a CID that isn't a valid archive, or a
-    // manifest that fails validation), not at the arbiters. These rounds are
-    // excluded from both the fulfilled and the failed tallies.
-    let likelyMalformed = 0;
-    const likelyMalformedAggIds = [];
-    for (const [aggId, ev] of Object.entries(evals)) {
-      if (ev.fulfilled) continue; // succeeded — no blame
-      const slots = Object.values(ev.slots);
-      const commitCount = slots.filter((s) => s.committed).length;
-      if (commitCount === 0) {
-        // Only tally rounds whose request is in the window, so the count stays a
-        // subset of `requests` (the same basis as fulfilled/unfulfilled).
-        if (ev.requestBlock != null) {
-          likelyMalformed++;
-          likelyMalformedAggIds.push(aggId);
-          const o = dayOff(ev.requestBlock);
-          if (o >= 0 && o < days) daily[o].malformed++;
-        }
-        continue;
-      }
-      if (commitCount < COMMITS_REQUIRED) {
-        // Failed at the commit stage: blame every selected slot that didn't commit.
-        for (const s of slots) if (!s.committed) dockBlame(s.operator, aggId, 'commit');
-      } else {
-        const revealCount = slots.filter((s) => s.revealed).length;
-        if (revealCount < REVEALS_REQUIRED) {
-          // Reached the reveal stage but fell short: blame only arbiters that were
-          // ASKED to reveal (RevealRequestDispatched) and didn't. A committer that
-          // was never sent a reveal request did its job — not blameworthy. (Only a
-          // subset of committers are dispatched reveal requests.)
-          for (const s of slots) if (s.revealRequested && !s.revealed) dockBlame(s.operator, aggId, 'reveal');
-        }
-      }
-    }
 
-    // ---- Response timing. Commit time = seconds from the request landing to
-    // the operator's CommitReceived; reveal time = seconds from the slot's
-    // RevealRequestDispatched to its NewOracleResponseRecorded. Both derive
-    // from block deltas (Base: fixed 2s blocks), so no per-event getBlock is
-    // needed. Slots whose anchor event fell before the scan floor are skipped.
-    const BLOCK_SECONDS = 2;
-    const timingByOp = {}; // operatorLower → { operator, commit: number[], reveal: number[] }
-    const timingFor = (operator) => {
-      const k = operator.toLowerCase();
-      if (!timingByOp[k]) timingByOp[k] = { operator: ethers.getAddress(operator), commit: [], reveal: [] };
+    const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0, failed: 0, malformed: 0, notDrawn: 0 }));
+    const tally = { requests: 0, fulfilled: 0, failed: 0, malformed: 0, notDrawn: 0, running: 0 };
+    const likelyMalformedAggIds = [];
+    const ops = {};      // operatorLower → { operator, selected, commits, promoted, reveals, lateReveals }
+    const blameByOp = {}; // operatorLower → { count, evals: { aggId → { stage, slots } } }
+    const timingByOp = {};
+    const timingDaily = Array.from({ length: days }, () => ({ cSum: 0, cN: 0, rSum: 0, rN: 0 }));
+    const commitRevealLogs = []; // { kind, txHash, operator, blockNumber } for gas tracking
+    const opFor = (addr) => {
+      const k = addr.toLowerCase();
+      if (!ops[k]) ops[k] = { operator: addr, selected: 0, commits: 0, promoted: 0, reveals: 0, lateReveals: 0 };
+      return ops[k];
+    };
+    const timingFor = (addr) => {
+      const k = addr.toLowerCase();
+      if (!timingByOp[k]) timingByOp[k] = { operator: addr, commit: [], reveal: [] };
       return timingByOp[k];
     };
-    // Daily buckets (index = days ago, same block-offset bucketing as `daily`)
-    // for the per-day average commit / reveal time series.
-    const timingDaily = Array.from({ length: days }, () => ({ cSum: 0, cN: 0, rSum: 0, rN: 0 }));
-    for (const ev of Object.values(evals)) {
-      for (const sl of Object.values(ev.slots)) {
-        if (!sl.operator) continue;
-        // OracleSelected is emitted in the request tx, so its block is the same
-        // anchor — and it survives when the RequestAIEvaluation log is missing.
-        const anchor = ev.requestBlock != null ? ev.requestBlock : sl.selectedBlock;
-        if (sl.commitBlock != null && anchor != null && sl.commitBlock >= anchor) {
-          const sec = (sl.commitBlock - anchor) * BLOCK_SECONDS;
-          timingFor(sl.operator).commit.push(sec);
-          const o = dayOff(sl.commitBlock);
-          if (o >= 0 && o < days) { timingDaily[o].cSum += sec; timingDaily[o].cN++; }
+
+    for (const r of judged) {
+      const o = dayOff(r.requestBlock);
+      tally.requests++;
+      if (inDays(o)) daily[o].requests++;
+      const slots = r.slots || [];
+      const d = describeRound({
+        phase: phaseOf(r), failedPhase: r.failedPhase, M, N, fulfilled: r.fulfilled,
+        slots: slots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: r.reveals[s.index]?.late })),
+      });
+      const bucket = { completed: 'fulfilled', failed: 'failed', malformed: 'malformed', notDrawn: 'notDrawn', cancelled: 'notDrawn' }[d.kind] || 'running';
+      tally[bucket]++;
+      if (bucket !== 'running' && inDays(o)) daily[o][bucket]++;
+      if (d.kind === 'malformed') likelyMalformedAggIds.push(r.aggId);
+
+      for (const s of slots) {
+        const f = decodeSlotFlags(s.flags);
+        const op = opFor(s.oracle);
+        if (f.dispatched) op.selected++;
+        if (f.committed) op.commits++;
+        if (f.promoted) op.promoted++;
+        if (f.revealed) op.reveals++;
+        const rv = r.reveals[s.index];
+        if (rv && rv.late) op.lateReveals++;
+        // Response timing: commit = draw → CommitReceived; reveal = promotion
+        // (the reveal requests go out in that tx) → RevealReceived. Block deltas
+        // at the measured block time, so no per-event getBlock is needed.
+        const cm = r.commits[s.index];
+        if (cm) {
+          commitRevealLogs.push({ kind: 'commit', txHash: cm.tx, operator: s.oracle, blockNumber: cm.block });
+          if (r.drawBlock != null && cm.block >= r.drawBlock) {
+            const sec = Math.round((cm.block - r.drawBlock) * blockSec * 10) / 10;
+            timingFor(s.oracle).commit.push(sec);
+            const od = dayOff(cm.block);
+            if (inDays(od)) { timingDaily[od].cSum += sec; timingDaily[od].cN++; }
+          }
         }
-        if (sl.revealBlock != null && sl.revealReqBlock != null && sl.revealBlock >= sl.revealReqBlock) {
-          const sec = (sl.revealBlock - sl.revealReqBlock) * BLOCK_SECONDS;
-          timingFor(sl.operator).reveal.push(sec);
-          const o = dayOff(sl.revealBlock);
-          if (o >= 0 && o < days) { timingDaily[o].rSum += sec; timingDaily[o].rN++; }
+        if (rv) {
+          commitRevealLogs.push({ kind: 'reveal', txHash: rv.tx, operator: s.oracle, blockNumber: rv.block });
+          if (r.promoteBlock != null && rv.block >= r.promoteBlock) {
+            const sec = Math.round((rv.block - r.promoteBlock) * blockSec * 10) / 10;
+            timingFor(s.oracle).reveal.push(sec);
+            const od = dayOff(rv.block);
+            if (inDays(od)) { timingDaily[od].rSum += sec; timingDaily[od].rN++; }
+          }
         }
       }
+
+      // Blame: a slot is an (operator, jobId) arbiter, so an operator backing
+      // several slots in one round is docked once per blameworthy slot.
+      for (const b of d.blame) {
+        const s = slots.find((x) => x.index === b.slot);
+        if (!s) continue;
+        const k = s.oracle.toLowerCase();
+        if (!blameByOp[k]) blameByOp[k] = { count: 0, evals: {} };
+        blameByOp[k].count++;
+        const e = blameByOp[k].evals[r.aggId] || (blameByOp[k].evals[r.aggId] = { stage: b.stage, slots: 0 });
+        e.slots++;
+      }
     }
+
     // Oldest → newest (today last), matching dailyTrend / gasDaily.
     const timingDailySeries = timingDaily
       .map((b, i) => ({
@@ -1420,19 +1417,17 @@ class VerdiktaService {
       for (const v of raw.reveal) timingPoints.push([i, 'r', v]);
     });
 
-    // Count currently-registered arbiters (jobId registrations) per operator
-    // contract, for context next to the reliability numbers. Independent of the
-    // event scan — if the enumeration fails, counts are simply omitted (null).
+    // Currently registered arbiters per operator contract, for context next to
+    // the reliability numbers. If the registry can't be read, counts are null.
     let arbiterCountByOp = {};
     try {
-      const oracles = await this.getAllOracles();
-      for (const o of oracles) {
-        if (o.error || !o.oracle) continue;
-        const k = o.oracle.toLowerCase();
+      const registry = await this.getRegistry();
+      for (const e of registry.values()) {
+        const k = String(e.oracle).toLowerCase();
         arbiterCountByOp[k] = (arbiterCountByOp[k] || 0) + 1;
       }
     } catch (err) {
-      logger.warn('oracle-health: getAllOracles failed (arbiter counts omitted)', { network: this.networkKey, msg: err.message });
+      logger.warn('oracle-health: registry read failed (arbiter counts omitted)', { network: this.networkKey, msg: err.message });
       arbiterCountByOp = null;
     }
 
@@ -1480,7 +1475,7 @@ class VerdiktaService {
           if (!rcpt || rcpt.gasUsed == null) { gasFailed++; return; }
           // ethers v6: the effective gas price paid is exposed as receipt.gasPrice.
           const effectiveGasPrice = rcpt.gasPrice ?? rcpt.effectiveGasPrice ?? 0n;
-          const ts = anchorTs - (latest - e.blockNumber) * 2;
+          const ts = Math.round(anchorTs - (latest - e.blockNumber) * blockSec);
           store.set(e.txHash, {
             kind: e.kind,
             operator: e.operator,
@@ -1574,9 +1569,11 @@ class VerdiktaService {
         timesSelected: o.selected,
         commits: o.commits,
         commitRatePct: pct(o.commits, o.selected),
+        promoted: o.promoted,
         reveals: o.reveals,
-        revealRatePct: pct(o.reveals, o.commits), // reveals per commit — exposes commit-but-no-reveal
-        blameworthy: (blameByOp[o.operator.toLowerCase()] || {}).count || 0, // failed-eval slots charged to this operator
+        lateReveals: o.lateReveals,
+        revealRatePct: pct(o.reveals, o.promoted), // reveals per promotion — only promoted commits are asked to reveal
+        blameworthy: (blameByOp[o.operator.toLowerCase()] || {}).count || 0, // failed-round slots charged to this operator
         // Distinct failed aggIds this operator is responsible for (drill-down list).
         blameAggIds: blameByOp[o.operator.toLowerCase()]
           ? Object.entries(blameByOp[o.operator.toLowerCase()].evals).map(([aggId, d]) => ({ aggId, stage: d.stage, slots: d.slots }))
@@ -1585,11 +1582,8 @@ class VerdiktaService {
       }))
       .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);
 
-    // Daily trend, oldest → newest (today last). failed ≈ requests not fulfilled
-    // that day (request→fulfill happens within minutes, so same-day), minus the
-    // likely-malformed rounds, which get their own series.
     const dailyTrend = daily
-      .map((d, i) => ({ daysAgo: i, fulfilled: d.fulfilled, failed: Math.max(0, d.requests - d.fulfilled - d.malformed), malformed: d.malformed }))
+      .map((d, i) => ({ daysAgo: i, fulfilled: d.fulfilled, failed: d.failed, malformed: d.malformed, notDrawn: d.notDrawn }))
       .reverse();
 
     return {
@@ -1597,33 +1591,38 @@ class VerdiktaService {
       windowDays: days,
       fromBlock: Math.max(floor, 0),
       toBlock: latest,
+      blockSeconds: Math.round(blockSec * 1000) / 1000,
+      requirements: { K, M, N },
       scannedChunks,
       totalChunks: ranges.length,
       chunkErrors,
       aborted,
+      slotReadErrors,
       // Not one chunk came back: the numbers below are all zero because nothing
       // could be read, NOT because the network was idle. The client renders this
       // as an error rather than as an empty window.
       scanFailed: scannedChunks === 0 && chunkErrors > 0,
       scanError,
-      partial,
+      partial: partial || slotReadErrors > 0,
       success: {
-        requests,
-        fulfilled,
-        // Failed/timed out despite at least one commit (likely-malformed excluded).
-        unfulfilled: Math.max(0, requests - fulfilled - likelyMalformed),
-        likelyMalformed,       // no arbiter committed — probably a bad request, not a node failure
+        requests: tally.requests,
+        fulfilled: tally.fulfilled,
+        // Failed after the draw for an arbiter-side reason or an unclosed/unpromoted window.
+        unfulfilled: tally.failed,
+        likelyMalformed: tally.malformed,   // no arbiter committed — probably a bad request, not a node failure
         likelyMalformedAggIds,
-        // Rate over the rounds arbiters could actually act on.
-        successRatePct: pct(fulfilled, requests - likelyMalformed),
+        notDrawn: tally.notDrawn,           // never drawn: pool shortage, beacon quorum missed, or cancelled
+        inProgress: tally.running,
+        // Rate over the drawn rounds arbiters could actually act on, once decided.
+        successRatePct: pct(tally.fulfilled, tally.fulfilled + tally.failed),
       },
       dailyTrend,
       operators,
-      // Response timing (seconds; from block deltas at 2s/block). `operators`
-      // carries avg/min/max per operator, `points` every observation for the
-      // cluster chart as [operatorIndex, 'c'|'r', seconds].
+      // Response timing (seconds; from block deltas at the measured block time).
+      // `operators` carries avg/min/max per operator, `points` every observation
+      // for the cluster chart as [operatorIndex, 'c'|'r', seconds].
       timing: {
-        blockSeconds: BLOCK_SECONDS,
+        blockSeconds: Math.round(blockSec * 1000) / 1000,
         operators: timingOperators,
         points: timingPoints,
         daily: timingDailySeries, // per-day avg commit / reveal seconds, oldest → newest
@@ -1638,238 +1637,189 @@ class VerdiktaService {
   }
 
   /**
-   * Full blow-by-blow of a single aggregation (aggId), for the agg-history
-   * drill-down: contract requirements (K/M/N), the named on-chain status, the
-   * request event + CIDs, a per-slot commit/reveal/failure breakdown, the final
-   * fulfillment (likelihoods + justification CID), and a derived outcome.
-   * Mirrors example-bounty-program's getAggHistory so the same picture renders
-   * here. Reads go through the read RPC; log scans use the archive provider and
-   * are bounded to a window around the request (never a full-history scan).
+   * Full blow-by-blow of a single round (aggId), for the agg-history drill-down:
+   * the requirements (K/M/N/P, current aggregator config), the round's on-chain
+   * state (getRoundInfo), every slot (getSlot: who, fee, what it did), the
+   * request CIDs, the event timeline, the final result and a derived outcome
+   * (utils/roundModel.describeRound).
+   *
+   * The request block is exact (getRoundInfo), so the event scan runs from it to
+   * a bounded estimate of the round's end — never a full-history scan.
    */
   async getAggHistory(aggId) {
-    const provider = this.provider;
+    const agg = this._agg();
     const logProvider = this._getLogProvider();
-    const aggr = new ethers.Contract(this.aggregatorAddress, AGG_HISTORY_ABI, provider);
-    const iface = aggr.interface;
-    const deployBlock = this.aggregatorFromBlock || 0;
+    const iface = new ethers.Interface(AGG_EVENT_ABI);
 
-    // Chunked log scan over the log provider, at its per-query range cap.
-    const CHUNK = this.logMaxChunk;
-    const getLogsChunked = async (topics, fromBlock, toBlock) => {
-      const out = [];
-      if (toBlock < fromBlock) return out;
-      for (let start = fromBlock; start <= toBlock; start += CHUNK) {
-        const end = Math.min(start + CHUNK - 1, toBlock);
-        const chunk = await withRetry(() => logProvider.getLogs({
-          address: this.aggregatorAddress, topics, fromBlock: start, toBlock: end,
-        }));
-        out.push(...chunk);
-      }
-      return out;
+    // 1. Requirements (the aggregator's current config; a round keeps the values
+    //    it was requested with, which only differ if the owner changed them since).
+    const [K, M, N, P] = await withRetry(() => Promise.all([agg.K(), agg.M(), agg.N(), agg.P()]))
+      .then((v) => v.map(Number));
+    const contractParams = { K, M, N, P, mPlus: mPlus(K, M) };
+
+    // 2. Round state. Phase 0 = the aggregator has no such round.
+    const ri = await withRetry(() => agg.getRoundInfo(aggId));
+    const phase = Number(ri.phase);
+    if (phase === PHASE.NONE) {
+      return { found: false, aggId, network: this.networkKey, message: 'No round with this ID on the aggregator' };
+    }
+    const fmt = (v) => ethers.formatEther(v);
+    const roundInfo = {
+      phase,
+      phaseName: PHASE_NAMES[phase] || String(phase),
+      requestBlock: Number(ri.requestBlock),
+      requestTime: Number(ri.requestTime),
+      sealed: ri.sealedHash !== ethers.ZeroHash,
+      closeBlock: Number(ri.closeBlock) || null,
+      deadline: Number(ri.deadline) || null,
+      windowEnd: Number(ri.windowEnd) || null,
+      commits: Number(ri.commits),
+      received: fmt(ri.received),
+      baseFees: fmt(ri.baseFees),
+      bonuses: fmt(ri.bonuses),
+      rewards: fmt(ri.rewards),
     };
 
+    // 3. Slots, with each arbiter's jobId (keeper.jobIdOf).
+    const final = phase >= PHASE.SETTLED;
+    const rawSlots = await this._readSlots(aggId, K, { final });
+    const keeper = await this.getReputationKeeper();
+    const jobIds = await Promise.all(rawSlots.map((s) => withRetry(() => keeper.jobIdOf(s.key)).then(String).catch(() => null)));
+
+    // 4. Event timeline: every round event with topic1 = aggId, from the request
+    //    block forward. A round that has ended stops the walk at the chunk holding
+    //    its last event (RoundSettled / RoundCancelled, or a draw-time failure);
+    //    an open round is scanned to the head. Capped at AGGH_MAX_SCAN_BLOCKS.
     const currentBlock = await withRetry(() => logProvider.getBlockNumber());
-
-    // 1. Contract params: K = oracles polled, M = commits required, N = reveals required.
-    const [K, M, N, maxLikLen] = await withRetry(() => Promise.all([
-      aggr.commitOraclesToPoll(),
-      aggr.oraclesToPoll(),
-      aggr.requiredResponses(),
-      aggr.maxLikelihoodLength(),
-    ]));
-    const contractParams = { K: Number(K), M: Number(M), N: Number(N), maxLikelihoodLength: Number(maxLikLen) };
-
-    // 2. Named on-chain aggregation status.
-    let aggStatus;
-    try {
-      const raw = await withRetry(() => aggr.getAggregationStatus(aggId));
-      aggStatus = {
-        commitPhaseComplete: raw.commitPhaseComplete,
-        commitExpected: Number(raw.commitExpected),   // K
-        commitCount: Number(raw.commitReceived),      // commits received
-        responseCount: Number(raw.responseCount),     // reveals recorded
-        requiredResponses: Number(raw.requiredN),     // N
-        clusterSize: Number(raw.clusterP),            // P
-        requester: raw.requester,
-        startTimestamp: Number(raw.startTimestamp),   // unix secs
-        isComplete: raw.isComplete,
-        failed: raw.failed,
-      };
-    } catch (err) {
-      logger.warn('agg-history: getAggregationStatus failed', { network: this.networkKey, aggId, msg: err.message });
-      aggStatus = null;
-    }
-
-    // A clean read with startTimestamp 0 means the aggregator has no record of
-    // this aggId — definitively not found; skip the (costly) log scan.
-    if (aggStatus && !(aggStatus.startTimestamp > 0)) {
-      return { found: false, aggId, network: this.networkKey, message: 'No aggregation found on-chain for this ID' };
-    }
-
-    // 3. Find the RequestAIEvaluation event, narrowing via startTimestamp when set.
-    const aggIdTopic = aggId;
-    const reqTopics = [iface.getEvent('RequestAIEvaluation').topicHash, aggIdTopic];
-    let requestEvent = null;
-    let searchFrom = deployBlock;
-    let logs = [];
-    if (aggStatus?.startTimestamp > 0) {
-      const nowSec = Math.floor(Date.now() / 1000);
-      const ageBlocks = Math.floor((nowSec - aggStatus.startTimestamp) / 2); // ~2s/block on Base
-      const estReqBlock = Math.max(deployBlock, currentBlock - ageBlocks);
-      searchFrom = Math.max(deployBlock, estReqBlock - AGGH_REQ_SEARCH_MARGIN);
-      const searchTo = Math.min(currentBlock, estReqBlock + AGGH_REQ_SEARCH_MARGIN);
-      logs = await getLogsChunked(reqTopics, searchFrom, searchTo);
-    }
-    if (logs.length === 0) {
-      // Fallback: bounded recent look-back (never unbounded full history).
-      searchFrom = Math.max(deployBlock, currentBlock - AGGH_RECENT_FALLBACK_BLOCKS);
-      logs = await getLogsChunked(reqTopics, searchFrom, currentBlock);
-    }
-    if (logs.length > 0) {
-      const parsed = iface.parseLog(logs[0]);
-      requestEvent = { block: logs[0].blockNumber, txHash: logs[0].transactionHash, cids: parsed.args.cids };
-    }
-    if (!requestEvent && !aggStatus) {
-      return { found: false, aggId, network: this.networkKey, message: 'No matching aggregation found on-chain' };
-    }
-
-    const eventFromBlock = requestEvent ? requestEvent.block : searchFrom;
-    const eventToBlock = Math.min(currentBlock, eventFromBlock + AGGH_EVENT_WINDOW);
-
-    // 4. OracleSelected → the per-slot roster.
-    const oracleLogs = await getLogsChunked([iface.getEvent('OracleSelected').topicHash, aggIdTopic], eventFromBlock, eventToBlock);
-    const slotMap = {};
-    for (const log of oracleLogs) {
-      const parsed = iface.parseLog(log);
-      const slot = Number(parsed.args.pollIndex);
-      slotMap[slot] = {
-        slot, oracle: parsed.args.oracle, jobId: parsed.args.jobId,
-        committed: false, revealRequested: false, revealOK: false,
-        hashMismatch: false, invalidFormat: false, tooManyScores: false,
-        wrongScoreCount: false, tooFewScores: false, scores: null,
-      };
-    }
-
-    // 5. Commit / reveal-request / failure events (indexed by aggRequestId).
-    const eventNames = [
-      'CommitReceived', 'RevealRequestDispatched',
-      'RevealHashMismatch', 'InvalidRevealFormat',
-      'RevealTooManyScores', 'RevealWrongScoreCount', 'RevealTooFewScores',
-    ];
+    const fromBlock = roundInfo.requestBlock;
+    let toBlock = Math.min(currentBlock, fromBlock + AGGH_MAX_SCAN_BLOCKS);
+    const truncated = currentBlock - fromBlock > AGGH_MAX_SCAN_BLOCKS;
+    const ended = phase >= PHASE.SETTLED;
+    const endTopics = new Set(['RoundSettled', 'RoundCancelled'].map((n) => iface.getEvent(n).topicHash));
+    const failTopic = iface.getEvent('EvaluationFailed').topicHash;
+    const isEnd = (log) => endTopics.has(log.topics[0])
+      || (log.topics[0] === failTopic && [PHASE.DRAW, PHASE.BEACON].includes(Number(iface.parseLog(log).args.phase)));
+    const topics = [iface.fragments.filter((f) => f.type === 'event').map((f) => f.topicHash), String(aggId).toLowerCase()];
+    const logs = [];
     // Sequential, NOT Promise.all: concurrent getLogs get batched into one
     // JSON-RPC call by ethers, and the Tenderly archive gateway hangs on batched
-    // eth_getLogs. Each scan is a sub-second single-chunk query, so serial is fine.
-    const lifecycleLogs = [];
-    for (const name of eventNames) {
-      lifecycleLogs.push(await getLogsChunked([iface.getEvent(name).topicHash, aggIdTopic], eventFromBlock, eventToBlock));
+    // eth_getLogs. Also what lets the walk stop at the round's end.
+    for (let start = fromBlock; start <= toBlock; start += this.logMaxChunk) {
+      const end = Math.min(start + this.logMaxChunk - 1, toBlock);
+      const chunk = await withRetry(() => logProvider.getLogs({ address: this.aggregatorAddress, topics, fromBlock: start, toBlock: end }));
+      logs.push(...chunk);
+      if (ended && chunk.some(isEnd)) { toBlock = end; break; }
     }
-    for (let i = 0; i < eventNames.length; i++) {
-      for (const log of lifecycleLogs[i]) {
-        const parsed = iface.parseLog(log);
-        const slot = Number(parsed.args.pollIndex);
-        if (!slotMap[slot]) continue;
-        switch (eventNames[i]) {
-          case 'CommitReceived': slotMap[slot].committed = true; break;
-          case 'RevealRequestDispatched': slotMap[slot].revealRequested = true; break;
-          case 'RevealHashMismatch': slotMap[slot].hashMismatch = true; break;
-          case 'InvalidRevealFormat': slotMap[slot].invalidFormat = true; break;
-          case 'RevealTooManyScores': slotMap[slot].tooManyScores = true; break;
-          case 'RevealWrongScoreCount': slotMap[slot].wrongScoreCount = true; break;
-          case 'RevealTooFewScores': slotMap[slot].tooFewScores = true; break;
+    logs.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.index - b.index));
+
+    const timeline = [];
+    let requestEvent = null, fulfillment = null, failedPhase = null;
+    const lateBySlot = {}, skipBySlot = {}, bonusBySlot = {};
+    for (const log of logs) {
+      let p;
+      try { p = iface.parseLog({ topics: log.topics, data: log.data }); } catch { continue; }
+      const a = p.args;
+      const entry = { event: p.name, block: log.blockNumber, txHash: log.transactionHash, detail: null };
+      switch (p.name) {
+        case 'RequestAIEvaluation':
+          requestEvent = { block: log.blockNumber, txHash: log.transactionHash, cids: [...a.cids] };
+          entry.detail = `${a.cids.length} CID${a.cids.length === 1 ? '' : 's'}`;
+          break;
+        case 'RequestFunded': entry.detail = `requester ${a.requester}, ${fmt(a.fromValue)} ETH sent, ${fmt(a.fromCredit)} ETH from credit`; break;
+        case 'SeedSealed': entry.detail = 'draw seed sealed'; break;
+        case 'JuryDrawn': entry.detail = `drawn by ${a.drawer}, reward ${fmt(a.reward)} ETH`; break;
+        case 'BeaconStageStarted': entry.detail = `${a.beacons} beacons called`; break;
+        case 'BeaconPayment': entry.detail = `${fmt(a.amount)} ETH to ${a.payee}`; break;
+        case 'CommitReceived': entry.detail = `slot ${a.pollIndex}`; break;
+        case 'CommitWindowClosed': entry.detail = `close block ${a.closeBlock}`; break;
+        case 'CommitPhaseComplete': entry.detail = `${a.promoted} commits promoted`; break;
+        case 'RevealReceived': {
+          const i = Number(a.pollIndex);
+          lateBySlot[i] = Boolean(a.late);
+          entry.detail = `slot ${i}${a.late ? ` (late, ${QCODE_NAMES[Number(a.qcode)] || 'unclassified'})` : ''}`;
+          break;
         }
+        case 'FulfillAIEvaluation':
+          fulfillment = {
+            aggregated: a.aggregated.map((s) => s.toString()),
+            justificationCIDs: String(a.justifications).split(',').filter(Boolean),
+            block: log.blockNumber,
+            txHash: log.transactionHash,
+          };
+          entry.detail = `[${fulfillment.aggregated.join(', ')}]`;
+          break;
+        case 'EvaluationFailed':
+          failedPhase = Number(a.phase);
+          entry.detail = `failed in the ${PHASE_NAMES[failedPhase] || failedPhase} phase`;
+          break;
+        case 'RoundSettled': entry.detail = a.failed ? 'settled as failed' : 'settled'; break;
+        case 'RoundCancelled': entry.detail = `${fmt(a.toTreasury)} ETH to the treasury`; break;
+        case 'BasePayment': entry.detail = `slot ${a.pollIndex}: ${fmt(a.amount)} ETH to ${a.payee}`; break;
+        case 'BonusPayment':
+          bonusBySlot[Number(a.pollIndex)] = fmt(a.amount);
+          entry.detail = `slot ${a.pollIndex}: ${fmt(a.amount)} ETH to ${a.payee}`;
+          break;
+        case 'RequesterRefunded': entry.detail = `${fmt(a.amount)} ETH to ${a.requester}`; break;
+        case 'SlotSkipped': {
+          const i = a.pollIndex === ethers.MaxUint256 ? null : Number(a.pollIndex);
+          const reason = SKIP_REASONS[Number(a.reason)] || `reason ${a.reason}`;
+          if (i != null) skipBySlot[i] = reason;
+          entry.detail = i != null ? `slot ${i}: ${reason}` : reason;
+          break;
+        }
+        default: break;
       }
+      timeline.push(entry);
     }
 
-    // 6. Successful reveals.
-    const responseLogs = await getLogsChunked([iface.getEvent('NewOracleResponseRecorded').topicHash, aggIdTopic], eventFromBlock, eventToBlock);
-    for (const log of responseLogs) {
-      const parsed = iface.parseLog(log);
-      const slot = Number(parsed.args.pollIndex);
-      if (slotMap[slot]) slotMap[slot].revealOK = true;
-    }
-
-    // 7. Fulfillment (final scores + justification CID).
-    const fulfillLogs = await getLogsChunked([iface.getEvent('FulfillAIEvaluation').topicHash, aggIdTopic], eventFromBlock, eventToBlock);
-    let fulfillment = null;
-    if (fulfillLogs.length > 0) {
-      const parsed = iface.parseLog(fulfillLogs[0]);
-      fulfillment = {
-        likelihoods: parsed.args.likelihoods.map((s) => Number(s)),
-        justificationCID: parsed.args.justificationCID,
-        block: fulfillLogs[0].blockNumber,
-        txHash: fulfillLogs[0].transactionHash,
-      };
-    }
-
-    // 8. Build slots + analysis + derived outcome.
-    const slots = Object.values(slotMap).sort((a, b) => a.slot - b.slot);
-    const committedSlots = slots.filter((s) => s.committed);
-    const revealedSlots = slots.filter((s) => s.revealOK);
-    const nonRespondingSlots = slots.filter((s) => !s.committed);
-    const uniqueOracles = new Set(slots.map((s) => s.oracle)).size;
-
-    const requestBlock = requestEvent?.block || null;
-    let elapsedMinutes = null;
-    if (requestBlock) elapsedMinutes = Math.round((currentBlock - requestBlock) * 2 / 60);
-    else if (aggStatus?.startTimestamp > 0) elapsedMinutes = Math.round((Math.floor(Date.now() / 1000) - aggStatus.startTimestamp) / 60);
-    const IN_PROCESS_WINDOW_MINUTES = 10;
-    const isEarly = elapsedMinutes !== null && elapsedMinutes < IN_PROCESS_WINDOW_MINUTES;
-
-    // Outcome from events + elapsed time (the aggregator leaves `failed` unset on
-    // timeouts). Phase of death: commit (< M commits) or reveal (< N reveals).
-    const failPhase = committedSlots.length < contractParams.M ? 'commit'
-      : (revealedSlots.length < contractParams.N ? 'reveal' : 'aggregation');
-    let outcome;
-    if (fulfillment) outcome = 'COMPLETED';
-    else if (isEarly) outcome = `IN PROCESS (${failPhase} phase, ${elapsedMinutes}m elapsed)`;
-    else if (elapsedMinutes === null) outcome = 'RUNNING';
-    // No arbiter committed at all: the request itself was most likely unusable
-    // (same rule as the likely-malformed tally in getOracleHealth).
-    else if (committedSlots.length === 0) outcome = 'LIKELY MALFORMED (no arbiter committed)';
-    else outcome = `FAILED (${failPhase} phase)`;
-
-    const analysis = {
-      totalSlots: slots.length,
-      committed: committedSlots.length,
-      revealed: revealedSlots.length,
-      nonResponding: nonRespondingSlots.length,
-      nonRespondingSlotIds: nonRespondingSlots.map((s) => s.slot),
-      uniqueOracles,
-      failures: {
-        hashMismatch: slots.filter((s) => s.hashMismatch).length,
-        invalidFormat: slots.filter((s) => s.invalidFormat).length,
-        tooManyScores: slots.filter((s) => s.tooManyScores).length,
-        wrongScoreCount: slots.filter((s) => s.wrongScoreCount).length,
-        tooFewScores: slots.filter((s) => s.tooFewScores).length,
-      },
-    };
+    // 5. Slots + derived outcome.
+    const slots = rawSlots.map((s, n) => ({
+      slot: s.index,
+      oracle: s.oracle,
+      jobId: jobIds[n],
+      key: s.key,
+      payee: s.payee,
+      fee: s.fee,
+      bonus: bonusBySlot[s.index] || null,
+      ...decodeSlotFlags(s.flags),
+      late: !!lateBySlot[s.index],
+      quality: QCODE_NAMES[s.qcode] || null,
+      committedAt: s.committedAt || null,
+      skipped: skipBySlot[s.index] || null,
+    }));
+    const d = describeRound({
+      phase, failedPhase, M, N, fulfilled: !!fulfillment,
+      slots: rawSlots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: lateBySlot[s.index] })),
+    });
 
     return {
       found: true,
       aggId,
       network: this.networkKey,
       contractParams,
-      aggregationStatus: aggStatus,
+      roundInfo,
       requestEvent,
       slots,
       fulfillment,
-      outcome,
-      analysis,
+      outcome: d.label,
+      outcomeKind: d.kind,
+      failStage: d.failStage,
+      blame: d.blame,
+      analysis: d.analysis,
+      timeline,
+      scan: { fromBlock, toBlock, truncated },
     };
   }
 
   /**
    * Arbiters grouped by owner address (the ArbiterOperator owner), with totals
-   * for the analytics "Arbiters by Owner" table: arbiter/operator counts,
-   * average reputation, claimable ETH (ethOwed on the aggregator, per owner) and
-   * node funding.
+   * for the analytics "Arbiters by Owner" table: arbiter/operator counts, status
+   * tallies, average reputation, claimable ETH (ethOwed on the aggregator, per
+   * owner) and node funding.
    * Sorted by owner address, numerically ascending.
    */
   async getOwnersAnalytics() {
-    const [oracles, thresholds] = await Promise.all([
-      this.getAllOracles(),
-      this.getThresholds()
-    ]);
+    const oracles = await this.getAllOracles();
     const valid = oracles.filter((o) => !o.error && o.oracle);
     const operatorAddrs = [...new Set(valid.map((o) => o.oracle))];
 
@@ -1878,27 +1828,22 @@ class VerdiktaService {
       this._computeFunding(operatorAddrs)
     ]);
     const { perOp: fundingPerOp, gasPrice } = fundingData;
-    const now = Math.floor(Date.now() / 1000);
 
-    // Roll arbiters up by owner, tallying status the same way the availability
-    // table does so the by-owner table can show Active/New/Unresponsive/Blocked.
     const byOwner = {};
     for (const o of valid) {
       const opLower = o.oracle.toLowerCase();
       const owner = ownerMap[opLower] || null;
       const key = owner ? owner.toLowerCase() : 'unknown';
       if (!byOwner[key]) {
-        byOwner[key] = {
-          owner, operators: new Set(), arbiters: 0, qSum: 0, tSum: 0,
-          active: 0, new: 0, unresponsive: 0, blocked: 0, inactive: 0
-        };
+        byOwner[key] = { owner, operators: new Set(), arbiters: 0, qSum: 0, tSum: 0, offenses: 0, ...emptyTally() };
       }
       const b = byOwner[key];
       b.operators.add(opLower);
       b.arbiters += 1;
       b.qSum += o.qualityScore;
       b.tSum += o.timelinessScore;
-      b[this._statusFor(o, thresholds, now)] += 1;
+      b.offenses += o.offenses || 0;
+      b[o.status] += 1;
     }
 
     // Per-owner claimable ETH (ethOwed on the aggregator), read once per distinct owner.
@@ -1917,11 +1862,8 @@ class VerdiktaService {
         owner: b.owner,
         operators: b.operators.size,
         arbiters: b.arbiters,
-        active: b.active,
-        new: b.new,
-        unresponsive: b.unresponsive,
-        blocked: b.blocked,
-        inactive: b.inactive,
+        ...Object.fromEntries(STATUSES.map((s) => [s, b[s]])),
+        offenses: b.offenses,
         avgQualityScore: Math.round(b.qSum / b.arbiters),
         avgTimelinessScore: Math.round(b.tSum / b.arbiters),
         claimableEth: owedWei != null ? ethers.formatEther(owedWei) : null,
@@ -1954,77 +1896,37 @@ class VerdiktaService {
   }
 
   /**
-   * Check if the service is properly configured
+   * Check if the service is properly configured: the aggregator answers, its
+   * keeper and the wVDKA token resolve, and the config reads.
    */
   async healthCheck() {
     try {
-      const keeperAddress = await withRetry(() => this.aggregator.reputationKeeper());
+      const keeper = await this.getReputationKeeper();
       const config = await this.getAggregatorConfig();
-
-      // Chainlink transport-token address from getContractConfig (legacy view). This is
-      // the 0-juel request rail's token, NOT a payment token — arbiters are paid in ETH.
-      let linkTokenAddress = null;
-      try {
-        const contractConfig = await withRetry(() => this.aggregator.getContractConfig());
-        linkTokenAddress = contractConfig.linkAddr || contractConfig[1];
-      } catch (err) {
-        // May fail if getContractConfig is removed in future versions
-        logger.debug('Could not get transport-token address', { msg: err.message });
-      }
-
-      // Get wVDKA token address from ReputationKeeper
       let wvdkaAddress = null;
       try {
-        const keeper = await this.getReputationKeeper();
-        wvdkaAddress = await withRetry(() => keeper.verdiktaToken());
+        wvdkaAddress = String(await withRetry(() => keeper.verdiktaToken()));
       } catch (err) {
         logger.debug('Could not get wVDKA token address', { msg: err.message });
       }
-
       return {
         healthy: true,
         aggregatorAddress: this.aggregatorAddress,
-        keeperAddress,
-        linkTokenAddress,
+        keeperAddress: this.keeperAddress,
+        // Chainlink transport token for the 0-juel request rail (config; v2 has no
+        // getContractConfig). Not a payment token — arbiters are paid in ETH.
+        linkTokenAddress: this.linkTokenAddress,
         wvdkaAddress,
         config
       };
     } catch (error) {
       return {
         healthy: false,
+        configured: !!this.aggregator,
         aggregatorAddress: this.aggregatorAddress,
         error: error.message
       };
     }
-  }
-
-  /**
-   * ReputationKeeper scoring thresholds. An oracle's quality/timeliness score
-   * dropping below these triggers mild (warning) or severe (block) treatment.
-   */
-  async getKeeperThresholds() {
-    const keeper = await this.getReputationKeeper();
-    const [mild, severe] = await Promise.all([
-      withRetry(() => keeper.mildThreshold()),
-      withRetry(() => keeper.severeThreshold())
-    ]);
-    return { mildThreshold: Number(mild), severeThreshold: Number(severe) };
-  }
-
-  /**
-   * Legacy getContractConfig() view. Under the ETH aggregator this returns the Chainlink
-   * transport token (0-juel rail) and zero placeholders for jobId/fee — there is no single
-   * per-oracle LINK fee anymore (each arbiter's fee lives in the keeper, and maxOracleFee
-   * is the ETH ceiling). `fee` is therefore a 0 placeholder; the Contracts page shows the
-   * live ETH ceiling from getAggregatorConfig().maxOracleFee instead.
-   */
-  async getPaymentConfig() {
-    const cfg = await withRetry(() => this.aggregator.getContractConfig());
-    return {
-      transportTokenAddress: cfg.linkAddr || cfg[1],
-      jobId: cfg.jobId || cfg[2],
-      fee: ethers.formatEther(cfg.fee ?? cfg[3]) // legacy placeholder (0 on ETH contract)
-    };
   }
 
   /**
@@ -2064,20 +1966,28 @@ function getVerdiktaService(networkKey) {
   const key = normalizeNetwork(networkKey);
   if (!instances.has(key)) {
     const net = networks[key];
-    const service = new VerdiktaService(getRpcUrl(key), net.verdiktaAggregatorAddress, {
+    const cc = getContractsConfig(key);
+    const service = new VerdiktaService(getRpcUrl(key), cc.aggregatorAddress, {
       networkKey: key,
-      aggregatorFromBlock: net.aggregatorFromBlock || 0,
+      linkTokenAddress: net.linkTokenAddress || null,
+      aggregatorFromBlock: cc.aggregatorFromBlock,
+      keeperFromBlock: cc.keeperFromBlock,
       archiveRpcUrl: getArchiveRpcUrl(key),
       logScan: getLogScanRpc(key),
       receiptRpcUrl: getReceiptRpcUrl(key)
     });
     instances.set(key, service);
-    logger.info('Verdikta service initialized', { network: key, aggregatorAddress: net.verdiktaAggregatorAddress });
+    if (!cc.aggregatorAddress) {
+      logger.warn('Verdikta v2 aggregator not configured for this network (placeholder in config.js)', { network: key });
+    } else {
+      logger.info('Verdikta service initialized', { network: key, aggregatorAddress: cc.aggregatorAddress });
+    }
   }
   return instances.get(key);
 }
 
 module.exports = {
   getVerdiktaService,
-  VerdiktaService
+  VerdiktaService,
+  NotConfiguredError
 };

@@ -1,7 +1,7 @@
 /**
  * Contracts routes for example-arbiters.
  *
- * Read-only descriptive view of the core Verdikta contracts — the
+ * Read-only descriptive view of the core Verdikta v2 contracts — the
  * ReputationAggregator, the ReputationKeeper, and the wVDKA staking token —
  * including their addresses and live on-chain configuration. Reuses the same
  * VerdiktaService + per-network cache as the analytics routes.
@@ -19,7 +19,8 @@ const { networks, normalizeNetwork } = require('../config');
 
 /**
  * Assemble addresses + live config for the three contracts. Aggregator data is
- * required (via healthCheck); the keeper extras and token metadata are each
+ * required (via healthCheck; it fails with a "not configured" error while the
+ * v2 address is a placeholder); the keeper extras and token metadata are each
  * guarded so a single failing call degrades gracefully rather than sinking the
  * whole page.
  */
@@ -35,23 +36,17 @@ async function getContractsOverview(network) {
       networkName: net.name,
       explorer: net.explorer,
       healthy: false,
+      configured: health.configured !== false,
       error: health.error || `Could not reach the aggregator on ${key}`,
       contracts: null,
       generatedAt: Date.now()
     };
   }
 
-  let thresholds = null;
   let oracleCount = null;
-  let payment = null;
   let wvdka = null;
   let keeperConfig = null;
 
-  try {
-    thresholds = await verdiktaService.getKeeperThresholds();
-  } catch (e) {
-    logger.warn('[contracts] keeper thresholds failed', { network: key, msg: e.message });
-  }
   try {
     keeperConfig = await verdiktaService.getKeeperConfig();
   } catch (e) {
@@ -60,12 +55,7 @@ async function getContractsOverview(network) {
   try {
     oracleCount = await verdiktaService.getOracleCount();
   } catch (e) {
-    logger.warn('[contracts] oracle count failed', { network: key, msg: e.message });
-  }
-  try {
-    payment = await verdiktaService.getPaymentConfig();
-  } catch (e) {
-    logger.warn('[contracts] payment config failed', { network: key, msg: e.message });
+    logger.warn('[contracts] arbiter count failed', { network: key, msg: e.message });
   }
   if (health.wvdkaAddress) {
     try {
@@ -83,16 +73,16 @@ async function getContractsOverview(network) {
     contracts: {
       aggregator: {
         address: health.aggregatorAddress,
-        config: health.config,
-        payment // { transportTokenAddress, jobId, fee } or null (fee is a 0 placeholder under ETH)
+        config: health.config, // v2 getters (K/M/N/P, timing, fees, rewards, roundCount, …)
+        // Chainlink transport token for the 0-juel request rail (from config.js;
+        // v2 has no getContractConfig). Not a payment token.
+        transportTokenAddress: health.linkTokenAddress || null
       },
       keeper: {
         address: health.keeperAddress,
-        registeredOracles: oracleCount,
-        mildThreshold: thresholds?.mildThreshold ?? null,
-        severeThreshold: thresholds?.severeThreshold ?? null,
+        registeredArbiters: oracleCount, // live keys rebuilt from ArbiterRegistered/ArbiterRemoved logs
         verdiktaTokenAddress: health.wvdkaAddress || null,
-        config: keeperConfig // stake/penalty/selection config + selectionCounter, or null
+        config: keeperConfig // stake, penalties, liveness, selection, points — or null
       },
       wvdka: wvdka || (health.wvdkaAddress ? { address: health.wvdkaAddress } : null)
     },

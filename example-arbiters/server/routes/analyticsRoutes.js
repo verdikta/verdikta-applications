@@ -56,7 +56,9 @@ async function getArbiterAnalytics(network) {
       byClass: {},
       totalOracles: null,
       verdiktaConnected: false,
-      message: `Could not reach the aggregator on ${normalizeNetwork(network)}`,
+      message: error.code === 'NOT_CONFIGURED'
+        ? error.message
+        : `Could not reach the aggregator on ${normalizeNetwork(network)}`,
       timestamp: Date.now()
     };
   }
@@ -84,7 +86,7 @@ async function getSystemHealth(network) {
   return {
     network: normalizeNetwork(network),
     verdikta: {
-      configured: true,
+      configured: verdiktaHealth?.configured !== false,
       healthy: verdiktaHealth?.healthy || false,
       aggregatorAddress: verdiktaHealth?.aggregatorAddress || null,
       keeperAddress: verdiktaHealth?.keeperAddress || null,

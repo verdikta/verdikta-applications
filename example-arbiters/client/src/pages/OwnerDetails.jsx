@@ -19,6 +19,7 @@ import { useNetwork } from '../context/NetworkContext';
 import { chainForNetwork } from '../config/chains';
 import { apiService } from '../services/api';
 import { estQueriesFor, fmtQueries } from '../utils/funding';
+import { STATUS_LABELS, reasonLines } from '../utils/arbiterRegistration';
 import '../styles/funding.css';
 import './OwnerDetails.css';
 
@@ -92,7 +93,9 @@ function OwnerDetails() {
       jobId: j.jobId,
       classes: j.classes,
       status: j.status,
-      callCount: j.callCount,
+      statusReasons: j.statusReasons,
+      offenses: j.offenses,
+      stake: j.stake,
       qualityScore: j.qualityScore,
       timelinessScore: j.timelinessScore,
       fee: j.fee,
@@ -127,6 +130,7 @@ function OwnerDetails() {
               <tr>
                 <th>Address</th>
                 <th>Job ID</th>
+                <th>Status</th>
               </tr>
             </thead>
             <tbody>
@@ -147,14 +151,18 @@ function OwnerDetails() {
                     <td>
                       <code title={[
                         arb.classes?.length ? `Capability Classes: ${arb.classes.join(', ')}` : '',
-                        `Status: ${arb.status ?? 'N/A'}`,
-                        `Call Count: ${arb.callCount ?? 'N/A'}`,
+                        `Status: ${STATUS_LABELS[arb.status] || arb.status || 'N/A'}`,
                         `Quality Score: ${arb.qualityScore ?? 'N/A'}`,
                         `Timeliness Score: ${arb.timelinessScore ?? 'N/A'}`,
+                        `Offenses: ${arb.offenses ?? 'N/A'}`,
+                        `Stake: ${arb.stake != null ? `${arb.stake} wVDKA` : 'N/A'}`,
                         `Fee: ${arb.fee != null ? `${arb.fee} ETH` : 'N/A'}`
                       ].filter(Boolean).join('\n')}>
                         {arb.jobId}
                       </code>
+                    </td>
+                    <td title={reasonLines(arb.statusReasons).join('\n')}>
+                      {STATUS_LABELS[arb.status] || arb.status || '—'}
                     </td>
                   </tr>
                 );

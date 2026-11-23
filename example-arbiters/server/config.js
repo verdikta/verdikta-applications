@@ -3,8 +3,8 @@
  *
  * Read-only blockchain access for arbiter/oracle analytics. No bounty,
  * wallet, or IPFS concerns — the only contract addresses needed are the
- * Verdikta aggregator per network (the ReputationKeeper address is derived
- * on-chain from the aggregator).
+ * Verdikta v2 aggregator per network (the ReputationKeeper address is derived
+ * on-chain from the aggregator's keeper()).
  *
  * Both supported networks ship public RPC endpoints, so no secrets are
  * required. An operator may still override the RPC via RPC_URL /
@@ -26,18 +26,25 @@ const networks = {
     name: 'Base Sepolia',
     rpcUrl: 'https://base-sepolia-rpc.publicnode.com',
     explorer: 'https://sepolia.basescan.org',
-    // ETH-funded ReputationAggregator (arbiters earn ETH via ethOwed, claimed with
-    // withdrawEth — no LINK). Same ReputationKeeper + operator contracts as before
-    // (derived on-chain from the aggregator), so registrations/stakes/reputation carry over.
-    verdiktaAggregatorAddress: '0xe8a385E473EA710c5a88Cc72681a16a26fe380e4',
-    // Chainlink transport token for the 0-juel request rail. Vestigial for payment
-    // (arbiters are paid in ETH); retained only for the legacy-LINK claim path and
-    // informational display on the Contracts page.
+    // v2 ReputationAggregator. TODO(v2 deploy): not deployed / not known yet —
+    // fill in the address and its deploy block (and the keeper's deploy block)
+    // once the v2 contracts are live on this network. Until then the server
+    // answers every chain read with "aggregator not configured". The env vars
+    // AGGREGATOR_ADDRESS_BASE_SEPOLIA / AGGREGATOR_FROM_BLOCK_BASE_SEPOLIA /
+    // KEEPER_FROM_BLOCK_BASE_SEPOLIA override these without a code change.
+    // (The v1 aggregator 0xe8a3…80e4 and its keeper are not readable by this
+    // version: v2 is a redeploy with a different ABI.)
+    verdiktaAggregatorAddress: null, // PLACEHOLDER: v2 aggregator address
+    aggregatorFromBlock: null,       // PLACEHOLDER: v2 aggregator deploy block (event-scan floor)
+    // The ReputationKeeper address is read on-chain (aggregator.keeper()); the
+    // registry is rebuilt from its ArbiterRegistered / ArbiterRemoved logs, so
+    // the scan must start at or before the keeper's deploy block (the keeper is
+    // deployed, and arbiters may register, before the aggregator).
+    keeperFromBlock: null,           // PLACEHOLDER: v2 keeper deploy block
+    // Chainlink transport token for the 0-juel request rail (the v2 aggregator
+    // is still a ChainlinkClient). Not a payment token: arbiters are paid in ETH.
+    // Kept for the legacy-LINK claim path and the Contracts page.
     linkTokenAddress: '0xE4aB69C077896252FAFBD49EFD26B5D171A32410',
-    // New ETH aggregator deployment block (archive eth_getCode binary search, verified
-    // exact). Lower bound for the lifecycle event scans (oracle health / eval success /
-    // gas). Analytics intentionally start fresh from the new aggregator (no old-agg union).
-    aggregatorFromBlock: 42598251,
     // Archive RPC for historical eth_getLogs. The PublicNode endpoint above
     // prunes log history ("pruned history unavailable"), so the bonus scan uses
     // a full-archive endpoint. Override with ARCHIVE_RPC_URL if preferred.
@@ -52,12 +59,13 @@ const networks = {
     name: 'Base Mainnet',
     rpcUrl: 'https://base-rpc.publicnode.com',
     explorer: 'https://basescan.org',
-    // ETH-funded ReputationAggregator (see base-sepolia note above).
-    verdiktaAggregatorAddress: '0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a',
-    // Chainlink transport token (0-juel rail); vestigial for payment. See note above.
+    // v2 ReputationAggregator: see the base-sepolia note above. TODO(v2 deploy).
+    // Env overrides: AGGREGATOR_ADDRESS_BASE / AGGREGATOR_FROM_BLOCK_BASE / KEEPER_FROM_BLOCK_BASE.
+    verdiktaAggregatorAddress: null, // PLACEHOLDER: v2 aggregator address
+    aggregatorFromBlock: null,       // PLACEHOLDER: v2 aggregator deploy block
+    keeperFromBlock: null,           // PLACEHOLDER: v2 keeper deploy block
+    // Chainlink transport token (0-juel rail); not a payment token. See note above.
     linkTokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196',
-    // New ETH aggregator deployment block (verified exact). See base-sepolia note above.
-    aggregatorFromBlock: 47087827,
     archiveRpcUrl: 'https://base.gateway.tenderly.co',
     // Measured 2026-09-06: the keyless mainnet gateway now rejects anything over
     // 1,000 blocks ("Block range too large for public access ... or use an access
@@ -69,6 +77,26 @@ const networks = {
 };
 
 const DEFAULT_NETWORK = networks[process.env.NETWORK] ? process.env.NETWORK : 'base-sepolia';
+
+/**
+ * v2 contract coordinates for a network: the aggregator address and the event-
+ * scan floors, each overridable by env (suffix = network key upper-cased with
+ * '_' for '-', e.g. AGGREGATOR_ADDRESS_BASE_SEPOLIA). The address is null while
+ * the v2 deployment is unknown (see the placeholders above); callers must treat
+ * that as "not configured" rather than reading a v1 contract.
+ * @returns {{ aggregatorAddress: string|null, aggregatorFromBlock: number, keeperFromBlock: number }}
+ */
+function getContractsConfig(networkKey) {
+  const net = networks[normalizeNetwork(networkKey)];
+  const suffix = net.key.replace(/-/g, '_').toUpperCase();
+  const envNum = (name) => (Number(process.env[name]) > 0 ? Number(process.env[name]) : null);
+  const aggregatorAddress = process.env[`AGGREGATOR_ADDRESS_${suffix}`] || net.verdiktaAggregatorAddress || null;
+  const aggregatorFromBlock = envNum(`AGGREGATOR_FROM_BLOCK_${suffix}`) ?? net.aggregatorFromBlock ?? 0;
+  // The keeper predates the aggregator, so its floor defaults to the aggregator's
+  // only as a last resort (registrations before it would then be missed).
+  const keeperFromBlock = envNum(`KEEPER_FROM_BLOCK_${suffix}`) ?? net.keeperFromBlock ?? aggregatorFromBlock;
+  return { aggregatorAddress, aggregatorFromBlock, keeperFromBlock };
+}
 
 /**
  * Normalize a network key from any caller (client toggle, query param, env)
@@ -174,4 +202,4 @@ const funding = {
   lowEthThreshold: process.env.LOW_ETH_THRESHOLD || '0.01', // ETH (string)
 };
 
-module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, getLogScanRpc, getReceiptRpcUrl, funding };
+module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getContractsConfig, getRpcUrl, getArchiveRpcUrl, getLogScanRpc, getReceiptRpcUrl, funding };

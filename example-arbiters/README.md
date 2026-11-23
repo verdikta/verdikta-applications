@@ -1,6 +1,12 @@
 # Example Arbiters
 
-Peer project to `example-bounty-program` — a scaffold for the Verdikta Arbiters application. Currently a "coming soon" placeholder; ready to grow.
+Peer project to `example-bounty-program`: the Verdikta Arbiters site. It shows
+arbiter availability, reliability and contract configuration, and lets arbiter
+owners register and manage their arbiters and claim ETH from their wallet.
+
+It targets the **v2** ReputationAggregator / ReputationKeeper (see
+`verdikta-dispatcher/reputationBasedAggregator/MIGRATION.md`). v2 is a
+redeploy, not an upgrade: the v1 contracts are not read any more.
 
 ## Layout
 
@@ -26,6 +32,88 @@ npm run dev
 ```
 
 Open http://localhost:5175.
+
+## Tests
+
+```bash
+cd server && npm test    # node --test: status derivation, registry rebuild, round outcome/blame
+cd client && npm test    # vitest: registration parsing, descriptor, exit state, re-register tracker
+```
+
+## v2 contracts
+
+### Configuration (placeholders)
+
+The v2 aggregator address and the deploy blocks are **not known yet**.
+`server/config.js` has `verdiktaAggregatorAddress: null`, `aggregatorFromBlock:
+null` and `keeperFromBlock: null` for both networks, marked `PLACEHOLDER`. Until
+they are filled in, every chain read answers "The v2 Verdikta aggregator is not
+configured" (the home page shows "Not deployed yet"). They can also be set
+without a code change:
+
+```bash
+AGGREGATOR_ADDRESS_BASE_SEPOLIA=0x…   AGGREGATOR_FROM_BLOCK_BASE_SEPOLIA=…   KEEPER_FROM_BLOCK_BASE_SEPOLIA=…
+AGGREGATOR_ADDRESS_BASE=0x…           AGGREGATOR_FROM_BLOCK_BASE=…           KEEPER_FROM_BLOCK_BASE=…
+```
+
+The keeper address is read from `aggregator.keeper()`. `KEEPER_FROM_BLOCK` must
+be at or before the keeper's deployment: the keeper is deployed (and arbiters
+may register) before the aggregator.
+
+### How the server reads them
+
+- **Registry.** The v2 keeper has no index getter. The server rebuilds the
+  registered set from the keeper's `ArbiterRegistered` / `ArbiterRemoved` logs
+  (scanned once from `keeperFromBlock`, then incrementally), and reads each key
+  with `getArbiter`, `arbiterClasses` and `isFrozen`.
+- **Status** (`server/utils/arbiterStatus.js`). v1's call counts, recent-score
+  history and mild/severe thresholds are gone. Each arbiter gets one bucket,
+  first match wins:
+  - **blocked**: banned (flag 4), or `blockedUntil` in the future;
+  - **inactive**: exiting (flag 8), paused (2), under-staked (32), or a fee above the aggregator's `maxOracleFee`;
+  - **frozen**: re-syncing its hash chain (64), or a health call unanswered past `callDeadline`;
+  - **at risk**: a quality or timeliness score at or below `points().major` (one more major miss reaches 0 and blocks it);
+  - **new**: both scores still at `points().start` and no offenses;
+  - **active**: otherwise.
+
+  Every matching condition is also returned as `statusReasons` (shown as
+  tooltips and notes).
+- **Rounds** (`server/utils/roundModel.js`). Agg-history and the oracle-health
+  scan use `getRoundInfo`, `getSlot` and the v2 events, judged against the
+  aggregator's `M` and `N`. A failed round is charged to the drawn slots that
+  never committed (commit-phase failure with fewer than M commits) or the
+  promoted slots that never revealed (reveal-phase failure). No blame is charged
+  for rounds no arbiter committed to (likely malformed), rounds that were never
+  drawn, or rounds whose commit window was never closed or never promoted. The
+  agg-history route still requires a `0x` + 64-hex aggId; v2 aggIds are
+  sequential (`bytes32(roundId)`).
+
+### Registering and exiting from My Arbiters
+
+- **Register** sends `registerArbiter(oracle, jobId, fee, classes, 0x00…00)`
+  after a wVDKA approval of `stakeRequirement`. A browser can't hold the
+  arbiter's hash chain, so the site registers with head 0. The arbiter then
+  **starts frozen and is not selectable** until its node's health job re-syncs
+  onto a fresh chain and answers a health call, which it does on its own within
+  a minute or so of the job running. The site says so before and after the
+  transaction, and shows the arbiter as "Frozen (re-syncing)" until then.
+  Operators can instead register from the node with `register-oracle.sh`
+  (verdikta-arbiter installer), which creates the chain and the health job.
+- **Exit** takes two steps: `requestExit` (the arbiter stops being selected at
+  once), then `completeExit` once `exitAt` has passed (the unbonding period, 2
+  days by default; not while blocked). Completing the exit refunds the stake.
+- **Exit & register again** replaces v1's restart. Classes are fixed at
+  registration, so changing them means exiting and registering again later.
+  The planned fee and classes are kept in localStorage across the unbonding
+  period. v2 keeps a key's scores and offenses, so nothing is reset.
+- In place, with no exit: **Pause / Resume** (`setPaused`), **Change fee**
+  (`setFee`), **Top up stake** (`topUpStake`, shown when under-staked), and
+  **Send health call** (`requestHealthCall`, shown when frozen).
+- **Claimable ETH** is the wallet's `ethOwed` on the aggregator: arbiter base
+  fees and bonuses, draw / promote rewards earned by calling `drawJury` or
+  `promote`, and requester refunds. All are withdrawn with `withdrawEth()`.
+- The "Backup JSON" descriptor is version 2 (same fields as v1; v1 files still
+  import, without their v1 keeper address).
 
 ## Ports
 
@@ -78,7 +166,7 @@ Many operators run their nodes with an ops wallet that is *not* the operator
 contract's `owner()`. Those nodes sign with a key the server doesn't recognize,
 so every heartbeat is rejected with 403 and the arbiter shows as "not
 reporting". Putting the owner key on the node is the wrong fix — it controls
-the wVDKA stake, `deregisterOracle`, and ETH earnings.
+the wVDKA stake, the keeper's exit and fee controls, and ETH earnings.
 
 Instead the owner authorizes a **reporting key** from the **Reporting keys**
 section on `/my-arbiters`: an EIP-191 message signed in the browser (no
@@ -112,7 +200,7 @@ GET  /api/alerts/pending-reporters?network=&owner=  # candidates to authorize
 
 ## Notes
 
-- No wallet / IPFS code yet. Keep it that way until the feature set demands it.
-- Read-only blockchain access is intentional: the `/analytics` page reads arbiter/oracle data from the Verdikta aggregator + ReputationKeeper contracts via ethers (no wallet, no writes, no IPFS). A network toggle (Base mainnet / Base Sepolia) is exposed in the UI; the server reads each network over a public RPC (PublicNode), so no API keys are required. Override with `RPC_URL` / `INFURA_API_KEY` for a private endpoint.
+- No IPFS code. Wallet writes live only on `/my-arbiters` (client-side, through the user's wallet); the server only reads.
+- The `/analytics` page reads arbiter/oracle data from the Verdikta aggregator + ReputationKeeper contracts via ethers (no wallet, no writes, no IPFS). A network toggle (Base mainnet / Base Sepolia) is exposed in the UI; the server reads each network over a public RPC (PublicNode), so no API keys are required. Override with `RPC_URL` / `INFURA_API_KEY` for a private endpoint.
 - The write surfaces are all under `/api/alerts`: `POST /api/alerts` (arbiter watchdog webhooks) and the reporting-key delegation endpoints (see above). Every one of them is gated on an EIP-191 signature checked against on-chain state — there is no shared secret and no server-side allow-list to maintain.
 - Visual theme mirrors `example-bounty-program` (shared CSS variables and components). Keep in sync when the design system evolves.

@@ -3,8 +3,9 @@
  *
  * Lightweight cross-network headline stats for the home page: the total number
  * of registered arbiters on each network plus whether its aggregator is
- * reachable. Deliberately cheap — one `getOracleCount` (getRegisteredOraclesCount)
- * per network, no full enumeration — so the landing page loads fast.
+ * reachable. Deliberately cheap — one `getOracleCount` per network (the live
+ * keys from the keeper's registration logs, scanned incrementally; no per-
+ * arbiter reads) — so the landing page loads fast.
  */
 
 const express = require('express');
@@ -21,11 +22,13 @@ async function getSummary() {
       const verdiktaService = getVerdiktaService(net.key);
       let totalArbiters = null;
       let healthy = false;
+      let error = null;
       try {
         totalArbiters = await verdiktaService.getOracleCount();
         healthy = true;
       } catch (e) {
-        logger.warn('[summary] oracle count failed', { network: net.key, msg: e.message });
+        error = e.code === 'NOT_CONFIGURED' ? 'v2 aggregator not configured yet' : 'unreachable';
+        logger.warn('[summary] arbiter count failed', { network: net.key, msg: e.message });
       }
       return {
         network: net.key,
@@ -33,7 +36,8 @@ async function getSummary() {
         chainId: net.chainId,
         explorer: net.explorer,
         totalArbiters,
-        healthy
+        healthy,
+        error
       };
     })
   );

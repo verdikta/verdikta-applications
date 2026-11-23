@@ -3,10 +3,11 @@
  *
  * A standalone form (collapsible) to register an (oracle, jobId) from scratch —
  * for bringing up a new arbiter, recovering one from a downloaded JSON backup,
- * or re-registering after a manual close-out. Fields can be typed or filled by
+ * or registering again after a completed exit (the same key keeps its scores). Fields can be typed or filled by
  * importing an arbiter descriptor JSON (see utils/arbiterRegistration). On
  * submit it hands fixed params to RegisterArbiterModal, which runs the
- * approve → register transactions.
+ * approve → registerArbiter transactions (chain head 0: frozen until the node
+ * re-syncs, see RegisterArbiterModal).
  */
 
 import { useRef, useState } from 'react';
@@ -22,6 +23,7 @@ import {
 
 function RegisterArbiterSection({
   keeperAddress,
+  stakeRequirement, // formatted wVDKA string from the server, or null
   network,
   owner,
   chain,
@@ -56,7 +58,12 @@ function RegisterArbiterSection({
         setJobId(d.jobId);
         setFee(d.fee);
         setClasses(d.classes.join(', '));
-        if (d.network && d.network !== network) {
+        if (d.legacy) {
+          setImportNote({
+            kind: 'warn',
+            text: `Imported a v1 backup ("${file.name}"). Its fields still work: review them, then register with the v2 keeper.`,
+          });
+        } else if (d.network && d.network !== network) {
           setImportNote({
             kind: 'warn',
             text: `This descriptor is for network "${d.network}", but you are on "${network}". It will be registered on "${network}".`,
@@ -97,7 +104,11 @@ function RegisterArbiterSection({
           <p className="register-intro">
             Register an arbiter (oracle + Job&nbsp;ID) on {chain.name}. The connected wallet must own
             the operator contract. Fill the fields or import a previously downloaded backup. This
-            stakes 100&nbsp;wVDKA.
+            stakes {stakeRequirement ? Number(stakeRequirement) : 'the required'}&nbsp;wVDKA (the
+            keeper&rsquo;s stake requirement). The site registers without a health hash chain, so
+            the arbiter stays frozen until its node&rsquo;s health job re-syncs (automatic, about a
+            minute after the job runs); registering from the node with <code>register-oracle.sh</code>{' '}
+            avoids that step.
           </p>
 
           <div className="register-import">
@@ -189,6 +200,7 @@ function RegisterArbiterSection({
           fee={modalParams.fee}
           classes={modalParams.classes}
           keeperAddress={keeperAddress}
+          network={network}
           owner={owner}
           chain={chain}
           getSigner={getSigner}

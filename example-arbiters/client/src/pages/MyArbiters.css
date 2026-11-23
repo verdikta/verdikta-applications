@@ -183,7 +183,8 @@
 /* Arbiter status badges (match the Analytics palette) */
 .my-arbiters .status-active { background: #dcfce7; color: #166534; }
 .my-arbiters .status-new { background: #ede9fe; color: #5b21b6; }
-.my-arbiters .status-unresponsive { background: #fef3c7; color: #92400e; }
+.my-arbiters .status-atRisk { background: #fef3c7; color: #92400e; }
+.my-arbiters .status-frozen { background: #e0f2fe; color: #075985; }
 .my-arbiters .status-blocked { background: #fee2e2; color: #991b1b; }
 .my-arbiters .status-inactive { background: #f3f4f6; color: #374151; }
 
@@ -670,4 +671,21 @@
 
 .my-arbiters .reporting-add .register-fields {
   margin-bottom: 0.5rem;
+}
+
+/* v2: per-arbiter status notes and the frozen-until-re-sync notice */
+.my-arbiters .status-note {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #6b7280);
+  margin-top: 0.25rem;
+  max-width: 16rem;
+}
+.my-arbiters .reset-warn-note.resync-note {
+  align-items: flex-start;
+  color: #075985;
+  line-height: 1.4;
+}
+.my-arbiters .reset-warn-note.resync-note svg {
+  flex-shrink: 0;
+  margin-top: 0.15rem;
 }

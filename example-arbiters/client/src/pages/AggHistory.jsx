@@ -1,7 +1,8 @@
 /**
  * Aggregation History Page
  * Full arbiter evaluation lifecycle for a given Verdikta aggregation ID — the
- * drill-down reached from a blameworthy aggId on the Analytics page. Network is
+ * drill-down reached from a blameworthy aggId on the Analytics page. v2 rounds:
+ * getRoundInfo + getSlot for state, the round events for the timeline. Network is
  * the header-selected one (via useNetwork); the same id is passed to the
  * /api/analytics/agg-history endpoint and used to pick the block explorer.
  */
@@ -113,13 +114,36 @@ function AggHistory() {
     );
   }
 
-  const { contractParams, requestEvent, slots, fulfillment, outcome, analysis } = data;
+  const { contractParams, roundInfo, requestEvent, slots = [], fulfillment, outcome, outcomeKind, analysis, timeline = [], blame = [] } = data;
 
-  const isCompleted = outcome === 'COMPLETED';
-  const isRunning = outcome?.startsWith('RUNNING') || outcome?.startsWith('IN PROCESS');
-  const isMalformed = outcome?.startsWith('LIKELY MALFORMED');
-  const outcomeClass = isCompleted ? 'completed' : isRunning ? 'running' : isMalformed ? 'malformed' : 'failed';
-  const OutcomeIcon = isCompleted ? CheckCircle : isRunning ? Clock : isMalformed ? AlertTriangle : XCircle;
+  const kindClass = {
+    completed: 'completed', running: 'running', malformed: 'malformed',
+    failed: 'failed', notDrawn: 'failed', cancelled: 'failed',
+  }[outcomeKind] || 'failed';
+  const OutcomeIcon = kindClass === 'completed' ? CheckCircle : kindClass === 'running' ? Clock : kindClass === 'malformed' ? AlertTriangle : XCircle;
+  const blamed = new Map(blame.map((b) => [b.slot, b.stage]));
+  const fmtTime = (sec) => (sec ? new Date(sec * 1000).toLocaleString() : '—');
+
+  // A list of arbiter chips for the slots matching `pred`.
+  const chips = (prefix, pred) => {
+    const list = slots.filter(pred);
+    return list.length > 0 && (
+      <div className="req-actual-oracles">
+        {list.map((s) => (
+          <a
+            key={`${prefix}-${s.slot}`}
+            href={`${explorer}/address/${s.oracle}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="oracle-chip"
+          >
+            slot {s.slot}: {s.oracle.slice(0, 6)}…{s.oracle.slice(-4)} <ExternalLink size={10} />
+          </a>
+        ))}
+      </div>
+    );
+  };
+  const valClass = (n, need) => (n >= need ? 'val-ok' : n > 0 ? 'val-warn' : 'val-fail');
 
   return (
     <div className="agg-history">
@@ -132,6 +156,7 @@ function AggHistory() {
           <div className="agg-id-display">
             <span className="agg-id-label">Agg ID:</span>
             {aggId}
+            {/^0x0{40}/i.test(aggId) && <span className="agg-id-label"> (round #{parseInt(aggId, 16)})</span>}
             <button className="copy-btn" onClick={() => handleCopy(aggId)}>
               {copied === 'aggId' ? 'Copied' : 'Copy'}
             </button>
@@ -140,7 +165,7 @@ function AggHistory() {
       </div>
 
       {/* Outcome Banner */}
-      <div className={`outcome-banner ${outcomeClass}`}>
+      <div className={`outcome-banner ${kindClass}`}>
         <OutcomeIcon size={22} />
         {outcome}
       </div>
@@ -151,163 +176,112 @@ function AggHistory() {
           <h2><Activity size={20} /> Requirements</h2>
           <div className="req-actual-list">
             <div className="req-actual-row">
-              <span className="req-actual-label">Arbiters polled</span>
+              <span className="req-actual-label">Jury drawn (K)</span>
               <span className="req-actual-value">{contractParams.K}</span>
             </div>
             <div className="req-actual-row">
-              <span className="req-actual-label">Commits needed</span>
+              <span className="req-actual-label">Commits needed (M)</span>
               <span className="req-actual-value">{contractParams.M}</span>
             </div>
             <div className="req-actual-row">
-              <span className="req-actual-label">Reveals needed</span>
+              <span className="req-actual-label">Early close at (M+)</span>
+              <span className="req-actual-value">{contractParams.mPlus}</span>
+            </div>
+            <div className="req-actual-row">
+              <span className="req-actual-label">Promoted to reveal</span>
+              <span className="req-actual-value">{contractParams.M}</span>
+            </div>
+            <div className="req-actual-row">
+              <span className="req-actual-label">Reveals to finalize (N)</span>
               <span className="req-actual-value">{contractParams.N}</span>
             </div>
             <div className="req-actual-row">
-              <span className="req-actual-label">Max scores per reveal</span>
-              <span className="req-actual-value">{contractParams.maxLikelihoodLength}</span>
+              <span className="req-actual-label">Cluster (P)</span>
+              <span className="req-actual-value">{contractParams.P}</span>
             </div>
+            <div className="req-actual-detail">The aggregator&rsquo;s current settings; a round keeps the ones it was requested with.</div>
           </div>
         </div>
 
         <div className="analytics-section req-actual-half">
           <h2><Users size={20} /> Actual</h2>
           <div className="req-actual-list">
-            {/* Polled */}
             <div className="req-actual-row">
-              <span className="req-actual-label">Polled</span>
-              <span className="req-actual-value">{slots ? slots.length : 0} / {contractParams.K}</span>
+              <span className="req-actual-label">Drawn</span>
+              <span className="req-actual-value">{analysis.dispatched} / {contractParams.K}</span>
             </div>
-            {slots && slots.length > 0 && (
-              <div className="req-actual-oracles">
-                {slots.map(s => (
-                  <a
-                    key={`p-${s.slot}`}
-                    href={`${explorer}/address/${s.oracle}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="oracle-chip"
-                  >
-                    slot {s.slot}: {s.oracle.slice(0, 6)}…{s.oracle.slice(-4)} <ExternalLink size={10} />
-                  </a>
-                ))}
+            {chips('d', (s) => s.dispatched)}
+
+            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
+              <span className="req-actual-label">Commits</span>
+              <span className={`req-actual-value ${valClass(analysis.committed, contractParams.M)}`}>
+                {analysis.committed} / {contractParams.M} needed
+              </span>
+            </div>
+            {chips('c', (s) => s.committed)}
+
+            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
+              <span className="req-actual-label">Promoted</span>
+              <span className="req-actual-value">{analysis.promoted} / {contractParams.M}</span>
+            </div>
+            {chips('p', (s) => s.promoted)}
+
+            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
+              <span className="req-actual-label">Reveals counted</span>
+              <span className={`req-actual-value ${valClass(analysis.counted, contractParams.N)}`}>
+                {analysis.counted} / {contractParams.N}
+              </span>
+            </div>
+            {chips('r', (s) => s.counted)}
+            {analysis.lateReveals > 0 && (
+              <div className="req-actual-detail">
+                {analysis.lateReveals} late reveal{analysis.lateReveals === 1 ? '' : 's'} (after finalization: scored, not counted)
               </div>
             )}
 
-            {/* Commits */}
-            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
-              <span className="req-actual-label">Commits</span>
-              <span className={`req-actual-value ${analysis.committed >= contractParams.M ? 'val-ok' : analysis.committed > 0 ? 'val-warn' : 'val-fail'}`}>
-                {analysis.committed} / {contractParams.K}
-              </span>
-            </div>
-            {slots && (() => {
-              const committers = slots.filter(s => s.committed);
-              return committers.length > 0 && (
-                <div className="req-actual-oracles">
-                  {committers.map(s => (
-                    <a
-                      key={`c-${s.slot}`}
-                      href={`${explorer}/address/${s.oracle}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="oracle-chip"
-                    >
-                      slot {s.slot}: {s.oracle.slice(0, 6)}…{s.oracle.slice(-4)} <ExternalLink size={10} />
-                    </a>
-                  ))}
-                </div>
-              );
-            })()}
-
-            {/* Selected for reveal */}
-            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
-              <span className="req-actual-label">Reveal Requested</span>
-              <span className="req-actual-value">
-                {slots ? slots.filter(s => s.revealRequested).length : 0} / {contractParams.M}
-              </span>
-            </div>
-            {slots && (() => {
-              const selected = slots.filter(s => s.revealRequested);
-              return selected.length > 0 && (
-                <div className="req-actual-oracles">
-                  {selected.map(s => (
-                    <a
-                      key={`s-${s.slot}`}
-                      href={`${explorer}/address/${s.oracle}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="oracle-chip"
-                    >
-                      slot {s.slot}: {s.oracle.slice(0, 6)}…{s.oracle.slice(-4)} <ExternalLink size={10} />
-                    </a>
-                  ))}
-                </div>
-              );
-            })()}
-
-            {/* Reveals */}
-            <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
-              <span className="req-actual-label">Reveals</span>
-              <span className={`req-actual-value ${analysis.revealed >= contractParams.N ? 'val-ok' : analysis.revealed > 0 ? 'val-warn' : 'val-fail'}`}>
-                {analysis.revealed} / {contractParams.N}
-              </span>
-            </div>
-            {slots && (() => {
-              const revealers = slots.filter(s => s.revealOK);
-              return revealers.length > 0 && (
-                <div className="req-actual-oracles">
-                  {revealers.map(s => (
-                    <a
-                      key={`r-${s.slot}`}
-                      href={`${explorer}/address/${s.oracle}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="oracle-chip"
-                    >
-                      slot {s.slot}: {s.oracle.slice(0, 6)}…{s.oracle.slice(-4)} <ExternalLink size={10} />
-                    </a>
-                  ))}
-                </div>
-              );
-            })()}
-
-            {/* Non-responding */}
             {analysis.nonResponding > 0 && (
               <>
                 <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
-                  <span className="req-actual-label">Non-responding</span>
+                  <span className="req-actual-label">Never committed</span>
                   <span className="req-actual-value val-warn">{analysis.nonResponding}</span>
                 </div>
-                <div className="req-actual-detail">
-                  Slots: {analysis.nonRespondingSlotIds.join(', ')}
-                </div>
+                <div className="req-actual-detail">Slots: {analysis.nonRespondingSlotIds.join(', ')}</div>
               </>
             )}
-
-            {/* Failures */}
-            {Object.values(analysis.failures).some(v => v > 0) && (
+            {analysis.promotedNotRevealed?.length > 0 && (
+              <>
+                <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
+                  <span className="req-actual-label">Promoted, never revealed</span>
+                  <span className="req-actual-value val-warn">{analysis.promotedNotRevealed.length}</span>
+                </div>
+                <div className="req-actual-detail">Slots: {analysis.promotedNotRevealed.join(', ')}</div>
+              </>
+            )}
+            {(analysis.quality.close + analysis.quality.off + analysis.quality.far) > 0 && (
               <div className="req-actual-failures" style={{ marginTop: '0.75rem' }}>
-                <span className="req-actual-label" style={{ marginBottom: '0.25rem', display: 'block' }}>Failures</span>
-                {analysis.failures.hashMismatch > 0 && (
-                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.hashMismatch} hash mismatch</div>
-                )}
-                {analysis.failures.invalidFormat > 0 && (
-                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.invalidFormat} invalid format</div>
-                )}
-                {analysis.failures.tooManyScores > 0 && (
-                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.tooManyScores} too many scores</div>
-                )}
-                {analysis.failures.wrongScoreCount > 0 && (
-                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.wrongScoreCount} wrong score count</div>
-                )}
-                {analysis.failures.tooFewScores > 0 && (
-                  <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.failures.tooFewScores} too few scores</div>
-                )}
+                <span className="req-actual-label" style={{ marginBottom: '0.25rem', display: 'block' }}>Reveal quality</span>
+                <div className="failure-line"><CheckCircle size={12} className="icon-ok" /> {analysis.quality.close} close</div>
+                {analysis.quality.off > 0 && <div className="failure-line"><AlertTriangle size={12} className="icon-fail" /> {analysis.quality.off} off</div>}
+                {analysis.quality.far > 0 && <div className="failure-line"><XCircle size={12} className="icon-fail" /> {analysis.quality.far} far</div>}
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Round state */}
+      {roundInfo && (
+        <div className="analytics-section">
+          <h2><Clock size={20} /> Round</h2>
+          <div className="fulfillment-details">
+            <div className="detail-row"><span className="detail-label">Phase:</span><span className="detail-value">{roundInfo.phaseName} ({roundInfo.phase})</span></div>
+            <div className="detail-row"><span className="detail-label">Requested:</span><span className="detail-value">{fmtTime(roundInfo.requestTime)} · block {roundInfo.requestBlock}</span></div>
+            <div className="detail-row"><span className="detail-label">Commit window ends:</span><span className="detail-value">{fmtTime(roundInfo.windowEnd)}</span></div>
+            <div className="detail-row"><span className="detail-label">Deadline:</span><span className="detail-value">{fmtTime(roundInfo.deadline)}</span></div>
+            <div className="detail-row"><span className="detail-label">Escrow:</span><span className="detail-value">{roundInfo.received} ETH received · {roundInfo.baseFees} base fees · {roundInfo.bonuses} bonuses · {roundInfo.rewards} rewards</span></div>
+          </div>
+        </div>
+      )}
 
       {/* Request Event */}
       {requestEvent && (
@@ -355,8 +329,8 @@ function AggHistory() {
         </div>
       )}
 
-      {/* Oracle Slots Table */}
-      {slots && slots.length > 0 && (
+      {/* Arbiter Slots Table */}
+      {slots.length > 0 && (
         <div className="analytics-section">
           <h2><Users size={20} /> Arbiter Slots ({slots.length})</h2>
           <div className="slots-table">
@@ -366,18 +340,17 @@ function AggHistory() {
                   <th>Slot</th>
                   <th>Arbiter Addr</th>
                   <th>Job ID</th>
+                  <th>Fee</th>
                   <th>Commit</th>
-                  <th>Reveal Req</th>
-                  <th>Reveal OK</th>
-                  <th>Hash Mis</th>
-                  <th>Bad Fmt</th>
-                  <th>Too Many</th>
-                  <th>Wrong Cnt</th>
-                  <th>Too Few</th>
+                  <th>Promoted</th>
+                  <th>Revealed</th>
+                  <th>Counted</th>
+                  <th>Quality</th>
+                  <th>Note</th>
                 </tr>
               </thead>
               <tbody>
-                {slots.map(slot => (
+                {slots.map((slot) => (
                   <tr key={slot.slot}>
                     <td>{slot.slot}</td>
                     <td className="oracle-cell">
@@ -401,14 +374,19 @@ function AggHistory() {
                         </span>
                       ) : '-'}
                     </td>
+                    <td>{slot.fee}{slot.bonus ? ` + ${slot.bonus}` : ''}</td>
                     <BoolCell value={slot.committed} />
-                    <BoolCell value={slot.revealRequested} />
-                    <BoolCell value={slot.revealOK} />
-                    <BoolCell value={slot.hashMismatch} invert />
-                    <BoolCell value={slot.invalidFormat} invert />
-                    <BoolCell value={slot.tooManyScores} invert />
-                    <BoolCell value={slot.wrongScoreCount} invert />
-                    <BoolCell value={slot.tooFewScores} invert />
+                    <BoolCell value={slot.promoted} />
+                    <BoolCell value={slot.revealed} />
+                    <BoolCell value={slot.counted} />
+                    <td>{slot.quality || '-'}</td>
+                    <td>
+                      {[
+                        slot.late && 'late reveal',
+                        slot.skipped && `skipped: ${slot.skipped}`,
+                        blamed.has(slot.slot) && `blamed (${blamed.get(slot.slot)})`,
+                      ].filter(Boolean).join(' · ') || '-'}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -423,21 +401,26 @@ function AggHistory() {
           <h2><CheckCircle size={20} /> Fulfillment</h2>
           <div className="fulfillment-details">
             <div className="detail-row">
-              <span className="detail-label">Likelihoods:</span>
-              <span className="detail-value">[{fulfillment.likelihoods.join(', ')}]</span>
+              <span className="detail-label">Aggregated:</span>
+              <span className="detail-value">[{fulfillment.aggregated.join(', ')}]</span>
             </div>
-            {fulfillment.justificationCID && (
+            {fulfillment.justificationCIDs?.length > 0 && (
               <div className="detail-row">
-                <span className="detail-label">Justification CID:</span>
+                <span className="detail-label">Justification CIDs:</span>
                 <span className="detail-value">
-                  <a
-                    href={`${IPFS_GATEWAY}/${fulfillment.justificationCID}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: 'var(--primary)', textDecoration: 'none' }}
-                  >
-                    {fulfillment.justificationCID} <ExternalLink size={10} style={{ verticalAlign: 'middle' }} />
-                  </a>
+                  {fulfillment.justificationCIDs.map((cid, i) => (
+                    <span key={cid}>
+                      {i > 0 && ', '}
+                      <a
+                        href={`${IPFS_GATEWAY}/${cid}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: 'var(--primary)', textDecoration: 'none' }}
+                      >
+                        {cid} <ExternalLink size={10} style={{ verticalAlign: 'middle' }} />
+                      </a>
+                    </span>
+                  ))}
                 </span>
               </div>
             )}
@@ -462,21 +445,47 @@ function AggHistory() {
         </div>
       )}
 
+      {/* Event timeline */}
+      {timeline.length > 0 && (
+        <div className="analytics-section">
+          <h2><Activity size={20} /> Event Timeline ({timeline.length})</h2>
+          <div className="slots-table">
+            <table>
+              <thead>
+                <tr><th>Block</th><th>Event</th><th>Detail</th><th>Tx</th></tr>
+              </thead>
+              <tbody>
+                {timeline.map((e, i) => (
+                  <tr key={`${e.txHash}-${i}`}>
+                    <td>{e.block}</td>
+                    <td>{e.event}</td>
+                    <td>{e.detail || '-'}</td>
+                    <td>
+                      <a href={`${explorer}/tx/${e.txHash}`} target="_blank" rel="noopener noreferrer" className="oracle-link">
+                        {e.txHash.slice(0, 10)}… <ExternalLink size={10} />
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {data.scan?.truncated && (
+            <p className="req-actual-detail">The event scan was capped; later events of this round are not shown.</p>
+          )}
+        </div>
+      )}
+
     </div>
   );
 }
 
 /**
- * Boolean cell for the slots table.
- * For positive events (commit, reveal): green check = true, gray dash = false.
- * For failure events (invert=true): red X = true, gray dash = false.
+ * Boolean cell for the slots table: green check = true, gray dash = false.
  */
-function BoolCell({ value, invert }) {
+function BoolCell({ value }) {
   if (!value) {
     return <td><span className="icon-na">-</span></td>;
-  }
-  if (invert) {
-    return <td><XCircle size={14} className="icon-fail" /></td>;
   }
   return <td><CheckCircle size={14} className="icon-ok" /></td>;
 }

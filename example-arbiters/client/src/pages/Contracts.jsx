@@ -1,6 +1,6 @@
 /**
  * Contracts Page
- * Read-only reference for the core Verdikta contracts: the ReputationAggregator,
+ * Read-only reference for the core Verdikta v2 contracts: the ReputationAggregator,
  * the ReputationKeeper, and the wVDKA staking token. Shows what each contract
  * does, a block-explorer link, its address, and live on-chain configuration.
  *
@@ -27,26 +27,28 @@ import './Contracts.css';
 // Concise plain-language descriptions of each contract's role.
 const DESCRIPTIONS = {
   aggregator:
-    'Orchestrates each evaluation: it selects a panel of registered arbiter oracles, ' +
-    'collects their commit-and-reveal responses, and aggregates them into a single ' +
-    'verdict. The parameters below control how many oracles are polled and how many ' +
-    'must respond.',
+    'Runs each evaluation in two phases. A request escrows the fees; from two blocks later ' +
+    'anyone can draw the jury (K arbiters, chosen by reputation from the keeper’s state at ' +
+    'the request block). The commit phase closes at M+ commits, or after T+ with at least M; ' +
+    'M commits are promoted to reveal, and the N-th reveal finalizes the verdict. The P ' +
+    'closest reveals earn the bonus. Late reveals are still scored, and settlement after the ' +
+    'deadline reports every slot’s outcome to the keeper.',
   keeper:
-    'The on-chain registry of arbiter oracles. It records each oracle’s stake, ' +
-    'supported classes, and running quality/timeliness scores, and blocks oracles whose ' +
-    'scores fall below the thresholds below.',
+    'The on-chain registry of arbiters, keyed by (operator, Job ID). It holds each ' +
+    'arbiter’s stake, classes, fee, and two scores (quality and timeliness). A score that ' +
+    'reaches 0 blocks the arbiter, the maximum number of offenses bans it, and an unanswered ' +
+    'health call freezes it until it answers. Exits take two steps: a request, then ' +
+    'completion after the unbonding period, which refunds the stake.',
   wvdka:
-    'The staking token oracles bond to register with the Reputation Keeper. Stakes are ' +
-    'locked or slashed based on performance, aligning oracle incentives with honest, ' +
-    'timely responses.'
+    'The staking token arbiters bond to register with the Reputation Keeper. The stake is ' +
+    'held while the arbiter is registered and through the unbonding period after it asks to ' +
+    'exit, so penalties for its last rounds can still apply.'
 };
-
-// A bytes32 of all zeros means "unset" — don't surface it as a real value.
-const isZeroHash = (v) => !v || /^0x0+$/i.test(v);
 
 // Format a duration in seconds as a compact human string (e.g. 86400 -> "24h").
 const formatDuration = (s) => {
   if (s == null) return null;
+  if (s >= 86400 && s % 3600 === 0) return `${+(s / 86400).toFixed(s % 86400 ? 1 : 0)}d`;
   if (s >= 3600) return `${+(s / 3600).toFixed(s % 3600 ? 1 : 0)}h`;
   if (s >= 60) return `${Math.round(s / 60)}m`;
   return `${s}s`;
@@ -54,47 +56,20 @@ const formatDuration = (s) => {
 
 // Format a token amount string ("100.0") as "100 wVDKA".
 const fmtToken = (v) => (v == null ? null : `${Number(v)} wVDKA`);
-
-// Format a signed score delta: "+60", "0", "-60".
-const fmtDelta = (n) => (n == null ? '—' : n > 0 ? `+${n}` : `${n}`);
+const fmtSigned = (n) => (n == null ? '—' : n > 0 ? `+${n}` : `${n}`);
 const deltaColor = (n) => (n == null ? 'var(--text-secondary)' : n > 0 ? '#16a34a' : n < 0 ? '#dc2626' : 'var(--text-secondary)');
-const fmtCount = (n) => (Number.isFinite(n) ? n : '—');
 
-// Reputation score-delta rows (the rulebook behind quality/timeliness scores).
-// `count` derives how many oracles land in each outcome per evaluation from the
-// selection parameters K (commit polls) ≥ M (reveals) ≥ N (required) ≥ P (cluster);
-// `formula` is shown as the count's mouseover.
-const DELTA_ROWS = [
-  {
-    key: 'clustered',
-    label: 'Clustered',
-    desc: 'Response landed in the consensus cluster (agreed with the aggregated answer).',
-    count: (c) => c.clusterSize,
-    formula: (c) => `Cluster (P) = ${c.clusterSize}`
-  },
-  {
-    key: 'selected',
-    label: 'Selected, not clustered',
-    desc: 'Selected for aggregation but outside the consensus cluster.',
-    count: (c) => c.requiredResponses - c.clusterSize,
-    formula: (c) => `Required (N) − Cluster (P) = ${c.requiredResponses} − ${c.clusterSize} = ${c.requiredResponses - c.clusterSize}`
-  },
-  {
-    key: 'revealed',
-    label: 'Revealed, not selected',
-    desc: 'Revealed a response but was not selected for aggregation.',
-    count: (c) => c.oraclesToPoll - c.requiredResponses,
-    formula: (c) => `Reveals (M) − Required (N) = ${c.oraclesToPoll} − ${c.requiredResponses} = ${c.oraclesToPoll - c.requiredResponses}`
-  },
-  {
-    key: 'committed',
-    label: 'Committed, not revealed',
-    desc: 'Committed to a response but never revealed it.',
-    count: (c) => c.commitOraclesToPoll - c.oraclesToPoll,
-    formula: (c) => `Commit Polls (K) − Reveals (M) = ${c.commitOraclesToPoll} − ${c.oraclesToPoll} = ${c.commitOraclesToPoll - c.oraclesToPoll}`
-  }
+// Table 1 of the keeper: how each slot outcome moves the two scores. `t` and `q`
+// pick the timeliness / quality change from the keeper's points() (null = no change).
+const POINT_ROWS = [
+  { label: 'Promoted, revealed', desc: 'Revealed after promotion (even late).', t: (p) => p.gain, q: null },
+  { label: '… and close to the result', desc: 'Its reveal fell within the spread of the aggregated answer.', t: null, q: (p) => p.gain },
+  { label: '… and off', desc: 'Its reveal was outside the spread, but not far.', t: null, q: (p) => -p.minor },
+  { label: '… and far', desc: 'Its reveal was far from the aggregated answer.', t: null, q: (p) => -p.major },
+  { label: 'Promoted, no reveal (round finished)', desc: 'Asked to reveal and never did; the round finished anyway.', t: (p) => -p.major, q: null },
+  { label: 'Promoted, no reveal (round failed)', desc: 'Asked to reveal and never did; the round failed for lack of reveals.', t: (p) => -p.fail, q: null },
+  { label: 'No commit (round failed)', desc: 'Drawn but never committed, and the round failed for lack of commits.', t: (p) => -p.nocommit, q: null },
 ];
-
 // Render an address with a copyable code block and a block-explorer link.
 function AddressRow({ label, address, explorer }) {
   if (!address) return null;
@@ -310,80 +285,31 @@ function Contracts() {
 
           {agg?.config && (
             <div className="config-grid">
-              <ConfigItem label="Commit Polls (K)" value={agg.config.commitOraclesToPoll} />
-              <ConfigItem label="Reveals (M)" value={agg.config.oraclesToPoll} />
-              <ConfigItem label="Required (N)" value={agg.config.requiredResponses} />
-              <ConfigItem label="Cluster (P)" value={agg.config.clusterSize} />
+              <ConfigItem label="Jury (K)" value={agg.config.K} title="Arbiters drawn per request" />
+              <ConfigItem label="Commits needed (M)" value={agg.config.M} title="Commits needed to close the commit phase after T+; also the number of commits promoted to reveal" />
+              <ConfigItem label="Early close (M+)" value={agg.config.mPlus} title="The commit phase closes at once when this many commits are in: M + ceil((K − M) / 2)" />
+              <ConfigItem label="Reveals to finalize (N)" value={agg.config.N} />
+              <ConfigItem label="Cluster (P)" value={agg.config.P} title="Reveals in the consensus cluster, each paid the bonus" />
               <ConfigItem label="Bonus Multiplier" value={agg.config.bonusMultiplier != null ? `${agg.config.bonusMultiplier}x` : null} />
-              <ConfigItem label="Timeout" value={agg.config.responseTimeoutSeconds != null ? `${agg.config.responseTimeoutSeconds}s` : null} />
-              <ConfigItem label="Max Oracle Fee" value={agg.config.maxOracleFee != null ? `${agg.config.maxOracleFee} ETH` : null} />
-              {agg.payment?.fee != null && Number(agg.payment.fee) > 0 && (
-                <ConfigItem label="Fee / Oracle" value={`${agg.payment.fee} ETH`} />
-              )}
-              <ConfigItem
-                label="Max Scores / Response"
-                value={agg.config.maxLikelihoodLength}
-                title="Maximum number of likelihood scores allowed in a single oracle response"
-              />
-              <ConfigItem
-                label="Last Activity Block"
-                value={agg.config.lastEntropyBlock != null ? agg.config.lastEntropyBlock.toLocaleString() : null}
-                title="Block of the most recent aggregation that updated on-chain entropy"
-              />
-              <ConfigItem
-                label="Max CIDs / Request"
-                value={agg.config.inputLimits?.maxCidCount}
-                title="Maximum number of IPFS CIDs accepted per evaluation request"
-              />
-              <ConfigItem label="Max CID Length" value={agg.config.inputLimits?.maxCidLength} />
-              <ConfigItem
-                label="Max Addendum Length"
-                value={agg.config.inputLimits?.maxAddendumLength}
-                title="Maximum length (characters) of the addendum text per request"
-              />
+              <ConfigItem label="Round Timeout" value={formatDuration(agg.config.responseTimeoutSeconds)} title="From the draw to the round deadline; settlement is due after it" />
+              <ConfigItem label="Commit Window (T+)" value={formatDuration(agg.config.tPlus)} title="After this, M commits are enough to close the commit phase" />
+              <ConfigItem label="Reveal Window" value={formatDuration(agg.config.revealWindow)} title="Reveal time guaranteed to promoted arbiters after promotion" />
+              <ConfigItem label="Max Oracle Fee" value={agg.config.maxOracleFee != null ? `${agg.config.maxOracleFee} ETH` : null} title="Fee ceiling: arbiters posting more are never drawn" />
+              <ConfigItem label="Draw Reward" value={agg.config.drawRewardFees != null ? `${agg.config.drawRewardFees} × fee` : null} title="Paid into ethOwed to whoever draws the jury (only the requester during the priority window)" />
+              <ConfigItem label="Promote Reward" value={agg.config.promoteRewardFees != null ? `${agg.config.promoteRewardFees} × fee` : null} title="Paid into ethOwed to whoever calls promote" />
+              <ConfigItem label="Requester Draw Priority" value={formatDuration(agg.config.requesterDrawPriority)} />
+              <ConfigItem label="Spread Floor" value={agg.config.spreadFloor != null ? agg.config.spreadFloor.toLocaleString() : null} title="Minimum quality spread on the arbiters' 0..1,000,000 scale" />
+              <ConfigItem label="Rounds So Far" value={agg.config.roundCount != null ? agg.config.roundCount.toLocaleString() : null} title="roundCount(): rounds requested on this aggregator; aggIds are sequential" />
+              <ConfigItem label="Beacons" value={agg.config.beacons ? 'On' : 'Off'} title="JuryBeacons contract for beacon-seeded draws (per-request flag)" />
+              {agg.config.paused && <ConfigItem label="Status" value="Paused" />}
             </div>
           )}
 
-          {agg?.config?.scoreDeltas && (
-            <div className="stats-table">
-              <h3 className="table-title">Reputation Score Deltas</h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Response outcome</th>
-                    <th className="tooltip-header" title="How many oracles fall into this outcome in a single evaluation, derived from the K/M/N/P selection parameters above">Instances / Eval</th>
-                    <th className="tooltip-header" title="Change applied to the oracle's quality score">&Delta; Quality</th>
-                    <th className="tooltip-header" title="Change applied to the oracle's timeliness score">&Delta; Timeliness</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {DELTA_ROWS.map((r) => {
-                    const d = agg.config.scoreDeltas[r.key] || {};
-                    return (
-                      <tr key={r.key}>
-                        <td className="tooltip-header" title={r.desc}>{r.label}</td>
-                        <td className="tooltip-header" title={r.formula(agg.config)}>{fmtCount(r.count(agg.config))}</td>
-                        <td style={{ color: deltaColor(d.quality), fontWeight: 600 }}>{fmtDelta(d.quality)}</td>
-                        <td style={{ color: deltaColor(d.timeliness), fontWeight: 600 }}>{fmtDelta(d.timeliness)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {agg?.payment && (
-            <div className="contract-addresses">
-              <AddressRow label="Transport Token (0-juel rail)" address={agg.payment.transportTokenAddress} explorer={explorer} />
-              {!isZeroHash(agg.payment.jobId) && (
-                <div className="contract-row">
-                  <span className="contract-label">Chainlink Job ID</span>
-                  <code className="address">{agg.payment.jobId}</code>
-                </div>
-              )}
-            </div>
-          )}
+          <div className="contract-addresses">
+            <AddressRow label="Treasury" address={agg?.config?.treasury} explorer={explorer} />
+            <AddressRow label="Jury Beacons" address={agg?.config?.beacons} explorer={explorer} />
+            <AddressRow label="Transport Token (0-juel rail)" address={agg?.transportTokenAddress} explorer={explorer} />
+          </div>
         </div>
       </section>
 
@@ -409,50 +335,85 @@ function Contracts() {
           </div>
 
           <div className="config-grid">
-            <ConfigItem label="Registered Oracles" value={keeper?.registeredOracles} />
+            <ConfigItem label="Registered Arbiters" value={keeper?.registeredArbiters} title="Live keys, rebuilt from the keeper's registration and removal events" />
             <ConfigItem
               label="Required Stake"
               value={fmtToken(keeper?.config?.stakeRequirement)}
-              title="wVDKA an oracle must stake to register"
+              title="wVDKA an arbiter must stake to register (stakeRequirement)"
             />
             <ConfigItem
-              label="Selection Rounds"
-              value={keeper?.config?.selectionCounter != null ? keeper.config.selectionCounter.toLocaleString() : null}
-              title="Cumulative oracle-selection rounds performed by the network"
+              label="Unbonding Period"
+              value={formatDuration(keeper?.config?.unbondingPeriodSeconds)}
+              title="Time between requestExit and completeExit, when the stake is refunded"
             />
-            <ConfigItem label="Mild Threshold" value={keeper?.mildThreshold} />
-            <ConfigItem label="Severe Threshold" value={keeper?.severeThreshold} />
             <ConfigItem
-              label="Lock Duration"
+              label="Health Call Deadline"
+              value={formatDuration(keeper?.config?.callDeadlineSeconds)}
+              title="An arbiter that has not answered a health call within this is frozen until it answers"
+            />
+            <ConfigItem
+              label="Block Duration"
               value={formatDuration(keeper?.config?.lockDurationSeconds)}
-              title="How long an oracle is locked after a penalty (cannot be deregistered until it expires)"
+              title="How long an arbiter is blocked when a score reaches 0, doubled per earlier offense"
             />
             <ConfigItem
-              label="Slash Amount"
-              value={fmtToken(keeper?.config?.slashAmount)}
-              title="wVDKA slashed from an oracle's stake on a severe penalty"
+              label="Offense Decay"
+              value={formatDuration(keeper?.config?.decayPeriodSeconds)}
+              title="One offense is forgiven per this many clean days"
             />
+            <ConfigItem
+              label="Max Offenses"
+              value={keeper?.config?.maxOffenses}
+              title="The block that reaches this many offenses is a permanent ban"
+            />
+            <ConfigItem
+              label="Burn per Block"
+              value={fmtToken(keeper?.config?.burnPerBlock)}
+              title="wVDKA burned from the stake on a block, doubled per earlier offense"
+            />
+            <ConfigItem label="Burn on Ban" value={keeper?.config?.burnOnBan == null ? null : keeper.config.burnOnBan ? 'Whole stake' : 'No'} />
             <ConfigItem
               label="Shortlist Size"
               value={keeper?.config?.shortlistSize}
-              title="Top-N oracles considered during selection"
+              title="Eligible arbiters collected per draw before the weighted pick"
             />
-            <ConfigItem
-              label="Min Selection Score"
-              value={keeper?.config?.minScoreForSelection}
-              title="Floor applied to an oracle's score when computing its selection weight"
-            />
-            <ConfigItem
-              label="Max Selection Score"
-              value={keeper?.config?.maxScoreForSelection}
-              title="Cap applied to an oracle's score when computing its selection weight"
-            />
-            <ConfigItem
-              label="Score History"
-              value={keeper?.config?.maxScoreHistory}
-              title="Number of recent score snapshots retained per oracle"
-            />
+            <ConfigItem label="Max Scan" value={keeper?.config?.maxScan} title="Bound on class-list entries walked per draw" />
+            <ConfigItem label="Random Health Calls" value={keeper?.config?.liveRandom} title="Extra shortlisted arbiters sent a health call per draw" />
+            <ConfigItem label="Starting Score" value={keeper?.config?.points?.start} title="Both scores start here (0..cap)" />
+            <ConfigItem label="Score Cap" value={keeper?.config?.points?.cap} />
           </div>
+
+          {keeper?.config?.points && (
+            <div className="stats-table">
+              <h3 className="table-title">Reputation Points per Round</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Slot outcome (settlement)</th>
+                    <th className="tooltip-header" title="Change applied to the arbiter's timeliness score">&Delta; Timeliness</th>
+                    <th className="tooltip-header" title="Change applied to the arbiter's quality score">&Delta; Quality</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {POINT_ROWS.map((r) => {
+                    const t = r.t ? r.t(keeper.config.points) : null;
+                    const q = r.q ? r.q(keeper.config.points) : null;
+                    return (
+                      <tr key={r.label}>
+                        <td className="tooltip-header" title={r.desc}>{r.label}</td>
+                        <td style={{ color: deltaColor(t), fontWeight: 600 }}>{fmtSigned(t)}</td>
+                        <td style={{ color: deltaColor(q), fontWeight: 600 }}>{fmtSigned(q)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="table-note">
+                A score that reaches 0 blocks the arbiter and restarts at {keeper.config.points.start}.
+                An arbiter frozen at the round deadline is not scored unless it committed in that round.
+              </p>
+            </div>
+          )}
 
           <div className="contract-addresses">
             <AddressRow label="Staking Token (wVDKA)" address={keeper?.verdiktaTokenAddress} explorer={explorer} />

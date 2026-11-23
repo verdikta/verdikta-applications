@@ -1157,3 +1157,20 @@
 .mutual-wager-note p { margin: 0 0 0.75rem; }
 .mutual-wager-problems ul { margin: 0.25rem 0 0; padding-left: 1.25rem; }
 .mutual-wager-problems li { margin: 0.25rem 0; }
+
+/* Bounty size class picker (v2) */
+.class-picker .class-picker-options { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+.class-picker .class-picker-option {
+  position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem;
+  padding: 0.5rem 0.75rem; border: 1px solid var(--border-color, #d0d7de); border-radius: 8px; cursor: pointer;
+}
+.class-picker .class-picker-option input { position: absolute; opacity: 0; pointer-events: none; }
+.class-picker .class-picker-option.selected { border-color: var(--primary-color, #2563eb); box-shadow: 0 0 0 1px var(--primary-color, #2563eb); }
+.class-picker .class-picker-name { font-weight: 600; }
+.class-picker .class-picker-sub { font-size: 0.8rem; opacity: 0.75; }
+.class-picker .class-picker-table { width: 100%; border-collapse: collapse; margin: 0.5rem 0 0.75rem; font-size: 0.9rem; }
+.class-picker .class-picker-table th { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; white-space: nowrap; vertical-align: top; width: 1%; }
+.class-picker .class-picker-table td { padding: 0.25rem 0; }
+.class-picker .class-picker-explain { font-size: 0.875rem; margin: 0.5rem 0 0.75rem; }
+.class-picker .class-picker-explain p { margin: 0 0 0.5rem; }
+.class-picker .class-picker-checkbox { display: block; margin: 0.25rem 0 0.75rem; font-size: 0.9rem; }

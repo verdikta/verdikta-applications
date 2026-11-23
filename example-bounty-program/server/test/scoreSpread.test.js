@@ -1,6 +1,5 @@
 /**
- * Arbiter score spread (utils/scoreSpread.js): reveal decoding and commit check,
- * per-round spread, the report served by GET /api/analytics/score-spread, and the
+ * Arbiter score spread (utils/scoreSpread.js): reading a v2 round, per-round spread, the report served by GET /api/analytics/score-spread, and the
  * incremental collector skipping rounds that are already settled.
  */
 jest.mock('../config', () => ({ config: { network: 'base-sepolia', bountyEscrowAddress: '0x' + 'AB'.repeat(20) } }));
@@ -27,38 +26,6 @@ const reveal = (slot, accept, extra = {}) => ({
   block: 100 + slot, counted: slot < 3, scores: vec(accept), cid: `QmJust${slot}`, hashOk: true, ...extra
 });
 const sd = (a) => { const m = a.reduce((x, y) => x + y, 0) / a.length; return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / (a.length - 1)); };
-
-describe('reveal decoding and commit check', () => {
-  test('decodes an operator fulfill and reproduces the aggregator commit hash', () => {
-    const operator = '0x' + '22'.repeat(20);
-    const callback = '0x' + '33'.repeat(20);
-    const rid = id(7);
-    const scores = ['120000', '880000'];
-    const salt = 'abcdef0123456789abcd';
-    const data = ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'uint256[]', 'string'], [rid, scores, `QmCid:${salt}`]);
-    const tx = ss.OPERATOR_IFACE.encodeFunctionData('fulfillOracleRequestV', [rid, 0, callback, '0x12345678', 0, data]);
-
-    const dec = ss.decodeOperatorFulfill(tx);
-    expect(dec).toEqual({ requestId: rid, callback, scores, cid: `QmCid:${salt}` });
-    const cs = ss.parseCidSalt(dec.cid);
-    expect(cs).toEqual({ cid: 'QmCid', salt: BigInt('0x' + salt) });
-
-    const enc = ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256[]', 'uint256'], [operator, scores, BigInt('0x' + salt)]);
-    expect(ss.revealCommitHash(operator, scores, cs.salt)).toBe(ethers.sha256(enc).slice(0, 34).toLowerCase());
-    expect(ss.revealCommitHash(operator, ['120001', '879999'], cs.salt)).not.toBe(ss.revealCommitHash(operator, scores, cs.salt));
-  });
-
-  test('rejects malformed salts and non-fulfill calldata', () => {
-    expect(ss.parseCidSalt('QmCid')).toBeNull();
-    expect(ss.parseCidSalt('QmCid:xyz')).toBeNull();
-    expect(() => ss.decodeOperatorFulfill('0xdeadbeef')).toThrow('not an operator fulfill call');
-  });
-
-  test('shows ASCII Chainlink jobIds as text', () => {
-    expect(ss.jobIdText(ethers.hexlify(ethers.toUtf8Bytes('c7bcd383e05a49eda9f795d1c21a4c53')))).toBe('c7bcd383e05a49eda9f795d1c21a4c53');
-    expect(ss.jobIdText(id(1))).toBe(id(1));
-  });
-});
 
 describe('roundSpread', () => {
   test('sample sd of the accept share over every usable reveal', () => {
@@ -119,6 +86,13 @@ describe('clusteredSpread (unclustered outliers excluded)', () => {
   });
 });
 
+// Rounds are cached under <jobId>:<aggId> (v2 ids are sequential per aggregator).
+function keyed(rounds, jobs) {
+  const out = {};
+  for (const j of jobs) for (const sub of j.submissions) if (rounds[sub.verdiktaAggId]) out[ss.roundKey(j.jobId, sub.verdiktaAggId)] = rounds[sub.verdiktaAggId];
+  return out;
+}
+
 function fixture() {
   const rounds = {
     [id(1)]: { aggId: id(1), startTs: NOW - 1 * DAY - 100, settled: true, finalAccept: 91,
@@ -148,7 +122,7 @@ function fixture() {
     ] }
   ];
   for (const r of Object.values(rounds)) r.reqBlock = 1000;
-  return { state: { version: 1, rounds, lastRunAt: 5, lastError: null }, jobs };
+  return { state: { version: 2, rounds: keyed(rounds, jobs), lastRunAt: 5, lastError: null }, jobs };
 }
 
 describe('buildReport', () => {
@@ -207,9 +181,9 @@ describe('buildReport', () => {
   test('per-arbiter gap from the other arbiters in the same round', () => {
     const op = (n) => '0x' + String(n).repeat(40);
     const state = { rounds: {
-      [id(1)]: { aggId: id(1), startTs: NOW - DAY, reveals: [
+      ['1:' + id(1)]: { aggId: id(1), startTs: NOW - DAY, reveals: [
         reveal(0, 90, { operator: op(1) }), reveal(1, 92, { operator: op(2) }), reveal(2, 91, { operator: op(3) }), reveal(3, 40, { operator: op(4) })] },
-      [id(2)]: { aggId: id(2), startTs: NOW - 2 * DAY, reveals: [
+      ['1:' + id(2)]: { aggId: id(2), startTs: NOW - 2 * DAY, reveals: [
         reveal(0, 80, { operator: op(1) }), reveal(1, 82, { operator: op(2) }), reveal(2, 50, { operator: op(4) })] }
     } };
     const jobs = [{ jobId: 1, submissions: [
@@ -235,58 +209,88 @@ describe('buildReport', () => {
   });
 });
 
+const AGG = '0x' + '44'.repeat(20);
+const { AGGREGATOR_ABI } = require('../utils/aggregatorAbi');
+const IFACE = new ethers.Interface(AGGREGATOR_ABI);
+
 describe('runCollection', () => {
   test('does not touch the RPC for rounds that are already settled', async () => {
-    const { state } = fixture();
-    state.rounds[id(8)] = { aggId: id(8), startTs: NOW - 40 * DAY, settled: true, reveals: [] };
+    const { state, jobs } = fixture();
+    state.rounds['9:' + id(8)] = { aggId: id(8), startTs: NOW - 40 * DAY, settled: true, reveals: [] };
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'spread-')), 'state.json');
     fs.writeFileSync(file, JSON.stringify(state));
     const boom = () => { throw new Error('unexpected RPC call'); };
     const provider = { getBlockNumber: boom, getBlock: boom, call: boom, getLogs: boom };
-    const targets = [id(1), id(2), id(3), id(5)].map((a) => ({ aggId: a, ts: NOW - DAY }));
-    targets.push({ aggId: '0x' + '0'.repeat(64), ts: NOW - DAY });
-    const res = await ss.runCollection(targets, provider, '0x' + '44'.repeat(20), { file, now: NOW });
+    const targets = jobs.flatMap((j) => j.submissions.filter((sub) => sub.verdiktaAggId !== id(6))
+      .map((sub) => ({ jobId: j.jobId, aggId: sub.verdiktaAggId, ts: NOW - DAY, aggregator: AGG })));
+    const res = await ss.runCollection(targets, provider, { file, now: NOW });
     expect(res).toEqual({ fetched: 0, failed: 0 });
     const after = JSON.parse(fs.readFileSync(file, 'utf8'));
-    expect(Object.keys(after.rounds)).not.toContain(id(8)); // aged out of the 30-day look-back
-    expect(Object.keys(after.rounds)).toContain(id(4));
-    expect(after.rounds[id(1)].reveals).toHaveLength(4);
+    expect(Object.keys(after.rounds)).not.toContain('9:' + id(8)); // aged out of the 30-day look-back
+    expect(Object.keys(after.rounds)).toContain('9:' + id(4));
+    expect(after.rounds['7:' + id(1)].reveals).toHaveLength(4);
   });
 
-  test('re-reads a cached round whose request event was never found', async () => {
-    const { state } = fixture();
-    state.rounds[id(9)] = { aggId: id(9), startTs: NOW - DAY, settled: true, reqBlock: null, reveals: [] };
+  test('keys rounds by bounty: the same id on two aggregators is two rounds', async () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'spread-')), 'state.json');
-    fs.writeFileSync(file, JSON.stringify(state));
     const boom = jest.fn(async () => { throw new Error('rpc down'); });
     const provider = { getBlockNumber: boom, getBlock: boom, call: boom, getLogs: boom };
-    const targets = [id(1), id(9)].map((a) => ({ aggId: a, ts: NOW - DAY }));
-    await expect(ss.runCollection(targets, provider, '0x' + '44'.repeat(20), { file, now: NOW })).rejects.toThrow('rpc down');
-    expect(boom).toHaveBeenCalled(); // only id(9) was due, so the pass went to the RPC
+    const targets = [{ jobId: 1, aggId: id(3), ts: NOW - DAY, aggregator: AGG }, { jobId: 2, aggId: id(3), ts: NOW - DAY, aggregator: AGG }];
+    await expect(ss.runCollection(targets, provider, { file, now: NOW })).rejects.toThrow('rpc down');
+    expect(ss.getStatus().total).toBe(2);   // two cache entries were due, not one
   });
 });
 
-describe('locateBlock', () => {
-  // A chain whose block time drops from 2 s to 0.2 s at block 1,000,000.
-  const T0 = 1_700_000_000;
-  const SWITCH = 1_000_000;
-  const tsOf = (n) => (n <= SWITCH ? T0 + 2 * n : T0 + 2 * SWITCH + Math.floor((n - SWITCH) / 5));
-  const head = SWITCH + 5_000_000;
-  const fakeProvider = () => {
-    const calls = { n: 0 };
-    return { calls, getBlock: async (n) => { calls.n++; return { number: n, timestamp: tsOf(n) }; } };
-  };
+describe('fetchRound (v2)', () => {
+  // A finalized round: three counted reveals from slots 4, 1, 0 (in reveal order), one late reveal.
+  const scores = { 0: [100000, 80000, 600000], 1: [900000, 920000, 400000] };
+  const slotOracle = (s) => '0x' + String(s + 1).repeat(40);
+  function provider({ phase = 6 } = {}) {
+    const ret = (fn, vals) => IFACE.encodeFunctionResult(fn, vals);
+    return {
+      call: async ({ data }) => {
+        const tx = IFACE.parseTransaction({ data });
+        switch (tx.name) {
+          case 'getRoundInfo': return ret('getRoundInfo', [phase, 1000, ethers.ZeroHash, 0, 0, 0, 0, 0, NOW - 3000, 0, 4, NOW - 3600]);
+          case 'getOutcomeScores': {
+            const o = Number(tx.args[1]);
+            return ret('getOutcomeScores', scores[o] && phase >= 6 && phase <= 7 ? [scores[o], true] : [[], false]);
+          }
+          case 'getEvaluation': return ret('getEvaluation', [[150000, 850000], 'QmA,QmB', true]);
+          case 'getSlot': {
+            const s = Number(tx.args[1]);
+            return ret('getSlot', [[slotOracle(s), 1, ethers.zeroPadValue(ethers.toBeHex(s + 1), 32), ethers.ZeroAddress, 0, 31, 1, ethers.ZeroHash]]);
+          }
+          default: throw new Error('unexpected ' + tx.name);
+        }
+      },
+      getLogs: async () => [[4, false], [1, false], [3, true], [0, false]].map(([slot, late], k) => {
+        const { data, topics } = IFACE.encodeEventLog(IFACE.getEvent('RevealReceived'), [id(5), slot, late, late ? 2 : 0]);
+        return { data, topics, blockNumber: 1100 + k, index: 0 };
+      })
+    };
+  }
+  const ctx = (p) => ({ provider: p, head: 5000, headTs: NOW, blockTime: 2 });
 
-  test.each([
-    ['after the change', SWITCH + 1_234_567],
-    ['before the change', 400_000],
-    ['right at the change', SWITCH + 3]
-  ])('finds the block %s', async (_label, target) => {
-    const provider = fakeProvider();
-    const ctx = { provider, head, headTs: tsOf(head), blockTime: 0.2 };
-    const at = await ss.locateBlock(ctx, tsOf(target));
-    expect(Math.abs(tsOf(at.block) - tsOf(target))).toBeLessThanOrEqual(2);
-    expect(provider.calls.n).toBeLessThanOrEqual(100);
+  test('reads the counted scores in reveal order and pairs them with their arbiters', async () => {
+    const rec = await ss.fetchRound(ctx(provider()), AGG, id(5), NOW - 3600);
+    expect(rec).toMatchObject({ finalized: true, settled: true, finalAccept: 85, arbitersKnown: true, startTs: NOW - 3600, reqBlock: 1000 });
+    expect(rec.reveals.map((r) => [r.slot, r.operator, r.scores])).toEqual([
+      [4, slotOracle(4), ['100000', '900000']],
+      [1, slotOracle(1), ['80000', '920000']],
+      [0, slotOracle(0), ['600000', '400000']]
+    ]);
+    expect(rec.reveals.every((r) => r.counted && r.hashOk)).toBe(true);
+  });
+
+  test('a running round is re-read later; a dead one is final with no reveals', async () => {
+    expect(await ss.fetchRound(ctx(provider({ phase: 5 })), AGG, id(5))).toMatchObject({ settled: false, reveals: [] });
+    expect(await ss.fetchRound(ctx(provider({ phase: 8 })), AGG, id(5))).toMatchObject({ settled: true, finalized: false, reveals: [] });
+  });
+
+  test('an id the aggregator has no round for is notFound', async () => {
+    const p = provider({ phase: 0 });
+    expect(await ss.fetchRound(ctx(p), AGG, id(5), NOW - 7200)).toMatchObject({ notFound: true, settled: true });
   });
 });
 

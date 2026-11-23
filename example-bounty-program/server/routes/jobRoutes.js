@@ -508,7 +508,7 @@ async function resolveGasGuidance(data, from) {
 /**
  * When nextAction is AWAIT_EARLIER: the earlier submissions by other hunters that hold
  * payout priority, each with the transaction that resolves it now (FINALIZE /
- * FORCE_FAIL; anyone may send it) or none if it is still in evaluation. Never throws.
+ * CLOSE_FAILED / EXPIRE_RERUN; anyone may send it) or none if it is still in evaluation. Never throws.
  */
 async function finalizeBlockersFor(onChainBountyId, onChainSubmissionId, from) {
   try {
@@ -7796,8 +7796,9 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
     };
 
     // The contract's own verdict on what to do next (see BountyEscrow.nextAction):
-    // START | AWAIT_SLOT | AWAIT_CREATOR | AWAIT_ORACLE | AWAIT_EARLIER | FINALIZE |
-    // FORCE_FAIL | RECOVER_REFUND | DONE | DEAD. For AWAIT_EARLIER, blockedBy lists the
+    // START | AWAIT_SLOT | AWAIT_CREATOR | DRAW | CLOSE_COMMITS | PROMOTE | AWAIT_ORACLE |
+    // AWAIT_EARLIER | FINALIZE | CLOSE_FAILED | RERUN | AWAIT_EXPIRY | EXPIRE_RERUN |
+    // RECOVER_REFUND | DONE | DEAD. For AWAIT_EARLIER, blockedBy lists the
     // earlier submissions holding payout priority and the calls that resolve them.
     try {
       if (job && job.onChain !== false && Number.isInteger(Number(job.jobId))) {

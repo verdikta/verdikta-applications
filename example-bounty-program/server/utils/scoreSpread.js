@@ -2,34 +2,25 @@
  * Arbiter score spread: how far apart the arbiters' scores are for the same
  * submission in the same evaluation round.
  *
- * For every bounty submission evaluated by the ReputationAggregator, the round
- * sends reveal requests to the first M=4 arbiters that committed. The
- * aggregator finalizes on the N=3rd valid reveal, and a 4th reveal that lands
- * later is rejected by the aggregator. The operator transaction still
- * succeeds, though, so its scores are on chain in the operator's calldata.
- * This module recovers all 3 or 4 reveals per round:
- *
- *   1. Aggregator logs for the round (topic-filtered by aggId) give the polled
- *      slots, their commit hashes and the reveal-request transaction.
- *   2. That transaction's receipt pairs each ChainlinkRequested(id) with the
- *      RevealRequestDispatched(aggId, slot) emitted right after it, giving the
- *      reveal requestId for each slot.
- *   3. The operator's OracleResponse(requestId) log points at the fulfill tx;
- *      its calldata holds (requestId, scores, "justificationCid:salt").
- *   4. Each reveal is checked against its commit exactly as the aggregator
- *      does: bytes16(sha256(abi.encode(operator, scores, salt))) must equal the
- *      slot's commit hash. Reveals that fail the check are excluded.
+ * v2 aggregator: a finalized round (phase 6 final or 7 settled) keeps every
+ * counted reveal's raw scores on chain, read with getOutcomeScores(aggId, o)
+ * for each outcome o, in reveal order. The RevealReceived(aggId, slot, late=false)
+ * events give that order as slots, and getSlot(aggId, slot) the arbiter
+ * (operator and key). The aggregator checked each reveal against its commit, so
+ * every counted reveal is verified. A late reveal stores only its quality code,
+ * not its scores, so it is not in the spread (v1 recovered it from operator
+ * calldata).
  *
  * Metric: scores become shares of 100 (s = 100 * v / sum(v)). A round's spread
  * is the sample standard deviation of those shares across its reveals (for
  * two-outcome bounties, the sd of the "accept" share). The pooled sd across
  * rounds, sqrt(sum (n-1) var / sum (n-1)), is the per-response noise and is
- * the headline number. Same method as verdikta-dispatcher
- * reputationBasedAggregator/scripts/arbiter-noise.js.
+ * the headline number. A one-number result has no shares and is not measured.
  *
- * Settled rounds never change, so they are cached in
- * data/<network>/scoreSpread.json and fetched once; a background pass picks
- * up new rounds. Readers never wait on RPC.
+ * v2 round ids are sequential per aggregator, so rounds are cached under
+ * "<jobId>:<aggId>" (a bounty uses one aggregator). Finalized and dead rounds
+ * never change, so they are cached in data/<network>/scoreSpread.json and
+ * fetched once; a background pass picks up new rounds. Readers never wait on RPC.
  */
 
 const fs = require('fs').promises;
@@ -37,21 +28,20 @@ const path = require('path');
 const { ethers } = require('ethers');
 const { config } = require('../config');
 const logger = require('./logger');
+const { AGGREGATOR_ABI } = require('./aggregatorAbi');
 
 const NETWORK = config.network || 'base-sepolia';
 const STATE_FILE = path.join(__dirname, `../data/${NETWORK}/scoreSpread.json`);
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;   // 2: v2 aggregator, rounds keyed <jobId>:<aggId>
 
 const LOOKBACK_DAYS = parseFloat(process.env.SCORE_SPREAD_LOOKBACK_DAYS) || 30; // rounds collected
 const MAX_REPORT_DAYS = LOOKBACK_DAYS;
-// A round's reveals (including a late 4th) land within minutes of the request.
-// Rounds younger than this are re-read on the next pass; older ones are final.
+// An id the aggregator has no round for, this long after the submission, is never coming.
 const SETTLE_SECONDS = 60 * 60;
-// Windows are in seconds and converted with the block time measured near the
-// round: Base Sepolia's block time changed (2 s -> 0.2 s), so a count of blocks
-// means different spans of time on different dates and networks.
-const EVENT_WINDOW_SECONDS = 30 * 60; // after the request: commits, reveals, a late 4th reveal
-const PRE_REQUEST_SECONDS = 60;       // slack before the located request block
+// Reveals land before the round's deadline; the log scan runs from the request block to
+// the deadline plus this slack, converted with the measured block time.
+const EVENT_SLACK_SECONDS = 10 * 60;
+const MAX_OUTCOMES = 16;              // getOutcomeScores is read for outcomes 0.. until invalid
 const LOG_CHUNK_BLOCKS = 9000;        // keyless/public RPCs reject eth_getLogs over 10,000 blocks
 const ROUND_PARALLEL = 3;
 // Round sd at or below AGREE_SD: the arbiters agree. Above OUTLIER_SD: one or more
@@ -72,55 +62,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ABIs
 // ------------------------------------------------------------
 
-const AGG_IFACE = new ethers.Interface([
-  'function getAggregationStatus(bytes32 aggId) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredN, uint256 clusterP, address requester, uint256 startTimestamp)',
-  'event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)',
-  'event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)',
-  'event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)',
-  'event RevealRequestDispatched(bytes32 indexed aggRequestId, uint256 pollIndex, bytes16 commitHash)',
-  'event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)',
-  'event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)',
-  'event ChainlinkRequested(bytes32 indexed id)'
-]);
-const ROUND_EVENTS = ['RequestAIEvaluation', 'OracleSelected', 'CommitReceived', 'RevealRequestDispatched',
-  'NewOracleResponseRecorded', 'FulfillAIEvaluation'];
-
-// ArbiterOperator.fulfillOracleRequestV, or the stock Chainlink Operator's
-// fulfillOracleRequest2 (same arguments). data = abi(bytes32, uint256[], string)
-// for ReputationAggregator.fulfill.
-const OPERATOR_IFACE = new ethers.Interface([
-  'function fulfillOracleRequestV(bytes32 requestId,uint256 payment,address callbackAddress,bytes4 callbackFunctionId,uint256 expiration,bytes data)',
-  'function fulfillOracleRequest2(bytes32 requestId,uint256 payment,address callbackAddress,bytes4 callbackFunctionId,uint256 expiration,bytes data)',
-  'event OracleResponse(bytes32 indexed requestId)'
-]);
-const CODER = ethers.AbiCoder.defaultAbiCoder();
-
-// ------------------------------------------------------------
-// Reveal decoding and commit check (pure)
-// ------------------------------------------------------------
-
-function decodeOperatorFulfill(txData) {
-  let dec = null;
-  for (const fn of ['fulfillOracleRequestV', 'fulfillOracleRequest2']) {
-    try { dec = OPERATOR_IFACE.decodeFunctionData(fn, txData); break; } catch { /* try the next one */ }
-  }
-  if (!dec) throw new Error('not an operator fulfill call');
-  const [rid, scores, cid] = CODER.decode(['bytes32', 'uint256[]', 'string'], dec.data);
-  return { requestId: lc(rid), callback: lc(dec.callbackAddress), scores: scores.map((x) => x.toString()), cid };
-}
-
-/** Split an arbiter reveal "cid:20hexsalt" into { cid, salt }, or null if malformed. */
-function parseCidSalt(packed) {
-  const i = packed.lastIndexOf(':');
-  if (i <= 0 || packed.length - i - 1 !== 20 || !/^[0-9a-fA-F]{20}$/.test(packed.slice(i + 1))) return null;
-  return { cid: packed.slice(0, i), salt: BigInt('0x' + packed.slice(i + 1)) };
-}
-
-/** The aggregator's commit check: bytes16(sha256(abi.encode(operator, scores, salt))). */
-function revealCommitHash(operator, scores, salt) {
-  const enc = CODER.encode(['address', 'uint256[]', 'uint256'], [operator, scores.map(BigInt), salt]);
-  return lc(ethers.sha256(enc).slice(0, 34));
-}
+const AGG_IFACE = new ethers.Interface(AGGREGATOR_ABI);
+const FINAL_PHASES = new Set([6, 7]);  // final, settled: scores readable and fixed
+const DEAD_PHASES = new Set([8, 9]);   // failed, cancelled: no scores, ever
 
 // ------------------------------------------------------------
 // Statistics (pure)
@@ -254,7 +198,7 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
     for (const sub of job.submissions || []) {
       const aggId = lc(sub.verdiktaAggId);
       if (!isRoundId(aggId)) continue;
-      const rec = rounds[aggId];
+      const rec = rounds[roundKey(job.jobId, aggId)];
       const ts = rec?.startTs || sub.submittedAt || 0;
       if (ts < from || ts > now) continue;
       coverage.submissions++;
@@ -422,169 +366,83 @@ async function getLogsChunked(provider, filter, fromBlock, toBlock) {
   return out;
 }
 
-async function blockTimestamp(ctx, n) {
-  ctx.tsCache = ctx.tsCache || new Map();
-  if (!ctx.tsCache.has(n)) {
-    const b = await withRetry(() => ctx.provider.getBlock(n));
-    if (!b) throw new Error(`block ${n} not returned by the RPC`);
-    ctx.tsCache.set(n, Number(b.timestamp));
-  }
-  return ctx.tsCache.get(n);
+const roundKey = (jobId, aggId) => `${jobId}:${lc(aggId)}`;
+
+async function aggCall(ctx, aggAddr, fn, args) {
+  const data = await withRetry(() => ctx.provider.call({ to: aggAddr, data: AGG_IFACE.encodeFunctionData(fn, args) }));
+  return AGG_IFACE.decodeFunctionResult(fn, data);
 }
 
 /**
- * The block mined at (or just before) unix time `ts`, and the block time around it.
- * Starts from a constant-block-time guess and corrects it with real block
- * timestamps. Each step is a secant step using the local block time, kept inside a
- * bracket [lo, hi] known to contain the answer; a step that would leave the bracket
- * bisects instead. So a block-time change inside the look-back (Base Sepolia went
- * from 2 s to 0.2 s) cannot make the search oscillate. Usually 2-3 steps.
- */
-async function locateBlock(ctx, ts) {
-  const { head, headTs } = ctx;
-  let lo = 0;
-  let hi = head;
-  if (ts >= headTs) return { block: head, blockTime: ctx.blockTime };
-  let n = Math.max(1, Math.min(head - 1, head - Math.round((headTs - ts) / ctx.blockTime)));
-  let bt = ctx.blockTime;
-  for (let i = 0; i < 48; i++) {
-    const t = await blockTimestamp(ctx, n);
-    const back = Math.max(0, n - 300);
-    const tBack = await blockTimestamp(ctx, back);
-    if (n > back && t > tBack) bt = (t - tBack) / (n - back);
-    const diff = ts - t;
-    if (Math.abs(diff) <= Math.max(2, bt)) break;
-    if (diff > 0) lo = n; else hi = n;
-    if (hi - lo <= 1) { n = lo; break; }
-    let next = n + Math.round(diff / bt);
-    if (next <= lo || next >= hi) next = Math.floor((lo + hi) / 2);
-    n = next;
-  }
-  return { block: n, blockTime: bt };
-}
-
-/**
- * Read one round's reveals. ctx = { provider, aggregator (address), head, headTs, blockTime }.
+ * Read one round's counted reveals. ctx = { provider, head, headTs, blockTime }.
  * `hintTs` (the submission time) decides when an unknown aggId is final.
  * Returns a record suitable for the cache. RPC failures throw, so a round is
  * never cached half-read; it is retried on the next pass.
  */
-async function fetchRound(ctx, aggId, hintTs = 0) {
+async function fetchRound(ctx, aggregator, aggId, hintTs = 0) {
   const { provider, head, headTs } = ctx;
-  const aggAddr = lc(ctx.aggregator);
+  const aggAddr = lc(aggregator);
   aggId = lc(aggId);
-
-  const statusData = await withRetry(() => provider.call({
-    to: aggAddr, data: AGG_IFACE.encodeFunctionData('getAggregationStatus', [aggId])
-  }));
-  const status = AGG_IFACE.decodeFunctionResult('getAggregationStatus', statusData);
-  const startTs = Number(status.startTimestamp);
   const fetchedAt = Math.floor(Date.now() / 1000);
-  if (!(startTs > 0)) {
-    return { aggId, notFound: true, fetchedAt, settled: hintTs > 0 && headTs - hintTs > SETTLE_SECONDS, reveals: [] };
+
+  const info = await aggCall(ctx, aggAddr, 'getRoundInfo', [aggId]);
+  const phase = Number(info.phase);
+  if (phase === 0) {
+    return { aggId, aggregator: aggAddr, notFound: true, fetchedAt, settled: hintTs > 0 && headTs - hintTs > SETTLE_SECONDS, reveals: [] };
+  }
+  const startTs = Number(info.requestTime);
+  const reqBlock = Number(info.requestBlock);
+  const base = { aggId, aggregator: aggAddr, phase, startTs, reqBlock, fetchedAt };
+  if (!FINAL_PHASES.has(phase)) {
+    // Still running (re-read next pass), or dead with no scores (final).
+    return { ...base, finalized: false, finalAccept: null, settled: DEAD_PHASES.has(phase), reveals: [] };
   }
 
-  const at = await locateBlock(ctx, startTs);
-  const windowBlocks = Math.ceil(EVENT_WINDOW_SECONDS / at.blockTime);
-  const fromBlock = Math.max(0, at.block - Math.ceil(PRE_REQUEST_SECONDS / at.blockTime));
-  const toBlock = Math.min(head, at.block + windowBlocks);
-  const topics = [ROUND_EVENTS.map((n) => AGG_IFACE.getEvent(n).topicHash), aggId];
-  const logs = await getLogsChunked(provider, { address: aggAddr, topics }, fromBlock, toBlock);
+  // Every outcome's counted scores, in reveal order.
+  const perOutcome = [];
+  for (let o = 0; o < MAX_OUTCOMES; o++) {
+    const r = await aggCall(ctx, aggAddr, 'getOutcomeScores', [aggId, o]);
+    if (!r.valid) break;
+    perOutcome.push(r.scores.map((x) => x.toString()));
+  }
+  const n = perOutcome[0]?.length || 0;
+  const vectors = Array.from({ length: n }, (_, i) => perOutcome.map((col) => col[i]));
+
+  const ev = await aggCall(ctx, aggAddr, 'getEvaluation', [aggId]);
+  const lk = ev.aggregated.map(Number);
+  const sum = lk.reduce((x, y) => x + y, 0);
+  const finalAccept = lk.length > ACCEPT_INDEX && sum > 0 ? round2((100 * lk[ACCEPT_INDEX]) / sum) : null;
+
+  // Reveal order -> slots, from the counted RevealReceived events.
+  const deadline = Number(info.deadline) || startTs;
+  const span = Math.max(0, deadline - startTs) + EVENT_SLACK_SECONDS;
+  const toBlock = Math.min(head, reqBlock + Math.ceil(span / ctx.blockTime));
+  const topics = [AGG_IFACE.getEvent('RevealReceived').topicHash, aggId];
+  const logs = await getLogsChunked(provider, { address: aggAddr, topics }, reqBlock, toBlock);
   logs.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
-
-  const selected = {};
-  const commits = {};
-  const revealTxs = new Set();
-  const countedIds = new Set();
-  let reqBlock = null;
-  let finalAccept = null;
-  let finalized = false;
+  const order = [];
   for (const log of logs) {
-    const ev = AGG_IFACE.parseLog(log);
-    if (!ev) continue;
-    const a = ev.args;
-    switch (ev.name) {
-      case 'RequestAIEvaluation': reqBlock = log.blockNumber; break;
-      case 'OracleSelected': selected[Number(a.pollIndex)] = { oracle: lc(a.oracle), jobId: lc(a.jobId) }; break;
-      case 'CommitReceived': commits[Number(a.pollIndex)] = lc(a.commitHash); break;
-      case 'RevealRequestDispatched': revealTxs.add(log.transactionHash); break;
-      case 'NewOracleResponseRecorded': countedIds.add(lc(a.requestId)); break;
-      case 'FulfillAIEvaluation': {
-        finalized = true;
-        const lk = a.likelihoods.map(Number);
-        const sum = lk.reduce((x, y) => x + y, 0);
-        if (lk.length > ACCEPT_INDEX && sum > 0) finalAccept = round2((100 * lk[ACCEPT_INDEX]) / sum);
-        break;
-      }
-      default: break;
-    }
+    const e = AGG_IFACE.parseLog(log);
+    if (e && !e.args.late) order.push({ slot: Number(e.args.pollIndex), block: log.blockNumber });
   }
-  // The aggregator has this round (startTs > 0), so its request event exists; not
-  // finding it means the window missed. Throw so the round is retried, not cached.
-  if (reqBlock == null) throw new Error(`request event not found in blocks ${fromBlock}-${toBlock}`);
-
-  // Pair each reveal dispatch with its operator requestId: dispatchOracleRequest emits
-  // ChainlinkRequested(id), then the aggregator emits RevealRequestDispatched(aggId, slot).
-  const slotByRequest = new Map();
-  let revealReqBlock = null;
-  for (const txHash of revealTxs) {
-    const rc = await withRetry(() => provider.getTransactionReceipt(txHash));
-    if (!rc) continue;
-    revealReqBlock = revealReqBlock == null ? rc.blockNumber : Math.min(revealReqBlock, rc.blockNumber);
-    const pending = [];
-    for (const log of [...rc.logs].sort((x, y) => x.index - y.index)) {
-      if (lc(log.address) !== aggAddr) continue;
-      let ev;
-      try { ev = AGG_IFACE.parseLog(log); } catch { ev = null; }
-      if (!ev) continue;
-      if (ev.name === 'ChainlinkRequested') pending.push(lc(ev.args.id));
-      else if (ev.name === 'RevealRequestDispatched' && lc(ev.args.aggRequestId) === aggId) {
-        const rid = pending.pop();
-        if (rid) slotByRequest.set(rid, Number(ev.args.pollIndex));
-      }
-    }
-  }
-
+  // The scores are authoritative; if the scan missed reveals, keep them without an arbiter.
+  const known = order.length === n;
   const reveals = [];
-  if (slotByRequest.size) {
-    const operators = [...new Set([...slotByRequest.values()].map((s) => selected[s]?.oracle).filter(Boolean))];
-    const respTopic = OPERATOR_IFACE.getEvent('OracleResponse').topicHash;
-    const respLogs = operators.length ? await getLogsChunked(provider, {
-      address: operators,
-      topics: [respTopic, [...slotByRequest.keys()]]
-    }, revealReqBlock, Math.min(head, revealReqBlock + windowBlocks)) : [];
-    for (const l of respLogs) {
-      const rid = lc(l.topics[1]);
-      const slot = slotByRequest.get(rid);
-      if (slot == null) continue;
-      const rec = {
-        slot, requestId: rid, operator: lc(l.address), jobId: selected[slot]?.jobId || null,
-        block: l.blockNumber, counted: countedIds.has(rid)
-      };
-      const tx = await withRetry(() => provider.getTransaction(l.transactionHash));
-      if (!tx) throw new Error(`fulfill tx ${l.transactionHash} not returned by the RPC`);
-      try {
-        const dec = decodeOperatorFulfill(tx.data);
-        if (dec.requestId !== rid) throw new Error('requestId mismatch');
-        if (dec.callback !== aggAddr) throw new Error('callback is not this aggregator');
-        rec.scores = dec.scores;
-        const cs = parseCidSalt(dec.cid);
-        rec.cid = cs ? cs.cid : null;
-        const commit = commits[slot];
-        rec.hashOk = !cs ? false : (commit ? revealCommitHash(rec.operator, dec.scores, cs.salt) === commit : null);
-      } catch (e) {
-        rec.decodeError = String(e.shortMessage || e.message).slice(0, 120);
-      }
-      reveals.push(rec);
+  for (let i = 0; i < n; i++) {
+    const at = known ? order[i] : { slot: i, block: null };
+    let operator = null;
+    let key = null;
+    if (known) {
+      const sl = (await aggCall(ctx, aggAddr, 'getSlot', [aggId, at.slot]))[0];
+      operator = lc(sl.oracle);
+      key = lc(sl.key);
     }
+    reveals.push({ slot: at.slot, operator, jobId: key, block: at.block, counted: true, hashOk: true, scores: vectors[i] });
   }
+  // getEvaluation's justifications name only the clustered P arbiters, so they are not mapped
+  // onto reveals; a reveal carries no CID.
 
-  return {
-    aggId, startTs, reqBlock, finalized, finalAccept, fetchedAt,
-    revealRequests: slotByRequest.size,
-    settled: headTs - startTs > SETTLE_SECONDS,
-    reveals
-  };
+  return { ...base, finalized: true, finalAccept, revealRequests: n, settled: true, arbitersKnown: known, reveals };
 }
 
 // ------------------------------------------------------------
@@ -628,7 +486,7 @@ async function mapLimit(items, limit, fn) {
  * One incremental pass: fetch every round in the look-back that is not cached
  * yet or was not settled when last read. `targets` = [{ aggId, ts }].
  */
-async function runCollection(targets, provider, aggregator, { file = STATE_FILE, now = Math.floor(Date.now() / 1000) } = {}) {
+async function runCollection(targets, provider, { file = STATE_FILE, now = Math.floor(Date.now() / 1000) } = {}) {
   if (status.running) return { skipped: true };
   Object.assign(status, { running: true, done: 0, total: 0, startedAt: Date.now() });
   const state = await readState(file);
@@ -636,22 +494,22 @@ async function runCollection(targets, provider, aggregator, { file = STATE_FILE,
   try {
     const from = now - LOOKBACK_DAYS * 86400;
     const byId = new Map(targets
-      .filter((t) => isRoundId(t.aggId) && (t.ts || 0) >= from)
-      .map((t) => [lc(t.aggId), t]));
-    // Re-read rounds cached before the request-event check existed (reqBlock missing).
-    const final = (r) => r?.settled && (r.notFound || r.reqBlock != null);
+      .filter((t) => isRoundId(t.aggId) && (t.ts || 0) >= from && t.aggregator)
+      .map((t) => [roundKey(t.jobId, t.aggId), t]));
+    const final = (r) => r?.settled;
     const todo = [...byId.keys()].filter((id) => !final(state.rounds[id]));
     status.total = todo.length;
     if (todo.length) {
       const head = await withRetry(() => provider.getBlockNumber());
       const [hb, pb] = await Promise.all([head, head - 1000].map((n) => withRetry(() => provider.getBlock(n))));
-      const ctx = { provider, aggregator, head, headTs: hb.timestamp, blockTime: (hb.timestamp - pb.timestamp) / 1000 || 2 };
-      await mapLimit(todo, ROUND_PARALLEL, async (aggId) => {
+      const ctx = { provider, head, headTs: hb.timestamp, blockTime: (hb.timestamp - pb.timestamp) / 1000 || 2 };
+      await mapLimit(todo, ROUND_PARALLEL, async (key) => {
+        const t = byId.get(key);
         try {
-          state.rounds[aggId] = await fetchRound(ctx, aggId, byId.get(aggId).ts);
+          state.rounds[key] = await fetchRound(ctx, t.aggregator, t.aggId, t.ts);
         } catch (err) {
           failures++;
-          logger.warn('[scoreSpread] round fetch failed', { aggId, msg: (err.shortMessage || err.message || '').slice(0, 120) });
+          logger.warn('[scoreSpread] round fetch failed', { key, msg: (err.shortMessage || err.message || '').slice(0, 120) });
         }
         status.done++;
       });
@@ -683,8 +541,8 @@ async function runCollection(targets, provider, aggregator, { file = STATE_FILE,
 let timer = null;
 
 /**
- * @param getTargets  async () => [{ aggId, ts }] for every evaluated submission
- * @param getService  () => VerdiktaService (provider + aggregator address) or null
+ * @param getTargets  async () => [{ jobId, aggId, ts, aggregator }] for every evaluated submission
+ * @param getService  () => VerdiktaService (its provider) or null
  */
 function startScoreSpreadService(getTargets, getService) {
   if (process.env.SCORE_SPREAD_ENABLED === 'false') {
@@ -697,7 +555,7 @@ function startScoreSpreadService(getTargets, getService) {
     if (!svc) return;
     try {
       const t0 = Date.now();
-      const res = await runCollection(await getTargets(), svc.provider, svc.aggregatorAddress);
+      const res = await runCollection(await getTargets(), svc.provider);
       if (!res.skipped && res.fetched) logger.info('[scoreSpread] collection complete', { fetched: res.fetched, ms: Date.now() - t0 });
     } catch (err) {
       logger.error('[scoreSpread] collection failed', { msg: err.shortMessage || err.message });
@@ -725,11 +583,7 @@ module.exports = {
   roundSpread,
   clusteredSpread,
   pooled,
-  locateBlock,
-  decodeOperatorFulfill,
-  parseCidSalt,
-  revealCommitHash,
+  roundKey,
   jobIdText,
-  OPERATOR_IFACE,
   STATE_FILE
 };

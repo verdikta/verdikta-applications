@@ -304,16 +304,16 @@ class ContractService {
   }
 
   /**
-   * Gas limit for a resolve call (finalizeSubmission / failTimedOutSubmission).
+   * Gas limit for a resolve call (finalizeSubmission / closeFailedRound / expireRerun).
    *
-   * WHY THIS EXISTS: both calls try `verdikta.finalizeEvaluationTimeout(aggId)` inside a
-   * try/catch before checking the round. When the round has timed out that inner call
-   * settles it — timeout penalties for every selected oracle plus the prepay refund —
-   * and costs ~2M gas on a 6-oracle round. If the caller hard-codes a smaller limit the
-   * inner call runs out of gas, the catch swallows it, and the outer call dies too (no
-   * revert reason, gasUsed == gasLimit). eth_call / estimateGas pass because they are
-   * not capped, so an agent sees "simulation OK, tx reverts every time". Bounties 56/57
-   * on Base mainnet (2026-09-16) were stuck exactly this way at 800k / 1M / 1.5M.
+   * WHY THIS EXISTS: these calls may settle the aggregator round inside a try/catch
+   * (closeFailedRound tries settle, then cancelUnsealed; finalize reads every arbiter's
+   * scores). Settling pays or penalizes every drawn juror and refunds the prepay, which costs
+   * well over 1.5M gas on a large jury. If the caller hard-codes a smaller limit the inner
+   * call runs out of gas, the catch swallows it, and the outer call dies too (no revert
+   * reason, gasUsed == gasLimit). eth_call / estimateGas pass because they are not capped,
+   * so an agent sees "simulation OK, tx reverts every time". (v1: bounties 56/57 on Base
+   * mainnet, 2026-09-16, were stuck exactly this way at 800k / 1M / 1.5M.)
    *
    * Returns { gasLimit (string), estimatedGas (string|null), source: 'estimate'|'fallback',
    * reason? } — estimate + margin when the node can simulate the call, otherwise the

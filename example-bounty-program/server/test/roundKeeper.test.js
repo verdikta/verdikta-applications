@@ -124,3 +124,20 @@ describe('shared/classPresets', () => {
     expect(classPresets.minAttemptCostWei('jumbo', 10n)).toBe(520n);
   });
 });
+
+describe('GET /api/classes/presets', () => {
+  jest.doMock('../utils/ethPrice', () => ({ getEthPriceUsd: async () => ({ usd: 2500 }) }));
+  const express = require('express');
+  const request = require('supertest');
+  const app = express();
+  app.use(require('../routes/classRoutes'));
+
+  test('lists the presets with wei values and suggests a class for ?usd=', async () => {
+    const res = await request(app).get('/api/classes/presets?usd=500');
+    expect(res.status).toBe(200);
+    expect(res.body.classes.map((c) => c.key)).toEqual(classPresets.CLASS_PRESETS.map((c) => c.key));
+    expect(res.body.suggested).toBe('medium');
+    expect(res.body.classes.find((c) => c.key === 'medium').wei.bond).toBe((10n ** 18n / 50n).toString());
+    expect(res.body).toMatchObject({ maxRounds: 6, rerunWindowSeconds: 7200, ethUsd: 2500 });
+  });
+});

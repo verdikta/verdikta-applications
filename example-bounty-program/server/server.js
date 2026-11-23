@@ -329,10 +329,20 @@ const startServer = async () => {
     // ====================================================
 
     // Arbiter score spread per evaluation round (RPC; background, cached on disk)
+    // v2 round ids are per aggregator, so each target names its bounty's aggregator (cached per bounty).
+    const spreadAggregatorOf = new Map();
     startScoreSpreadService(async () => {
       const r = await jobStorage.listJobs({});
-      return (r.jobs || r).flatMap((j) => (j.submissions || [])
-        .map((sub) => ({ aggId: sub.verdiktaAggId, ts: sub.submittedAt })));
+      const jobs = (r.jobs || r).filter((j) => (j.submissions || []).length);
+      for (const j of jobs) {
+        if (spreadAggregatorOf.has(j.jobId)) continue;
+        try {
+          const agg = await getContractService().getAggregatorFor(j.jobId);
+          spreadAggregatorOf.set(j.jobId, await agg.getAddress());
+        } catch { /* not on-chain yet, or RPC down: retried next pass */ }
+      }
+      return jobs.flatMap((j) => (j.submissions || [])
+        .map((sub) => ({ jobId: j.jobId, aggId: sub.verdiktaAggId, ts: sub.submittedAt, aggregator: spreadAggregatorOf.get(j.jobId) })));
     }, getVerdiktaService);
 
     // Hunter connection analysis (RPC-heavy; runs in the background, results cached on disk)

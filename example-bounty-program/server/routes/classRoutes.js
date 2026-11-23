@@ -52,6 +52,41 @@ router.get('/api/classes', (req, res) => {
   }
 });
 
+/**
+ * GET /api/classes/presets[?usd=<bounty amount in USD>]
+ * The bounty size classes (TODO item 15): jury (approved aggregator index) and its K/M/N/P,
+ * the Q-of-N pass quota, the forfeit line R, the hunter bond and the per-juror fee floor (USD),
+ * beacons, cost per round and the largest bounty each is offered for. They are defaults: the
+ * creator may override every value on POST /jobs/create. With ?usd= the response names the
+ * suggested class; wei values use the server's ETH/USD price when it can be read.
+ * Registered before /api/classes/:classId so "presets" is not read as a class id.
+ */
+router.get('/api/classes/presets', async (req, res) => {
+  const presets = require('../../shared/classPresets');
+  let ethUsd = null;
+  try { ethUsd = (await require('../utils/ethPrice').getEthPriceUsd()).usd; } catch { /* USD only */ }
+  const usd = req.query.usd != null && req.query.usd !== '' ? Number(req.query.usd) : null;
+  const classes = presets.CLASS_PRESETS.map((c) => {
+    let wei = null;
+    if (ethUsd) {
+      try {
+        const p = presets.toBountyParams(c.key, ethUsd);
+        wei = { bond: p.bond, minOracleFee: p.minOracleFee };
+      } catch { wei = null; }
+    }
+    return { ...c, wei };
+  });
+  res.json({
+    success: true,
+    classes,
+    suggested: Number.isFinite(usd) && usd > 0 ? presets.presetForBounty(usd)?.key ?? null : null,
+    ethUsd,
+    maxRounds: presets.MAX_ROUNDS,
+    rerunWindowSeconds: presets.RERUN_WINDOW_SECONDS,
+    note: 'Defaults only: the bounty creator sets jury, quota, forfeitLine, bond, oracleMinOracleFee and oracleWithBeacons on POST /jobs/create (bountyClass picks a preset).'
+  });
+});
+
 const UNLISTED_CLASS_NOTE = 'This class is not in the Verdikta class registry. That is allowed: anyone can run arbiters for a new class and define what it means. The platform has no model list for it, so use the provider/model identifiers its arbiter operators advertise, and check GET /api/classes/:classId/coverage for live arbiters.';
 const unlistedClassName = (classId) => `Custom class ${classId}`;
 

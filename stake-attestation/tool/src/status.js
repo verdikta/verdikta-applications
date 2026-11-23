@@ -4,9 +4,16 @@
 // The watch is bounded while a read hangs: each read gets at most the time left, and none starts after it.
 //
 // A round that is over is read the way finalize reads it (node P32): the aggregator's result, judged by the lens's
-// judgeVector, or with none the aggregator's own status of the round. So a round with no verdict reads as failed
-// from the moment the aggregator's rule says so, before anyone finalizes it, and an open round, however slow, never
-// does: the dry run of finalize is refused while the aggregator still waits for it. Nothing here reads a clock.
+// judgeVector, or with none a round finalize's dry run already passes for (the v2 aggregator failed or cancelled it,
+// or finalize would: a drawn round past its deadline, an undrawn one past its day). So a round with no verdict reads
+// as failed from the moment the aggregator's rule says so, before anyone finalizes it, and an open round, however
+// slow, never does: the dry run of finalize is refused while the aggregator still waits for it.
+//
+// The v2 aggregator draws a round's jury in a second step (the lens's openRound gives the round's phase). Until it is
+// drawn the round waits, however long, and nothing times out: the site's keeper draws it, anyone may, and `claim`
+// does when drawJury's dry run passes (status itself sends nothing). Its response timeout runs from the draw; a
+// round left undrawn for a day can only be cancelled, its whole prepay to the aggregator's treasury. Nothing here
+// reads a clock.
 //
 // The reveal deadline is the lens's. A release (or a roll-forward) ends the fix window early, and the deadline moves
 // with it: status says so against what commit printed and recorded in state.json (`told`), and claims no move when
@@ -33,6 +40,8 @@ const ZERO_ID = /^0x0+$/;
 const eth = (wei) => `${formatEther(wei)} ETH`;
 
 export const WATCH_MAX_MS = 15 * 60 * 1000;
+/** The v2 aggregator's round phases the texts name (getRoundInfo; the lens's openRound). */
+const PHASE = Object.freeze({ DRAW: 1n, BEACONS: 2n, COMMIT: 3n, CLOSING: 4n, REVEAL: 5n, FINAL: 6n, SETTLED: 7n, FAILED: 8n, CANCELLED: 9n });
 const WATCH_POLL_MS = 15_000;
 
 export { justificationCidOf };
@@ -48,8 +57,8 @@ async function readEvidence(ctx, claim, live = () => true) {
   try {
     const aggregator = await ctx.aggregator();
     if (!live()) return null;
-    const { justificationCID } = await ctx.rpc(() => aggregator.getEvaluation(requestId));
-    const cid = justificationCidOf(justificationCID);
+    const { justifications } = await ctx.rpc(() => aggregator.getEvaluation(requestId));
+    const cid = justificationCidOf(justifications);
     if (!cid || !live()) return null;
     const bytes = await gatewayGet(ctx.gateway, cid, { maxBytes: MAX_JUSTIFICATION_UPLOAD_BYTES, timeoutMs: Math.min(ctx.readTimeoutMs, 30_000), fetchImpl: ctx.fetch });
     return readExecutionEvidence(JSON.parse(bytes.toString('utf8'))?.justification);
@@ -58,33 +67,50 @@ async function readEvidence(ctx, claim, live = () => true) {
   }
 }
 
-/** What a failed round cost, from its own numbers (node P32): what the aggregator says it spent, or the prepay alone. */
-export function roundCostText({ prepayWei = null, spentWei = null, refundWei = null } = {}, { recorded = true } = {}) {
+/**
+ * What a failed round cost, from its own numbers (node P32; the v2 aggregator's getRoundInfo): the prepay it received,
+ * what it paid out (the jurors' base fees, any bonuses and rewards; a draw reward this claim's wallet earned comes
+ * back with the rest), and where the rest went: to you (`refundTo` 'hunter'), or to the aggregator's treasury
+ * ('treasury': a round never drawn and cancelled, a missed beacon quorum, M commits nobody promoted), or unsaid (null).
+ */
+export function roundCostText({ prepayWei = null, spentWei = null, refundWei = null, refundTo = null } = {}, { recorded = true } = {}) {
   if (prepayWei === null || prepayWei === undefined) return '';
   const back = recorded ? 'came back to you at finalize' : 'comes back to you at finalize';
-  if (spentWei === null || spentWei === undefined) return `This round's prepay was ${eth(prepayWei)}: its base fees came out of it, and the rest ${back}; the aggregator does not say how much of it the base fees took.`;
-  return `This round's prepay was ${eth(prepayWei)}: its base fees took ${eth(spentWei)}, and the other ${eth(refundWei)} ${back}.`;
+  if (spentWei === null || spentWei === undefined) return `This round's prepay was ${eth(prepayWei)}: its base fees came out of it, and the rest ${back} unless the aggregator sent it to its treasury; the aggregator does not say how much of it the base fees took.`;
+  if (refundTo === 'treasury') return `This round's prepay was ${eth(prepayWei)}: ${eth(spentWei)} was paid out (base fees and rewards), and the aggregator sent the other ${eth(refundWei)} to its treasury, not back to you: it does that for a round never drawn, a missed beacon quorum, or a round whose commits nobody promoted.`;
+  const rest = refundTo === 'hunter' ? back : `${back} unless the aggregator sent it to its treasury`;
+  return `This round's prepay was ${eth(prepayWei)}: ${eth(spentWei)} was paid out (base fees and rewards; a draw reward your round's wallet earned comes back too), and the other ${eth(refundWei)} ${rest}.`;
+}
+
+/** Where the bond goes if no round settles a verdict (erratum E6 on the v2 aggregator; ClaimLogic.expire). */
+function bondAtExpiry(answered) {
+  return answered
+    ? 'A round of this claim got a result from its jury that is no verdict, so if no round settles one, the bond goes to the maker at expiry (RoundsFailed).'
+    : 'No round of this claim has got a result from its jury yet, so if none settles a verdict, the bond comes back to you at expiry (RoundsUnanswered), unless a later round\'s jury answers with no verdict.';
 }
 
 /**
  * Design §12 and erratum E6, for a claim's round with no verdict: in RoundFailed, or over at the aggregator and not yet
  * finalized (`recorded` false, node P32). The money depends on which kind of failure it was. What status read of it,
  * when it has: the re-trigger's quote, the window a deadline not yet set runs for, the round's cost and its timeout.
- * @param {{ deadline: bigint|null, requestId: string, roundStarted: boolean, recorded?: boolean, window?: bigint|null, retriggerWei?: bigint|null, cost?: object|null, timeoutSeconds?: bigint|null }} o
+ * The bond's fate follows the rounds (ClaimLogic.expire): to the maker once a round's jury answered with a result that
+ * is no verdict (`answered`), else back to the hunter.
+ * @param {{ deadline: bigint|null, requestId: string, roundStarted: boolean, answered?: boolean, recorded?: boolean, window?: bigint|null, retriggerWei?: bigint|null, cost?: object|null, timeoutSeconds?: bigint|null }} o
  */
-export function failedRoundNext({ deadline, requestId, roundStarted, recorded = true, window = null, retriggerWei = null, cost = null, timeoutSeconds = null }) {
+export function failedRoundNext({ deadline, requestId, roundStarted, answered = false, recorded = true, window = null, retriggerWei = null, cost = null, timeoutSeconds = null }) {
   const refused = ZERO_ID.test(String(requestId));
   const span = window === null || window === undefined ? 'the listing\'s reveal window' : `${window} s`;
   const when = deadline ? `before ${deadline} on the chain's clock` : `within ${span} of when finalize records the round as failed`;
   const quote = retriggerWei === null || retriggerWei === undefined ? '' : ` It sends ${eth(retriggerWei)} now, the contract's quote.`;
   if (refused && !roundStarted) return `The aggregator refused the request, so no round ran and nothing was spent: it holds no fault of your claim's. reveal --retrigger says what that costs and, with --yes, sends it again ${when}: only what the live fee has risen by.${quote} If every attempt is refused, anyone may expire the claim from then on, and the bond and the prepay come back to you.`;
-  if (refused) return `The aggregator refused this attempt, so the prepay is still held. An earlier round ran: ${ABSTAIN_COSTS} reveal --retrigger says what it costs and, with --yes, sends it again ${when}.${quote}`;
-  const head = recorded ? 'The round ended with no verdict: the claim is RoundFailed.' : 'The round ended with no verdict: the aggregator\'s time for it is over, and finalize records the claim as RoundFailed.';
+  if (refused) return `The aggregator refused this attempt, so the prepay is still held. An earlier round ran: ${ABSTAIN_COSTS} ${bondAtExpiry(answered)} reveal --retrigger says what it costs and, with --yes, sends it again ${when}.${quote}`;
+  const head = recorded ? 'The round ended with no verdict: the claim is RoundFailed.' : 'The round ended with no verdict: the aggregator is done with it, and finalize records the claim as RoundFailed.';
   return [
     head,
     `It may be your proof or a host. ${noVerdictMeans(timeoutSeconds)}`,
     roundCostText(cost ?? {}, { recorded }),
     ABSTAIN_COSTS,
+    bondAtExpiry(answered),
     RETRIGGER_SAME_CLAIM,
     // nothing re-triggers a round finalize has not recorded (R1-F2): claim records it, as anyone may, the keeper too
     recorded ? '' : 'Run claim to record it as failed now (anyone may, and the site\'s keeper does); until then reveal --retrigger has nothing to send.',
@@ -114,6 +140,12 @@ export async function snapshot(ctx, claimId, live = () => true) {
   const appealDeadline = lens === 'Judged' ? await read('appealDeadline') : 0n;
   const [confirmOpensAt, confirmDeadline] = lens === 'Judged' || lens === 'Disputed' ? await read('confirmWindow') : [0n, 0n];
   const outcome = judged ? OUTCOMES[Number(claim.outcome)] : null;
+  // the v2 aggregator's round a Revealed or Disputed claim has open: its phase and deadline (the lens's openRound)
+  let round = null;
+  if (lens === 'Revealed' || lens === 'Disputed') {
+    const r = await read('openRound');
+    round = { requestId: r.requestId, phase: BigInt(r.phase), deadline: BigInt(r.deadline) };
+  }
   // Claims on a listing reveal in commit order (decision D5): while this one is still to be revealed and another
   // heads the listing's queue, that one comes first, whatever this claim's own fix window says.
   let waitsFor = null;
@@ -178,27 +210,57 @@ export async function snapshot(ctx, claimId, live = () => true) {
     timedOut: false,
     evidence: null,
     roundStarted: claim.roundStarted,
+    // a claim round's jury answered with a result that is no verdict: the bond goes to the maker at expiry
+    juryAnswered: claim.juryAnswered,
+    // the round finalize would record now got a result that is no verdict (readNow)
+    roundAnswered: false,
+    // the open round at the aggregator (Revealed, Disputed): { requestId, phase, deadline }, else null
+    round,
     raw: claim,
     block: block.number,
   };
 }
 
-async function finalizeReady(ctx, claimId, blockTag) {
+// A dry run of `name`: true when it would pass now. A revert is false, whether the contract's own reason or one the
+// aggregator passes on with a custom error (drawJury: TooEarly, WrongPhase, DrawExpired); a node that does not
+// answer is RPC_UNAVAILABLE.
+async function dryRun(ctx, name, claimId, blockTag) {
   try {
-    await ctx.rpc(() => ctx.provider.call({ to: ctx.contract, data: ctx.encode('finalize', [claimId]), blockTag }));
-    return true;
+    return await ctx.rpc(async () => {
+      try {
+        await ctx.provider.call({ to: ctx.contract, data: ctx.encode(name, [claimId]), blockTag });
+        return true;
+      } catch (err) {
+        if (err?.code === 'CALL_EXCEPTION') return false;
+        throw err;
+      }
+    });
   } catch (err) {
     if (err.code === 'CONTRACT_REFUSED') return false;
     throw err;
   }
 }
+const finalizeReady = (ctx, claimId, blockTag) => dryRun(ctx, 'finalize', claimId, blockTag);
+
+/**
+ * Whether drawJury would pass now: from block B+2 (read from the aggregator's getRoundInfo, a view, so a round still
+ * too young costs no reverted call), the dry run decides (a beacon stage still collecting, a day past, a pause).
+ */
+async function drawDue(ctx, s, live) {
+  const at = { blockTag: s.block };
+  const aggregator = await ctx.aggregator();
+  if (!live()) return false;
+  const { requestBlock } = await ctx.rpc(() => aggregator.getRoundInfo(s.round.requestId, at));
+  if (BigInt(s.block) < BigInt(requestBlock) + 2n) return false;
+  return live() && dryRun(ctx, 'drawJury', s.claimId, s.block);
+}
 
 /**
  * What finalize will record for a round its dry run says is over, read as finalize's _poll reads it (node P32): the
- * aggregator's result, judged by the lens (judgeVector, ClaimRules.judge); with none, a round the aggregator has
- * settled is one with no verdict, and one it has not settled yet (finalize settles it there, past its timeout) fails
- * with too few commits or reveals. With enough of both the aggregator finishes it normally, and only finalize can
- * tell: null. Every read is at the snapshot's block.
+ * aggregator's result (valid from phase 6), judged by the lens (judgeVector, ClaimRules.judge); with none, the round
+ * is failed or cancelled at the aggregator, or finalize fails it there (settle past its deadline, cancelUnsealed),
+ * so it has no verdict. `answered` says the jury returned a result that is no verdict. Every read is at the
+ * snapshot's block.
  */
 async function roundResultOf(ctx, s, live) {
   const at = { blockTag: s.block };
@@ -208,14 +270,10 @@ async function roundResultOf(ctx, s, live) {
   };
   const requestId = s.state === 'Disputed' ? s.raw.disputeRequestId : s.requestId;
   const aggregator = await step(() => ctx.aggregator());
-  const [likelihoods, , exists] = await step(() => ctx.rpc(() => aggregator.getEvaluation(requestId, at)));
-  if (exists) {
-    const judged = await step(() => ctx.read('judgeVector', [s.listingId, [...likelihoods].map(BigInt)], at));
-    return judged.wellFormed ? 'verdict' : 'noVerdict';
-  }
-  const round = await step(() => ctx.rpc(() => aggregator.getAggregationStatus(requestId, at)));
-  if (round.isComplete) return 'noVerdict';
-  return !round.commitPhaseComplete || round.responseCount < round.requiredN ? 'noVerdict' : null;
+  const [aggregated, , valid] = await step(() => ctx.rpc(() => aggregator.getEvaluation(requestId, at)));
+  if (!valid) return { result: 'noVerdict', answered: false };
+  const judged = await step(() => ctx.read('judgeVector', [s.listingId, [...aggregated].map(BigInt)], at));
+  return judged.wellFormed ? { result: 'verdict', answered: false } : { result: 'noVerdict', answered: true };
 }
 
 const PANEL_ROUND = Object.freeze({ Maker: 'The maker\'s dispute round', Confirmation: 'The dispute panel\'s confirmation round', Appeal: 'Your appeal\'s round' });
@@ -298,8 +356,14 @@ function nextFor(s) {
         if (s.roundResult === 'noVerdict') return `${round} ended with no verdict: run claim to record it, and status then says what follows.`;
         return `${round} is over, and finalize decides its result: run claim to record it.`;
       }
-      if (s.timedOut) return `${round} is still open after the time given. It may be running slowly; run status --wait again, and claim once it is over.`;
-      return `${round} is still open: the arbiters are at work, usually for 3 to 6 minutes and at most about 15. status --wait polls it.`;
+      if (s.round && (s.round.phase === PHASE.DRAW || s.round.phase === PHASE.BEACONS)) {
+        const stage = s.round.phase === PHASE.BEACONS ? ' (its beacon stage has started: a second draw follows once the beacon values are in)' : '';
+        const how = s.ready === 'draw' ? 'its draw is due now: run claim to draw it (anyone may, and the site\'s keeper does; the draw reward goes to the round\'s wallet and comes back with its leftover)' : 'it can be drawn from two blocks after the request; the site\'s keeper draws it, and claim does once it may be';
+        return `${round} is still open, and its jury is not drawn yet${stage}: ${how}. An undrawn round never times out, but undrawn a day after the request it can only be cancelled, its whole prepay to the aggregator's treasury, and the round fails.${s.timedOut ? ' The time given is over: run status --wait again.' : ''}`;
+      }
+      const until = s.round && s.round.deadline !== 0n ? ` Its deadline is ${s.round.deadline} on the chain's clock, the response timeout counted from the draw; after it the round is failed if it has not finished.` : '';
+      if (s.timedOut) return `${round} is still open after the time given. It may be running slowly; run status --wait again, and claim once it is over.${until}`;
+      return `${round} is drawn and open: the arbiters commit and reveal, usually for 3 to 6 minutes from the draw. status --wait polls it.${until}`;
     }
     case 'Judged':
       return judgedNext(s);
@@ -321,9 +385,10 @@ function failedRoundArgs(s) {
     deadline: f.retriggerDeadline ?? null,
     requestId: s.requestId,
     roundStarted: s.roundStarted,
+    answered: Boolean(s.juryAnswered || s.roundAnswered),
     window: f.retriggerWindow ?? null,
     retriggerWei: f.retriggerWei ?? null,
-    cost: f.prepayWei === undefined ? null : { prepayWei: f.prepayWei, spentWei: f.spentWei, refundWei: f.refundWei },
+    cost: f.prepayWei === undefined ? null : { prepayWei: f.prepayWei, spentWei: f.spentWei, refundWei: f.refundWei, refundTo: f.refundTo ?? null },
     timeoutSeconds: f.responseTimeoutSeconds ?? null,
   };
 }
@@ -340,6 +405,7 @@ function baseFailedRound(s) {
     prepayWei: s.prepayWei,
     spentWei: null,
     refundWei: null,
+    refundTo: null,
     responseTimeoutSeconds: null,
   };
 }
@@ -348,7 +414,9 @@ function baseFailedRound(s) {
  * A round with no verdict, from the chain (node P32): the re-trigger's quote and deadline, the lens's once finalize has
  * recorded it, and before that the live fee in full (a round that ran took its prepay: commitPrice less the bond) and
  * ClaimRules.retriggerDeadline from an earlier failure, if there was one; and what the round cost, from the
- * aggregator's own accounting of it (getEthAccounting), or the prepay alone where the aggregator has no such view.
+ * aggregator's own numbers (getRoundInfo: received, and what it paid out), with where the rest went: a cancelled round's
+ * all to the treasury, else as its RequesterRefunded event says (to the wallet, the hunter's, or the treasury), or,
+ * for a round finalize has yet to fail, where the aggregator's settle will send it. The prepay alone if unreadable.
  */
 async function failedRoundOf(ctx, s, live) {
   const step = (fn) => {
@@ -373,15 +441,41 @@ async function failedRoundOf(ctx, s, live) {
     out.responseTimeoutSeconds = null;
   }
   try {
-    const a = await step(() => ctx.rpc(() => aggregator.getEthAccounting(s.requestId)));
-    if (a.ethReceived > 0n) {
-      const spent = a.baseCredited + a.bonusCredited;
-      Object.assign(out, { prepayWei: a.ethReceived, spentWei: spent, refundWei: a.ethReceived - spent });
+    const r = await step(() => ctx.rpc(() => aggregator.getRoundInfo(s.requestId)));
+    if (r.received > 0n) {
+      const spent = r.baseFees + r.bonuses + r.rewards;
+      Object.assign(out, { prepayWei: r.received, spentWei: spent, refundWei: r.received - spent });
+      out.refundTo = await step(() => refundDestination(ctx, aggregator, s, r));
     }
   } catch {
-    // an aggregator without the view, such as the mock: the prepay the claim sent, and no figure made up for the split
+    // an aggregator that does not answer: the prepay the claim sent, and no figure made up for the split
   }
   return out;
+}
+
+/**
+ * Where a failed round's unspent prepay went, or goes (the v2 aggregator's routing): 'treasury', 'hunter' or null when
+ * unknown. Cancelled: all to the treasury. Failed: its RequesterRefunded event names the payee (the claim's wallet
+ * is the hunter's). Not failed yet (finalize settles it): the treasury for a round closed and not promoted (phase 4),
+ * or still in commit with at least M commits, which the aggregator's settle sends there too; the hunter otherwise.
+ */
+async function refundDestination(ctx, aggregator, s, r) {
+  const phase = BigInt(r.phase);
+  if (phase === PHASE.CANCELLED) return 'treasury';
+  if (phase === PHASE.FAILED) {
+    try {
+      const logs = await ctx.rpc(() => aggregator.queryFilter(aggregator.filters.RequesterRefunded(s.requestId), Number(r.requestBlock)));
+      if (!logs.length) return null;
+      const to = String(logs.at(-1).args.requester).toLowerCase();
+      return to === String(s.raw.evalWallet).toLowerCase() ? 'hunter' : 'treasury';
+    } catch {
+      return null; // a node that limits log ranges: unsaid
+    }
+  }
+  if (phase === PHASE.CLOSING) return 'treasury';
+  if (phase === PHASE.DRAW || phase === PHASE.BEACONS) return 'treasury'; // finalize cancels it
+  if (phase === PHASE.COMMIT) return r.commits >= BigInt(await ctx.rpc(() => aggregator.M())) ? 'treasury' : 'hunter';
+  return 'hunter';
 }
 
 /** At most `ms` for `work(live)`; past it, or on any failure, `fallback`, and the work starts nothing more. */
@@ -497,13 +591,18 @@ export const readClaimRound = (ctx, claimId) => readNow(ctx, BigInt(claimId));
 
 // A pending round is over only when the chain says so: finalize's dry run passes, at the snapshot's block. Then what
 // finalize would record is read from the aggregator (roundResultOf): a round with no verdict is failed from then on.
+// Otherwise, a round still to be drawn whose drawJury dry run passes is `ready: 'draw'` (claim sends it).
 async function readNow(ctx, id, live = () => true) {
   const s = await snapshot(ctx, id, live);
   if (s.pending && live() && await finalizeReady(ctx, id, s.block)) {
     s.pending = false;
     s.ready = 'finalize';
-    s.roundResult = await roundResultOf(ctx, s, live);
-    s.roundFailed = s.state === 'Revealed' && s.roundResult === 'noVerdict';
+    const { result, answered } = await roundResultOf(ctx, s, live);
+    s.roundResult = result;
+    s.roundFailed = s.state === 'Revealed' && result === 'noVerdict';
+    s.roundAnswered = s.state === 'Revealed' && answered;
+  } else if (s.pending && live() && s.round && (s.round.phase === PHASE.DRAW || s.round.phase === PHASE.BEACONS) && await drawDue(ctx, s, live)) {
+    s.ready = 'draw'; // still pending: drawing starts the round, it does not end it
   }
   return s;
 }

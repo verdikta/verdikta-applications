@@ -198,6 +198,7 @@ function printCommit(out, r) {
 function stageOf(s) {
   if (s.state === 'Committed') return s.disclosed ? `, disclosed${s.inFixWindow ? ', in its fix window' : ''}` : ', not disclosed';
   if (s.state === 'Revealed' && s.roundFailed) return ', its round ended with no verdict';
+  if (s.round && (s.round.phase === 1n || s.round.phase === 2n)) return ', its jury not drawn yet';
   return '';
 }
 
@@ -206,7 +207,8 @@ function printFailedRound(out, f) {
   if (!f.recorded) out(`Round: no verdict, not recorded yet: finalize records it (the site's keeper does, and claim does it now)`);
   if (!f.retriggerDeadline && f.retriggerWindow !== null) out(`Re-trigger within ${f.retriggerWindow} s of when the round is recorded`);
   if (f.retriggerWei !== null) out(`A re-trigger sends ${eth(f.retriggerWei)} now: reveal --retrigger says it again, and sends only with --yes`);
-  if (f.spentWei !== null) out(`This round: prepay ${eth(f.prepayWei)}, base fees ${eth(f.spentWei)}, back to you ${eth(f.refundWei)}`);
+  const rest = f.refundTo === 'treasury' ? 'to the aggregator\'s treasury' : f.refundTo === 'hunter' ? 'back to you' : 'back to you unless the aggregator sent it to its treasury';
+  if (f.spentWei !== null) out(`This round: prepay ${eth(f.prepayWei)}, paid out (base fees, rewards) ${eth(f.spentWei)}, ${rest} ${eth(f.refundWei)}`);
   else if (!f.refused && f.prepayWei) out(`This round: prepay ${eth(f.prepayWei)}; the aggregator does not say how much the base fees took`);
 }
 

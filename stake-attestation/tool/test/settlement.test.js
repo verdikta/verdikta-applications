@@ -33,7 +33,7 @@ function capLogs(maxBlocks) {
 beforeEach(() => capLogs(null));
 
 const eth = (s) => ethers.parseEther(s);
-const script = async (claimId, outcome) => (await w.aggregator.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf(outcome), JUSTIFICATION_CID)).wait();
+const script = async (claimId, outcome) => (await w.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf(outcome), JUSTIFICATION_CID)).wait();
 
 /** A committed claim's folder, revealed and finalized to `outcome`. */
 async function judge(dir, claimId, outcome) {

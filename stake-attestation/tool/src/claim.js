@@ -1,4 +1,6 @@
-// claim: finalize, settle and withdraw, each its own library call, and the verb that does whichever is due. All of
+// claim: drawJury, finalize, settle and withdraw, each its own library call, and the verb that does whichever is due.
+// drawJury (the v2 aggregator's second step) draws the claim's open round through its wallet, so the draw reward comes
+// back to whoever funded the round; it is sent when its dry run passes (status's `ready: 'draw'`). All of
 // them may be called by anyone and read the chain for where things stand, so a crash needs no saved state: a re-run
 // sees what is done and goes on. The contract's reason for refusing is passed on, as `NOT_READY`.
 //
@@ -31,6 +33,11 @@ async function stateAfter(ctx, claimId) {
   const claim = await ctx.readSettled('getClaim', [claimId]);
   const lens = CLAIM_STATES[Number(await ctx.read('claimState', [claimId]))];
   return { claim, state: lens };
+}
+
+export async function runDraw(ctx, claimId) {
+  const { hash } = await send(ctx, 'drawJury', [claimId]);
+  return { action: 'drawJury', tx: hash, claimId: BigInt(claimId) };
 }
 
 export async function runFinalize(ctx, claimId) {
@@ -102,6 +109,8 @@ export async function runClaim(ctx, { claimId, claimDir, waiveAppeal = false }) 
     const ours = sent.some((x) => x.action === 'settle' && String(x.tx).toLowerCase() === String(s.settlement?.tx).toLowerCase());
     if (s.settlement?.found && ours) s = { ...s, settlement: { ...s.settlement, by: 'thisRun' } };
   };
+  if (s.ready === 'draw') await unlessBeaten(() => runDraw(ctx, id));
+  if (s.ready === 'draw') await unlessBeaten(() => runDraw(ctx, id)); // a beacon round's second draw, if already due
   if (s.ready === 'finalize') await unlessBeaten(() => runFinalize(ctx, id));
   if (s.state === 'Judged' && s.times.settleableAt !== 0n && s.times.settleableAt <= s.chainTime) {
     await unlessBeaten(() => runSettle(ctx, id));

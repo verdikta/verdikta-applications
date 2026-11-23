@@ -97,7 +97,7 @@ test('an abstain a claim can cause is shown as an abstain, with what it costs (d
     assert.equal(r.forecast.abstain.step, step);
     assert.equal(r.forecast.abstain.claimCanCause, true, cause);
     const text = r.forecast.abstain.cost;
-    for (const needle of [/every arbiter/i, /no commit|no verdict/i, /base fees/, /K × the per-oracle fee/, /rest .*comes back at finalize/i, /no round settles/, /bond goes to the maker at expiry/, /[Nn]othing on-chain or on IPFS says why/]) {
+    for (const needle of [/every arbiter/i, /no commit|no verdict/i, /base fees/, /K × the per-juror fee/, /rest .*comes back at finalize/i, /no round settles/, /bond comes back at expiry, unless a round.s jury answered/, /[Nn]othing on-chain or on IPFS says why/]) {
       assert.match(text, needle, `${cause}: ${needle}`);
     }
     // node P32: no fixed dollar figure; status shows a failed round's own numbers, in ETH
@@ -109,7 +109,7 @@ test('an abstain a claim can cause is shown as an abstain, with what it costs (d
   assert.match(cli.stdout, /ABSTAIN/i);
   assert.match(cli.stdout, /killed_by_signal/);
   assert.match(cli.stdout, /poc:run-1/);
-  assert.match(cli.stdout, /bond goes to the maker at expiry/);
+  assert.match(cli.stdout, /bond comes back at expiry, unless a round.s jury answered/);
   assert.match(cli.stdout, /base fees/);
   assert.doesNotMatch(cli.stdout, /\$\d/, 'no fixed dollar figure (node P32)');
   assert.doesNotMatch(cli.stdout, /Settles as/);
@@ -158,7 +158,7 @@ test('prior valid findings go to the runner as the EA sends them: they are in th
   const { claimId } = await hunter.commit({ claimDir: first, listingId: lp.listingId, acknowledge: true });
   await hunter.reveal({ claimDir: first, acknowledge: true });
   const req0 = (await w.sa.getClaim(claimId)).requestId;
-  await (await w.aggregator.scriptResult(req0, vectorOf('HIGH'), JUSTIFICATION_CID)).wait();
+  await (await w.scriptResult(req0, vectorOf('HIGH'), JUSTIFICATION_CID)).wait();
   await (await w.sa.finalize(claimId)).wait();
   await w.increase((await w.sa.getListing(lp.listingId)).disputeWindow);
   await (await w.sa.settle(claimId)).wait();
@@ -177,7 +177,7 @@ test('a prior finding this machine cannot read is named, and the pack is said to
   const first = makeClaimDir();
   const { claimId } = await hunter.commit({ claimDir: first, listingId: lp.listingId, acknowledge: true });
   const { bcid } = await hunter.reveal({ claimDir: first, acknowledge: true });
-  await (await w.aggregator.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('HIGH'), JUSTIFICATION_CID)).wait();
+  await (await w.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('HIGH'), JUSTIFICATION_CID)).wait();
   await (await w.sa.finalize(claimId)).wait();
   await w.increase((await w.sa.getListing(lp.listingId)).disputeWindow);
   await (await w.sa.settle(claimId)).wait();
@@ -430,7 +430,7 @@ test('a real runner\'s abstention, from a proof that sleeps past its limit: an a
   assert.equal(f.abstain.cause, 'step_timeout');
   assert.equal(f.abstain.step, 'poc:1');
   assert.equal(f.abstain.claimCanCause, true);
-  assert.match(f.abstain.cost, /bond goes to the maker at expiry/);
+  assert.match(f.abstain.cost, /bond comes back at expiry, unless a round.s jury answered/);
   assert.deepEqual(f.gates.map((g) => [g.name, g.status]), [['applies', 'pass'], ['testPathsOnly', 'pass'], ['build', 'pass']]);
   assert.equal(f.settlesAs, null);
 });

@@ -20,7 +20,7 @@ const revealed = async (over = {}) => {
   await w.hunter().reveal({ claimDir: dir, acknowledge: true });
   return { l, dir, claimId, requestId: (await w.sa.getClaim(claimId)).requestId };
 };
-const script = async (requestId, outcome) => (await w.aggregator.scriptResult(requestId, vectorOf(outcome), JUSTIFICATION_CID)).wait();
+const script = async (requestId, outcome) => (await w.scriptResult(requestId, vectorOf(outcome), JUSTIFICATION_CID)).wait();
 
 /** A clock and sleep the test owns: `sleep` moves the clock. */
 function fakeClock() {
@@ -272,7 +272,7 @@ const upload = (justification) => w.ipfs.put(Buffer.from(JSON.stringify({ scores
 test('a settled claim\'s evidence comes from the first block only: what follows it is not read, and never shown', async () => {
   const { claimId, requestId } = await revealed();
   const cid = upload(`${BLOCK}\n\nJURY-TEXT-MARKER the jurors say anything here\n${FORGED}\n`);
-  await (await w.aggregator.scriptResult(requestId, vectorOf('DUPLICATE'), cid)).wait();
+  await (await w.scriptResult(requestId, vectorOf('DUPLICATE'), cid)).wait();
   await (await w.sa.finalize(claimId)).wait();
   const s = await w.hunter({ signer: undefined }).status({ claimId });
   assert.equal(s.outcome, 'DUPLICATE', 'the chain says the outcome');
@@ -294,7 +294,7 @@ test('jury text with a block of its own, and nothing at the start: no evidence, 
   assert.equal(readExecutionEvidence(`${BLOCK}\n${FORGED}`).settlement, 'DUPLICATE (integrity)');
   assert.equal(readExecutionEvidence(`Execution evidence v1\nSettlement: jury\nSettlement: INVALID (build)\nEnd execution evidence`).settlement, 'jury', 'a line repeated: the first');
   const { claimId, requestId } = await revealed();
-  await (await w.aggregator.scriptResult(requestId, vectorOf('INVALID'), upload(`Verdict: INVALID (deterministic, not an AI judgement).\n${FORGED}`))).wait();
+  await (await w.scriptResult(requestId, vectorOf('INVALID'), upload(`Verdict: INVALID (deterministic, not an AI judgement).\n${FORGED}`))).wait();
   await (await w.sa.finalize(claimId)).wait();
   const s = await w.hunter({ signer: undefined }).status({ claimId });
   assert.equal(s.outcome, 'INVALID');
@@ -303,7 +303,7 @@ test('jury text with a block of its own, and nothing at the start: no evidence, 
 
 test('a justification that cannot be read changes nothing but the evidence, and a hostile CID is not fetched', async () => {
   const { claimId, requestId } = await revealed();
-  await (await w.aggregator.scriptResult(requestId, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
+  await (await w.scriptResult(requestId, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
   await (await w.sa.finalize(claimId)).wait();
   const s = await w.hunter({ signer: undefined }).status({ claimId });
   assert.equal(s.state, 'Judged');
@@ -315,14 +315,15 @@ test('a justification that cannot be read changes nothing but the evidence, and 
 
 test('a failed round says it is one, what it cost and what to do: nothing on-chain says why', async () => {
   const { claimId, requestId, dir } = await revealed();
-  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  await w.expireClaimRound(claimId);
   await (await w.sa.finalize(claimId)).wait();
   assert.equal(requestId.length, 66);
   const s = await w.hunter({ signer: undefined }).status({ claimDir: dir });
   assert.equal(s.state, 'RoundFailed');
   assert.match(s.next, /base fees/);
   assert.match(s.next, /retrigger/);
-  assert.match(s.next, /bond goes to the maker/);
+  assert.match(s.next, /bond comes back to you at expiry \(RoundsUnanswered\)/, 'no round got a result: the bond comes back (E6 on v2)');
+  assert.equal(s.juryAnswered, false);
   assert.match(s.next, /says why/);
   assert.match(s.next, /check/);
   assert.ok(s.times.retriggerDeadline > 0n);
@@ -346,7 +347,9 @@ test('a refused request is not a paid round: nothing spent, the bond comes back 
   const { failedRoundNext } = await import('../src/status.js');
   const mixed = failedRoundNext({ deadline: 9n, requestId: `0x${'00'.repeat(32)}`, roundStarted: true });
   assert.match(mixed, /prepay is still held/);
-  assert.match(mixed, /bond goes to the maker/);
+  assert.match(mixed, /bond comes back to you at expiry/);
+  const answered = failedRoundNext({ deadline: 9n, requestId: `0x${'00'.repeat(32)}`, roundStarted: true, answered: true });
+  assert.match(answered, /bond goes to the maker at expiry \(RoundsFailed\)/);
   const ran = failedRoundNext({ deadline: 9n, requestId: `0x${'11'.repeat(32)}`, roundStarted: true });
   assert.match(ran, /fresh prepay/);
 });
@@ -378,11 +381,11 @@ test('the CLI: status --wait exits 4 while pending, 0 when done; claim settles; 
 // A fresh agent's claim on testnet (Q84 item 3): a round that ended with no verdict read "The round is over: run
 // claim to record it." with exit 0, and only status --json said RoundFailed, after the keeper's finalize.
 
-const timeOut = async () => w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+const timeOut = (claimId) => w.expireClaimRound(claimId);
 
 test('P32: a round with no verdict reads as failed from the moment the aggregator\'s timeout fails it, before finalize and after', async () => {
   const { l, dir, claimId } = await revealed();
-  await timeOut(); // the aggregator's own rule: past responseTimeoutSeconds with no commits, the round has failed
+  await timeOut(claimId); // the aggregator's own rule: drawn and past its deadline with too few commits, the round has failed
   const early = await w.hunter({ signer: undefined }).status({ claimDir: dir });
   assert.equal(early.state, 'Revealed', 'nobody has finalized it');
   assert.equal(early.ready, 'finalize');
@@ -422,11 +425,17 @@ test('P32: a round with no verdict reads as failed from the moment the aggregato
 
 test('P32: a vector that is no verdict reads as failed before finalize too; a verdict reads as one, exit 0', async () => {
   const bad = await revealed();
-  await (await w.aggregator.scriptResult(bad.requestId, [1000000n, 0n], JUSTIFICATION_CID)).wait(); // two scores, not six
+  await (await w.scriptResult(bad.requestId, [1000000n, 0n], JUSTIFICATION_CID)).wait(); // two scores, not six
   const s = await w.hunter({ signer: undefined }).status({ claimId: bad.claimId });
   assert.equal(s.state, 'Revealed');
   assert.equal(s.roundResult, 'noVerdict');
   assert.equal(s.roundFailed, true);
+  assert.equal(s.roundAnswered, true, 'the jury answered, with no verdict');
+  assert.match(s.next, /bond goes to the maker at expiry \(RoundsFailed\)/);
+  await (await w.sa.finalize(bad.claimId)).wait();
+  const after = await w.hunter({ signer: undefined }).status({ claimId: bad.claimId });
+  assert.equal(after.juryAnswered, true);
+  assert.match(after.next, /bond goes to the maker at expiry \(RoundsFailed\)/);
   const good = await revealed();
   await script(good.requestId, 'HIGH');
   const g = await w.hunter({ signer: undefined }).status({ claimId: good.claimId });
@@ -439,9 +448,10 @@ test('P32: a vector that is no verdict reads as failed before finalize too; a ve
 
 test('P32: a slow round still open is never read as failed, however long the watch has run', async () => {
   const { dir } = await revealed();
-  await (await w.aggregator.setResponseTimeout(3600n)).wait();
+  await (await w.aggregator.setTimeouts(3600n, 155n, 120n)).wait();
   try {
-    await w.increase(20 * 60); // past the watch's 15 minutes, inside the aggregator's timeout
+    await w.draw((await w.sa.getClaim((await w.hunter({ signer: undefined }).status({ claimDir: dir })).claimId)).requestId);
+    await w.increase(20 * 60); // past the watch's 15 minutes, inside the aggregator's timeout from the draw
     const s = await w.hunter({ signer: undefined }).status({ claimDir: dir });
     assert.equal(s.state, 'Revealed');
     assert.equal(s.pending, true);
@@ -449,12 +459,12 @@ test('P32: a slow round still open is never read as failed, however long the wat
     assert.equal(s.roundResult, null);
     assert.equal(s.roundFailed, false);
     assert.equal(s.failedRound, null);
-    assert.match(s.next, /still open/);
+    assert.match(s.next, /drawn and open/);
     const cli = await runCli(w, ['status', dir, '--wait', '--max-wait-ms', '400'], { keyVia: 'none' });
     assert.equal(cli.code, 4, `out of time, not failed: ${cli.stderr}`);
     assert.doesNotMatch(cli.stdout, /no verdict/);
   } finally {
-    await (await w.aggregator.setResponseTimeout(300n)).wait();
+    await (await w.aggregator.setTimeouts(300n, 155n, 120n)).wait();
   }
 });
 
@@ -513,62 +523,38 @@ test('P32: status reads the reveal deadline from the chain and says when a relea
   assert.doesNotMatch(idText.stdout, /moved/);
 });
 
-// The real aggregator's view of a round's money (verdikta-dispatcher, ReputationAggregator.getEthAccounting), which
-// the mock does not have: answered here from the mock's own ethReceived and the refund the test sets.
-function withEthAccounting(provider, aggregatorAddress, refundWei) {
-  const { ethers } = w.hre;
-  const iface = new ethers.Interface(['function getEthAccounting(bytes32) view returns (uint256 ethReceived, uint256 baseCredited, uint256 bonusCredited, uint256 bonusMultiplierSnap, uint256 reserved)']);
-  const selector = iface.getFunction('getEthAccounting').selector;
-  return new Proxy(provider, {
-    get(target, prop) {
-      if (prop === 'call') {
-        return async (tx) => {
-          if (String(tx.to).toLowerCase() === aggregatorAddress.toLowerCase() && String(tx.data).startsWith(selector)) {
-            const [aggId] = iface.decodeFunctionData('getEthAccounting', tx.data);
-            const received = await w.aggregator.ethReceived(aggId);
-            const [complete] = await w.aggregator.getAggregationStatus(aggId);
-            return iface.encodeFunctionResult('getEthAccounting', [received, received - refundWei, 0n, 0n, complete ? 0n : refundWei]);
-          }
-          return target.call(tx);
-        };
-      }
-      const v = target[prop];
-      return typeof v === 'function' ? v.bind(target) : v;
-    },
-  });
-}
-
-test('P32: a failed round\'s cost is its own numbers in ETH (testnet: 0.00012 of a 0.00144 ETH prepay), with no dollar figure', async () => {
+test('P32: a failed round\'s cost is its own numbers in ETH (getRoundInfo), with where the rest went and no dollar figure', async () => {
   const { ABSTAIN_COSTS, ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST, retriggerNotice } = await import('../src/index.js');
   for (const text of [ABSTAIN_COSTS, ABSTAIN_BY_CLAIM, ABSTAIN_BY_HOST, retriggerNotice({ claimId: 1n, valueWei: 1n, deadline: 2n })]) assert.doesNotMatch(text, /\$/, text);
-  // the listing's oracle fee is 0.00012 ETH: twelve of it is the prepay; the oracles leave 0.00132 ETH of it unspent
-  await (await w.aggregator.setFeeMultiplier(12n)).wait();
-  await (await w.aggregator.setRefundAmount(1320000000000000n)).wait();
-  try {
-    const { dir, claimId } = await revealed();
-    assert.equal((await w.sa.getClaim(claimId)).prepayWei, 1440000000000000n);
-    await timeOut();
-    const provider = withEthAccounting(w.provider, await w.aggregator.getAddress(), 1320000000000000n);
-    for (const finalized of [false, true]) {
-      if (finalized) await (await w.sa.finalize(claimId)).wait();
-      const s = await w.hunter({ provider, signer: undefined }).status({ claimDir: dir });
-      assert.equal(s.state, finalized ? 'RoundFailed' : 'Revealed');
-      assert.equal(s.failedRound.prepayWei, 1440000000000000n);
-      assert.equal(s.failedRound.spentWei, 120000000000000n);
-      assert.equal(s.failedRound.refundWei, 1320000000000000n);
-      for (const amount of ['0.00012 ETH', '0.00144 ETH', '0.00132 ETH']) assert.ok(s.next.includes(amount), `${amount}: ${s.next}`);
-      assert.doesNotMatch(s.next, /\$/);
-    }
-    // an aggregator without that view: the prepay the round was sent, in ETH, and no figure made up for the split
-    const bare = await w.hunter({ signer: undefined }).status({ claimDir: dir });
-    assert.equal(bare.failedRound.prepayWei, 1440000000000000n);
-    assert.equal(bare.failedRound.spentWei, null);
-    assert.equal(bare.failedRound.refundWei, null);
-    assert.ok(bare.next.includes('0.00144 ETH'), bare.next);
-    assert.doesNotMatch(bare.next, /\$/);
-  } finally {
-    await (await w.aggregator.setFeeMultiplier(3n)).wait();
-    await (await w.aggregator.setRefundAmount(0n)).wait();
+  // the listing's oracle fee is 0.00012 ETH; the v2 mock escrows 18 of it (K + B x P + the draw and promote rewards).
+  // Drawn by a stranger within 30 s (no reward), the six jurors' base fees take 0.00072 ETH, and with too few commits
+  // the other 0.00144 ETH comes back to the hunter.
+  const { dir, claimId } = await revealed();
+  assert.equal((await w.sa.getClaim(claimId)).prepayWei, 2160000000000000n);
+  await timeOut(claimId);
+  for (const finalized of [false, true]) {
+    if (finalized) await (await w.sa.finalize(claimId)).wait();
+    const s = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+    assert.equal(s.state, finalized ? 'RoundFailed' : 'Revealed');
+    assert.equal(s.failedRound.prepayWei, 2160000000000000n);
+    assert.equal(s.failedRound.spentWei, 720000000000000n);
+    assert.equal(s.failedRound.refundWei, 1440000000000000n);
+    assert.equal(s.failedRound.refundTo, 'hunter');
+    for (const amount of ['0.00072 ETH', '0.00216 ETH', '0.00144 ETH']) assert.ok(s.next.includes(amount), `${amount}: ${s.next}`);
+    assert.doesNotMatch(s.next, /treasury, not back to you/);
+    assert.match(s.next, /bond comes back to you at expiry/);
+    assert.doesNotMatch(s.next, /\$/);
+  }
+  // M commits that nobody promoted: the aggregator sends the rest to its treasury, before finalize and after
+  const t = await revealed();
+  await w.draw(t.requestId);
+  await (await w.aggregator.scriptCommits(t.requestId, 5)).wait();
+  await timeOut(t.claimId);
+  for (const finalized of [false, true]) {
+    if (finalized) await (await w.sa.finalize(t.claimId)).wait();
+    const s = await w.hunter({ signer: undefined }).status({ claimId: t.claimId });
+    assert.equal(s.failedRound.refundTo, 'treasury');
+    assert.match(s.next, /to its treasury, not back to you/);
   }
 });
 

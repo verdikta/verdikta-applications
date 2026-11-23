@@ -43,10 +43,14 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      pins the plaintext and pays any top-up the live fee needs; prints it, and sends only with --yes
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes
   status <claim-dir|claim-id> [--wait] [--max-wait-ms <n>]
-                     a round with no verdict reads as one as soon as the aggregator's time for it is over, before
-                     anyone finalizes it; the reveal deadline is the chain's, and status says when a release moved it
+                     a round with no verdict reads as one as soon as the aggregator is done with it, before
+                     anyone finalizes it; a round whose jury is not drawn yet waits (claim draws it, as anyone may,
+                     and the site's keeper does): the response timeout runs from the draw, and a round undrawn for
+                     a day can only be cancelled, its prepay to the aggregator's treasury
+                     the reveal deadline is the chain's, and status says when a release moved it
                      claims on a listing reveal in commit order: status names the earlier claim yours waits for
   claim <claim-dir|claim-id> [--waive-appeal]
+                     sends whatever is due: drawJury for a round still to be drawn, finalize, settle, withdraw
                      --waive-appeal settles your own INVALID before anyone else may, which waives its appeal
                      on a settled claim, claim and status say who sent the settle (this run, the hunter's own
                      address or another), its transaction and block, and what its Settled event paid and left owed

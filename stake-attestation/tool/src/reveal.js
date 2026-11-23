@@ -31,7 +31,7 @@ async function outcomeOf(ctx, state, topUpWei = null, tx = state.revealTx?.hash 
     topUpWei,
     tx,
     action,
-    next: name === 'RoundFailed' ? failedRoundNext({ deadline: await ctx.read('retriggerDeadline', [state.claimId]), requestId: claim.requestId, roundStarted: claim.roundStarted }) : 'status --wait polls the evaluation, for up to 15 minutes.',
+    next: name === 'RoundFailed' ? failedRoundNext({ deadline: await ctx.read('retriggerDeadline', [state.claimId]), requestId: claim.requestId, roundStarted: claim.roundStarted, answered: claim.juryAnswered }) : 'The round\'s jury is drawn next (claim draws it from two blocks on, and the site\'s keeper does); status --wait polls the evaluation, for up to 15 minutes.',
   };
 }
 

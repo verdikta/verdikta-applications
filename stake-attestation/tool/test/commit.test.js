@@ -289,16 +289,16 @@ test('--json: stdout is the result alone, whatever notices were said', async () 
 
 test('the live fee: a rise before the read is paid, and the prepay goes up with it', async () => {
   const l = await w.listing();
-  await (await w.aggregator.setFeeMultiplier(5n)).wait();
+  await (await w.aggregator.setBonusMultiplier(5n)).wait();
   try {
     const dir = makeClaimDir();
     const price = await w.sa.commitPrice(l.listingId);
     const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
     const claim = await w.sa.getClaim(r.claimId);
     assert.equal(claim.bondWei + claim.prepayWei, price);
-    assert.equal(claim.prepayWei, 5n * 120000000000000n);
+    assert.equal(claim.prepayWei, 24n * 120000000000000n); // B = 5: 6 + 5 x 3 + 3
   } finally {
-    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+    await (await w.aggregator.setBonusMultiplier(3n)).wait();
   }
 });
 
@@ -308,7 +308,7 @@ test('a fee that rises after the read: the commit reverts, nothing is pinned, a 
   const uploads = w.ipfs.uploads.length;
   const count = await w.claimCount();
   const onStep = async (step) => {
-    if (step === 'commit:signed') await (await w.aggregator.setFeeMultiplier(6n)).wait();
+    if (step === 'commit:signed') await (await w.aggregator.setBonusMultiplier(6n)).wait();
   };
   try {
     await assert.rejects(w.hunter({ onStep }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }), (e) => e.code === 'COMMIT_REVERTED' && /payment below bond/.test(e.message));
@@ -318,7 +318,7 @@ test('a fee that rises after the read: the commit reverts, nothing is pinned, a 
     assert.equal(r.stage, 'disclosed');
     assert.equal(await w.claimCount(), count + 1n);
   } finally {
-    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+    await (await w.aggregator.setBonusMultiplier(3n)).wait();
   }
 });
 

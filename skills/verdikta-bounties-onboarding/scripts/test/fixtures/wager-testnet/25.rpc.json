@@ -17,6 +17,12 @@
     "maxOracleFee": "1",
     "alpha": "500",
     "estimatedBaseCost": "0",
-    "maxFeeBasedScaling": "1"
-  }
+    "maxFeeBasedScaling": "1",
+    "minOracleFee": "0",
+    "withBeacons": false
+  },
+  "jury": "0",
+  "quota": "3",
+  "forfeitLine": "1",
+  "bond": "0"
 }

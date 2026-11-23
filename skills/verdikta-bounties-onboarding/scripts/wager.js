@@ -27,7 +27,7 @@ import path from 'node:path';
 import { Contract, getAddress, parseEther } from 'ethers';
 import { isMain } from './_cli.js';
 import { defaultSecretsDir, ensureDir } from './_paths.js';
-import { abi, deployments, reviewedApiOrigin } from './_transaction-guards.js';
+import { abi, deployments, reviewedApiOrigin, escrowDeployment } from './_transaction-guards.js';
 import { runCreate } from './create_bounty.js';
 import { runRecover } from './recover_funds.js';
 import { runSubmit } from './submit_to_bounty.js';
@@ -73,7 +73,8 @@ const plainBounty = (b) => ({
   createdAt: String(b.createdAt), submissionDeadline: String(b.submissionDeadline), status: String(b.status), winner: b.winner, targetHunter: b.targetHunter,
   creatorDeterminationPayment: String(b.creatorDeterminationPayment), arbiterDeterminationPayment: String(b.arbiterDeterminationPayment),
   creatorAssessmentWindowSize: String(b.creatorAssessmentWindowSize),
-  oracle: { maxOracleFee: String(b.oracle.maxOracleFee), alpha: String(b.oracle.alpha), estimatedBaseCost: String(b.oracle.estimatedBaseCost), maxFeeBasedScaling: String(b.oracle.maxFeeBasedScaling) },
+  oracle: { maxOracleFee: String(b.oracle.maxOracleFee), alpha: String(b.oracle.alpha), estimatedBaseCost: String(b.oracle.estimatedBaseCost), maxFeeBasedScaling: String(b.oracle.maxFeeBasedScaling), minOracleFee: String(b.oracle.minOracleFee), withBeacons: Boolean(b.oracle.withBeacons) },
+  jury: String(b.jury), quota: String(b.quota), forfeitLine: String(b.forfeitLine), bond: String(b.bond),
 });
 
 export async function runWager(lib, {
@@ -85,7 +86,7 @@ export async function runWager(lib, {
   if (!['propose', 'answer', 'check', 'status', 'claim', 'close'].includes(verb)) throw new Error(USAGE);
   const network = lib.getNetwork();
   const origin = reviewedApiOrigin(network, process.env.VERDIKTA_BOUNTIES_BASE_URL);
-  const ctx = W.siteContext({ network, origin, deployment: deployments[network] });
+  const ctx = W.siteContext({ network, origin, deployment: escrowDeployment(network) });
   const stateDir = path.join(secretsDir, 'wagers');
   let apiKey;
 
@@ -442,7 +443,7 @@ export async function runWager(lib, {
       const start = W.unix(r.start);
       // Past the deadline, claims still pending on your bounty block the close until they are finalized or failed.
       const pending = deadlinePassed && !['AWARDED', 'CLOSED'].includes(mineStatus?.status) ? await escrowRead((e) => e.pendingSubmissionIds(r.bountyId)).then((l) => l.length, () => null) : null;
-      const closeStep = `node wager.js close ${r.termsSha256.slice(0, 8)}${pending ? ` (it first finalizes or fails the ${pending} claim${pending === 1 ? '' : 's'} still pending on your bounty #${r.bountyId}, gas only; a claim that passed or is still being evaluated stops it)` : ''}`;
+      const closeStep = `node wager.js close ${r.termsSha256.slice(0, 8)}${pending ? ` (it first clears the ${pending} claim${pending === 1 ? '' : 's'} still pending on your bounty #${r.bountyId}, gas only; a claim that passed or is still being evaluated stops it)` : ''}`;
       let next;
       if (mineStatus?.status === 'AWARDED') next = `Your bounty #${r.bountyId} paid the opponent: the jury found the other side won.`;
       else if (mineStatus?.status === 'CLOSED') next = `Your bounty #${r.bountyId} is closed and its stake refunded.`;
@@ -487,7 +488,8 @@ export async function runWager(lib, {
       const sub = await rpcSubmission(n, id), s = W.SUBMISSION_STATUS[Number(sub.status)];
       if (!sameAddress(sub.hunter, me)) throw new Error(`Submission ${id} on bounty #${n} is not this wallet's; inspect ${submissionPath}`);
       if (s === 'Prepared') throw new Error(`This wager's claim was already submitted as submission ${id}, but its evaluation was not started. Continue it with: ${resume}`);
-      if (s === 'PendingVerdikta') throw new Error(`This wager's claim was already submitted as submission ${id} and is being evaluated. After the jury: node claim_bounty.js --jobId ${n} --submissionId ${id}. A new claim is possible only if it fails`);
+      if (s === 'PendingVerdikta') throw new Error(`This wager's claim was already submitted as submission ${id} and is being evaluated. Move its round on and finalize it, one step per run: node claim_bounty.js --jobId ${n} --submissionId ${id}. A new claim is possible only if it fails`);
+      if (s === 'AwaitingRerun') throw new Error(`This wager's claim, submission ${id}, soft-failed or got no result and awaits a re-run until ${W.isoOf(sub.rerunDeadline)}. Re-running it costs a new evaluation prepay, so it is the owner's decision: node claim_bounty.js --jobId ${n} --submissionId ${id} --rerun. Otherwise let it expire (node claim_bounty.js ... once its nextAction is EXPIRE_RERUN); a new claim is possible after it fails`);
       if (s !== 'Failed') throw new Error(`This wager's claim was already submitted as submission ${id} and is ${s ?? `in state ${sub.status}`}`);
       outcome = { result: 'FAILED', acceptance: Number(sub.acceptance), rejection: Number(sub.rejection) };
     }
@@ -551,7 +553,7 @@ export async function runWager(lib, {
     const saved = await fs.readFile(submissionPath, 'utf8').then(JSON.parse, () => ({}));
     record.claim = { bounty: claimedNumber, attempt, claimSha256, approvalLine: approval.line, submissionId: saved.submissionId ?? null, submittedAt: isoNow() };
     await saveRecord(record);
-    say(`Claim submitted to bounty #${claimedNumber}${saved.submissionId != null ? ` as submission ${saved.submissionId}` : ''}. The jury takes about 5-10 minutes; then node claim_bounty.js --jobId ${claimedNumber} --submissionId <id> finalizes the payout.`);
+    say(`Claim submitted to bounty #${claimedNumber}${saved.submissionId != null ? ` as submission ${saved.submissionId}` : ''}. The round is drawn and promoted (the site's keeper usually does it; node claim_bounty.js --jobId ${claimedNumber} --submissionId <id> sends the next step), the jury answers, then the same command finalizes it: a pass pays out, a soft fail or no result may re-run (--rerun, a new prepay).`);
   }
 
   async function close() {
@@ -562,7 +564,7 @@ export async function runWager(lib, {
     if (!b || !sameAddress(b.creator, me)) throw new Error(`Bounty #${record.bountyId} is not this wallet's`);
     if (b.status !== '0') throw new Error(`Bounty #${record.bountyId} is already ${b.status === '1' ? 'paid out' : 'closed'}`);
     if (now() < Number(b.submissionDeadline)) throw new Error(`Bounty #${record.bountyId} can be closed after its deadline ${W.isoOf(b.submissionDeadline)}`);
-    say(`Closing your bounty #${record.bountyId} returns its ${record.stake} ETH stake to this wallet. Claims still pending on it are finalized or failed first (gas only, covered by this close); a claim that passed or is still being evaluated stops it.`);
+    say(`Closing your bounty #${record.bountyId} returns its ${record.stake} ETH stake to this wallet. Claims still pending on it are cleared first (finalizeSubmission for a result that does not pass, closeFailedRound for a round with no result, expireRerun for a re-run that can no longer happen; gas only, covered by this close); a claim that passed or is still being evaluated stops it.`);
     const receipt = await recover(lib, { close: String(record.bountyId) });
     if (receipt) { Object.assign(record, { closedAt: new Date(now() * 1000).toISOString(), closeTx: receipt.hash }); await saveRecord(record); say(`Closed: transaction ${receipt.hash}`); }
   }

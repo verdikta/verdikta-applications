@@ -9,11 +9,14 @@
   "threshold": 85,
   "submissionWindowHours": 24,
   "creatorAssessmentWindowSeconds": 0,
+  "bountyClass": "bondless-small",
   "oracle": {
     "maxOracleFee": "100000000000000",
     "alpha": 500,
     "estimatedBaseCost": "0",
-    "maxFeeBasedScaling": 1
+    "maxFeeBasedScaling": 1,
+    "minOracleFee": "0",
+    "withBeacons": false
   },
   "rubricJson": {
     "title": "Bounded technical-claim source check v1",

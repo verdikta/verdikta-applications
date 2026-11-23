@@ -4,9 +4,9 @@ import fs from 'node:fs/promises';
 import { saveState } from './_state.js';
 import { createHash } from 'node:crypto';
 import { isMain } from './_cli.js';
-import { Contract } from 'ethers';
+import { Contract, formatEther } from 'ethers';
 
-import { creationTerms, bindCreation, verifyTransaction, iface, deployments, abi, verifyCreatedBounty, verifySignedTransaction, reviewedApiOrigin } from './_transaction-guards.js';
+import { creationTerms, bindCreation, verifyTransaction, iface, abi, verifyCreatedBounty, verifySignedTransaction, reviewedApiOrigin, escrowAddress, decisionBody } from './_transaction-guards.js';
 import { validateRubric } from './rubric.cjs';
 import { applyWorkOrder } from './_work-order.js';
 
@@ -29,15 +29,22 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
   if (!rubric.valid) throw new Error(rubric.errors.join('; '));
   if (!config.title || !config.description || !Array.isArray(config.juryNodes) || !config.juryNodes.length) throw new Error('Title, description and juryNodes required');
   if ('threshold' in config.rubricJson) throw new Error('Threshold belongs outside rubricJson');
-  const network = getNetwork(), provider = providerFor(network);
+  const network = getNetwork(), escrowAt = escrowAddress(network), provider = providerFor(network);
+  const d = terms.decision;
+  // What a hunter faces on this bounty (item 12's rule): shown in every review.
+  const decisionText = `Decision: ${d.className} preset${config.bountyClass == null ? ' (default)' : ''}; jury ${d.jury}; a round passes with ${d.quota} juror score(s) at or above the threshold, fewer than ${d.forfeitLine} forfeits the bond to you; hunter bond ${formatEther(d.bond)} ETH (${d.bond} wei); fee floor ${d.minOracleFee} wei; beacons ${d.withBeacons ? 'on' : 'off'}`;
   try {
     const baseUrl = configuredBaseUrl ? configuredBaseUrl.replace(/\/+$/, '') : reviewedApiOrigin(network);
     await preflightDeployment(network, provider, baseUrl);
     const policy = await loadSpendPolicy();
     if (terms.value > BigInt(policy.maxValueWei) || terms.value > BigInt(policy.maxTotalWei)) throw new Error('Reward exceeds owner cap');
-    const aggregatorAddress = await contract(deployments[network].address, ['function verdikta() view returns(address)'], provider).verdikta();
-    const ceiling = await contract(aggregatorAddress, ['function maxOracleFee() view returns(uint256)'], provider).maxOracleFee();
-    if (terms.params.oracle.maxOracleFee > ceiling) throw new Error('Oracle fee exceeds live ceiling');
+    // The jury's own aggregator (one per jury size): its live fee ceiling and N, as createBounty checks them.
+    const aggregatorAddress = await contract(escrowAt, ['function aggregators(uint256) view returns(address)'], provider).aggregators(terms.params.jury)
+      .catch(error => { throw new Error(`Jury ${terms.params.jury} is not an approved aggregator of the escrow (aggregators(${terms.params.jury}) failed: ${error.shortMessage ?? error.message})`, { cause: error }); });
+    const aggregator = contract(aggregatorAddress, ['function maxOracleFee() view returns(uint256)', 'function N() view returns(uint8)'], provider);
+    const [ceiling, juryN] = await Promise.all([aggregator.maxOracleFee(), aggregator.N()]);
+    if (terms.params.oracle.maxOracleFee > ceiling) throw new Error(`Oracle fee exceeds the live ceiling of jury ${terms.params.jury} (${ceiling} wei)`);
+    if (terms.params.quota > BigInt(juryN)) throw new Error(`quota ${terms.params.quota} exceeds the jury's N (${juryN})`);
     const wallet = (await loadWallet()).connect(provider);
     const apiKey = await loadApiKey();
     if (!apiKey) throw new Error('Configured API identity required');
@@ -58,13 +65,13 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
       try {
         if (receipt.hash !== state.txHash) throw new Error('Creation receipt hash mismatch');
         if (receipt.status !== 1) throw new Error('Creation did not succeed; inspect saved transaction');
-        const event = receipt.logs.filter(l => l.address.toLowerCase() === deployments[network].address.toLowerCase())
+        const event = receipt.logs.filter(l => l.address.toLowerCase() === escrowAt.toLowerCase())
           .map(l => { try { return iface.parseLog(l); } catch { return null; } }).find(l => l?.name === 'BountyCreated');
         if (!event) throw new Error('No escrow BountyCreated event; inspect saved transaction');
         const bound = bindCreation(config, state.response, { recovery: true });
         let bounty;
         for (let attempt = 0; ; attempt++) {
-          try { bounty = await contract(deployments[network].address, abi, provider).getBounty(event.args.bountyId, { blockTag: receipt.blockNumber }); break; }
+          try { bounty = await contract(escrowAt, abi, provider).getBounty(event.args.bountyId, { blockTag: receipt.blockNumber }); break; }
           catch (error) { if (attempt >= 3) throw error; await pause(1000 * 2 ** attempt); }
         }
         verifyCreatedBounty(bounty, bound.params, wallet.address);
@@ -79,7 +86,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
     }
     async function broadcast(state, bound) {
       await beforeBroadcast({ jobId: state?.response?.job?.jobId ?? null });
-      const review = [`Escrow: ${deployments[network].address}`, `Submission deadline: ${new Date(Number(bound.params.submissionDeadline) * 1000).toISOString()}`, `Remaining submission time: ${Math.floor(Number(bound.params.submissionDeadline) - Date.now() / 1000)} seconds (${windowText})`, `Usable time before prepare cutoff: ${Math.floor(Number(bound.params.submissionDeadline - bound.params.creatorAssessmentWindowSize) - Date.now() / 1000 - 2)} seconds`, `Supplier: ${config.procurementMode} ${bound.params.targetHunter}`];
+      const review = [`Escrow: ${escrowAt}`, `Submission deadline: ${new Date(Number(bound.params.submissionDeadline) * 1000).toISOString()}`, `Remaining submission time: ${Math.floor(Number(bound.params.submissionDeadline) - Date.now() / 1000)} seconds (${windowText})`, `Usable time before prepare cutoff: ${Math.floor(Number(bound.params.submissionDeadline - bound.params.creatorAssessmentWindowSize) - Date.now() / 1000 - 2)} seconds`, `Supplier: ${config.procurementMode} ${bound.params.targetHunter}`, decisionText];
       const receipt = await sendTx(wallet, 'createBounty', bound.transaction, {
         network, args: [bound.params], exactValueWei: bound.value, policy, review,
         onSigned: async ({ rawTransaction, hash }) => { state.rawTransaction = rawTransaction; state.txHash = hash; state.status = 'BROADCAST_PENDING'; await saveState(statePath, state); },
@@ -109,7 +116,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
         if (!state.rawTransaction) throw new Error('Saved transaction missing; reconcile its hash manually');
         bindCreation(config, state.response, { apiCreatedAt: state.apiCreatedAt });
         await beforeBroadcast({ jobId: state.response?.job?.jobId ?? null });
-        await confirmSpendOrExit([`Rebroadcast exactly the saved signed transaction ${state.txHash}. No new nonce or API job.`, `Escrow: ${deployments[network].address}; reward ${config.bountyAmount} ETH`, `Submission deadline: ${new Date(Number(saved.params.submissionDeadline) * 1000).toISOString()}`]);
+        await confirmSpendOrExit([`Rebroadcast exactly the saved signed transaction ${state.txHash}. No new nonce or API job.`, `Escrow: ${escrowAt}; reward ${config.bountyAmount} ETH`, `Submission deadline: ${new Date(Number(saved.params.submissionDeadline) * 1000).toISOString()}`, decisionText]);
         const sent = await provider.broadcastTransaction(state.rawTransaction);
         if (sent.hash !== state.txHash) throw new Error('RPC returned a different transaction hash');
         state.status = 'BROADCAST'; await saveState(statePath, state);
@@ -131,7 +138,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
         response = prepared.response ?? prepared;
         apiCreatedAt = prepared.apiCreatedAt; // Prefer a saved API_CREATED state for older responses.
       } else {
-        await confirmSpendOrExit([`Commission ${config.procurementMode} work for ${terms.params.targetHunter}`, `Reward: ${config.bountyAmount} ETH; chain: ${network}`, `Threshold ${config.threshold}; ${windowText}`, `Publish the reviewed description/rubric; then review exact transaction`, `Payout follows creator approval in its window or passing oracle evaluation; finalization is required.`]);
+        await confirmSpendOrExit([`Commission ${config.procurementMode} work for ${terms.params.targetHunter}`, `Reward: ${config.bountyAmount} ETH; chain: ${network}`, `Threshold ${config.threshold}; ${windowText}`, decisionText, `Publish the reviewed description/rubric; then review exact transaction`, `Payout follows creator approval in its window or a passing round (Q of N juror scores); finalization is required. A soft fail or a round without a result may re-run (up to 6 rounds, each within 2 hours).`]);
         // Reserve before mutation. Existing state always stops duplicate creation.
         state = { configHash, network, creator: wallet.address, status: 'API_CREATE_PENDING' };
         await fs.writeFile(statePath, JSON.stringify(state, null, 2), { flag: 'wx', mode: 0o600 });
@@ -152,6 +159,8 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
           creatorAssessmentWindowSeconds: Number(terms.params.creatorAssessmentWindowSize),
           oracleMaxOracleFee: o.maxOracleFee.toString(), oracleAlpha: Number(o.alpha),
           oracleEstimatedBaseCost: o.estimatedBaseCost.toString(), oracleMaxFeeBasedScaling: Number(o.maxFeeBasedScaling),
+          // Every v2 setting explicit, so the server picks no class and converts no price for this bounty.
+          ...decisionBody(terms.decision),
         }).catch(async error => {
           if (error.status != null && (error.status < 500 || error.code)) { state.status = 'API_REJECTED'; state.apiError = { status: error.status, code: error.code, message: error.message }; await saveState(statePath, state); }
           throw error;

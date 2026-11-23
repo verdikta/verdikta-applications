@@ -28,6 +28,11 @@ export const WAGER_DEFAULTS = Object.freeze({
   jury: shared.DEFAULT_WAGER_JURY.map((n) => ({ ...n })),
   oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 },
 });
+// The v2 decision settings of every wager bounty this skill posts, and what it requires of the bounty it answers or
+// claims: the Bondless Small preset (jury 0, a round passes with 3 of its 4 scores at the threshold, below 1 a hard
+// fail), no bond, no fee floor, no beacons. A bond would be a stake beyond the terms (a hard-failed claim would pay it
+// to the opponent), and both sides of a wager are judged by the same rule.
+export const WAGER_DECISION = Object.freeze({ bountyClass: 'bondless-small', jury: 0, quota: 3, forfeitLine: 1, bond: '0', minOracleFee: '0', withBeacons: false });
 // No game is final this soon after its scheduled start: claim refuses before it (shared timing adds ~2 h after the final).
 export const CLAIM_OPENS_AFTER_START = 3 * 3600;
 const MIN_SETTLE_AFTER_START = 12 * 3600, MAX_SETTLE_AFTER_START = 60 * 86400;
@@ -147,14 +152,14 @@ export function ownTermsProblems({ description, me, ctx, now }) {
 }
 
 // Escrow SubmissionStatus: a claim whose evaluation ended Failed may be replaced by a new one before the deadline.
-export const SUBMISSION_STATUS = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
+export const SUBMISSION_STATUS = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval', 'AwaitingRerun'];
 
 /** The opponent's bounty read straight from the escrow must agree with the site's onchain-status for it. */
 export function chainProblems(number, status, b, now) {
   const p = (msg) => `Bounty #${number} on chain: ${msg}`;
   if (!b) return [p('it could not be read from the escrow.')];
   if (!status) return [];
-  const o = status.oracleSettings || {};
+  const o = status.oracleSettings || {}, ds = status.decisionSettings || {};
   const fields = [
     ['creator', sameAddress(b.creator, status.creator)],
     ['target', sameAddress(b.targetHunter, status.targetHunter || ZeroAddress)],
@@ -167,9 +172,15 @@ export function chainProblems(number, status, b, now) {
     ['arbiter payment', big(b.arbiterDeterminationPayment) === wei(status.arbiterDeterminationPaymentEth)],
     ['creator payment', big(b.creatorDeterminationPayment) === wei(status.creatorDeterminationPaymentEth)],
     ['approval window', big(b.creatorAssessmentWindowSize) === big(status.creatorAssessmentWindowSize)],
-    ['oracle settings', ['maxOracleFee', 'alpha', 'estimatedBaseCost', 'maxFeeBasedScaling'].every((k) => big(b.oracle?.[k]) === big(o[k]))],
+    ['oracle settings', ['maxOracleFee', 'alpha', 'estimatedBaseCost', 'maxFeeBasedScaling', 'minOracleFee'].every((k) => big(b.oracle?.[k]) === big(o[k])) && Boolean(b.oracle?.withBeacons) === Boolean(o.withBeacons)],
+    ['decision settings', [['jury', 'jury'], ['quota', 'quota'], ['forfeitLine', 'forfeitLine'], ['bond', 'bondWei']].every(([k, s]) => big(b[k]) != null && big(b[k]) === big(ds[s]))],
   ];
   const problems = fields.filter(([, ok]) => !ok).map(([name]) => p(`its ${name} differs from the site's record of it.`));
+  // Both sides are judged by the same rule, and a claim posts no bond the terms do not name (WAGER_DECISION).
+  const off = [['jury', b.jury, WAGER_DECISION.jury], ['quota', b.quota, WAGER_DECISION.quota], ['forfeit line', b.forfeitLine, WAGER_DECISION.forfeitLine], ['hunter bond', b.bond, WAGER_DECISION.bond], ['fee floor', b.oracle?.minOracleFee, WAGER_DECISION.minOracleFee]]
+    .filter(([, v, want]) => big(v) !== big(want)).map(([name, v]) => `${name} ${v}`);
+  if (b.oracle && Boolean(b.oracle.withBeacons) !== WAGER_DECISION.withBeacons) off.push('beacons on');
+  if (off.length) problems.push(p(`its decision settings (${off.join(', ')}) are not the wager settings both sides use (Bondless Small: jury 0, quota 3, forfeit line 1, no bond, no fee floor, no beacons).`));
   if (Number(b.status) !== 0) problems.push(p(`it is no longer open (status ${b.status}).`));
   if (now != null && Number(b.submissionDeadline) <= now) problems.push(p('its deadline has passed.'));
   return problems;
@@ -265,7 +276,8 @@ export function createConfig({ createBody: b, wager }) {
     juryNodes: b.juryNodes.map(({ provider, model, weight, runs }) => ({ provider, model, weight, runs })),
     procurementMode: 'TARGETED', targetHunter: getAddress(b.targetHunter), bountyAmount: String(b.bountyAmount),
     submissionDeadline: b.submissionDeadline, creatorAssessmentWindowSeconds: 0, publicSubmissions: b.publicSubmissions,
-    oracle: { maxOracleFee: parseEther(String(b.oracleMaxOracleFee)).toString(), alpha: Number(b.oracleAlpha), estimatedBaseCost: parseEther(String(b.oracleEstimatedBaseCost)).toString(), maxFeeBasedScaling: Number(b.oracleMaxFeeBasedScaling) },
+    oracle: { maxOracleFee: parseEther(String(b.oracleMaxOracleFee)).toString(), alpha: Number(b.oracleAlpha), estimatedBaseCost: parseEther(String(b.oracleEstimatedBaseCost)).toString(), maxFeeBasedScaling: Number(b.oracleMaxFeeBasedScaling), minOracleFee: WAGER_DECISION.minOracleFee, withBeacons: WAGER_DECISION.withBeacons },
+    bountyClass: WAGER_DECISION.bountyClass, jury: WAGER_DECISION.jury, quota: WAGER_DECISION.quota, forfeitLine: WAGER_DECISION.forfeitLine, bond: WAGER_DECISION.bond,
     wager,
   };
 }

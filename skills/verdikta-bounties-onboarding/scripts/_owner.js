@@ -94,7 +94,8 @@ export async function withdrawToOwner(signer, { network, owner, asset = 'ETH', a
     if (await provider.getCode(token.address) === '0x' || await contract.decimals() !== BigInt(token.decimals)) throw new Error(`The ${asset} contract on ${network} does not match the reviewed token`);
     balance = await contract.balanceOf(from);
   } else {
-    const owed = await new Contract(deployment.address, abi, provider).withdrawable(from).catch(() => 0n);
+    // Informational only; skipped while the v2 escrow is not deployed (deployments.json placeholder).
+    const owed = deployment.address ? await new Contract(deployment.address, abi, provider).withdrawable(from).catch(() => 0n) : 0n;
     if (owed > 0n) log(`The escrow also holds ${formatEther(owed)} ETH for this wallet; \`node recover_funds.js --withdraw\` moves it into the wallet first.`);
   }
   const units = v => `${token ? formatUnits(v, token.decimals) : formatEther(v)} ${asset}`;

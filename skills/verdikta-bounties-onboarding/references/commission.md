@@ -11,7 +11,18 @@ For a discovery handoff, install both skill directories and run the discovery pa
 - procurementMode: TARGETED with targetHunter, or deliberately OPEN.
 - bountyAmount: decimal ETH string. Optional creatorDeterminationPayment and arbiterDeterminationPayment are decimal ETH strings; bountyAmount must equal their maximum.
 - creatorAssessmentWindowSeconds: integer seconds divisible by 3600; zero requires equal payments.
-- oracle: maxOracleFee and estimatedBaseCost as integer wei strings; alpha 0–1000; maxFeeBasedScaling 1–1000. Fee must be positive and within the live aggregator ceiling; base cost must be below fee.
+- oracle: maxOracleFee and estimatedBaseCost as integer wei strings; alpha 0–1000; maxFeeBasedScaling 1–1000. Fee must be positive and within the live ceiling of the bounty's jury (its own aggregator); base cost must be below fee. Optional minOracleFee (the fee floor, integer wei: every juror is paid at least this; it may exceed the ceiling) and withBeacons (true or false); both default to the size-class preset.
+- Decision settings (v2, optional; default to a size-class preset): `bountyClass` (`bondless-small`, `small`, `medium`, `large`, `jumbo`), `jury` (the escrow's approved aggregator index, one per jury size), `quota` (Q ≥ 1: a round passes with at least Q of its N juror scores at the threshold; at most the jury's N), `forfeitLine` (R ≤ Q: fewer than R is a hard fail and the hunter's bond goes to you), `bond` (integer wei each hunter posts at start), and `ethUsd` (an owner-reviewed ETH price). Without `bountyClass` the preset is the smallest class offered for `bountyAmount` at `ethUsd`, else Bondless Small. A preset's USD bond and fee floor convert only at `ethUsd`; without it, give `bond` and `oracle.minOracleFee` in wei (Bondless Small needs neither). Every field you give overrides the preset, and the script sends them all to `/jobs/create` explicitly, so the server picks no class and converts no price. `create_bounty.js` checks the jury's live fee ceiling and N, and shows the class, Q, R, bond, floor and beacons in every review.
+
+| Preset | jury | Q of N | R | bond | fee floor | beacons | offered up to |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Bondless Small | 0 (small) | 3 of 4 | 1 | none | none | no | $25 |
+| Small | 0 (small) | 3 of 4 | 1 | $5 | none | no | $100 |
+| Medium | 1 (medium) | 3 of 4 | 2 | $50 | $0.25 | no | $1,000 |
+| Large | 2 (large) | 10 of 13 | 8 | $100 | $0.25 | no | $10,000 |
+| Jumbo | 3 (jumbo) | 17 of 27 | 12 | $200 | $0.25 | yes | $100,000 |
+
+The presets are `scripts/_class-presets.cjs`, the site's `shared/classPresets.js` byte for byte. A soft fail (R to Q−1 scores) or a round with no result lets the hunter re-run (a fresh prepay, a new jury, keeping its place and bond) within 2 hours, up to 6 rounds, before the deadline.
 
 Use `examples/creator.json` as a synthetic shape example only. Its jury entries are placeholders: select real currently available models from `/api/classes/:id/models`; the script rejects placeholders. Rubric must-pass weights are zero; scored weights sum to 1 within 0.001. Every criterion needs unique id, description, numeric weight and boolean must. The proposed template threshold 85 is uncalibrated.
 
@@ -19,12 +30,12 @@ Use `examples/creator.json` as a synthetic shape example only. Its jury entries 
 
 The owner-reviewed `VERDIKTA_SPEND_POLICY` JSON has integer wei fields `maxValueWei`, `maxTotalWei`, `maxGasLimit`, `maxFeePerGasWei`, `maxPriorityFeePerGasWei`. The total is a cumulative upper bound on value + execution gas for this process; limits are not a persistent daily ledger. Base's separately charged L1 data fee is not an execution-gas cap. Do not grant ongoing unattended authority through repeated CLI invocations; use the hosted runtime's durable caps for that case. Withdrawals to the recorded owner address (`withdraw_to_owner.js`) use the gas, fee and total execution caps but not the value caps, because the funds return to the owner. An owner should keep the policy outside model-writable workspace/configuration and review each commissioning intent.
 
-Size the caps for the largest transaction the wallet will sign. Starting an evaluation (`startPreparedSubmission`, the claim step of every submission, a wager claim included) is the gas-heaviest call. On Base Sepolia a class-128, two-juror start used 3,257,858 gas, and the executor's limit for it was 4,150,503: the estimate plus 25%. A `maxGasLimit` of 2,000,000 blocks every such start. Recommended:
+Size the caps for the largest transaction the wallet will sign. On the v1 escrow, starting an evaluation was the gas-heaviest call (on Base Sepolia a class-128, two-juror start used 3,257,858 gas, with a limit of 4,150,503: the estimate plus 25%); on v2 the jury is drawn in a separate call, and no v2 measurement exists yet. `closeFailedRound` always gets a limit of at least 2,500,000: it settles the round on the aggregator (one outcome per juror) inside a try/catch, which takes well over 1.5M gas on a large jury, and with less the transaction fails with no revert reason. Recommended:
 
-- `maxGasLimit`: `6000000`. That leaves headroom for a two-juror class; more jurors or iterations can need more.
+- `maxGasLimit`: `6000000`. That covers the closeFailedRound floor and leaves headroom; larger juries can need more.
 - `maxFeePerGasWei` and `maxPriorityFeePerGasWei`: the executor signs with exactly these values (EIP-1559 `maxFeePerGas` and `maxPriorityFeePerGas`). Set them above the network's current base fee plus tip, or a transaction waits unmined. You pay the actual base fee plus tip, not the cap.
 - `maxTotalWei`: at least the sum, over the transactions of one run, of value + gas limit × `maxFeePerGasWei`. Every transaction reserves that much before signing. For example, at `maxFeePerGasWei` `100000000` (0.1 gwei), a 4,150,503-gas start reserves 0.000415 ETH plus its evaluation prepay. A close that first clears claims reserves once per clearing call and once for the close.
-- `maxValueWei`: the largest single value, such as a reward or an evaluation prepay.
+- `maxValueWei`: the largest single value, such as a reward, or a start's `startValue` (the evaluation prepay plus the bounty's hunter bond).
 
 When a cap stops a transaction, nothing is signed, and the refusal names the cap, the amount the call needs and the policy file (`Gas limit exceeds owner cap: startPreparedSubmission needs a gas limit of 4150503, and maxGasLimit is 2000000 in the spend policy …`). Raising a cap is the owner's decision: report the message instead of editing the policy.
 

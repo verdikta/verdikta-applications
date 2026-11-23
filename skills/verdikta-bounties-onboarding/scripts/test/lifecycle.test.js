@@ -1,3 +1,4 @@
+import './_v2-deployment.js'; // synthetic v2 escrow: deployments.json holds placeholders until the deploy
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
@@ -6,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { runCreate } from '../create_bounty.js';
 import { runSubmit } from '../submit_to_bounty.js';
 import { runClaim } from '../claim_bounty.js';
-import { iface, deployments, bindCreation, verifyTransaction } from '../_transaction-guards.js';
+import { iface, aggregatorIface, deployments, bindCreation, verifyTransaction } from '../_transaction-guards.js';
 const testWallet=new Wallet('0x'+'11'.repeat(32)); // Synthetic offline key, never funded.
 const creator=testWallet.address,target='0x2222222222222222222222222222222222222222';
 const cid='Qm'+'a'.repeat(44),hunterCid='Qm'+'b'.repeat(44),hash='0x'+'1'.repeat(64),d=deployments.base;
@@ -19,7 +20,7 @@ function harness(args) {
  const provider={destroy(){},getTransaction:async()=>null,getTransactionReceipt:async()=>null};
  const wallet={address:creator,connect(){return {...this,provider};}};
  const lib={arg:n=>args[n]??null,argAll:n=>args[n]||[],getNetwork:()=> 'base',providerFor:()=>provider,loadWallet:async()=>wallet,loadApiKey:async()=> 'mock',preflightDeployment:async()=>d.address,loadSpendPolicy:async()=>policy,isDryRun:()=>false,confirmSpendOrExit:async r=>reviews.push(r),getSupportedModelsForClass:async()=>[],validateAndNormalizeJuryNodes:({juryNodes})=>juryNodes,
- sendTx:async(signer,method,tx,opts)=> {verifyTransaction(tx,{network:'base',method,args:opts.args,value:opts.exactValueWei??0n,maxValueWei:policy.maxValueWei});reviews.push(opts.review);await opts.onSigned?.({hash});sent.push(method);await opts.onBroadcast?.(hash);return {status:1,hash,blockNumber:1,logs:[]};}};
+ sendTx:async(signer,method,tx,opts)=> {verifyTransaction(tx,{network:'base',method,args:opts.args,value:opts.exactValueWei??0n,maxValueWei:policy.maxValueWei,aggregator:opts.round?tx.to:null});reviews.push(opts.review);await opts.onSigned?.({hash});sent.push(method);await opts.onBroadcast?.(hash);return {status:1,hash,blockNumber:1,logs:[]};}};
  return {lib,provider,wallet,sent,reviews};
 }
 async function creationFixture(t,changes={}) {
@@ -30,7 +31,7 @@ async function creationFixture(t,changes={}) {
  const bound=bindCreation(cfg,response);
  response.onChain.transaction={to:d.address,chainId:d.chainId,value:bound.value.toString(),data:iface.encodeFunctionData('createBounty',[bound.params])};
  const bounty={creator,...bound.params};let creates=0,links=0;
- const env={baseUrl:'https://mock.invalid',contract:()=>({verdikta:async()=>target,maxOracleFee:async()=>1000n,getBounty:async()=>bounty}),fetchApi:async(url)=>{if(url.endsWith('/jobs/create')){creates++;return json(response);}links++;return json({success:true,job:{jobId:7}});}};
+ const env={baseUrl:'https://mock.invalid',contract:()=>({aggregators:async()=>target,maxOracleFee:async()=>1000n,N:async()=>4n,getBounty:async()=>bounty}),fetchApi:async(url)=>{if(url.endsWith('/jobs/create')){creates++;return json(response);}links++;return json({success:true,job:{jobId:7}});}};
  const send=h.lib.sendTx;
  h.lib.sendTx=async(...params)=>{const r=await send(...params);r.logs=[log('BountyCreated',[7,creator,cid,128,85,1000000000000000n,now+86400])];return r;};
  return {...h,cfg,args,file,response,bounty,env,counts:()=>({creates,links})};
@@ -88,7 +89,7 @@ test('submit retries lagging confirmation; resume confirms without preparing aga
  const args={jobId:'7',file:[file],state:`${dir}/state.json`},f=harness(args);let confirms=0,uploads=0,prepares=0;const pauses=[];let action='AWAIT_CREATOR';
  const bounty={evaluationCid:cid,targetHunter:creator};
  const transaction={to:d.address,chainId:d.chainId,value:'0',data:iface.encodeFunctionData('prepareSubmission',[7,cid,hunterCid])};
- const env={baseUrl:'https://mock.invalid',pause:async ms=>pauses.push(ms),contract:()=>({getBounty:async()=>bounty,isAcceptingSubmissions:async()=>true,getSubmission:async()=>({hunter:creator,hunterCid}),nextAction:async()=> action,requiredPrepay:async()=>123n}),fetchApi:async(url)=>{
+ const env={baseUrl:'https://mock.invalid',pause:async ms=>pauses.push(ms),contract:()=>({getBounty:async()=>bounty,isAcceptingSubmissions:async()=>true,getSubmission:async()=>({hunter:creator,hunterCid}),nextAction:async()=> action,startValue:async()=>123n,requiredPrepay:async()=>100n}),fetchApi:async(url)=>{
    if(url.endsWith('/7'))return json({job:{jobId:7,onChain:true,evaluationCid:cid}});
    if(url.endsWith('/validate'))return json({valid:true});
    if(url.endsWith('/submit')){uploads++;return json({submission:{hunterCid}});}
@@ -116,7 +117,7 @@ test('submit retries a lagging getSubmission after prepare and never prepares ag
  async function run(lagReads){
   const args={jobId:'7',file:[file],state:`${dir}/state-${lagReads}.json`},f=harness(args);let reads=0,prepares=0;const pauses=[];
   const env={baseUrl:'https://mock.invalid',pause:async ms=>pauses.push(ms),contract:()=>({getBounty:async()=>bounty,isAcceptingSubmissions:async()=>true,
-    getSubmission:async()=>{if(++reads<=lagReads)throw badId();return {hunter:creator,hunterCid};},nextAction:async()=> 'AWAIT_CREATOR',requiredPrepay:async()=>123n}),fetchApi:async(url)=>{
+    getSubmission:async()=>{if(++reads<=lagReads)throw badId();return {hunter:creator,hunterCid};},nextAction:async()=> 'AWAIT_CREATOR',startValue:async()=>123n,requiredPrepay:async()=>100n}),fetchApi:async(url)=>{
     if(url.endsWith('/7'))return json({job:{jobId:7,onChain:true,evaluationCid:cid}});
     if(url.endsWith('/validate'))return json({valid:true});
     if(url.endsWith('/submit'))return json({submission:{hunterCid}});
@@ -139,7 +140,63 @@ test('claim shows creator payout, hunter and work CID and handles nextAction',as
  process.argv.push('--approve-as-creator');
  try {await runClaim(f.lib,env);} finally {process.argv.pop();}
  assert.deepEqual(f.sent,['creatorApproveSubmission']);assert.ok(f.reviews.flat().some(x=>x.includes('123 wei')));assert.ok(f.reviews.flat().some(x=>x.includes(target)));assert.ok(f.reviews.flat().some(x=>x.includes(hunterCid)));
- await runClaim(f.lib,{...env,contract:()=>({nextAction:async()=> 'FINALIZE'})});assert.equal(f.sent.at(-1),'finalizeSubmission');
+ await runClaim(f.lib,{...env,contract:()=>({nextAction:async()=> 'FINALIZE',getOracleResult:async()=>({outcome:4n,passCount:0n,hasResult:true})})});assert.equal(f.sent.at(-1),'finalizeSubmission');
+ assert.ok(f.reviews.at(-1).some(x=>x.includes('HARD_FAIL')));assert.ok(f.reviews.at(-1).some(x=>x.includes('bond goes to the bounty creator')));
+});
+test('claim sends the one call each nextAction names, and nothing for the waits',async()=>{
+ const aggregator='0x4444444444444444444444444444444444444444',aggId='0x'+'ab'.repeat(32);
+ const sub={hunter:creator,bondFunder:target,hunterCid,verdiktaAggId:aggId,rerunDeadline:1800000000n,rounds:1n};
+ async function claim(next,flags=[]) {
+   const f=harness({jobId:'7',submissionId:'0'}),txs=[];const send=f.lib.sendTx;f.lib.sendTx=async(s,m,tx,o)=>{txs.push({tx,o});return send(s,m,tx,o);};
+   const env={baseUrl:'https://mock.invalid',contract:()=>({nextAction:async()=>next,getSubmission:async()=>sub,aggregatorOf:async()=>aggregator,requiredPrepay:async()=>100n,getOracleResult:async()=>({outcome:3n,passCount:2n,hasResult:true})})};
+   process.argv.push(...flags);
+   try {await runClaim(f.lib,env);} finally {process.argv.splice(-flags.length||process.argv.length,flags.length);}
+   return {sent:f.sent,txs,reviews:f.reviews};
+ }
+ for(const [next,method] of [['DRAW','drawJury'],['FINALIZE','finalizeSubmission'],['CLOSE_FAILED','closeFailedRound'],['EXPIRE_RERUN','expireRerun'],['RECOVER_REFUND','recoverLeftoverEth']]) {
+   const r=await claim(next);assert.deepEqual(r.sent,[method],next);assert.equal(r.txs[0].tx.to,d.address);assert.equal(r.txs[0].tx.value,'0');
+ }
+ for(const [next,method] of [['CLOSE_COMMITS','closeCommits'],['PROMOTE','promote']]) {
+   const r=await claim(next);assert.deepEqual(r.sent,[method]);
+   assert.equal(r.txs[0].tx.to,aggregator);assert.equal(r.txs[0].tx.data,aggregatorIface.encodeFunctionData(method,[aggId]));
+   assert.deepEqual(r.txs[0].o.round,{bountyId:7n,submissionId:0n});assert.deepEqual(r.txs[0].o.args,[aggId]);
+ }
+ // A re-run spends a fresh prepay: only with --rerun, from the hunter or the bond's funder, attaching requiredPrepay.
+ assert.deepEqual((await claim('RERUN')).sent,[]);
+ const rerun=await claim('RERUN',['--rerun']);assert.deepEqual(rerun.sent,['rerunSubmission']);
+ assert.equal(rerun.txs[0].tx.value,'100');assert.equal(rerun.txs[0].o.exactValueWei,100n);assert.ok(rerun.reviews.flat().some(x=>x.includes('Round 2 of at most 6')));
+ sub.hunter=sub.bondFunder=aggregator;
+ await assert.rejects(claim('RERUN',['--rerun']),/Only the hunter or the bond's funder/);
+ for(const next of ['AWAIT_ORACLE','AWAIT_EARLIER','AWAIT_SLOT','AWAIT_EXPIRY','AWAIT_CREATOR','START','DONE','DEAD']) assert.deepEqual((await claim(next)).sent,[],next);
+});
+test('submit starts with the live startValue (prepay + bond) and shows the bond',async t=>{
+ const dir=await mkdtemp(`${tmpdir()}/verdikta-submit-start-`);t.after(()=>rm(dir,{recursive:true,force:true}));
+ const args={jobId:'7',resume:'0',state:`${dir}/state.json`},f=harness(args),bounty={evaluationCid:cid,targetHunter:creator,quota:3n,forfeitLine:1n,bond:23n};
+ await writeFile(args.state,JSON.stringify({network:'base',jobId:'7',hunter:creator,hunterCid,submissionId:'0',confirmed:true}));
+ const start={to:d.address,chainId:d.chainId,value:'123',data:iface.encodeFunctionData('startPreparedSubmission',[7,0])};
+ const env={baseUrl:'https://mock.invalid',contract:()=>({getBounty:async()=>bounty,getSubmission:async()=>({hunter:creator,hunterCid}),nextAction:async()=>'START',startValue:async()=>123n,requiredPrepay:async()=>100n}),fetchApi:async url=>{
+   if(url.endsWith('/7'))return json({job:{jobId:7,onChain:true,evaluationCid:cid}});
+   if(url.endsWith('/validate'))return json({valid:true});
+   if(url.endsWith('/start'))return json({transaction:start});
+   throw Error(url);
+ }};
+ await runSubmit(f.lib,env);
+ assert.deepEqual(f.sent,['startPreparedSubmission']);
+ assert.ok(f.reviews.flat().some(x=>x.includes('prepay 100 wei + hunter bond 23 wei')));
+ // The API's value must be startValue: requiredPrepay alone (v1) is refused before signing.
+ const g=harness({...args}),v1={...start,value:'100'};
+ await assert.rejects(runSubmit(g.lib,{...env,fetchApi:async url=>url.endsWith('/start')?json({transaction:v1}):env.fetchApi(url)}),/value mismatch/);assert.deepEqual(g.sent,[]);
+});
+test('create sends every v2 setting explicitly and checks the jury\'s live ceiling and N',async t=>{
+ const f=await creationFixture(t,{bountyClass:'small',bond:'5000'}),bodies=[],fetchApi=f.env.fetchApi;
+ f.env.fetchApi=async(url,init)=>{if(url.endsWith('/jobs/create'))bodies.push(JSON.parse(init.body));return fetchApi(url,init);};
+ await runCreate(f.lib,f.env);
+ assert.deepEqual(['bountyClass','jury','quota','forfeitLine','bond','oracleMinOracleFee','oracleWithBeacons'].map(k=>bodies[0][k]),['small',0,3,1,'5000','0',false]);
+ assert.ok(f.reviews.flat().some(x=>x?.includes('Decision: Small preset; jury 0; a round passes with 3 juror score(s)')&&x.includes('hunter bond 0.000000000000005 ETH (5000 wei)')));
+ const g=await creationFixture(t,{quota:5,forfeitLine:1});
+ await assert.rejects(runCreate(g.lib,g.env),/quota 5 exceeds the jury's N \(4\)/);assert.equal(g.counts().creates,0);
+ const h=await creationFixture(t);const other=h.env.contract;h.env.contract=(...a)=>({...other(...a),maxOracleFee:async()=>99n});
+ await assert.rejects(runCreate(h.lib,h.env),/exceeds the live ceiling of jury 0/);assert.equal(h.counts().creates,0);
 });
 
 test('onboarding worker performs only a read-only open-job listing',async()=>{

@@ -33,7 +33,7 @@ Any class ID with registered arbiters can be used (the UI's "Enter custom class 
 - **Registry class**: every jury `{provider, model}` must be on its model list, or `/jobs/create` refuses.
 - **Unlisted class**: allowed. `/jobs/create` returns warnings in `classPolicy.warnings` instead of refusing, because the jury can't be checked. Use exactly the identifiers the class's arbiter operators advertise: an identifier their nodes don't serve makes every evaluation fail, and the bounty can't be edited or canceled afterwards.
 - **Any class**: refused with `code: "CLASS_UNSERVABLE"` only when **zero** arbiters are eligible at the bounty's fee (registered, active, not blocked, fee ≤ `maxOracleFee`). Then every evaluation start reverts `No active oracles available with fee <= maxFee and requested class`.
-- Thin coverage (fewer eligible arbiters than the aggregator polls, currently 6), a single operator, or arbiters owned by the creator's own address are **warnings**; hunters see them on the bounty page.
+- Thin coverage (fewer eligible arbiters than the bounty's jury draws: K = 6 for the small jury, 8 medium, 21 large, 50 jumbo on the v2 aggregators), a single operator, or arbiters owned by the creator's own address are **warnings**; hunters see them on the bounty page. Coverage is checked against the jury the bounty names (its size class), and a fee floor (`minOracleFee`) raises what each juror is paid, not who is eligible.
 
 So before creating a bounty on any class:
 
@@ -126,7 +126,7 @@ The API key is only shown once; store it securely.
 2) **Fetch rubric**
    - `GET /api/jobs/:jobId/rubric`
 
-3) **Estimate fee** (ETH; live requiredPrepay is authoritative)
+3) **Estimate fee** (ETH; the live `startValue` = `requiredPrepay` + hunter bond is authoritative: `GET /api/jobs/:jobId/onchain-status`)
    - `GET /api/jobs/:jobId/estimate-fee`
 
 4) **Upload submission** (pins your work to IPFS)
@@ -142,7 +142,9 @@ The API key is only shown once; store it securely.
    The backend does not start the evaluation for you. You must perform:
 
    - `prepareSubmission(bountyId, evaluationCid, hunterCid)`
-   - `startPreparedSubmission(bountyId, submissionId)` with exact live `requiredPrepay(bountyId)` ETH value
+   - `startPreparedSubmission(bountyId, submissionId)` with exact live `startValue(bountyId)` ETH value (the prepay plus the hunter bond)
+   - the round must then be drawn and moved on: `drawJury(bountyId, submissionId)` from two blocks after the start (twice on a beacon bounty), then `closeCommits(aggId)` / `promote(aggId)` on the bounty's aggregator (`aggregatorOf(bountyId)`). Anyone may send them and the server's keeper usually does; `POST /api/jobs/:jobId/submissions/:id/round-step` returns the one that succeeds now, and `nextAction(bountyId, submissionId)` names it
+   - after the result: `finalizeSubmission` (a pass is paid; a soft fail may `rerunSubmission` with `requiredPrepay`; a hard fail forfeits the bond), or `closeFailedRound` for a round with no result
 
 6) **Confirm to backend (after on-chain success)**
    - `POST /api/jobs/:jobId/submissions/confirm`
@@ -183,7 +185,7 @@ Before creating or submitting to a bounty:
 2) `GET /api/classes/:classId/models` → ensure your provider/model exist
 3) Ensure jury weights sum to 1.0
 4) Ensure rubric criteria weights sum to 1.0
-5) For submissions: ensure your wallet has enough **ETH for gas and live oracle prepay**
+5) For submissions: ensure your wallet has enough **ETH for gas and the live startValue** (oracle prepay plus the bounty's hunter bond), and read the bounty's Q, R and bond: a hard fail forfeits the bond to the creator
 
 ---
 

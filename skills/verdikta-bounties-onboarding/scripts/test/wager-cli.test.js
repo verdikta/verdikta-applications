@@ -1,4 +1,5 @@
 // wager.js verbs end to end against recorded testnet records, with the site, the escrow and create_bounty.js mocked.
+import './_v2-deployment.js'; // synthetic v2 escrow: deployments.json holds placeholders until the deploy
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, readdir, rm } from 'node:fs/promises';
@@ -601,12 +602,12 @@ test('status and close tell the owner a close clears pending claims first', asyn
   await h.run('check', '19');
   h.clock = at('2026-10-21T19:00:01Z'); h.pending[26] = [0, 1, 2, 3, 4]; h.logs.length = 0;
   await h.run('status');
-  assert.match(h.text(), /Next: The deadline passed: reclaim your stake with node wager\.js close [0-9a-f]{8} \(it first finalizes or fails the 5 claims still pending on your bounty #26, gas only; a claim that passed or is still being evaluated stops it\)/);
+  assert.match(h.text(), /Next: The deadline passed: reclaim your stake with node wager\.js close [0-9a-f]{8} \(it first clears the 5 claims still pending on your bounty #26, gas only; a claim that passed or is still being evaluated stops it\)/);
   h.pending[26] = []; h.logs.length = 0;
   await h.run('status');
   assert.match(h.text(), /Next: The deadline passed: reclaim your stake with node wager\.js close [0-9a-f]{8}$/m);
   h.logs.length = 0;
   await h.run('close', '26');
-  assert.match(h.text(), /Claims still pending on it are finalized or failed first \(gas only, covered by this close\)/);
+  assert.match(h.text(), /Claims still pending on it are cleared first \(finalizeSubmission for a result that does not pass, closeFailedRound for a round with no result, expireRerun for a re-run that can no longer happen; gas only, covered by this close\)/);
   assert.deepEqual(h.recovered, [{ close: '26' }]);
 });

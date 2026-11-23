@@ -4,7 +4,7 @@ Local discovery needs no funds, wallet or registration. Fund only after separate
 
 Current bounties use ETH on the explicitly selected Base network: creator reward, transaction gas, and hunter oracle prepay. No LINK, token approval or swap is required.
 
-Read `requiredPrepay(bountyId)` immediately before start. The preparation event budget is only an estimate. The funder receives unspent oracle prepay when resolution succeeds; RefundDeferred can require later recovery, and PaymentDeferred can require a recipient withdrawal.
+A start attaches `startValue(bountyId)`, read immediately before it: the round's oracle prepay (`requiredPrepay`) plus the bounty's hunter bond. A re-run attaches `requiredPrepay` alone. The preparation event budget is only an estimate of the prepay and leaves out the bond. The funder receives unspent oracle prepay when the round resolves; the bond comes back on a pass or a failure without a hard fail, and goes to the bounty creator on a hard fail; RefundDeferred can require later recovery, and PaymentDeferred can require a recipient withdrawal.
 
 The owner policy caps transaction value, execution gas and cumulative execution cost per process. Base L1 data fees are charged separately; maintain a reserve and do not describe the execution cap as an all-in chain fee guarantee. For ongoing autonomous operation use the hosted runtime's durable policy ledger rather than these single-run scripts.
 

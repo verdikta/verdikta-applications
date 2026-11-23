@@ -1,3 +1,4 @@
+import './_v2-deployment.js'; // synthetic v2 escrow: deployments.json holds placeholders until the deploy
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';

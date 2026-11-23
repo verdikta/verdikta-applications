@@ -1,7 +1,7 @@
 {
   "ownerId": "kn70kt901qt3bjzwb1v3q90jm181xhyf",
   "slug": "verdikta-bounties-onboarding",
-  "version": "1.9.0",
+  "version": "2.0.0",
   "description": "Hot-wallet Verdikta Bounties operator for Base. Creates/imports Ethereum keys into an encrypted keystore whose password is never stored (it comes from VERDIKTA_WALLET_PASSWORD via a secret store or a prompt), keeps an API key locally, uploads public bounty/work data, calls the reviewed Verdikta API and Base RPC, and can sign irreversible mainnet/testnet transactions within an owner spend policy. Places mutual wagers (two directed bounties as a bet, on a game or a YES/NO question) with wager.js only after the owner approves the exact terms in chat. Withdraws the wallet's ETH (or leftover LINK) only to the owner address recorded at onboarding.",
   "permissions": {
     "shell": {
@@ -62,14 +62,15 @@
       "transactionTypes": [
         "create/fund bounty",
         "submit work",
-        "start evaluation with payable ETH prepay",
+        "start evaluation with payable ETH (prepay plus hunter bond)",
+        "draw and step an evaluation round (gas only), and re-run a soft-failed submission with a fresh prepay",
         "finalize or claim payout",
         "creator approval payout",
-        "force-fail timed-out submission",
+        "close a round with no result, or expire a re-run",
         "recover deferred ETH refund",
         "withdraw pull-ledger balance",
         "close expired bounty",
-        "withdraw ETH or leftover LINK to the owner address recorded at onboarding (the only non-escrow destination)"
+        "withdraw ETH or leftover LINK to the owner address recorded at onboarding (besides the gas-only round steps closeCommits/promote, sent to the aggregator the escrow names for the bounty, the only non-escrow destination)"
       ]
     }
   },

@@ -150,7 +150,7 @@ node wager.js claim VW-BOS-DET-20261020 \
 
 A game claim refuses until 3 hours after the scheduled start, after the settlement deadline, on a tie, when the score says the other side won, when your own bounty was already paid to the opponent, when your bounty would fail the claimed bounty's own counter check, and on sources that break the rules above. It builds the text with the shared `buildWagerClaim` (the server's `/api/wagers` claim builder, the layout of the winning mainnet claim #303), writes it to the wager's folder, saves its inputs, prints the warnings and the claim line. With the owner's line, `claim <wager> --approval "<line>" --yes` rebuilds the same bytes, checks them against the line and submits them through `submit_to_bounty.js`, which prepays the evaluation fee when the submission starts. Submission waits until about 2 hours after the final (`--final-at`), or 5 hours after the scheduled start without it: right after a final a juror's web tool can still be served an in-progress page. Finalize afterwards with `claim_bounty.js`.
 
-`claim` also refuses when it cannot read your own bounty on the site and on chain, and while your earlier claim is still in progress (it says how to continue that one). When the escrow shows the earlier claim's evaluation `Failed` (the jury's verdict, or a timed-out evaluation once `claim_bounty.js` finalized it), or the earlier attempt stopped before anything reached the chain, a new claim may replace it before the settlement deadline. Each submission prepays a new evaluation fee, so the owner approves it again: run `claim` with `--score` (a question: `--answer`, `--value`, `--as-of`) and `--source` again, show the owner the new `claim.md` and why the last one failed, and submit with their new claim line. `claim --approval` refuses until the claim was prepared again after the failure; the line for the failed claim does not cover a new submission. `status` says when the jury failed your claim.
+`claim` also refuses when it cannot read your own bounty on the site and on chain, and while your earlier claim is still in progress (it says how to continue that one). When the escrow shows the earlier claim's evaluation `Failed` (a hard fail, a re-run that expired, or a submission that ran out of re-runs), or the earlier attempt stopped before anything reached the chain, a new claim may replace it before the settlement deadline. Each submission prepays a new evaluation fee, so the owner approves it again: run `claim` with `--score` (a question: `--answer`, `--value`, `--as-of`) and `--source` again, show the owner the new `claim.md` and why the last one failed, and submit with their new claim line. `claim --approval` refuses until the claim was prepared again after the failure; the line for the failed claim does not cover a new submission. `status` says when the jury failed your claim. A claim that soft-failed or got no result is not failed: it awaits a re-run (`AwaitingRerun`) for 2 hours, keeping its place. Re-running it (`node claim_bounty.js --jobId <N> --submissionId <id> --rerun`) costs a new evaluation prepay, so ask the owner first; otherwise let it expire (`claim_bounty.js` sends `expireRerun` once `nextAction` is EXPIRE_RERUN), and `claim` can then prepare a new one. Wager bounties carry no hunter bond (Bondless Small), so no claim risks one.
 
 ```
 MUTUAL WAGER CLAIM (mutual-wager-v3)
@@ -221,16 +221,16 @@ Section 3 is the game claim's: the two URLs when the claimed bounty's Counter li
 
 After your bounty's deadline (the settlement deadline), `close <wager>` checks on chain that the bounty is yours, still open and past its deadline, then closes it with `recover_funds.js --close`; the stake returns to this wallet. Run `--dry-run` first if the owner wants to see the transactions.
 
-Only the opponent can submit to your bounty, so a claim of theirs that the jury rejected but nobody finalized stays pending, and the escrow refuses the close ("active evaluation - finalize first"). `close` clears such claims first, on your own bounty past its deadline only:
+Only the opponent can submit to your bounty, so a claim of theirs that nobody resolved stays pending (in evaluation, or awaiting a re-run), and the escrow refuses the close ("active evaluation - finalize first"). `close` clears such claims first, on your own bounty past its deadline only:
 
-- a stored result that failed is finalized (`finalizeSubmission`);
-- a round that timed out without a result is failed (`failTimedOutSubmission`).
+- a stored result that does not pass is finalized (`finalizeSubmission`; past the deadline a soft fail cannot re-run, so it fails);
+- a round with no result that can get none is closed (`closeFailedRound`);
+- a claim awaiting a re-run that can no longer happen is expired (`expireRerun`).
 
-Both are gas-only calls under the spend policy. Neither can change who wins, and both return the claim's unused prepay to whoever paid it. The owner's approval of the close covers them; there is no separate line. `close` sends nothing, and says why, when any pending claim:
+All are gas-only calls under the spend policy. None can change who wins, and each returns the claim's unused prepay to whoever paid it. The owner's approval of the close covers them; there is no separate line. `close` sends nothing, and says why, when any pending claim:
 
 - passed (finalizing it pays the opponent);
-- has no stored result yet (finalizing it would decide it now);
-- is still being evaluated (it gives the time to retry).
+- is still being evaluated (it gives the time to retry, from the round's deadline).
 
 `status` says how many claims a close will clear first.
 

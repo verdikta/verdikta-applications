@@ -52,7 +52,9 @@ Body:
 }
 ```
 
-Response includes `job.evaluationCid` — use this as the `evaluationCid` in the on-chain `createBounty()` call.
+Optional v2 decision settings (BountyEscrow v2): `bountyClass` (`bondless-small`, `small`, `medium`, `large`, `jumbo`; presets the rest, by default the smallest class offered for `bountyAmountUSD`, or Bondless Small without it), `jury` (the escrow's approved aggregator index), `quota` (Q ≥ 1), `forfeitLine` (R ≤ Q), `bond` (decimal ETH or integer wei), `oracleMinOracleFee` (the fee floor) and `oracleWithBeacons` (bool), beside the existing `oracleMaxOracleFee`, `oracleAlpha`, `oracleEstimatedBaseCost` and `oracleMaxFeeBasedScaling`. A preset's USD bond and fee floor are converted at the ETH price `bountyAmountUSD / bountyAmount`, else the server's price feed; `create_bounty.js` sends every one of them explicitly, so neither applies. The presets are the site's `shared/classPresets.js` (vendored as `scripts/_class-presets.cjs`; table in [commission configuration](commission.md)).
+
+Response includes `job.evaluationCid` — use this as the `evaluationCid` in the on-chain `createBounty()` call — and `job.decisionSettings` (`bountyClass`, `jury`, `quota`, `forfeitLine`, `bond`). Its `onChain.transaction` encodes the v2 `createBounty(CreateParams)`: the oracle struct with `minOracleFee` and `withBeacons`, then `jury`, `quota`, `forfeitLine` and `bond`.
 
 **Rubric templates.** `GET /api/templates` (no key) lists ready rubrics, the same ones the website's create page offers, each with `useWhen`, `version`, `recommendedThreshold` and `recommendedClassId`. `GET /api/templates/:key` returns one with a `rubricJson` in this endpoint's form. To use one as is, send `"rubricTemplate": "<key>"` in place of `rubricJson`: the server fills in the exact rubric, and the template's threshold and classId unless you send your own. Optional `rubricTemplateVersion` must equal the current version (`400 TEMPLATE_VERSION_CHANGED` otherwise). To edit one, change its `rubricJson` and send that. The response's `job.rubricTemplate` (`key`, `version`, `match`) and `/rubric/validate`'s `templateMatch` say which template a rubric matches. The description must still say what to deliver: templates are generic. Work-order templates (`kind: "service"`) are built through `verdikta-discover`, not by key.
 
@@ -153,7 +155,7 @@ Returns rubric object directly with criteria, threshold, forbidden_content.
 
 `GET /api/jobs/:jobId/estimate-fee`
 
-Returns an ETH estimate. The authoritative start value is the live escrow requiredPrepay(bountyId), not the prepare event estimate.
+Returns an ETH estimate of the prepay. The authoritative start value is the live escrow `startValue(bountyId)` (requiredPrepay plus the hunter bond), not the prepare event estimate. `GET /api/jobs/:jobId/onchain-status` returns `requiredPrepay`, `startValue` and `decisionSettings` (`jury`, `quota`, `forfeitLine`, `bondWei`) live.
 
 ---
 
@@ -246,7 +248,7 @@ Params: hunter and hunterCid only. Oracle settings are chosen by the creator; hu
 
 `POST /api/jobs/:jobId/submissions/:subId/start`
 
-Triggers oracle evaluation with transaction.value equal to live requiredPrepay(bountyId). Check owner value/gas ceilings; stop on changes. No LINK approval exists.
+Starts the oracle round with transaction.value equal to the live `startValue(bountyId)`: the round's prepay (`prepayWei`, its unspent part refunded when the round resolves) plus the hunter bond (`bondWei`, returned unless a hard fail forfeits it to the creator). Check owner value/gas ceilings; stop on changes. No LINK approval exists. The round must then be drawn: see [Round steps](#round-steps-v2).
 
 Params:
 - `hunter` (required)
@@ -277,13 +279,16 @@ this point and a bad shape can no longer be prevented, only surfaced.
 No body required. Reads the submission from the blockchain and updates local status.
 
 Return statuses:
-- `PENDING_EVALUATION` — oracle evaluation still running
-- `ACCEPTED_PENDING_CLAIM` — passed, ready to finalize and claim payout
-- `REJECTED_PENDING_FINALIZATION` — failed, can finalize to recover unspent ETH prepay
+- `PENDING_EVALUATION` — the round is still running (drawing, commits or reveals)
+- `ACCEPTED_PENDING_CLAIM` — passed (at least Q juror scores at the threshold), ready to finalize and claim payout
+- `REJECTED_PENDING_FINALIZATION` — hard fail (fewer than R), finalizing forfeits the bond to the creator
+- `SOFT_FAIL_PENDING_FINALIZATION` — soft fail (R to Q−1), or a result of the wrong shape: finalizing lets it re-run
+- `NO_RESULT_PENDING_CLOSE` — the round ended, or must end, with no result: `closeFailedRound` lets it re-run
+- `AWAITING_RERUN` — may re-run until `rerunDeadline`, keeping its place and bond
 - `APPROVED` — already finalized (passed)
 - `REJECTED` — already finalized (failed)
 
-Response includes `acceptance` (score 0-100), `rejection`, `paidWinner` (boolean), and `failureReason` (`null`, `'ORACLE_TIMEOUT'`, or `'EVALUATION_FAILED'`).
+Response includes `acceptance` (score 0-100), `rejection`, `paidWinner` (boolean), `failureReason` (`null`, `'EVALUATION_FAILED'`, `'NO_RESULT'` or `'RERUN_EXPIRED'`), `round` (`phase`, `outcome`, `passCount`, `deadline`, `nextAction`, while in evaluation), `rounds`, `rerunDeadline` and `bondHeldWei`.
 
 ## Finalize submission (claim payout)
 
@@ -292,19 +297,19 @@ Response includes `acceptance` (score 0-100), `rejection`, `paidWinner` (boolean
 Params:
 - `hunter` (required, must match the submission's hunter address)
 
-Checks oracle readiness, then returns `finalizeSubmission` calldata. Sign and broadcast to pull oracle results on-chain and release ETH payout (if passed) or recover unspent ETH prepay (if failed).
+Checks that the round has a result, then returns `finalizeSubmission` calldata. The escrow judges the round by item 12's Q-of-N rule (not the mean score): a pass pays the hunter and returns the bond; a soft fail or an unusable result awaits a re-run (2 hours, keeping place and bond); a hard fail forfeits the bond to the creator. The unspent prepay goes back to the round's funder in every case. A round with no result returns 400 with `reason: "no_result"` and points to `/close-failed`.
 
 Response:
 ```json
 {
   "success": true,
   "transaction": { "to": "0x...", "data": "0x...", "value": "0", "chainId": 84532 },
-  "oracleResult": { "acceptance": 83, "rejection": 17, "passed": true, "threshold": 75 },
+  "oracleResult": { "acceptance": 83, "rejection": 17, "outcome": "pass", "passCount": 3, "quota": 3, "forfeitLine": 1, "passed": true, "threshold": 75, "effect": "paid (subject to payout priority); the bond is returned" },
   "expectedPayout": "0.0001"
 }
 ```
 
-> **Note:** `claim_bounty.js` checks nextAction and handles one available finalization/recovery action. Use it instead of calling these endpoints manually.
+> **Note:** `claim_bounty.js` reads `nextAction` and sends the one call it names. Use it instead of calling these endpoints manually.
 
 ## Get evaluation report
 
@@ -336,22 +341,28 @@ Params:
 
 `GET /api/jobs/:jobId/submissions/:subId/diagnose`
 
-Returns diagnosis with issues and recommendations.
+Returns diagnosis with issues and recommendations. `checks.onChain.round` is the round as the escrow's lens reports it: `phase`, `outcome`, `passCount`, `deadline`, `requestTime` and `nextAction`; `closeFailedEligible` (v1 name `timeoutEligible`) says whether `closeFailedRound` succeeds now.
 
 ### Finalize submission
 
 `POST /api/jobs/:jobId/submissions/:subId/finalize`
 
-Checks oracle readiness, returns encoded `finalizeSubmission` calldata plus oracle result with acceptance/rejection scores and expected payout.
+Checks that the round has a result, returns encoded `finalizeSubmission` calldata plus the oracle result (`outcome`, `passCount`, acceptance/rejection scores, `effect`) and expected payout.
 
 Params:
 - `hunter` (required)
 
-### Timeout stuck submission
+### Round steps (v2)
 
-`POST /api/jobs/:jobId/submissions/:subId/timeout`
+A v2 round is drawn (`drawJury`, from two blocks after the start; twice on a beacon bounty), its commits are closed (`closeCommits` on the bounty's aggregator) and it is promoted (`promote`, aggregator), then the jurors reveal. Anyone may send each step; the server's keeper usually does. Every endpoint below checks the escrow lens's `nextAction` first and refuses (400, with `nextAction` and a `hint`) when its step is not the one that succeeds now.
 
-Returns encoded calldata for `failTimedOutSubmission`. Requires aggregator timeout state; elapsed local time alone does not authorize force-fail.
+- `POST /api/jobs/:jobId/submissions/:subId/draw` — `drawJury(bountyId, submissionId)` on the escrow, when `nextAction` is DRAW. The draw reward comes back to the round's funder.
+- `POST /api/jobs/:jobId/submissions/:subId/round-step` — whichever of DRAW, CLOSE_COMMITS, PROMOTE, CLOSE_FAILED or EXPIRE_RERUN succeeds now. `closeCommits(aggId)` and `promote(aggId)` go to the bounty's aggregator (`aggregatorOf(bountyId)`), the rest to the escrow; `contractCall.target` says which.
+- `POST /api/jobs/:jobId/submissions/:subId/close-failed` — `closeFailedRound`: the round failed, was cancelled, is past its deadline with no result, or can never be drawn. The submission then awaits a re-run, keeping its place and bond. Send it with the returned `transaction.gasLimit`: settling a round can need well over 1.5M gas. `POST .../timeout` is the v1 name, kept as an alias; v1's `failTimedOutSubmission` no longer exists.
+- `POST /api/jobs/:jobId/submissions/:subId/rerun` — `rerunSubmission` (payable `requiredPrepay`), by the hunter or the bond's funder, while `nextAction` is RERUN (before `rerunDeadline`, at most 6 rounds). Returns `rerunDeadline` and `rounds`.
+- `POST /api/jobs/:jobId/submissions/:subId/expire-rerun` — `expireRerun`: the re-run window has closed; the bond goes back to its funder. Anyone may send it.
+
+`nextAction(bountyId, submissionId)` values: START, AWAIT_SLOT, AWAIT_CREATOR, DRAW, CLOSE_COMMITS, PROMOTE, AWAIT_ORACLE, AWAIT_EARLIER, FINALIZE, CLOSE_FAILED, RERUN, AWAIT_EXPIRY, EXPIRE_RERUN, RECOVER_REFUND, DONE, DEAD. `claim_bounty.js` sends the one it names (RERUN only with `--rerun`).
 
 ---
 
@@ -387,7 +398,7 @@ Validates format, stores results, returns summary.
 
 `GET /api/jobs/admin/stuck`
 
-Returns submissions in `PENDING_EVALUATION` for 10+ minutes.
+Returns submissions pending for 10+ minutes (in evaluation, awaiting finalization or a close, or awaiting a re-run), with `canCloseFailed`, `canExpireRerun`, `canFinalize` and the round's `nextAction`.
 
 ### List expired bounties
 
@@ -399,7 +410,7 @@ Returns expired bounties with close eligibility.
 
 `POST /api/jobs/:jobId/close`
 
-Returns encoded calldata for `closeExpiredBounty`.
+Returns encoded calldata for `closeExpiredBounty`. While submissions are pending it returns 400 with `needsFinalize`, `needsCloseFailed`, `needsExpireRerun` and `stillEvaluating` (`needsTimeout` is the v1 name for everything but finalize).
 
 ---
 

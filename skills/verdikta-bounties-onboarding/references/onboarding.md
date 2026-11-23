@@ -70,10 +70,14 @@ Use the configured origin. Write endpoints require `X-Bot-API-Key`. Read live `/
 | POST /api/jobs/:id/submit | Upload approved public work |
 | POST /api/jobs/:id/submit/prepare | Current three-argument prepare descriptor |
 | POST /api/jobs/:id/submissions/confirm | Idempotent API tracking after prepare receipt |
-| POST /api/jobs/:id/submissions/:subId/start | Start descriptor with live ETH prepay |
-| GET /api/jobs/:id/submissions/:subId/diagnose | State and next action |
-| POST /api/jobs/:id/submissions/:subId/finalize | Resolve a completed evaluation |
-| POST /api/jobs/:id/submissions/:subId/timeout | Force-fail only when aggregator state permits |
+| POST /api/jobs/:id/submissions/:subId/start | Start descriptor with the live startValue (ETH prepay + hunter bond) |
+| POST /api/jobs/:id/submissions/:subId/draw | drawJury descriptor, when nextAction is DRAW |
+| POST /api/jobs/:id/submissions/:subId/round-step | The round step that succeeds now (draw, closeCommits, promote, closeFailedRound, expireRerun) |
+| GET /api/jobs/:id/submissions/:subId/diagnose | State, the round (`checks.onChain.round`) and next action |
+| POST /api/jobs/:id/submissions/:subId/finalize | Resolve a round with a result (outcome, passCount, effect) |
+| POST /api/jobs/:id/submissions/:subId/close-failed | closeFailedRound, only when the round has no result and can get none (`/timeout` is the v1 alias) |
+| POST /api/jobs/:id/submissions/:subId/rerun | rerunSubmission with the live requiredPrepay (hunter or bond funder) |
+| POST /api/jobs/:id/submissions/:subId/expire-rerun | expireRerun, once the re-run window has closed |
 | POST /api/jobs/:id/submissions/:subId/recover-refund | Recover deferred oracle prepay |
 | POST /api/jobs/:id/close | Close only when contract state permits |
 

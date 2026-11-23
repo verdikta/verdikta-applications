@@ -27,7 +27,7 @@ import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
-import { getContractService, ORACLE_MAX_ALPHA, ORACLE_MAX_FEE_SCALING, ORACLE_FEE_CEILING_WEI } from '../services/contractService';
+import { getContractService, ORACLE_MAX_ALPHA, ORACLE_MAX_FEE_SCALING } from '../services/contractService';
 import { config, currentNetwork } from '../config';
 import { walletEnvironment, withTimeout } from '../services/injectedProvider';
 import { classifyCreateFailure, describeCreateFailure, accountTypeFromCode } from '../utils/createFailure';
@@ -49,7 +49,6 @@ const ORACLE_DEFAULTS = {
   oracleEstimatedBaseCostEth: ethers.formatEther(config.submissionDefaults.estimatedBaseCostWei),
   oracleMaxFeeBasedScaling: String(config.submissionDefaults.maxFeeBasedScaling),
 };
-const ORACLE_FEE_CEILING_ETH = ethers.formatEther(ORACLE_FEE_CEILING_WEI);
 // The rubric templates of a mutual wager: a game (mutual-wager-v3) or a question (mutual-wager-v5).
 const WAGER_TEMPLATES = ['mutualWager', 'questionWager'];
 
@@ -64,7 +63,6 @@ function validateOracleSettings(f) {
   try { baseWei = ethers.parseEther(String(f.oracleEstimatedBaseCostEth || '0').trim() || '0'); }
   catch { return 'Estimated base cost must be a decimal ETH amount (e.g. 0.00001)'; }
   if (feeWei <= 0n) return 'Max oracle fee must be greater than 0';
-  if (feeWei > ORACLE_FEE_CEILING_WEI) return `Max oracle fee must be at most ${ORACLE_FEE_CEILING_ETH} ETH (aggregator ceiling)`;
   if (baseWei < 0n) return 'Estimated base cost must be >= 0';
   if (baseWei >= feeWei) return 'Estimated base cost must be below the max oracle fee';
   const alpha = Number(f.oracleAlpha);
@@ -1578,7 +1576,7 @@ function CreateBounty({ walletState }) {
                       />
                       <small className="helper-text">
                         Arbiters priced above this are ineligible. Sizes the hunter's ETH prepay. Must be &gt; 0 and
-                        at most {ORACLE_FEE_CEILING_ETH} ETH.
+                        at most the jury aggregator's live ceiling (its maxOracleFee()).
                       </small>
                     </div>
                     <div className="form-group">

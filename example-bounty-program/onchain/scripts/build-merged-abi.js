@@ -27,7 +27,7 @@ const outFile = path.join(root, 'abi/BountyEscrow.json');
 
 // Lens entries that are implementation details of the lens itself, not part of
 // the escrow's public interface (constructor/fallback are duplicates of the
-// escrow's; `escrow()` is the lens's back-pointer; `verdikta()` exists on both).
+// escrow's; `escrow()` is the lens's back-pointer).
 const LENS_SKIP = new Set(['constructor', 'fallback', 'receive']);
 const LENS_SKIP_NAMES = new Set(['escrow']);
 

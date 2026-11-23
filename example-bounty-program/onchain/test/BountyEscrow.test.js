@@ -1,6 +1,6 @@
 const { expect } = require("chai");
 const { ethers, network } = require("hardhat");
-const { loadFixture, time } = require("@nomicfoundation/hardhat-network-helpers");
+const { loadFixture, time, mine } = require("@nomicfoundation/hardhat-network-helpers");
 const { mergedAbi } = require("../deploy/helpers");
 
 describe("BountyEscrow", function () {
@@ -31,17 +31,29 @@ describe("BountyEscrow", function () {
   const PASSING_SCORES = [200000n, 800000n]; // 20% reject, 80% accept (>= 70 threshold)
   const FAILING_SCORES = [600000n, 400000n]; // 60% reject, 40% accept (< 70 threshold)
   const JUST_CIDS = "QmJustificationCid";
+  // The real aggregator's draw and promote rewards, in fees (the fixture turns them off).
+  const REWARDS = [2, 1];
+  // Gas ceilings of the four hot paths (see "gas ceilings" below), ~15% over what was measured
+  // 2026-11-23: create 359k, prepare 329k (binds the wallet to its aggregator), start 707k (of which
+  // the mock's request, which stores every forwarded parameter for inspection, is most; the real
+  // v2 request is ~205k), finalize 154k (reads every counted score for the Q-of-N rule).
+  const GAS_CEILING = { create: 415_000n, prepare: 380_000n, start: 815_000n, finalize: 180_000n };
 
   async function deployBountyEscrowFixture() {
     const [owner, creator, hunter, hunter2, other] = await ethers.getSigners();
 
     const MockAgg = await ethers.getContractFactory("MockVerdiktaAggregator");
-    const verdiktaAggregator = await MockAgg.deploy();
+    const mockAgg = await MockAgg.deploy();
+    // No draw / promote rewards: the escrow is then exactly the base fees plus the bonuses, all
+    // spent by a finished round, so a round leaves no leftover (v1's mock default). Refund tests turn
+    // the rewards back on (REWARDS) and assert the real leftover.
+    await mockAgg.setRewards(0, 0);
+    // v1 tests set a round's result in one call; on v2 a result needs a drawn round. withV2Hooks
+    // keeps that call (setEvaluation) and adds the v2 steps the tests use (see below).
+    const verdiktaAggregator = withV2Hooks(mockAgg);
 
     const BountyEscrow = await ethers.getContractFactory("BountyEscrow");
-    const deployed = await BountyEscrow.deploy(
-      await verdiktaAggregator.getAddress()
-    );
+    const deployed = await BountyEscrow.deploy([await mockAgg.getAddress()]);
     // Attach the MERGED ABI (escrow + lens views): the read-only views live in
     // BountyEscrowLens and are served at the escrow address through its fallback, so the
     // compiled BountyEscrow artifact's ABI alone does not list them.
@@ -58,7 +70,53 @@ describe("BountyEscrow", function () {
     };
   }
 
+  // The same, with the real aggregator's draw and promote rewards: a round then leaves a leftover
+  // (the unearned rewards: a third party drawing within 30 s earns nothing, and the test shortcut
+  // skips promotion), refunded to the round's funder.
+  async function deployWithRewardsFixture() {
+    const f = await deployBountyEscrowFixture();
+    await f.verdiktaAggregator.setRewards(...REWARDS);
+    return f;
+  }
+
+  // The v2 mock with the v1 tests' one-call result, plus round helpers:
+  //   setEvaluation(aggId, scores, cids, exists): exists=false leaves the round open; otherwise the
+  //     round is drawn (by the test's owner, a third party: no draw reward) and gets N reveals of
+  //     `scores` (a two-entry [DONT_FUND, FUND] vector; any other length is "malformed").
+  //   draw(aggId): mine to B+2 and draw if undrawn.
+  //   expire(aggId): draw if undrawn, then pass the round's deadline (settle becomes due).
+  function withV2Hooks(agg) {
+    const phaseOf = async (aggId) => (await agg.getRoundInfo(aggId))[0];
+    const draw = async (aggId) => {
+      if ((await phaseOf(aggId)) !== 1n) return;
+      await mine(2);
+      await agg.drawJury(aggId);
+    };
+    const hooks = {
+      async setEvaluation(aggId, scores, cids, exists = true) {
+        if (!exists) return;
+        await draw(aggId);
+        await agg.scriptResult(aggId, scores, cids);
+      },
+      draw,
+      async expire(aggId) {
+        await draw(aggId);
+        const deadline = (await agg.getRoundInfo(aggId))[8];
+        await time.increaseTo(deadline + 1n);
+      },
+      phaseOf,
+      // what the round will refund (or has refunded): received - base fees - bonuses - rewards
+      async leftover(aggId) {
+        const i = await agg.getRoundInfo(aggId);
+        return i[4] - i[5] - i[6] - i[7];
+      },
+    };
+    return new Proxy(agg, { get: (t, p) => (p in hooks ? hooks[p] : t[p]) });
+  }
+
   // Helper: build a CreateParams struct. Non-windowed by default (both payments = value).
+  // The v2 decision rule defaults to v1's: quota = forfeitLine = 1 (any score at the threshold
+  // passes; none is a hard fail, i.e. Failed) and no bond.
   function bountyParams(overrides = {}, deadline) {
     const value = overrides.value ?? BOUNTY_WEI;
     return {
@@ -75,7 +133,13 @@ describe("BountyEscrow", function () {
         alpha: overrides.alpha ?? ALPHA,
         estimatedBaseCost: overrides.estimatedBaseCost ?? EST_BASE_COST,
         maxFeeBasedScaling: overrides.maxFeeBasedScaling ?? MAX_FEE_SCALING,
+        minOracleFee: overrides.minOracleFee ?? 0n,
+        withBeacons: overrides.withBeacons ?? false,
       },
+      jury: overrides.jury ?? 0,
+      quota: overrides.quota ?? 1,
+      forfeitLine: overrides.forfeitLine ?? 1,
+      bond: overrides.bond ?? 0n,
     };
   }
 
@@ -154,21 +218,24 @@ describe("BountyEscrow", function () {
 
   // =========================================================================
   describe("Deployment", function () {
-    it("Should deploy with correct Verdikta address", async function () {
+    it("Should deploy with the approved aggregator list", async function () {
       const { bountyEscrow, verdiktaAggregator } =
         await loadFixture(deployBountyEscrowFixture);
 
-      expect(await bountyEscrow.verdikta()).to.equal(
+      expect(await bountyEscrow.aggregatorCount()).to.equal(1);
+      expect(await bountyEscrow.aggregators(0)).to.equal(
         await verdiktaAggregator.getAddress()
       );
     });
 
-    it("Should reject zero aggregator address in constructor", async function () {
+    it("Should reject a zero aggregator address, and an empty or oversized list, in the constructor", async function () {
       const BountyEscrow = await ethers.getContractFactory("BountyEscrow");
+      const { verdiktaAggregator } = await loadFixture(deployBountyEscrowFixture);
+      const a = await verdiktaAggregator.getAddress();
 
-      await expect(
-        BountyEscrow.deploy(ethers.ZeroAddress)
-      ).to.be.revertedWith("zero addr");
+      await expect(BountyEscrow.deploy([a, ethers.ZeroAddress])).to.be.revertedWith("zero addr");
+      await expect(BountyEscrow.deploy([])).to.be.revertedWith("bad aggregators");
+      await expect(BountyEscrow.deploy(Array(9).fill(a))).to.be.revertedWith("bad aggregators");
     });
   });
 
@@ -699,8 +766,8 @@ describe("BountyEscrow", function () {
       const b = await createDefaultBounty(bountyEscrow, creator, { maxOracleFee: highFee, estimatedBaseCost: 0n });
       const sa = await prepareDefaultSubmission(bountyEscrow, hunter, a.bountyId);
       const sb = await prepareDefaultSubmission(bountyEscrow, hunter2, b.bountyId);
-      expect(sa.ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(lowFee));
-      expect(sb.ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(highFee));
+      expect(sa.ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(lowFee, 0, false));
+      expect(sb.ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(highFee, 0, false));
       expect(sb.ethMaxBudget).to.be.gt(sa.ethMaxBudget);
       await expect(bountyEscrow.connect(hunter).startPreparedSubmission(a.bountyId, sa.submissionId, { value: sb.ethMaxBudget }))
         .to.be.revertedWith("wrong eth amount");
@@ -711,6 +778,7 @@ describe("BountyEscrow", function () {
       const fee = ethers.parseEther("0.0001");
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         maxOracleFee: fee, alpha: 700, estimatedBaseCost: fee / 4n, maxFeeBasedScaling: 7, classId: 131,
+        minOracleFee: fee * 2n, withBeacons: true,
       });
       const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
       await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
@@ -722,7 +790,9 @@ describe("BountyEscrow", function () {
       expect(rp.estimatedBaseCost).to.equal(fee / 4n);
       expect(rp.maxFeeBasedScaling).to.equal(7);
       expect(rp.requestedClass).to.equal(131);
-      expect(rp.cidCount).to.equal(2);
+      expect(rp.minFee).to.equal(fee * 2n);
+      expect(rp.withBeacons).to.equal(true);
+      expect(await verdiktaAggregator.getRequestCids(aggId)).to.deep.equal([EVAL_CID, HUNTER_CID]);
     });
 
     it("Submission struct no longer carries oracle settings; prepare takes only the two CIDs", async function () {
@@ -752,19 +822,18 @@ describe("BountyEscrow", function () {
     });
 
     for (const [label, vec] of [["FUND above scale", OVER], ["DONT_FUND above scale", OVER_REJECT]]) {
-      it(`Finalize: ${label} is invalid → Failed with 0/0 scores and a refund (was clamped to a pass before)`, async function () {
+      it(`Finalize: ${label} is corrupt → no result: AwaitingRerun with 0/0 scores, never a pass`, async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-        const { submissionId, ethMaxBudget, evalWallet } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-        await verdiktaAggregator.setRefundAmount(ethMaxBudget);
-        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
-        const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+        const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
         await verdiktaAggregator.setEvaluation(aggId, vec, JUST_CIDS, true);
         await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
-          .to.emit(bountyEscrow, "SubmissionFinalized").withArgs(bountyId, submissionId, false, false, 0, 0, JUST_CIDS)
-          .and.to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget)
+          .to.emit(bountyEscrow, "RerunAwaited")
+          .and.to.emit(bountyEscrow, "EthRefunded")
           .and.to.not.emit(bountyEscrow, "PayoutSent");
-        expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(2);
+        const s = await bountyEscrow.getSubmission(bountyId, submissionId);
+        expect(s.status).to.equal(6);                                       // AwaitingRerun
+        expect([s.acceptance, s.rejection, s.passCount]).to.deep.equal([0n, 0n, 0n]);
         expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(0); // still Open
       });
     }
@@ -798,7 +867,7 @@ describe("BountyEscrow", function () {
         .to.be.revertedWith("another submission already passed - finalize it first");
     });
 
-    it("Payout: a lower-index sibling with an out-of-range result finalizes as Failed and then no longer blocks", async function () {
+    it("Payout: a lower-index sibling with an out-of-range result never passes, and stops blocking once its re-run expires", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const A = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);   // index 0
@@ -808,10 +877,14 @@ describe("BountyEscrow", function () {
       // While A is still in evaluation it holds index priority whatever its result looks like
       await expect(bountyEscrow.finalizeSubmission(bountyId, B.submissionId))
         .to.be.revertedWith("earlier submission pending - retry after it resolves");
-      // A resolves as Failed (corrupt vector is never a pass) ...
+      // A is no result (a corrupt vector is never a pass): it may re-run, keeping its place ...
       await bountyEscrow.finalizeSubmission(bountyId, A.submissionId);
-      expect((await bountyEscrow.getSubmission(bountyId, A.submissionId)).status).to.equal(2); // Failed
-      // ... and B is paid: a would-be 100% if clamped never held the win
+      expect((await bountyEscrow.getSubmission(bountyId, A.submissionId)).status).to.equal(6); // AwaitingRerun
+      await expect(bountyEscrow.finalizeSubmission(bountyId, B.submissionId))
+        .to.be.revertedWith("earlier submission pending - retry after it resolves");
+      // ... until its window closes; then B is paid: a would-be 100% if clamped never held the win
+      await time.increase(2 * 3600 + 1);
+      await bountyEscrow.expireRerun(bountyId, A.submissionId);
       await expect(bountyEscrow.finalizeSubmission(bountyId, B.submissionId))
         .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter2.address, BOUNTY_WEI);
     });
@@ -867,32 +940,36 @@ describe("BountyEscrow", function () {
     });
 
     describe("getOracleResult", function () {
-      it("reports not started, then in flight, then a result, then a timed-out round — with no aggregator ABI", async function () {
+      it("reports not started, then the round's phase, its result and the Q-of-N outcome, then a failed round — with no aggregator ABI", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
         const p = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
         let r = await bountyEscrow.getOracleResult(bountyId, p.submissionId);
         expect(r.started).to.equal(false); expect(r.hasResult).to.equal(false); expect(r.scores).to.have.length(0);
+        expect(r.phase).to.equal(0); expect(r.rounds).to.equal(0);
 
         await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, p.submissionId, { value: p.ethMaxBudget });
         r = await bountyEscrow.getOracleResult(bountyId, p.submissionId);
-        expect(r.started).to.equal(true); expect(r.hasResult).to.equal(false); expect(r.settled).to.equal(false);
-        expect(r.startTimestamp).to.be.gt(0);
+        expect(r.started).to.equal(true); expect(r.hasResult).to.equal(false);
+        expect(r.phase).to.equal(1); expect(r.rounds).to.equal(1); expect(r.outcome).to.equal(0);   // undrawn, not ready
+        expect(r.requestTime).to.be.gt(0); expect(r.deadline).to.equal(0);
 
         const aggId = (await bountyEscrow.getSubmission(bountyId, p.submissionId)).verdiktaAggId;
         // (a FAILING result, so the second submission below is still allowed to start)
         await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
         r = await bountyEscrow.getOracleResult(bountyId, p.submissionId);
-        expect(r.hasResult).to.equal(true); expect(r.settled).to.equal(true); expect(r.failed).to.equal(false);
+        expect(r.hasResult).to.equal(true); expect(r.phase).to.equal(6);
+        expect(r.outcome).to.equal(4); expect(r.passCount).to.equal(0);                           // hard fail (R = 1)
         expect(r.scores.map(Number)).to.deep.equal(FAILING_SCORES.map(Number));
         expect(r.justificationCids).to.equal(JUST_CIDS);
+        expect(r.deadline).to.be.gt(0);
 
-        // a second submission whose round times out
+        // a second submission whose round fails (no commits by its deadline)
         const q = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
-        await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) + 1);
-        await verdiktaAggregator.finalizeEvaluationTimeout(q.aggId);
+        await verdiktaAggregator.expire(q.aggId);
+        await verdiktaAggregator.settle(q.aggId);
         r = await bountyEscrow.getOracleResult(bountyId, q.submissionId);
-        expect(r.hasResult).to.equal(false); expect(r.settled).to.equal(true); expect(r.failed).to.equal(true);
+        expect(r.hasResult).to.equal(false); expect(r.phase).to.equal(8); expect(r.outcome).to.equal(1);   // no result
       });
     });
 
@@ -909,7 +986,13 @@ describe("BountyEscrow", function () {
         expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("DEAD");
         await expect(bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget }))
           .to.be.revertedWith("another submission already passed - finalize it first");
-        // A failing sibling result does not kill it
+      });
+
+      it("Prepared: a failing in-flight sibling does not kill it", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const A = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
         await verdiktaAggregator.setEvaluation(A.aggId, FAILING_SCORES, JUST_CIDS, true);
         expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("START");
       });
@@ -939,19 +1022,14 @@ describe("BountyEscrow", function () {
         expect(await act(bountyEscrow, bountyId, v2.submissionId)).to.equal("FINALIZE");
       });
 
-      it("Past the timeout, not yet settled: FINALIZE if enough late reveals exist, else FORCE_FAIL — and each call succeeds", async function () {
-        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+      it("A drawn round past its deadline with no result: CLOSE_FAILED, then RERUN — and each call succeeds", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-        const late = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
-        const dead = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
-        await verdiktaAggregator.setTimeoutResult(late.aggId, FAILING_SCORES, JUST_CIDS);
-        await time.increase(601);
-        expect(await act(bountyEscrow, bountyId, late.submissionId)).to.equal("FINALIZE");
-        expect(await act(bountyEscrow, bountyId, dead.submissionId)).to.equal("FORCE_FAIL");
-        await expect(bountyEscrow.failTimedOutSubmission(bountyId, late.submissionId))
-          .to.be.revertedWith("result available - use finalizeSubmission");
-        await expect(bountyEscrow.finalizeSubmission(bountyId, late.submissionId)).to.emit(bountyEscrow, "SubmissionFinalized");
-        await expect(bountyEscrow.failTimedOutSubmission(bountyId, dead.submissionId)).to.emit(bountyEscrow, "SubmissionFinalized");
+        const dead = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        await verdiktaAggregator.expire(dead.aggId);
+        expect(await act(bountyEscrow, bountyId, dead.submissionId)).to.equal("CLOSE_FAILED");
+        await expect(bountyEscrow.closeFailedRound(bountyId, dead.submissionId)).to.emit(bountyEscrow, "RerunAwaited");
+        expect(await act(bountyEscrow, bountyId, dead.submissionId)).to.equal("RERUN");
       });
 
       it("Prepared: START before the deadline, DEAD after", async function () {
@@ -990,26 +1068,30 @@ describe("BountyEscrow", function () {
         expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("DONE");
       });
 
-      it("In flight with no result: FORCE_FAIL once the aggregator timeout has elapsed (even before anyone settled it)", async function () {
+      it("In flight with no result: DRAW from two blocks on, AWAIT_ORACLE once drawn, CLOSE_FAILED past the deadline", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-        const { submissionId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
-        await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) - 5);
+        const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        await mine(2);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("DRAW");
+        await bountyEscrow.drawJury(bountyId, submissionId);
         expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("AWAIT_ORACLE");
-        await time.increase(6);
-        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("FORCE_FAIL");
-        await bountyEscrow.failTimedOutSubmission(bountyId, submissionId); // and it really is callable
-        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("DONE");
+        const deadline = (await verdiktaAggregator.getRoundInfo(aggId))[8];
+        await time.increaseTo(deadline - 5n);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("AWAIT_ORACLE");
+        await time.increaseTo(deadline + 1n);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("CLOSE_FAILED");
+        await bountyEscrow.closeFailedRound(bountyId, submissionId); // and it really is callable
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("RERUN");
       });
 
       it("Resolved with a deferred refund: RECOVER_REFUND until recovered", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-        const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-        await verdiktaAggregator.setRefundAmount(ethMaxBudget);
-        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
-        const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+        await verdiktaAggregator.setRewards(...REWARDS);             // a round now leaves a leftover
+        const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
         await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+        expect(await verdiktaAggregator.leftover(aggId)).to.be.gt(0);
         await verdiktaAggregator.setWithdrawBroken(true);
         await bountyEscrow.finalizeSubmission(bountyId, submissionId);
         expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("RECOVER_REFUND");
@@ -1071,7 +1153,7 @@ describe("BountyEscrow", function () {
       const e = await bountyEscrow.effectiveOracleParams(bountyId);
       expect(e.maxOracleFee).to.equal(newCeiling); expect(e.estimatedBaseCost).to.equal(BASE);
       const live = await bountyEscrow.requiredPrepay(bountyId);
-      expect(live).to.equal(await verdiktaAggregator.maxTotalFee(newCeiling));
+      expect(live).to.equal(await verdiktaAggregator.maxTotalFee(newCeiling, 0, false));
       expect(live).to.be.lt(estimate);
       await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: live }))
         .to.emit(bountyEscrow, "WorkSubmitted");
@@ -1102,8 +1184,8 @@ describe("BountyEscrow", function () {
       const { verdiktaAggregator, hunter } = await loadFixture(deployBountyEscrowFixture);
       await verdiktaAggregator.setMaxOracleFee(ethers.parseEther("0.00005"));
       await expect(
-        verdiktaAggregator.connect(hunter).requestAIEvaluationWithApproval(["a", "b"], "", 500, FEE, BASE, 3, 128, { value: 0 })
-      ).to.be.revertedWith("Base cost must be less than max fee");
+        verdiktaAggregator.connect(hunter).requestAIEvaluationWithApproval(["a", "b"], "", 500, FEE, 0, BASE, 3, 128, false, { value: 0 })
+      ).to.be.revertedWithCustomError(verdiktaAggregator, "BadInput");
     });
 
     it("Windowed submission prepared before the ceiling drop can still be started by anyone after the window", async function () {
@@ -1129,14 +1211,14 @@ describe("BountyEscrow", function () {
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
       expect(await bountyEscrow.requiredPrepay(bountyId)).to.equal(ethMaxBudget);
-      expect(ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(MAX_ORACLE_FEE));
+      expect(ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(MAX_ORACLE_FEE, 0, false));
     });
 
     it("Requirement RISES after prepare: the old estimate is rejected, the live value works, and it is recorded", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, ethMaxBudget: estimate } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setFeeMultiplier(5); // was 3
+      await verdiktaAggregator.setBonusMultiplier(5); // was 3
       const live = await bountyEscrow.requiredPrepay(bountyId);
       expect(live).to.be.gt(estimate);
       await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: estimate }))
@@ -1150,7 +1232,7 @@ describe("BountyEscrow", function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, ethMaxBudget: estimate } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setFeeMultiplier(2);
+      await verdiktaAggregator.setBonusMultiplier(1);
       const live = await bountyEscrow.requiredPrepay(bountyId);
       expect(live).to.be.lt(estimate);
       await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: estimate }))
@@ -1166,7 +1248,7 @@ describe("BountyEscrow", function () {
         creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600,
       });
       const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setFeeMultiplier(7);
+      await verdiktaAggregator.setBonusMultiplier(7);
       await time.increase(3601);
       const live = await bountyEscrow.requiredPrepay(bountyId);
       await expect(bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, { value: live }))
@@ -1182,72 +1264,74 @@ describe("BountyEscrow", function () {
 
   describe("Leftover prepay goes to the funder", function () {
     it("Hunter-funded start: refund to the hunter (funder == hunter)", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
       await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
       expect((await bountyEscrow.getSubmission(bountyId, submissionId)).funder).to.equal(hunter.address);
       const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+      const left = await verdiktaAggregator.leftover(aggId);
+      expect(left).to.be.gt(0);
       const before = await ethers.provider.getBalance(hunter.address);
       await bountyEscrow.finalizeSubmission(bountyId, submissionId);
-      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(ethMaxBudget);
+      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(left);
     });
 
     it("Third-party-funded start on an expired-window submission: refund to the FUNDER, not the hunter", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600,
       });
       const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
       await time.increase(3601);
       await bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
       expect((await bountyEscrow.getSubmission(bountyId, submissionId)).funder).to.equal(other.address);
       const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+      const left = await verdiktaAggregator.leftover(aggId);
       const hb = await ethers.provider.getBalance(hunter.address);
       const ob = await ethers.provider.getBalance(other.address);
       await expect(bountyEscrow.connect(creator).finalizeSubmission(bountyId, submissionId))
-        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget);
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, left);
       expect(await ethers.provider.getBalance(hunter.address)).to.equal(hb);
-      expect((await ethers.provider.getBalance(other.address)) - ob).to.equal(ethMaxBudget);
+      expect((await ethers.provider.getBalance(other.address)) - ob).to.equal(left);
     });
 
     it("Creator-funded start that PASSES: bounty to the hunter, leftover prepay to the creator", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600,
       });
       const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
       await time.increase(3601);
       await bountyEscrow.connect(creator).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
       const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      const left = await verdiktaAggregator.leftover(aggId);
       const hb = await ethers.provider.getBalance(hunter.address);
       const cb = await ethers.provider.getBalance(creator.address);
       await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
         .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, BOUNTY_WEI);
       expect((await ethers.provider.getBalance(hunter.address)) - hb).to.equal(BOUNTY_WEI);
-      expect((await ethers.provider.getBalance(creator.address)) - cb).to.equal(ethMaxBudget);
+      expect((await ethers.provider.getBalance(creator.address)) - cb).to.equal(left);
     });
 
-    it("Force-fail refunds the funder too", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+    it("closeFailedRound refunds the funder too", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600,
       });
       const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
-      await verdiktaAggregator.setCreditOnTimeout(true);
       await time.increase(3601);
       await bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
-      await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) + 1);
+      const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+      await verdiktaAggregator.expire(aggId);                  // drawn, no commits, past the deadline
       const ob = await ethers.provider.getBalance(other.address);
-      await bountyEscrow.connect(creator).failTimedOutSubmission(bountyId, submissionId);
-      expect((await ethers.provider.getBalance(other.address)) - ob).to.equal(ethMaxBudget);
+      await bountyEscrow.connect(creator).closeFailedRound(bountyId, submissionId);
+      const left = await verdiktaAggregator.leftover(aggId);   // settled: everything but the base fees
+      expect(left).to.be.gt(0);
+      expect((await ethers.provider.getBalance(other.address)) - ob).to.equal(left);
     });
   });
 
@@ -1255,17 +1339,17 @@ describe("BountyEscrow", function () {
     // The unspent-prepay recovery (wallet -> aggregator withdrawEth -> wallet -> escrow) is
     // best-effort inside finalize / force-fail; a failure there can never revert the
     // resolution. recoverLeftoverEth() is the permissionless retry.
+    // (the rewards fixture: the round leaves a leftover, `left` once it has a result)
     async function startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter, funder) {
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, ethMaxBudget, evalWallet } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
       await bountyEscrow.connect(funder ?? hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
       const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
       return { bountyId, submissionId, ethMaxBudget, evalWallet, aggId };
     }
 
     it("A broken aggregator withdraw does not block a PASSING finalize: winner paid, RefundDeferred emitted", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployWithRewardsFixture);
       const { bountyId, submissionId, ethMaxBudget, evalWallet, aggId } =
         await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
@@ -1280,12 +1364,12 @@ describe("BountyEscrow", function () {
       expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(3); // PassedPaid
       expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded
       expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
-      // prepay still sits on the aggregator as the wallet's credit
-      expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(ethMaxBudget);
+      // the leftover still sits on the aggregator as the wallet's credit
+      expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(await verdiktaAggregator.leftover(aggId));
     });
 
     it("recoverLeftoverEth retries: reverts (with the aggregator's reason) while broken, succeeds after, then has nothing left", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployWithRewardsFixture);
       const { bountyId, submissionId, ethMaxBudget, aggId } =
         await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
@@ -1299,18 +1383,19 @@ describe("BountyEscrow", function () {
         .to.be.revertedWith("aggregator withdraw disabled");
 
       await verdiktaAggregator.setWithdrawBroken(false);
+      const left = await verdiktaAggregator.leftover(aggId);
       const before = await ethers.provider.getBalance(hunter.address);
       // anyone may call; the funder (hunter) is paid
       await expect(bountyEscrow.connect(other).recoverLeftoverEth(bountyId, submissionId))
-        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget);
-      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(ethMaxBudget);
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, left);
+      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(left);
 
       await expect(bountyEscrow.recoverLeftoverEth(bountyId, submissionId))
         .to.be.revertedWith("nothing to recover");
     });
 
     it("recoverLeftoverEth refuses unresolved submissions", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const prepared = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
       await expect(bountyEscrow.recoverLeftoverEth(bountyId, prepared.submissionId)).to.be.revertedWith("not resolved");
@@ -1318,31 +1403,31 @@ describe("BountyEscrow", function () {
       await expect(bountyEscrow.recoverLeftoverEth(bountyId, started.submissionId)).to.be.revertedWith("not resolved");
     });
 
-    it("Force-fail with a broken withdraw still fails the submission; recovery pays the FUNDER later", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+    it("closeFailedRound with a broken withdraw still moves the submission on; recovery pays the FUNDER later", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
         creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600,
       });
       const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
-      await verdiktaAggregator.setCreditOnTimeout(true);
       await time.increase(3601);
       await bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget }); // third-party funder
-      await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) + 1);
+      const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+      await verdiktaAggregator.expire(aggId);
       await verdiktaAggregator.setWithdrawBroken(true);
-      await expect(bountyEscrow.failTimedOutSubmission(bountyId, submissionId))
+      await expect(bountyEscrow.closeFailedRound(bountyId, submissionId))
         .to.emit(bountyEscrow, "RefundDeferred").withArgs(bountyId, submissionId);
-      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(2);
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(6);   // AwaitingRerun
       expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
 
       await verdiktaAggregator.setWithdrawBroken(false);
+      const left = await verdiktaAggregator.leftover(aggId);
       const ob = await ethers.provider.getBalance(other.address);
       await bountyEscrow.connect(creator).recoverLeftoverEth(bountyId, submissionId);
-      expect((await ethers.provider.getBalance(other.address)) - ob).to.equal(ethMaxBudget);
+      expect((await ethers.provider.getBalance(other.address)) - ob).to.equal(left);
     });
 
     it("ETH that reaches the wallet AFTER resolution is recoverable", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployWithRewardsFixture);
       const { bountyId, submissionId, evalWallet, aggId } =
         await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
@@ -1358,7 +1443,7 @@ describe("BountyEscrow", function () {
     });
 
     it("Inline refund is gas-capped: an aggregator withdraw that burns all gas cannot revert or inflate the resolution", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployWithRewardsFixture);
       expect(await bountyEscrow.INLINE_REFUND_GAS_LIMIT()).to.equal(200000);
       const { bountyId, submissionId, ethMaxBudget, aggId } =
         await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
@@ -1374,19 +1459,19 @@ describe("BountyEscrow", function () {
       // Retry later with full gas once the aggregator behaves
       await verdiktaAggregator.setWithdrawBurnsGas(false);
       await expect(bountyEscrow.recoverLeftoverEth(bountyId, submissionId))
-        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget);
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, await verdiktaAggregator.leftover(aggId));
     });
 
     it("Inline refund path costs far less than the cap (guard against the cap becoming too tight)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      // A: no refund credit
+      // A: no refund credit (rewards off: the round spends everything)
       const a = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
       await verdiktaAggregator.setEvaluation(a.aggId, FAILING_SCORES, JUST_CIDS, true);
       const gasNoRefund = await bountyEscrow.finalizeSubmission.estimateGas(bountyId, a.submissionId);
-      // B: full refund credit
+      // B: a refund credit (rewards on: the unearned rewards come back)
+      await verdiktaAggregator.setRewards(...REWARDS);
       const p = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
-      await verdiktaAggregator.setRefundAmount(p.ethMaxBudget);
       await bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, p.submissionId, { value: p.ethMaxBudget });
       const bAgg = (await bountyEscrow.getSubmission(bountyId, p.submissionId)).verdiktaAggId;
       await verdiktaAggregator.setEvaluation(bAgg, FAILING_SCORES, JUST_CIDS, true);
@@ -1397,12 +1482,12 @@ describe("BountyEscrow", function () {
     });
 
     it("Normal path unchanged: inline refund in the resolving transaction, no RefundDeferred", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployWithRewardsFixture);
       const { bountyId, submissionId, ethMaxBudget, aggId } =
         await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
       await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
-        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget)
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, await verdiktaAggregator.leftover(aggId))
         .and.to.not.emit(bountyEscrow, "RefundDeferred");
     });
   });
@@ -1427,7 +1512,7 @@ describe("BountyEscrow", function () {
     //  - WINDOWED bounties cap PREPARED submissions (MAX_SUBMISSIONS_PER_BOUNTY = 128): the
     //    priority scan must see in-window, never-started entries, so it walks the full array.
     //  - NON-WINDOWED bounties have NO prepare cap. Their scans walk the PENDING LIST (in-flight
-    //    evaluations only), whose length is capped at start (MAX_ACTIVE_EVALUATIONS = 256).
+    //    evaluations only), whose rounds in flight are capped at start (MAX_ACTIVE_EVALUATIONS = 64).
     // Measured against the mock: a passing finalize on a non-windowed bounty costs the same
     // with 200 never-started junk siblings as with none; start / finalize with 255 in-flight
     // siblings that all have results ≈ 5M gas.
@@ -1441,7 +1526,7 @@ describe("BountyEscrow", function () {
     it("exposes both caps", async function () {
       const { bountyEscrow } = await loadFixture(deployBountyEscrowFixture);
       expect(await bountyEscrow.MAX_SUBMISSIONS_PER_BOUNTY()).to.equal(128);
-      expect(await bountyEscrow.MAX_ACTIVE_EVALUATIONS()).to.equal(256);
+      expect(await bountyEscrow.MAX_ACTIVE_EVALUATIONS()).to.equal(64);
     });
 
     it("windowed open bounty: rejects the 129th prepare", async function () {
@@ -1597,7 +1682,7 @@ describe("BountyEscrow", function () {
       expect((await tx.wait()).gasUsed).to.be.lessThan(1_000_000n);
     });
 
-    it("pending list: swap-removal keeps the id set exact across finalize and force-fail", async function () {
+    it("pending list: swap-removal keeps the id set exact across finalize, closeFailedRound and expireRerun", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2, other } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -1612,9 +1697,14 @@ describe("BountyEscrow", function () {
       await bountyEscrow.finalizeSubmission(bountyId, s0.submissionId);
       expect(await bountyEscrow.pendingSubmissionIds(bountyId)).to.deep.equal([2n, 1n]);
 
-      // Force-fail the (now last) entry
-      await time.increase(601);
-      await bountyEscrow.failTimedOutSubmission(bountyId, s1.submissionId);
+      // Close the (now last) entry's dead round: it awaits a re-run and stays on the list ...
+      await verdiktaAggregator.expire(s1.aggId);
+      await bountyEscrow.closeFailedRound(bountyId, s1.submissionId);
+      expect(await ids()).to.deep.equal([1, 2]);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(1);   // ... but holds no slot
+      // ... until its window closes and anyone expires it
+      await time.increase(2 * 3600 + 1);
+      await bountyEscrow.expireRerun(bountyId, s1.submissionId);
       expect(await ids()).to.deep.equal([2]);
 
       // A new start lands at the end; its position bookkeeping must be right for removal
@@ -1749,19 +1839,18 @@ describe("BountyEscrow", function () {
     });
 
     describe("Malformed score vectors", function () {
-      // The aggregator returns one score per outcome in the evaluation package. The
-      // escrow expects exactly [DONT_FUND, FUND]. Anything else must fail the
-      // submission (never pass, never revert) so the bounty stays usable.
+      // The aggregator returns one score per outcome in the evaluation package: [DONT_FUND, FUND],
+      // or a one-number [FUND]. Any other length is no usable result: never a pass, never a revert.
+      // As a round with no result is not the hunter's fault, it awaits a re-run (item 12), keeping
+      // the submission's place and bond.
       const THREE_SCORES = [100000n, 800000n, 100000n];
-      const ONE_SCORE = [1000000n];
-      const NO_SCORES = [];
+      const FOUR_SCORES = [250000n, 250000n, 250000n, 250000n];
 
       for (const [label, scores] of [
         ["3 scores", THREE_SCORES],
-        ["1 score", ONE_SCORE],
-        ["0 scores", NO_SCORES],
+        ["4 scores", FOUR_SCORES],
       ]) {
-        it(`Should fail (not pass, not revert) a submission with ${label}`, async function () {
+        it(`Should await a re-run (not pass, not revert) for a submission with ${label}`, async function () {
           const { bountyEscrow, verdiktaAggregator, creator, hunter } =
             await loadFixture(deployBountyEscrowFixture);
           const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -1772,31 +1861,46 @@ describe("BountyEscrow", function () {
           await verdiktaAggregator.setEvaluation(aggId, scores, JUST_CIDS, true);
 
           await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
-            .to.emit(bountyEscrow, "SubmissionFinalized")
-            .withArgs(bountyId, submissionId, false, false, 0, 0, JUST_CIDS);
+            .to.emit(bountyEscrow, "RerunAwaited")
+            .and.to.not.emit(bountyEscrow, "SubmissionFinalized");
 
           const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
-          expect(sub.status).to.equal(2); // Failed
+          expect(sub.status).to.equal(6); // AwaitingRerun
           expect(sub.acceptance).to.equal(0);
           expect(sub.rejection).to.equal(0);
           expect(sub.finalizedAt).to.be.gt(0);
 
-          // Bounty untouched: still Open, escrow intact, no winner
+          // Bounty untouched: still Open, escrow intact, no winner; the round is no longer in flight
           const bounty = await bountyEscrow.getBounty(bountyId);
           expect(bounty.status).to.equal(0); // Open
           expect(bounty.payoutWei).to.equal(BOUNTY_WEI);
           expect(bounty.winner).to.equal(ethers.ZeroAddress);
           expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
+          expect(await bountyEscrow.pendingSubmissionIds(bountyId)).to.deep.equal([submissionId]);
 
-          // Terminal: cannot be finalized or force-failed again
+          // Not in evaluation: cannot be finalized or closed again
           await expect(
             bountyEscrow.finalizeSubmission(bountyId, submissionId)
           ).to.be.revertedWith("not pending");
           await expect(
-            bountyEscrow.failTimedOutSubmission(bountyId, submissionId)
+            bountyEscrow.closeFailedRound(bountyId, submissionId)
           ).to.be.revertedWith("not pending");
         });
       }
+
+      it("A one-number result [FUND] is judged like the FUND entry of a two-outcome result", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const low = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        await verdiktaAggregator.setEvaluation(low.aggId, [690000n], JUST_CIDS, true);   // 69 < 70
+        await expect(bountyEscrow.finalizeSubmission(bountyId, low.submissionId))
+          .to.emit(bountyEscrow, "SubmissionFinalized").withArgs(bountyId, low.submissionId, false, false, 69, 31, JUST_CIDS);
+        const high = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+        await verdiktaAggregator.setEvaluation(high.aggId, [700000n], JUST_CIDS, true);  // 70: passes
+        await expect(bountyEscrow.finalizeSubmission(bountyId, high.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter2.address, BOUNTY_WEI);
+      });
 
       it("Should never pay out on a malformed vector even if a value would pass the threshold", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter } =
@@ -1817,36 +1921,31 @@ describe("BountyEscrow", function () {
         const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
         expect(hunterBalAfter).to.equal(hunterBalBefore);
 
-        expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(2);
+        expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(6);
         expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(0);
       });
 
       it("Should refund the hunter's leftover prepay on a malformed vector", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter } =
-          await loadFixture(deployBountyEscrowFixture);
+          await loadFixture(deployWithRewardsFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-
-        const { submissionId, ethMaxBudget, evalWallet } =
-          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-        await verdiktaAggregator.setRefundAmount(ethMaxBudget);
-        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
-          value: ethMaxBudget,
-        });
-        const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+        const { submissionId, aggId, evalWallet } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
 
         await verdiktaAggregator.setEvaluation(aggId, THREE_SCORES, JUST_CIDS, true);
+        const left = await verdiktaAggregator.leftover(aggId);
+        expect(left).to.be.gt(0);
 
         const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
         await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
           .to.emit(bountyEscrow, "EthRefunded")
-          .withArgs(bountyId, submissionId, ethMaxBudget);
+          .withArgs(bountyId, submissionId, left);
         const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
-        expect(hunterBalAfter - hunterBalBefore).to.equal(ethMaxBudget);
+        expect(hunterBalAfter - hunterBalBefore).to.equal(left);
         expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(0);
       });
 
-      it("Should leave the bounty open so a later well-formed submission can win", async function () {
-        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+      it("A later well-formed submission waits for the earlier one's re-run window, then wins", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2, other } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
@@ -1857,6 +1956,11 @@ describe("BountyEscrow", function () {
         const good = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
         await verdiktaAggregator.setEvaluation(good.aggId, PASSING_SCORES, JUST_CIDS, true);
 
+        // the earlier submission keeps its place while it may re-run
+        await expect(bountyEscrow.finalizeSubmission(bountyId, good.submissionId))
+          .to.be.revertedWith("earlier submission pending - retry after it resolves");
+        await time.increase(2 * 3600 + 1);
+        await bountyEscrow.connect(other).expireRerun(bountyId, bad.submissionId);
         await expect(bountyEscrow.finalizeSubmission(bountyId, good.submissionId))
           .to.emit(bountyEscrow, "PayoutSent")
           .withArgs(bountyId, hunter2.address, BOUNTY_WEI);
@@ -1868,7 +1972,7 @@ describe("BountyEscrow", function () {
         expect((await bountyEscrow.getSubmission(bountyId, good.submissionId)).status).to.equal(3);
       });
 
-      it("Should let the creator close an expired bounty after a malformed-vector failure", async function () {
+      it("Should let the creator close an expired bounty once the malformed round's re-run has expired", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
@@ -1877,11 +1981,12 @@ describe("BountyEscrow", function () {
           bountyEscrow, verdiktaAggregator, hunter, bountyId
         );
         await verdiktaAggregator.setEvaluation(aggId, THREE_SCORES, JUST_CIDS, true);
-
-        // Before the fix, activeEvaluations would stay at 1 and this would be locked forever.
         await bountyEscrow.finalizeSubmission(bountyId, submissionId);
 
         await time.increaseTo(deadline);
+        await expect(bountyEscrow.closeExpiredBounty(bountyId))
+          .to.be.revertedWith("active evaluation - finalize first");
+        await bountyEscrow.expireRerun(bountyId, submissionId);
         await expect(bountyEscrow.closeExpiredBounty(bountyId))
           .to.emit(bountyEscrow, "BountyClosed")
           .withArgs(bountyId, creator.address, BOUNTY_WEI);
@@ -1925,23 +2030,25 @@ describe("BountyEscrow", function () {
       ).to.be.revertedWith("Verdikta not ready");
     });
 
-    it("Should tell the caller to force-fail when the round is settled with no result", async function () {
+    it("Should tell the caller to use closeFailedRound when the round has no result and can get none", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
-      await time.increase(601);
-      // Not settled on-chain yet: finalize settles it, finds no result, and says so (the settle
-      // is rolled back with the revert; force-fail redoes it)
+      await verdiktaAggregator.draw(aggId);
       await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
-        .to.be.revertedWith("no oracle result - use failTimedOutSubmission");
-      expect(await bountyEscrow.nextAction(bountyId, submissionId)).to.equal("FORCE_FAIL");
+        .to.be.revertedWith("Verdikta not ready");                          // drawn, before its deadline
+      await verdiktaAggregator.expire(aggId);
+      // Past the deadline, not settled on-chain yet: finalize says to close it
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.be.revertedWith("no oracle result - use closeFailedRound");
+      expect(await bountyEscrow.nextAction(bountyId, submissionId)).to.equal("CLOSE_FAILED");
       // Settled on-chain by someone else: same answer
-      await verdiktaAggregator.finalizeEvaluationTimeout(aggId);
+      await verdiktaAggregator.settle(aggId);
       await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
-        .to.be.revertedWith("no oracle result - use failTimedOutSubmission");
-      await expect(bountyEscrow.failTimedOutSubmission(bountyId, submissionId))
-        .to.emit(bountyEscrow, "SubmissionFinalized");
+        .to.be.revertedWith("no oracle result - use closeFailedRound");
+      await expect(bountyEscrow.closeFailedRound(bountyId, submissionId))
+        .to.emit(bountyEscrow, "RerunAwaited");
     });
 
     it("Should reject finalization of non-pending submission", async function () {
@@ -2168,7 +2275,7 @@ describe("BountyEscrow", function () {
         expect((await bountyEscrow.getSubmission(bountyId, v1.submissionId)).status).to.equal(4);
       });
 
-      it("Waiting is bounded: a dead earlier round is force-failed by anyone, then the later one is paid", async function () {
+      it("Waiting is bounded: a dead earlier round is closed by anyone, its re-run window closes, then the later one is paid", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2, other } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -2176,8 +2283,11 @@ describe("BountyEscrow", function () {
         const good = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
         await verdiktaAggregator.setEvaluation(good.aggId, PASSING_SCORES, JUST_CIDS, true);
         await expect(bountyEscrow.finalizeSubmission(bountyId, good.submissionId)).to.be.revertedWith(RETRY);
-        await time.increase(601);
-        await bountyEscrow.connect(other).failTimedOutSubmission(bountyId, dead.submissionId);
+        await verdiktaAggregator.expire(dead.aggId);
+        await bountyEscrow.connect(other).closeFailedRound(bountyId, dead.submissionId);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, good.submissionId)).to.be.revertedWith(RETRY);
+        await time.increase(2 * 3600 + 1);
+        await bountyEscrow.connect(other).expireRerun(bountyId, dead.submissionId);
         await expect(bountyEscrow.finalizeSubmission(bountyId, good.submissionId))
           .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter2.address, BOUNTY_WEI);
       });
@@ -2231,78 +2341,8 @@ describe("BountyEscrow", function () {
   });
 
   // =========================================================================
-  describe("Timeout Handling", function () {
-    it("Should allow force-fail once the aggregator round has timed out and settled", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
-        await loadFixture(deployBountyEscrowFixture);
-      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId } = await submitFull(
-        bountyEscrow, verdiktaAggregator, hunter, bountyId
-      );
-
-      // Fast-forward 10+ minutes
-      await time.increase(601);
-
-      await expect(
-        bountyEscrow.failTimedOutSubmission(bountyId, submissionId)
-      )
-        .to.emit(bountyEscrow, "SubmissionFinalized")
-        .withArgs(bountyId, submissionId, false, false, 0, 0, "TIMED_OUT");
-
-      const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
-      expect(sub.status).to.equal(2); // Failed
-      expect(sub.finalizedAt).to.be.gt(0);
-
-      // Bounty remains open for new submissions
-      const bounty = await bountyEscrow.getBounty(bountyId);
-      expect(bounty.status).to.equal(0); // Open
-    });
-
-    it("Should reject force-fail while the aggregator round is still open (not timed out)", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
-        await loadFixture(deployBountyEscrowFixture);
-      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId } = await submitFull(
-        bountyEscrow, verdiktaAggregator, hunter, bountyId
-      );
-
-      // 4 minutes: aggregator's 300s response timeout has not elapsed, so the round is
-      // neither settled nor refundable — force-fail must refuse.
-      await time.increase(240);
-
-      await expect(
-        bountyEscrow.failTimedOutSubmission(bountyId, submissionId)
-      ).to.be.revertedWith("evaluation not settled");
-      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(1); // still PendingVerdikta
-      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(1);
-    });
-
-    it("Should gate force-fail on aggregator state, not on time since prepare", async function () {
-      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
-        await loadFixture(deployBountyEscrowFixture);
-      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId, ethMaxBudget } =
-        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-
-      // Hunter starts 20 minutes after preparing. The old 10-minute-from-submittedAt timer
-      // would have allowed a force-fail 1 second after start, before the aggregator could
-      // possibly have timed out — stranding the prepay.
-      await time.increase(20 * 60);
-      await startSubmission(bountyEscrow, hunter, bountyId, submissionId, ethMaxBudget);
-      await time.increase(1);
-
-      await expect(
-        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
-      ).to.be.revertedWith("evaluation not settled");
-
-      // Once the aggregator's own timeout has elapsed, the round settles and force-fail works.
-      await time.increase(300);
-      await expect(
-        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
-      ).to.emit(bountyEscrow, "SubmissionFinalized");
-    });
-
-    it("Should refuse to force-fail a submission that has a PASSING result on the aggregator", async function () {
+  describe("Failed rounds (closeFailedRound)", function () {
+    it("Should close a round once it is past its deadline with no result: the submission awaits a re-run", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -2310,13 +2350,79 @@ describe("BountyEscrow", function () {
         bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
-      // Oracle completes with a passing score; nobody has finalized yet.
-      await time.increase(601);
+      await verdiktaAggregator.expire(aggId);                 // drawn, no commits, past its deadline
+
+      await expect(
+        bountyEscrow.closeFailedRound(bountyId, submissionId)
+      )
+        .to.emit(bountyEscrow, "RerunAwaited")
+        .and.to.not.emit(bountyEscrow, "SubmissionFinalized");
+      expect(await verdiktaAggregator.phaseOf(aggId)).to.equal(8n);   // settled as failed
+
+      const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+      expect(sub.status).to.equal(6); // AwaitingRerun
+      expect(sub.finalizedAt).to.be.gt(0);
+
+      // Bounty remains open for new submissions
+      const bounty = await bountyEscrow.getBounty(bountyId);
+      expect(bounty.status).to.equal(0); // Open
+    });
+
+    it("Should refuse while the round is still open: drawn and before its deadline, or undrawn (an undrawn round never times out)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const drawn = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      const undrawn = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+      await verdiktaAggregator.draw(drawn.aggId);
+
+      await time.increase(240);
+      await expect(bountyEscrow.closeFailedRound(bountyId, drawn.submissionId)).to.be.revertedWith("round still open");
+      await time.increase(3 * 3600);                          // hours later: the undrawn round is still open
+      await expect(bountyEscrow.closeFailedRound(bountyId, undrawn.submissionId)).to.be.revertedWith("round still open");
+      expect((await bountyEscrow.getSubmission(bountyId, undrawn.submissionId)).status).to.equal(1); // still PendingVerdikta
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(2);                         // both still in flight
+    });
+
+    it("Should gate on the aggregator's state, not on time since prepare", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, ethMaxBudget } =
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+      // Hunter starts 20 minutes after preparing; nothing about that makes the round closable.
+      await time.increase(20 * 60);
+      await startSubmission(bountyEscrow, hunter, bountyId, submissionId, ethMaxBudget);
+      await time.increase(1);
+
+      await expect(
+        bountyEscrow.connect(other).closeFailedRound(bountyId, submissionId)
+      ).to.be.revertedWith("round still open");
+
+      // Once the drawn round is past its deadline, it settles and the close works.
+      const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+      await verdiktaAggregator.expire(aggId);
+      await expect(
+        bountyEscrow.connect(other).closeFailedRound(bountyId, submissionId)
+      ).to.emit(bountyEscrow, "RerunAwaited");
+    });
+
+    it("Should refuse to close a submission that has a PASSING result on the aggregator", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, aggId } = await submitFull(
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
+      );
+
+      // Oracle completes with a passing score; nobody has finalized yet, and the deadline passes.
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      await time.increase(3600);
 
       // Creator tries to erase the result before the hunter's finalize lands.
       await expect(
-        bountyEscrow.connect(creator).failTimedOutSubmission(bountyId, submissionId)
+        bountyEscrow.connect(creator).closeFailedRound(bountyId, submissionId)
       ).to.be.revertedWith("result available - use finalizeSubmission");
 
       // The hunter's payout is intact.
@@ -2326,7 +2432,7 @@ describe("BountyEscrow", function () {
       expect((await bountyEscrow.getBounty(bountyId)).winner).to.equal(hunter.address);
     });
 
-    it("Should refuse to force-fail a submission that has a FAILING result (must finalize)", async function () {
+    it("Should refuse to close a submission that has a FAILING result (must finalize)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -2334,51 +2440,45 @@ describe("BountyEscrow", function () {
         bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
-      await time.increase(601);
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
 
       await expect(
-        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
+        bountyEscrow.connect(other).closeFailedRound(bountyId, submissionId)
       ).to.be.revertedWith("result available - use finalizeSubmission");
 
-      // Real scores are recorded via finalize, not zeroed by a force-fail.
+      // Real scores are recorded via finalize, not zeroed by a close.
       await bountyEscrow.finalizeSubmission(bountyId, submissionId);
       const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
-      expect(sub.status).to.equal(2); // Failed
+      expect(sub.status).to.equal(2); // Failed (a hard fail: no score at the threshold, R = 1)
       expect(sub.acceptance).to.equal(40);
     });
 
-    it("Should refuse to force-fail when settling the timeout yields a late valid result", async function () {
+    it("An undrawn round more than a day old is cancelled (its prepay to the aggregator's treasury) and closed", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
-        await loadFixture(deployBountyEscrowFixture);
+        await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId, aggId } = await submitFull(
-        bountyEscrow, verdiktaAggregator, hunter, bountyId
-      );
-
-      // Enough late responses arrived: the aggregator's timeout path finalizes normally.
-      await verdiktaAggregator.setTimeoutResult(aggId, PASSING_SCORES, JUST_CIDS);
-      await time.increase(601);
-
-      // The force-fail's own settle attempt produces the result — it must then back off.
-      await expect(
-        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
-      ).to.be.revertedWith("result available - use finalizeSubmission");
-
-      // (The revert rolled the settle back; finalize settles it again and pays.)
-      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
-        .to.emit(bountyEscrow, "PayoutSent")
-        .withArgs(bountyId, hunter.address, BOUNTY_WEI);
+      const { submissionId, aggId, ethMaxBudget } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await mine(2);
+      await verdiktaAggregator.sealSeed(aggId);               // sealed, never drawn
+      await time.increase(24 * 3600 + 1);
+      await expect(bountyEscrow.connect(hunter).drawJury(bountyId, submissionId))
+        .to.be.revertedWithCustomError(verdiktaAggregator, "DrawExpired");
+      expect(await bountyEscrow.nextAction(bountyId, submissionId)).to.equal("CLOSE_FAILED");
+      const treasury = await verdiktaAggregator.treasury();
+      await expect(bountyEscrow.connect(other).closeFailedRound(bountyId, submissionId))
+        .to.emit(verdiktaAggregator, "RoundCancelled").withArgs(aggId, ethMaxBudget)
+        .and.to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, 0);   // nothing comes back
+      expect(await verdiktaAggregator.ethOwed(treasury)).to.equal(ethMaxBudget);
+      expect(await verdiktaAggregator.phaseOf(aggId)).to.equal(9n);
     });
 
-    it("Should not let force-fail defeat the two-passing-submissions payout (PassedUnpaid fix)", async function () {
+    it("Should not let a close defeat the two-passing-submissions payout (PassedUnpaid fix)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const a = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
       const b = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
 
-      await time.increase(601);
       await verdiktaAggregator.setEvaluation(a.aggId, PASSING_SCORES, "A", true);
       await verdiktaAggregator.setEvaluation(b.aggId, PASSING_SCORES, "B", true);
 
@@ -2387,9 +2487,9 @@ describe("BountyEscrow", function () {
         .to.be.revertedWith("earlier submission pending - retry after it resolves");
       expect((await bountyEscrow.getSubmission(bountyId, b.submissionId)).status).to.equal(1);
 
-      // Creator cannot force-fail A to leave nobody paid.
+      // Creator cannot close A's round to leave nobody paid.
       await expect(
-        bountyEscrow.connect(creator).failTimedOutSubmission(bountyId, a.submissionId)
+        bountyEscrow.connect(creator).closeFailedRound(bountyId, a.submissionId)
       ).to.be.revertedWith("result available - use finalizeSubmission");
 
       await expect(bountyEscrow.finalizeSubmission(bountyId, a.submissionId))
@@ -2400,7 +2500,7 @@ describe("BountyEscrow", function () {
       expect((await bountyEscrow.getSubmission(bountyId, b.submissionId)).status).to.equal(4);
     });
 
-    it("Should reject timeout on non-pending submission", async function () {
+    it("Should reject closing a non-pending submission", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -2412,64 +2512,51 @@ describe("BountyEscrow", function () {
       await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
       await bountyEscrow.finalizeSubmission(bountyId, submissionId);
 
-      await time.increase(601);
+      await time.increase(3600);
 
       await expect(
-        bountyEscrow.failTimedOutSubmission(bountyId, submissionId)
+        bountyEscrow.closeFailedRound(bountyId, submissionId)
       ).to.be.revertedWith("not pending");
     });
 
-    it("Should allow anyone to call timeout (not just hunter)", async function () {
+    it("Should allow anyone to close a failed round (not just the hunter)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      const { submissionId } = await submitFull(
+      const { submissionId, aggId } = await submitFull(
         bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
-      await time.increase(601);
+      await verdiktaAggregator.expire(aggId);
 
       // Called by unrelated account — should succeed
       await expect(
-        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
-      ).to.emit(bountyEscrow, "SubmissionFinalized");
+        bountyEscrow.connect(other).closeFailedRound(bountyId, submissionId)
+      ).to.emit(bountyEscrow, "RerunAwaited");
     });
 
-    it("Should settle the aggregator and recover the ETH prepay on force-fail (dead oracle)", async function () {
+    it("Should settle the aggregator and recover the leftover prepay when closing a dead round", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
-        await loadFixture(deployBountyEscrowFixture);
+        await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, evalWallet, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
 
-      // Model a dead oracle: the prepay stays RESERVED on the aggregator and is only
-      // credited to the wallet's pull-ledger when finalizeEvaluationTimeout settles it.
-      await verdiktaAggregator.setCreditOnTimeout(true);
-
-      const { submissionId, evalWallet, ethMaxBudget } =
-        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
-      await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
-        value: ethMaxBudget,
-      });
-
-      // Pre-timeout: nothing owed to the wallet yet (prepay still reserved on aggregator).
+      await verdiktaAggregator.expire(aggId);
+      // Before settlement nothing is owed to the wallet: the prepay is still escrowed.
       expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(0);
-
-      await time.increase(601);
 
       const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
 
-      // Force-fail by an unrelated caller (hunter pays no gas). The contract now settles
-      // the aggregator first, so the prepay is recovered and returned to the hunter —
-      // without the settle step this would emit EthRefunded(0) and strand the prepay.
-      await expect(
-        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
-      )
-        .to.emit(bountyEscrow, "SubmissionFinalized")
-        .and.to.emit(bountyEscrow, "EthRefunded")
-        .withArgs(bountyId, submissionId, ethMaxBudget);
+      // Closed by an unrelated caller (hunter pays no gas). It settles the round first, so the
+      // unspent prepay is credited, recovered and returned to the funder.
+      const tx = bountyEscrow.connect(other).closeFailedRound(bountyId, submissionId);
+      await expect(tx).to.emit(verdiktaAggregator, "RoundSettled").withArgs(aggId, true);
+      const left = await verdiktaAggregator.leftover(aggId);
+      expect(left).to.be.gt(0);
+      await expect(tx).to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, left);
 
       const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
-      expect(hunterBalAfter - hunterBalBefore).to.equal(ethMaxBudget);
+      expect(hunterBalAfter - hunterBalBefore).to.equal(left);
 
       // Aggregator credit fully drained — nothing stranded.
       expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(0);
@@ -2477,7 +2564,7 @@ describe("BountyEscrow", function () {
 
     it("Should not let a hunter that rejects ETH brick close-out (pull-payment guard)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, other } =
-        await loadFixture(deployBountyEscrowFixture);
+        await loadFixture(deployWithRewardsFixture);
       const escrowAddr = await bountyEscrow.getAddress();
 
       const Grief = await ethers.getContractFactory("MockRejectingHunter");
@@ -2489,40 +2576,37 @@ describe("BountyEscrow", function () {
       // Fund the grief contract so it can pay the ETH prepay (it accepts ETH while not rejecting).
       await other.sendTransaction({ to: griefAddr, value: ethers.parseEther("0.01") });
 
-      // Prepare + start via the contract. Model a dead oracle (prepay reserved until timeout).
       await grief.prepare(escrowAddr, bountyId, EVAL_CID, HUNTER_CID);
       const subId = await grief.lastSubId();
-      const budget = await grief.lastBudget();
-      await verdiktaAggregator.setCreditOnTimeout(true);
-      await verdiktaAggregator.setRefundAmount(budget);
       await grief.start(escrowAddr, bountyId, subId);
+      const aggId = (await bountyEscrow.getSubmission(bountyId, subId)).verdiktaAggId;
 
-      // Now the hunter rejects all incoming ETH.
+      // Now the hunter rejects all incoming ETH, and its round dies.
       await grief.setRejecting(true);
-      await time.increase(601);
+      await verdiktaAggregator.expire(aggId);
 
-      // Force-fail must NOT revert despite the hunter rejecting the refund; it defers it.
-      await expect(
-        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, subId)
-      )
-        .to.emit(bountyEscrow, "SubmissionFinalized")
-        .and.to.emit(bountyEscrow, "PaymentDeferred")
-        .withArgs(griefAddr, budget);
+      // The close must NOT revert despite the hunter rejecting the refund; it defers it.
+      const tx = bountyEscrow.connect(other).closeFailedRound(bountyId, subId);
+      await expect(tx).to.emit(bountyEscrow, "RerunAwaited");
+      const left = await verdiktaAggregator.leftover(aggId);
+      await expect(tx).to.emit(bountyEscrow, "PaymentDeferred").withArgs(griefAddr, left);
 
-      // Refund is parked on the pull ledger (not lost), and the submission is resolved.
-      expect(await bountyEscrow.withdrawable(griefAddr)).to.equal(budget);
-      expect((await bountyEscrow.getSubmission(bountyId, subId)).status).to.equal(2); // Failed
+      // Refund is parked on the pull ledger (not lost).
+      expect(await bountyEscrow.withdrawable(griefAddr)).to.equal(left);
+      expect((await bountyEscrow.getSubmission(bountyId, subId)).status).to.equal(6); // AwaitingRerun
 
-      // Critically, the bounty is NOT bricked — the creator can still reclaim after the deadline.
+      // Critically, the bounty is NOT bricked — after the deadline the re-run is expired and the
+      // creator reclaims.
       const b = await bountyEscrow.getBounty(bountyId);
       await time.increaseTo(Number(b.submissionDeadline) + 1);
+      await bountyEscrow.connect(other).expireRerun(bountyId, subId);
       await expect(bountyEscrow.closeExpiredBounty(bountyId)).to.emit(bountyEscrow, "BountyClosed");
 
       // And the hunter can claim once it can receive ETH again.
       await grief.setRejecting(false);
       await expect(grief.claim(escrowAddr))
         .to.emit(bountyEscrow, "Withdrawn")
-        .withArgs(griefAddr, budget);
+        .withArgs(griefAddr, left);
       expect(await bountyEscrow.withdrawable(griefAddr)).to.equal(0);
     });
   });
@@ -2644,7 +2728,7 @@ describe("BountyEscrow", function () {
       await expect(bountyEscrow.closeExpiredBounty(bountyId)).to.emit(bountyEscrow, "BountyClosed");
     });
 
-    it("Should track activeEvaluations across start, finalize and force-fail", async function () {
+    it("Should track activeEvaluations across start, finalize and closeFailedRound", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -2660,9 +2744,9 @@ describe("BountyEscrow", function () {
       await bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId);
       expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(1);
 
-      // Force-fail the other → counter 0
-      await time.increase(601);
-      await bountyEscrow.failTimedOutSubmission(bountyId, sub2.submissionId);
+      // Close the other's dead round → counter 0 (it awaits a re-run, holding no slot)
+      await verdiktaAggregator.expire(sub2.aggId);
+      await bountyEscrow.closeFailedRound(bountyId, sub2.submissionId);
       expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
     });
   });
@@ -2906,32 +2990,22 @@ describe("BountyEscrow", function () {
 
     it("Should refund leftover ETH to hunter after finalization", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } =
-        await loadFixture(deployBountyEscrowFixture);
+        await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      // With the aggregator's rewards on, a round leaves the unearned ones unspent.
+      const { submissionId, aggId, evalWallet } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      const left = await verdiktaAggregator.leftover(aggId);
+      expect(left).to.be.gt(0);
+      expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(left);
 
-      // Configure the mock to leave the full prepay as a refundable ethOwed credit,
-      // simulating an evaluation that cost less than the worst-case budget.
-      const { submissionId, ethMaxBudget, evalWallet } =
-        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
-
-      await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
-        value: ethMaxBudget,
-      });
-      const startSub = await bountyEscrow.getSubmission(bountyId, submissionId);
-      const aggId = startSub.verdiktaAggId;
-
-      await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
-
-      const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
-
-      // finalize called by default signer (owner) — hunter pays no gas, receives the refund.
+      const before = await ethers.provider.getBalance(hunter.address);
       await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
-        .to.emit(bountyEscrow, "EthRefunded")
-        .withArgs(bountyId, submissionId, ethMaxBudget);
-
-      const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
-      expect(hunterBalAfter - hunterBalBefore).to.equal(ethMaxBudget);
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, left);
+      // bounty + leftover prepay, both to the hunter (who funded the round)
+      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(BOUNTY_WEI + left);
+      expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(0);
+      expect(await ethers.provider.getBalance(evalWallet)).to.equal(0);
     });
 
     it("Should store submission timestamps correctly", async function () {
@@ -3570,7 +3644,7 @@ describe("BountyEscrow", function () {
         expect((await bountyEscrow.getBounty(bountyId)).winner).to.equal(hunter2.address);
       });
 
-      it("Should pay sub 1 on retry after the earlier in-flight sub 0 is force-failed", async function () {
+      it("Should pay sub 1 on retry after the earlier sub 0's dead round is closed and its re-run expires", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
@@ -3590,9 +3664,14 @@ describe("BountyEscrow", function () {
         await expect(bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId))
           .to.be.revertedWith("earlier submission pending - retry after it resolves");
 
-        // Sub 0's oracle round dies: past the aggregator timeout, anyone can force-fail it
-        await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) + 1);
-        await bountyEscrow.failTimedOutSubmission(bountyId, sub0.submissionId);
+        // Sub 0's oracle round dies: past its deadline anyone can close it; it keeps its place
+        // while it may re-run, and anyone expires it once that window closes
+        await verdiktaAggregator.expire((await bountyEscrow.getSubmission(bountyId, sub0.submissionId)).verdiktaAggId);
+        await bountyEscrow.closeFailedRound(bountyId, sub0.submissionId);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId))
+          .to.be.revertedWith("earlier submission pending - retry after it resolves");
+        await time.increase(2 * 3600 + 1);
+        await bountyEscrow.expireRerun(bountyId, sub0.submissionId);
 
         await expect(bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId))
           .to.emit(bountyEscrow, "PayoutSent")
@@ -4102,17 +4181,19 @@ describe("BountyEscrow", function () {
       const code = await ethers.provider.getCode(await bountyEscrow.getAddress());
       const size = (code.length - 2) / 2;
       expect(size).to.be.lessThan(EIP170_LIMIT);
-      // Room for the next contract change without another size exercise.
-      expect(EIP170_LIMIT - size).to.be.greaterThan(2000);
+      // Room for the next contract change without another size exercise (v2 added the Q-of-N
+      // rule, bonds and re-runs: 22.9 KB, 2026-11-23).
+      expect(EIP170_LIMIT - size).to.be.greaterThan(1500);
     });
 
-    it("creates the lens in the constructor, pointing back at the escrow and the aggregator", async function () {
-      const { bountyEscrow, verdiktaAggregator } = await loadFixture(deployBountyEscrowFixture);
+    it("creates the lens in the constructor, pointing back at the escrow (each bounty's aggregator is read from it)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator } = await loadFixture(deployBountyEscrowFixture);
       const lensAddr = await bountyEscrow.lens();
       expect(lensAddr).to.not.equal(ethers.ZeroAddress);
       const lens = await ethers.getContractAt("BountyEscrowLens", lensAddr);
       expect(await lens.escrow()).to.equal(await bountyEscrow.getAddress());
-      expect(await lens.verdikta()).to.equal(await verdiktaAggregator.getAddress());
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      expect(await bountyEscrow.aggregatorOf(bountyId)).to.equal(await verdiktaAggregator.getAddress());
     });
 
     it("answers the lens views at the escrow address, identically to a direct lens call", async function () {
@@ -4317,19 +4398,21 @@ describe("BountyEscrow", function () {
       expect(await bountyEscrow.nextAction(bountyId, submissionId)).to.equal("DONE");
     });
 
-    it("'bad budget': a zero aggregator quote is refused at create, prepare and start", async function () {
+    it("'bad budget': a zero aggregator quote is refused at prepare and start (create refuses the fee first)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
-      await verdiktaAggregator.setFeeMultiplier(0);
-      await expect(createDefaultBounty(bountyEscrow, creator)).to.be.revertedWith("bad budget");
+      // The real formula quotes 0 only for a zero fee: a ceiling of 0 clamps every request to it
+      const ceiling = await verdiktaAggregator.maxOracleFee();
+      await verdiktaAggregator.setMaxOracleFee(0);
+      await expect(createDefaultBounty(bountyEscrow, creator)).to.be.revertedWith("oracle fee above ceiling");
       await expect(prepareDefaultSubmission(bountyEscrow, hunter, bountyId)).to.be.revertedWith("bad budget");
       expect(await bountyEscrow.requiredPrepay(bountyId)).to.equal(0);
       await expect(
         bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: 0 })
       ).to.be.revertedWith("bad budget");
       // Quote restored → the prepared submission is not stranded
-      await verdiktaAggregator.setFeeMultiplier(3);
+      await verdiktaAggregator.setMaxOracleFee(ceiling);
       await expect(
         bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: await bountyEscrow.requiredPrepay(bountyId) })
       ).to.emit(bountyEscrow, "WorkSubmitted");
@@ -4344,25 +4427,34 @@ describe("BountyEscrow", function () {
       ).to.be.revertedWith("no arbiter payment");
     });
 
-    it("EvaluationWallet: only its escrow may operate it, and it starts at most once", async function () {
+    it("EvaluationWallet: only its escrow may operate it; bound to one aggregator once; it may run several rounds", async function () {
       const { bountyEscrow, verdiktaAggregator, owner, hunter, other } = await loadFixture(deployBountyEscrowFixture);
-      // A wallet created by the escrow rejects strangers
+      // A wallet created by the escrow rejects strangers, and is already bound
       const { bountyId } = await createDefaultBounty(bountyEscrow, owner);
       const { evalWallet } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
       const w = await ethers.getContractAt("EvaluationWallet", evalWallet);
+      expect(await w.verdikta()).to.equal(await verdiktaAggregator.getAddress());
+      const req = ["", ALPHA, MAX_ORACLE_FEE, 0, EST_BASE_COST, MAX_FEE_SCALING, CLASS_ID, false];
+      const value = await verdiktaAggregator.maxTotalFee(MAX_ORACLE_FEE, 0, false);
       await expect(w.connect(other).refundLeftoverEth()).to.be.revertedWith("Not bounty");
-      await expect(
-        w.connect(other).startEvaluation([EVAL_CID, HUNTER_CID], "", ALPHA, MAX_ORACLE_FEE, EST_BASE_COST, MAX_FEE_SCALING, CLASS_ID,
-          { value: MAX_ORACLE_FEE * 3n })
-      ).to.be.revertedWith("Not bounty");
+      await expect(w.connect(other).drawJury()).to.be.revertedWith("Not bounty");
+      await expect(w.connect(other).init(await verdiktaAggregator.getAddress())).to.be.revertedWith("Not bounty");
+      await expect(w.connect(other).startEvaluation([EVAL_CID, HUNTER_CID], req, { value }))
+        .to.be.revertedWith("Not bounty");
       // A wallet whose "bounty contract" is a test signer can be driven directly
       const W = await ethers.getContractFactory("EvaluationWallet");
-      const direct = await W.deploy(owner.address, await verdiktaAggregator.getAddress());
-      const args = [[EVAL_CID, HUNTER_CID], "", ALPHA, MAX_ORACLE_FEE, EST_BASE_COST, MAX_FEE_SCALING, CLASS_ID];
-      await direct.connect(owner).startEvaluation(...args, { value: MAX_ORACLE_FEE * 3n });
-      expect(await direct.started()).to.equal(true);
-      await expect(direct.connect(owner).startEvaluation(...args, { value: MAX_ORACLE_FEE * 3n }))
-        .to.be.revertedWith("Already started");
+      const direct = await W.deploy(owner.address);
+      await expect(direct.init(ethers.ZeroAddress)).to.be.revertedWith("bad init");
+      await direct.init(await verdiktaAggregator.getAddress());
+      await expect(direct.init(await verdiktaAggregator.getAddress())).to.be.revertedWith("bad init");
+      await direct.startEvaluation([EVAL_CID, HUNTER_CID], req, { value });
+      const first = await direct.aggId();
+      await direct.startEvaluation([EVAL_CID, HUNTER_CID], req, { value });   // the escrow's re-run
+      expect(await direct.rounds()).to.equal(2);
+      expect(await direct.aggId()).to.not.equal(first);
+      await mine(2);
+      await expect(direct.drawJury()).to.emit(verdiktaAggregator, "JuryDrawn");
+      expect(await verdiktaAggregator.phaseOf(await direct.aggId())).to.equal(3n);
     });
 
     it("same block at the window end: creator approval wins over a start regardless of tx order", async function () {
@@ -4406,12 +4498,14 @@ describe("BountyEscrow", function () {
       const aggId = sRc.logs.find((l) => l.fragment && l.fragment.name === "WorkSubmitted").args[2];
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
       const fRc = await (await bountyEscrow.finalizeSubmission(bountyId, submissionId)).wait();
-      // Measured 2026-09-12 after Tier A (clones + packing): see the numbers in the runbook.
-      // Ceilings leave ~15% headroom; a regression past them fails the suite.
-      expect(cRc.gasUsed).to.be.lessThan(420_000n);
-      expect(pRc.gasUsed).to.be.lessThan(320_000n);
-      expect(sRc.gasUsed).to.be.lessThan(500_000n);
-      expect(fRc.gasUsed).to.be.lessThan(180_000n);
+      // Measured 2026-11-23 on the v2 mock (Q-of-N reads every counted score; prepare binds the
+      // wallet to the bounty's aggregator): see the console line. Ceilings leave ~15% headroom; a
+      // regression past them fails the suite.
+      console.log(`      gas: create ${cRc.gasUsed}, prepare ${pRc.gasUsed}, start ${sRc.gasUsed}, finalize ${fRc.gasUsed}`);
+      expect(cRc.gasUsed).to.be.lessThan(GAS_CEILING.create);
+      expect(pRc.gasUsed).to.be.lessThan(GAS_CEILING.prepare);
+      expect(sRc.gasUsed).to.be.lessThan(GAS_CEILING.start);
+      expect(fRc.gasUsed).to.be.lessThan(GAS_CEILING.finalize);
     });
   });
 });

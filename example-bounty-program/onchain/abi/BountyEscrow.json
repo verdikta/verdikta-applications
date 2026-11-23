@@ -2,9 +2,9 @@
   {
     "inputs": [
       {
-        "internalType": "contract IVerdiktaAggregator",
-        "name": "_verdikta",
-        "type": "address"
+        "internalType": "contract IVerdiktaAggregator[]",
+        "name": "aggregators_",
+        "type": "address[]"
       }
     ],
     "stateMutability": "nonpayable",
@@ -30,6 +30,68 @@
     ],
     "name": "InsufficientBalance",
     "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "submissionId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "creator",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "BondForfeited",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "submissionId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "BondReturned",
+    "type": "event"
   },
   {
     "anonymous": false,
@@ -266,6 +328,49 @@
       },
       {
         "indexed": false,
+        "internalType": "uint8",
+        "name": "round",
+        "type": "uint8"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "passCount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "noResult",
+        "type": "bool"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "rerunDeadline",
+        "type": "uint64"
+      }
+    ],
+    "name": "RerunAwaited",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "submissionId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
         "internalType": "bool",
         "name": "passed",
         "type": "bool"
@@ -469,6 +574,19 @@
   },
   {
     "inputs": [],
+    "name": "MAX_ROUNDS",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "MAX_SUBMISSIONS_PER_BOUNTY",
     "outputs": [
       {
@@ -496,6 +614,19 @@
   {
     "inputs": [],
     "name": "PAYOUT_GAS_LIMIT",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "RERUN_WINDOW",
     "outputs": [
       {
         "internalType": "uint256",
@@ -546,6 +677,57 @@
         "internalType": "uint256",
         "name": "",
         "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "aggregatorCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
+      }
+    ],
+    "name": "aggregatorOf",
+    "outputs": [
+      {
+        "internalType": "contract IVerdiktaAggregator",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "i",
+        "type": "uint256"
+      }
+    ],
+    "name": "aggregators",
+    "outputs": [
+      {
+        "internalType": "contract IVerdiktaAggregator",
+        "name": "",
+        "type": "address"
       }
     ],
     "stateMutability": "view",
@@ -652,11 +834,41 @@
             "internalType": "uint256",
             "name": "maxFeeBasedScaling",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "minOracleFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "bool",
+            "name": "withBeacons",
+            "type": "bool"
           }
         ],
         "internalType": "struct BountyEscrow.OracleParams",
         "name": "oracle",
         "type": "tuple"
+      },
+      {
+        "internalType": "uint8",
+        "name": "jury",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint8",
+        "name": "quota",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint8",
+        "name": "forfeitLine",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint128",
+        "name": "bond",
+        "type": "uint128"
       }
     ],
     "stateMutability": "view",
@@ -684,6 +896,24 @@
       }
     ],
     "name": "closeExpiredBounty",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "submissionId",
+        "type": "uint256"
+      }
+    ],
+    "name": "closeFailedRound",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -753,11 +983,41 @@
                 "internalType": "uint256",
                 "name": "maxFeeBasedScaling",
                 "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "minOracleFee",
+                "type": "uint256"
+              },
+              {
+                "internalType": "bool",
+                "name": "withBeacons",
+                "type": "bool"
               }
             ],
             "internalType": "struct BountyEscrow.OracleParams",
             "name": "oracle",
             "type": "tuple"
+          },
+          {
+            "internalType": "uint8",
+            "name": "jury",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "quota",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "forfeitLine",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint256",
+            "name": "bond",
+            "type": "uint256"
           }
         ],
         "internalType": "struct BountyEscrow.CreateParams",
@@ -800,6 +1060,24 @@
         "internalType": "uint256",
         "name": "bountyId",
         "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "submissionId",
+        "type": "uint256"
+      }
+    ],
+    "name": "drawJury",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
       }
     ],
     "name": "effectiveOracleParams",
@@ -825,6 +1103,16 @@
             "internalType": "uint256",
             "name": "maxFeeBasedScaling",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "minOracleFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "bool",
+            "name": "withBeacons",
+            "type": "bool"
           }
         ],
         "internalType": "struct BountyEscrow.OracleParams",
@@ -848,7 +1136,7 @@
         "type": "uint256"
       }
     ],
-    "name": "failTimedOutSubmission",
+    "name": "expireRerun",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -974,11 +1262,41 @@
                 "internalType": "uint256",
                 "name": "maxFeeBasedScaling",
                 "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "minOracleFee",
+                "type": "uint256"
+              },
+              {
+                "internalType": "bool",
+                "name": "withBeacons",
+                "type": "bool"
               }
             ],
             "internalType": "struct BountyEscrow.OracleParams",
             "name": "oracle",
             "type": "tuple"
+          },
+          {
+            "internalType": "uint8",
+            "name": "jury",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "quota",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "forfeitLine",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint128",
+            "name": "bond",
+            "type": "uint128"
           }
         ],
         "internalType": "struct BountyEscrow.Bounty",
@@ -1065,6 +1383,31 @@
             "internalType": "address",
             "name": "funder",
             "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "bondFunder",
+            "type": "address"
+          },
+          {
+            "internalType": "uint96",
+            "name": "bondHeld",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "rerunDeadline",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint8",
+            "name": "rounds",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "passCount",
+            "type": "uint8"
           }
         ],
         "internalType": "struct BountyEscrow.Submission",
@@ -1209,9 +1552,46 @@
         "type": "uint256"
       }
     ],
+    "name": "rerunSubmission",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "submissionId",
+        "type": "uint256"
+      }
+    ],
     "name": "startPreparedSubmission",
     "outputs": [],
     "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
+      }
+    ],
+    "name": "startValue",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -1307,19 +1687,31 @@
         "internalType": "address",
         "name": "funder",
         "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "verdikta",
-    "outputs": [
+      },
       {
-        "internalType": "contract IVerdiktaAggregator",
-        "name": "",
+        "internalType": "address",
+        "name": "bondFunder",
         "type": "address"
+      },
+      {
+        "internalType": "uint96",
+        "name": "bondHeld",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint64",
+        "name": "rerunDeadline",
+        "type": "uint64"
+      },
+      {
+        "internalType": "uint8",
+        "name": "rounds",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint8",
+        "name": "passCount",
+        "type": "uint8"
       }
     ],
     "stateMutability": "view",
@@ -1508,11 +1900,41 @@
                 "internalType": "uint256",
                 "name": "maxFeeBasedScaling",
                 "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "minOracleFee",
+                "type": "uint256"
+              },
+              {
+                "internalType": "bool",
+                "name": "withBeacons",
+                "type": "bool"
               }
             ],
             "internalType": "struct BountyEscrow.OracleParams",
             "name": "oracle",
             "type": "tuple"
+          },
+          {
+            "internalType": "uint8",
+            "name": "jury",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "quota",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "forfeitLine",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint128",
+            "name": "bond",
+            "type": "uint128"
           }
         ],
         "internalType": "struct BountyEscrow.Bounty[]",
@@ -1558,39 +1980,61 @@
     "name": "getOracleResult",
     "outputs": [
       {
-        "internalType": "bool",
-        "name": "started",
-        "type": "bool"
-      },
-      {
-        "internalType": "bool",
-        "name": "hasResult",
-        "type": "bool"
-      },
-      {
-        "internalType": "bool",
-        "name": "settled",
-        "type": "bool"
-      },
-      {
-        "internalType": "bool",
-        "name": "failed",
-        "type": "bool"
-      },
-      {
-        "internalType": "uint256[]",
-        "name": "scores",
-        "type": "uint256[]"
-      },
-      {
-        "internalType": "string",
-        "name": "justificationCids",
-        "type": "string"
-      },
-      {
-        "internalType": "uint256",
-        "name": "startTimestamp",
-        "type": "uint256"
+        "components": [
+          {
+            "internalType": "bool",
+            "name": "started",
+            "type": "bool"
+          },
+          {
+            "internalType": "bool",
+            "name": "hasResult",
+            "type": "bool"
+          },
+          {
+            "internalType": "uint8",
+            "name": "phase",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "outcome",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "rounds",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint256",
+            "name": "passCount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "deadline",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "requestTime",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256[]",
+            "name": "scores",
+            "type": "uint256[]"
+          },
+          {
+            "internalType": "string",
+            "name": "justificationCids",
+            "type": "string"
+          }
+        ],
+        "internalType": "struct BountyEscrowLens.OracleResult",
+        "name": "r",
+        "type": "tuple"
       }
     ],
     "stateMutability": "view",
@@ -1667,6 +2111,31 @@
             "internalType": "address",
             "name": "funder",
             "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "bondFunder",
+            "type": "address"
+          },
+          {
+            "internalType": "uint96",
+            "name": "bondHeld",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "rerunDeadline",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint8",
+            "name": "rounds",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "passCount",
+            "type": "uint8"
           }
         ],
         "internalType": "struct BountyEscrow.Submission[]",
@@ -1758,6 +2227,31 @@
             "internalType": "address",
             "name": "funder",
             "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "bondFunder",
+            "type": "address"
+          },
+          {
+            "internalType": "uint96",
+            "name": "bondHeld",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "rerunDeadline",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint8",
+            "name": "rounds",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "passCount",
+            "type": "uint8"
           }
         ],
         "internalType": "struct BountyEscrow.Submission[]",

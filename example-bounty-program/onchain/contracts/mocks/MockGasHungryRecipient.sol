@@ -39,7 +39,14 @@ contract MockGasHungryRecipient {
             creatorDeterminationPayment: msg.value,
             arbiterDeterminationPayment: msg.value,
             creatorAssessmentWindowSize: 0,
-            oracle: BountyEscrow.OracleParams({ maxOracleFee: 2e13, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1 })
+            oracle: BountyEscrow.OracleParams({
+                maxOracleFee: 2e13, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1,
+                minOracleFee: 0, withBeacons: false
+            }),
+            jury: 0,
+            quota: 1,
+            forfeitLine: 0,
+            bond: 0
         });
         return BountyEscrow(payable(escrow)).createBounty{value: msg.value}(p);
     }

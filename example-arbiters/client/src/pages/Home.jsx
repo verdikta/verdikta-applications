@@ -33,14 +33,14 @@ import './Home.css';
 const sameNetwork = (a, b) => String(a).replace(/_/g, '-') === String(b).replace(/_/g, '-');
 
 const HOW_IT_WORKS = [
-  { icon: Coins, title: 'Stake & register', text: 'Operators stake 100 wVDKA in the Reputation Keeper to register an arbiter.' },
-  { icon: Shuffle, title: 'Randomly selected', text: 'For each request a panel of arbiters is drawn at random, weighted by reputation.' },
-  { icon: Lock, title: 'Commit & reveal', text: 'Selected arbiters commit, then reveal their scored AI evaluation.' },
+  { icon: Coins, title: 'Stake & register', text: 'Operators stake wVDKA in the Reputation Keeper (its stake requirement) to register an arbiter, and get it back after an exit and a short unbonding period.' },
+  { icon: Shuffle, title: 'Randomly selected', text: 'For each request a jury is drawn from a seed nobody knows at request time, weighted by reputation and fee.' },
+  { icon: Lock, title: 'Commit & reveal', text: 'The jury commits; a random subset of the commits is promoted to reveal its scored AI evaluation.' },
   { icon: Gavel, title: 'Verdict & rewards', text: 'Responses are aggregated into one verdict; arbiters earn ETH and gain or lose reputation.' }
 ];
 
 const EXPLORE = [
-  { to: '/my-arbiters', icon: Wallet, title: 'My Arbiters', text: 'Connect a wallet to claim earned or refunded ETH and close out your arbiters.' },
+  { to: '/my-arbiters', icon: Wallet, title: 'My Arbiters', text: 'Connect a wallet to claim ETH (earnings, rewards, refunds), and to register, pause, re-fee or exit your arbiters.' },
   { to: '/analytics', icon: BarChart3, title: 'Analytics', text: 'Arbiter availability and reputation by owner, plus system diagnostics.' },
   { to: '/contracts', icon: FileText, title: 'Contracts', text: 'The core Verdikta contracts and their live on-chain configuration.' }
 ];
@@ -70,7 +70,7 @@ function NetworkCard({ net, active, onSelect }) {
       <div className="network-card-label">registered arbiters</div>
       <div className={`network-card-health ${net.healthy ? 'healthy' : 'unhealthy'}`}>
         {net.healthy ? <CheckCircle size={14} /> : <XCircle size={14} />}
-        {net.healthy ? 'Aggregator online' : 'Unreachable'}
+        {net.healthy ? 'Aggregator online' : (net.error === 'v2 aggregator not configured yet' ? 'Not deployed yet' : 'Unreachable')}
       </div>
     </div>
   );

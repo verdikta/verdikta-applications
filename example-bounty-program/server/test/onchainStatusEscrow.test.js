@@ -36,6 +36,7 @@ jest.mock('../utils/contractService', () => {
   service.contract = {
     getBounty: async () => mockStruct,
     requiredPrepay: (...args) => mockRequiredPrepay(...args),
+    startValue: async (...args) => (await mockRequiredPrepay(...args)) + 5000000000000000n,
     prepareCutoff: async () => 1790003590n,
     effectiveOracleParams: (...args) => mockEffectiveOracleParams(...args)
   };
@@ -98,7 +99,7 @@ describe('GET /api/jobs/:id/onchain-status oracle settings', () => {
     const res = await request(app).get('/api/jobs/8/onchain-status');
     expect(res.status).toBe(200);
     expect(res.body.oracleSettings).toEqual({ maxOracleFee: '20000000000000', maxOracleFeeEth: '0.00002', alpha: 500,
-      estimatedBaseCost: '10000000000000', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3 });
+      estimatedBaseCost: '10000000000000', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, minOracleFee: '0', minOracleFeeEth: '0.0', withBeacons: false });
     expect(res.body.effectiveOracleSettings).toEqual(res.body.oracleSettings);
   });
 
@@ -106,7 +107,7 @@ describe('GET /api/jobs/:id/onchain-status oracle settings', () => {
     mockStruct = chainStruct({ oracle: { maxOracleFee: 1000000000000n, alpha: 0n, estimatedBaseCost: 999n, maxFeeBasedScaling: 1n } });
     const res = await request(app).get('/api/jobs/9/onchain-status');
     expect(res.body.oracleSettings).toEqual({ maxOracleFee: '1000000000000', maxOracleFeeEth: '0.000001', alpha: 0,
-      estimatedBaseCost: '999', estimatedBaseCostEth: '0.000000000000000999', maxFeeBasedScaling: 1 });
+      estimatedBaseCost: '999', estimatedBaseCostEth: '0.000000000000000999', maxFeeBasedScaling: 1, minOracleFee: '0', minOracleFeeEth: '0.0', withBeacons: false });
   });
 
   it('returns effectiveOracleParams separately when the aggregator ceiling clamps it', async () => {
@@ -118,7 +119,7 @@ describe('GET /api/jobs/:id/onchain-status oracle settings', () => {
     expect(seen).toEqual([10]);
     expect(res.body.oracleSettings).toMatchObject({ maxOracleFee: '400000000000000', maxOracleFeeEth: '0.0004' });
     expect(res.body.effectiveOracleSettings).toEqual({ maxOracleFee: '200000000000000', maxOracleFeeEth: '0.0002', alpha: 500,
-      estimatedBaseCost: '199999999999999', estimatedBaseCostEth: '0.000199999999999999', maxFeeBasedScaling: 3 });
+      estimatedBaseCost: '199999999999999', estimatedBaseCostEth: '0.000199999999999999', maxFeeBasedScaling: 3, minOracleFee: '0', minOracleFeeEth: '0.0', withBeacons: false });
   });
 
   it('answers with effectiveOracleSettings null when that view cannot be read', async () => {

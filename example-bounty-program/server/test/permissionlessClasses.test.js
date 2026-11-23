@@ -331,7 +331,7 @@ describe('class endpoints', () => {
     const res = await request(app).get('/api/classes/717/coverage');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ classId: 717, listed: false, className: 'Custom class 717', servable: true, coverage: { eligibleCount: 10 } });
-    expect(mockEligibility).toHaveBeenCalledWith(717, expect.objectContaining({ maxOracleFee: '20000000000000' }));
+    expect(mockEligibility).toHaveBeenCalledWith(717, expect.objectContaining({ maxOracleFee: '20000000000000' }), expect.anything());
   });
 
   it('honours ?maxOracleFee and reports an unservable class', async () => {
@@ -339,7 +339,7 @@ describe('class endpoints', () => {
     const res = await request(app).get('/api/classes/4242/coverage?maxOracleFee=0.0001');
     expect(res.body).toMatchObject({ servable: false });
     expect(res.body.refusal).toMatch(/No arbiters are registered/);
-    expect(mockEligibility).toHaveBeenCalledWith(4242, expect.objectContaining({ maxOracleFee: '100000000000000' }));
+    expect(mockEligibility).toHaveBeenCalledWith(4242, expect.objectContaining({ maxOracleFee: '100000000000000' }), expect.anything());
   });
 
   it('returns servable:null when coverage cannot be checked', async () => {

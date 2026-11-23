@@ -42,6 +42,7 @@ jest.mock('../utils/contractService', () => {
   service.contract = {
     getBounty: (...args) => mockGetBounty(...args),
     requiredPrepay: async () => 240000000000000n,
+    startValue: async () => 245000000000000n,
     prepareCutoff: async () => 1790003590n,
     effectiveOracleParams: (...args) => mockEffectiveOracleParams(...args)
   };
@@ -151,7 +152,7 @@ describe('anonymous GET /api/jobs/:id/onchain-status', () => {
     const res = await request(app).get('/api/jobs/17/onchain-status');
     expect(res.status).toBe(200);
     expect(res.body.oracleSettings).toEqual({ maxOracleFee: '20000000000000', maxOracleFeeEth: '0.00002', alpha: 500,
-      estimatedBaseCost: '10000000000000', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3 });
+      estimatedBaseCost: '10000000000000', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, minOracleFee: '0', minOracleFeeEth: '0.0', withBeacons: false });
     expect(res.body.effectiveOracleSettings).toMatchObject({ maxOracleFee: '20000000000000', maxOracleFeeEth: '0.00002' });
   });
 

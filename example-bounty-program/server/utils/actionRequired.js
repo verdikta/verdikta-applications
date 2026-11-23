@@ -15,6 +15,7 @@ const { ethers } = require('ethers');
 
 const BOUNTY_STATUS = ['Open', 'Awarded', 'Closed'];
 const PENDING_VERDIKTA = 1;
+const AWAITING_RERUN = 6;
 // Local statuses that are only ever set from chain facts (PayoutSent /
 // BountyClosed events, or the sync reconcile's on-chain read). On-chain
 // terminal states are irreversible, so these bounties need no RPC at all.
@@ -66,22 +67,41 @@ async function checkExpiredBounty({ contract, cs, bountyId, nowSeconds, retryDel
       // Can't tell whether this submission still blocks close — don't guess.
       return { state: 'unverified', error: err.message };
     }
-    if (Number(chainSub.status) !== PENDING_VERDIKTA) continue;
+    const status = Number(chainSub.status);
+    if (status !== PENDING_VERDIKTA && status !== AWAITING_RERUN) continue;
     const submittedAt = Number(chainSub.submittedAt);
-    // Aggregator-state gate (same rule as failTimedOutSubmission). On RPC
-    // error it returns reason 'rpc_error' with eligible/hasResult false, i.e.
-    // action 'wait' — the bounty is still correctly reported as blocked.
-    const gate = await cs.getForceFailEligibility(chainSub.verdiktaAggId);
+    if (status === AWAITING_RERUN) {
+      // Item 12: keeps priority (and blocks close) until it re-runs or its window closes; after
+      // the deadline anyone may expire it at once.
+      const rerunDeadline = Number(chainSub.rerunDeadline);
+      pendingSubmissions.push({
+        submissionId: id,
+        hunter: chainSub.hunter,
+        submittedAt,
+        ageMinutes: Math.floor((nowSeconds - submittedAt) / 60),
+        awaitingRerun: true,
+        rerunDeadline,
+        hasResult: false,
+        closeFailedEligible: false,
+        action: 'expire_rerun'
+      });
+      continue;
+    }
+    // Aggregator-state gate (same rule as closeFailedRound). On RPC error it returns reason
+    // 'rpc_error' with eligible/hasResult false, i.e. action 'wait' — the bounty is still
+    // correctly reported as blocked.
+    const gate = await cs.getCloseFailedEligibility(bountyId, id);
     pendingSubmissions.push({
       submissionId: id,
       hunter: chainSub.hunter,
       submittedAt,
       ageMinutes: Math.floor((nowSeconds - submittedAt) / 60),
-      timeoutEligible: gate.eligible === true,
+      closeFailedEligible: gate.eligible === true,
       hasResult: gate.hasResult === true,
-      action: gate.hasResult ? 'finalize' : (gate.eligible ? 'timeout' : 'wait'),
-      secondsUntilTimeout: gate.secondsUntilTimeout ?? null,
-      forceFail: gate
+      action: gate.hasResult ? 'finalize' : (gate.eligible ? 'close_failed' : 'wait'),
+      secondsUntilDeadline: gate.secondsUntilDeadline ?? null,
+      nextAction: gate.nextAction ?? null,
+      closeFailed: gate
     });
   }
 

@@ -5,8 +5,9 @@
  * Mirrors example-arbiters' getAggHistory "LIKELY MALFORMED (no arbiter
  * committed)" rule, which bounty-program's own getAggHistory and
  * GET /:jobId/submissions/:submissionId/diagnose previously lacked — a
- * settled round with zero commits used to be indistinguishable from a
- * generic FAILED (commit phase) node failure.
+ * dead round with zero commits used to be indistinguishable from a
+ * generic FAILED (commit phase) node failure. (v2: the round state comes from
+ * the escrow's lens; a dead round is closed with closeFailedRound.)
  */
 
 // jobRoutes.js is a large module with many requires; whichever test runs
@@ -62,16 +63,16 @@ jest.mock('../utils/bountyValidator', () => {
 // contractService: configurable per-case chain reads.
 let mockGetSubmission = jest.fn();
 let mockNextAction = jest.fn();
-let mockGetForceFailEligibility = jest.fn();
-let mockCheckEvaluationReady = jest.fn();
+// v2: the round as the escrow's lens reports it (phase, result, nextAction).
+let mockGetRoundState = jest.fn();
 jest.mock('../utils/contractService', () => ({
   getContractService: () => ({
     contract: {
       getSubmission: (...args) => mockGetSubmission(...args),
       nextAction: (...args) => mockNextAction(...args),
     },
-    getForceFailEligibility: (...args) => mockGetForceFailEligibility(...args),
-    checkEvaluationReady: (...args) => mockCheckEvaluationReady(...args),
+    getRoundState: (...args) => mockGetRoundState(...args),
+    getAggregatorFor: async () => ({ getAddress: async () => '0x' + '1'.repeat(40) }),
   }),
 }));
 
@@ -150,9 +151,12 @@ beforeEach(() => {
     acceptance: 0,
     rejection: 0,
   });
-  mockNextAction = jest.fn().mockResolvedValue('FORCE_FAIL');
-  mockGetForceFailEligibility = jest.fn().mockResolvedValue({ eligible: true, timeoutAt: NOW() - 60 });
-  mockCheckEvaluationReady = jest.fn().mockResolvedValue({ ready: false });
+  mockNextAction = jest.fn().mockResolvedValue('CLOSE_FAILED');
+  // a drawn round past its deadline with no result: closeFailedRound succeeds
+  mockGetRoundState = jest.fn().mockResolvedValue({
+    started: true, hasResult: false, phase: 3, phaseName: 'commit', outcome: 'no_result', passCount: 0,
+    rounds: 1, deadline: NOW() - 60, requestTime: NOW() - 3600, scores: null, justificationCids: '', nextAction: 'CLOSE_FAILED'
+  });
   mockGetAggHistory = jest.fn();
   mockValidateBounty = jest.fn().mockResolvedValue({ valid: true, issues: [] });
 });
@@ -170,7 +174,7 @@ describe('GET /:jobId/submissions/:submissionId/diagnose — issue #40 zero-comm
     return res.body.diagnosis;
   };
 
-  it('flags a settled zero-commit round but keeps the contract nextAction and the /timeout step', async () => {
+  it('flags a dead zero-commit round but keeps the contract nextAction and the /close-failed step', async () => {
     setStorage(makeJob({ jobId: JOBID }));
     zeroCommitRound();
 
@@ -178,10 +182,10 @@ describe('GET /:jobId/submissions/:submissionId/diagnose — issue #40 zero-comm
 
     expect(diagnosis.checks.aggHistory.outcome).toBe(LIKELY_MALFORMED_OUTCOME);
     expect(diagnosis.checks.aggHistory.likelyMalformed).toBe(true);
-    expect(diagnosis.issues.some((i) => i.includes('No arbiter committed (0 of 6 polled slots)'))).toBe(true);
-    // Force-failing is the only way to refund the prepay, so nothing may hide it.
-    expect(diagnosis.nextAction).toBe('FORCE_FAIL');
-    expect(diagnosis.recommendations.some((r) => r.includes('/timeout'))).toBe(true);
+    expect(diagnosis.issues.some((i) => i.includes('No arbiter committed (0 of 6 drawn jurors)'))).toBe(true);
+    // Closing the round is the only way to refund the prepay and re-run, so nothing may hide it.
+    expect(diagnosis.nextAction).toBe('CLOSE_FAILED');
+    expect(diagnosis.recommendations.some((r) => r.includes('/close-failed'))).toBe(true);
   });
 
   it('points at the oracle side, not the package, when the package validates clean', async () => {
@@ -212,8 +216,8 @@ describe('GET /:jobId/submissions/:submissionId/diagnose — issue #40 zero-comm
     expect(diagnosis.issues.some((i) => i.includes('fails validation'))).toBe(true);
     expect(diagnosis.issues.some((i) => i.includes('missing required "query" field'))).toBe(true);
     expect(diagnosis.issues.some((i) => i.includes('bCIDs'))).toBe(false);
-    expect(diagnosis.recommendations.some((r) => r.includes('Do not resubmit'))).toBe(true);
-    expect(diagnosis.nextAction).toBe('FORCE_FAIL');
+    expect(diagnosis.recommendations.some((r) => r.includes('Do not re-run or resubmit'))).toBe(true);
+    expect(diagnosis.nextAction).toBe('CLOSE_FAILED');
   });
 
   it('reports a package it could not fetch as unverified, not as malformed', async () => {
@@ -268,7 +272,10 @@ describe('GET /:jobId/submissions/:submissionId/diagnose — issue #40 zero-comm
 
   it('does not scan the aggregator while the round is still open', async () => {
     setStorage(makeJob({ jobId: JOBID }));
-    mockGetForceFailEligibility.mockResolvedValue({ eligible: false, timeoutAt: NOW() + 120 });
+    mockGetRoundState.mockResolvedValue({
+      started: true, hasResult: false, phase: 3, phaseName: 'commit', outcome: 'not_ready', passCount: 0,
+      rounds: 1, deadline: NOW() + 120, requestTime: NOW() - 60, scores: null, justificationCids: '', nextAction: 'AWAIT_ORACLE'
+    });
     mockNextAction.mockResolvedValue('AWAIT_ORACLE');
 
     const diagnosis = await diagnose();
@@ -289,7 +296,7 @@ describe('GET /:jobId/submissions/:submissionId/diagnose — issue #40 zero-comm
 
     expect(diagnosis.checks.aggHistory).toBeUndefined();
     expect(diagnosis.issues.some((i) => i.includes('No arbiter committed'))).toBe(false);
-    expect(diagnosis.nextAction).toBe('FORCE_FAIL');
-    expect(diagnosis.recommendations.some((r) => r.includes('/timeout'))).toBe(true);
+    expect(diagnosis.nextAction).toBe('CLOSE_FAILED');
+    expect(diagnosis.recommendations.some((r) => r.includes('/close-failed'))).toBe(true);
   });
 });

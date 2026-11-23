@@ -44,7 +44,7 @@ jest.mock('../config', () => ({
 // Configurable on-chain submission read used by the /start live-status gate.
 let mockGetSubmission = jest.fn();
 jest.mock('../utils/contractService', () => ({
-  getContractService: () => ({ contract: { getSubmission: (...args) => mockGetSubmission(...args) } }),
+  getContractService: () => ({ contract: { getSubmission: (...args) => mockGetSubmission(...args), startValue: async () => 245000000000000n, requiredPrepay: async () => 240000000000000n } }),
 }));
 
 const express = require('express');
@@ -156,6 +156,6 @@ describe('Windowed submission status + start gating', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.transaction.data).toMatch(/^0x[0-9a-f]+$/i);
-    expect(res.body.transaction.value).toBe('1200000000000000');
+    expect(res.body.transaction.value).toBe('245000000000000');   // startValue(bountyId), read live: prepay + bond
   });
 });

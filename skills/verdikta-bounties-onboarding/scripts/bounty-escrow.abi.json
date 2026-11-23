@@ -5,8 +5,8 @@
     "payable": false,
     "inputs": [
       {
-        "type": "address",
-        "name": "_verdikta"
+        "type": "address[]",
+        "name": "aggregators_"
       }
     ]
   },
@@ -26,6 +26,60 @@
       {
         "type": "uint256",
         "name": "needed"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "anonymous": false,
+    "name": "BondForfeited",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "submissionId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "creator",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "amount",
+        "indexed": false
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "anonymous": false,
+    "name": "BondReturned",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "submissionId",
+        "indexed": true
+      },
+      {
+        "type": "address",
+        "name": "to",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "amount",
+        "indexed": false
       }
     ]
   },
@@ -217,6 +271,43 @@
         "type": "uint256",
         "name": "submissionId",
         "indexed": true
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "anonymous": false,
+    "name": "RerunAwaited",
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId",
+        "indexed": true
+      },
+      {
+        "type": "uint256",
+        "name": "submissionId",
+        "indexed": true
+      },
+      {
+        "type": "uint8",
+        "name": "round",
+        "indexed": false
+      },
+      {
+        "type": "uint256",
+        "name": "passCount",
+        "indexed": false
+      },
+      {
+        "type": "bool",
+        "name": "noResult",
+        "indexed": false
+      },
+      {
+        "type": "uint64",
+        "name": "rerunDeadline",
+        "indexed": false
       }
     ]
   },
@@ -428,6 +519,20 @@
   },
   {
     "type": "function",
+    "name": "MAX_ROUNDS",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [],
+    "outputs": [
+      {
+        "type": "uint256",
+        "name": ""
+      }
+    ]
+  },
+  {
+    "type": "function",
     "name": "MAX_SUBMISSIONS_PER_BOUNTY",
     "constant": true,
     "stateMutability": "view",
@@ -457,6 +562,20 @@
   {
     "type": "function",
     "name": "PAYOUT_GAS_LIMIT",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [],
+    "outputs": [
+      {
+        "type": "uint256",
+        "name": ""
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "RERUN_WINDOW",
     "constant": true,
     "stateMutability": "view",
     "payable": false,
@@ -511,6 +630,58 @@
     "outputs": [
       {
         "type": "uint256",
+        "name": ""
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "aggregatorCount",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [],
+    "outputs": [
+      {
+        "type": "uint256",
+        "name": ""
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "aggregatorOf",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "address",
+        "name": ""
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "aggregators",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "i"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "address",
         "name": ""
       }
     ]
@@ -603,8 +774,32 @@
           {
             "type": "uint256",
             "name": "maxFeeBasedScaling"
+          },
+          {
+            "type": "uint256",
+            "name": "minOracleFee"
+          },
+          {
+            "type": "bool",
+            "name": "withBeacons"
           }
         ]
+      },
+      {
+        "type": "uint8",
+        "name": "jury"
+      },
+      {
+        "type": "uint8",
+        "name": "quota"
+      },
+      {
+        "type": "uint8",
+        "name": "forfeitLine"
+      },
+      {
+        "type": "uint128",
+        "name": "bond"
       }
     ]
   },
@@ -631,6 +826,23 @@
       {
         "type": "uint256",
         "name": "bountyId"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "closeFailedRound",
+    "constant": false,
+    "payable": false,
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId"
+      },
+      {
+        "type": "uint256",
+        "name": "submissionId"
       }
     ],
     "outputs": []
@@ -697,8 +909,32 @@
               {
                 "type": "uint256",
                 "name": "maxFeeBasedScaling"
+              },
+              {
+                "type": "uint256",
+                "name": "minOracleFee"
+              },
+              {
+                "type": "bool",
+                "name": "withBeacons"
               }
             ]
+          },
+          {
+            "type": "uint8",
+            "name": "jury"
+          },
+          {
+            "type": "uint8",
+            "name": "quota"
+          },
+          {
+            "type": "uint8",
+            "name": "forfeitLine"
+          },
+          {
+            "type": "uint256",
+            "name": "bond"
           }
         ]
       }
@@ -713,6 +949,23 @@
   {
     "type": "function",
     "name": "creatorApproveSubmission",
+    "constant": false,
+    "payable": false,
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId"
+      },
+      {
+        "type": "uint256",
+        "name": "submissionId"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "drawJury",
     "constant": false,
     "payable": false,
     "inputs": [
@@ -759,6 +1012,14 @@
           {
             "type": "uint256",
             "name": "maxFeeBasedScaling"
+          },
+          {
+            "type": "uint256",
+            "name": "minOracleFee"
+          },
+          {
+            "type": "bool",
+            "name": "withBeacons"
           }
         ]
       }
@@ -766,7 +1027,7 @@
   },
   {
     "type": "function",
-    "name": "failTimedOutSubmission",
+    "name": "expireRerun",
     "constant": false,
     "payable": false,
     "inputs": [
@@ -890,8 +1151,32 @@
               {
                 "type": "uint256",
                 "name": "maxFeeBasedScaling"
+              },
+              {
+                "type": "uint256",
+                "name": "minOracleFee"
+              },
+              {
+                "type": "bool",
+                "name": "withBeacons"
               }
             ]
+          },
+          {
+            "type": "uint8",
+            "name": "jury"
+          },
+          {
+            "type": "uint8",
+            "name": "quota"
+          },
+          {
+            "type": "uint8",
+            "name": "forfeitLine"
+          },
+          {
+            "type": "uint128",
+            "name": "bond"
           }
         ]
       }
@@ -965,6 +1250,26 @@
           {
             "type": "address",
             "name": "funder"
+          },
+          {
+            "type": "address",
+            "name": "bondFunder"
+          },
+          {
+            "type": "uint96",
+            "name": "bondHeld"
+          },
+          {
+            "type": "uint64",
+            "name": "rerunDeadline"
+          },
+          {
+            "type": "uint8",
+            "name": "rounds"
+          },
+          {
+            "type": "uint8",
+            "name": "passCount"
           }
         ]
       }
@@ -1088,6 +1393,24 @@
   },
   {
     "type": "function",
+    "name": "rerunSubmission",
+    "constant": false,
+    "stateMutability": "payable",
+    "payable": true,
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId"
+      },
+      {
+        "type": "uint256",
+        "name": "submissionId"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
     "name": "startPreparedSubmission",
     "constant": false,
     "stateMutability": "payable",
@@ -1103,6 +1426,25 @@
       }
     ],
     "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "startValue",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "uint256",
+        "name": ""
+      }
+    ]
   },
   {
     "type": "function",
@@ -1187,20 +1529,26 @@
       {
         "type": "address",
         "name": "funder"
-      }
-    ]
-  },
-  {
-    "type": "function",
-    "name": "verdikta",
-    "constant": true,
-    "stateMutability": "view",
-    "payable": false,
-    "inputs": [],
-    "outputs": [
+      },
       {
         "type": "address",
-        "name": ""
+        "name": "bondFunder"
+      },
+      {
+        "type": "uint96",
+        "name": "bondHeld"
+      },
+      {
+        "type": "uint64",
+        "name": "rerunDeadline"
+      },
+      {
+        "type": "uint8",
+        "name": "rounds"
+      },
+      {
+        "type": "uint8",
+        "name": "passCount"
       }
     ]
   },
@@ -1392,8 +1740,32 @@
               {
                 "type": "uint256",
                 "name": "maxFeeBasedScaling"
+              },
+              {
+                "type": "uint256",
+                "name": "minOracleFee"
+              },
+              {
+                "type": "bool",
+                "name": "withBeacons"
               }
             ]
+          },
+          {
+            "type": "uint8",
+            "name": "jury"
+          },
+          {
+            "type": "uint8",
+            "name": "quota"
+          },
+          {
+            "type": "uint8",
+            "name": "forfeitLine"
+          },
+          {
+            "type": "uint128",
+            "name": "bond"
           }
         ]
       }
@@ -1436,32 +1808,50 @@
     ],
     "outputs": [
       {
-        "type": "bool",
-        "name": "started"
-      },
-      {
-        "type": "bool",
-        "name": "hasResult"
-      },
-      {
-        "type": "bool",
-        "name": "settled"
-      },
-      {
-        "type": "bool",
-        "name": "failed"
-      },
-      {
-        "type": "uint256[]",
-        "name": "scores"
-      },
-      {
-        "type": "string",
-        "name": "justificationCids"
-      },
-      {
-        "type": "uint256",
-        "name": "startTimestamp"
+        "type": "tuple",
+        "name": "r",
+        "components": [
+          {
+            "type": "bool",
+            "name": "started"
+          },
+          {
+            "type": "bool",
+            "name": "hasResult"
+          },
+          {
+            "type": "uint8",
+            "name": "phase"
+          },
+          {
+            "type": "uint8",
+            "name": "outcome"
+          },
+          {
+            "type": "uint8",
+            "name": "rounds"
+          },
+          {
+            "type": "uint256",
+            "name": "passCount"
+          },
+          {
+            "type": "uint256",
+            "name": "deadline"
+          },
+          {
+            "type": "uint256",
+            "name": "requestTime"
+          },
+          {
+            "type": "uint256[]",
+            "name": "scores"
+          },
+          {
+            "type": "string",
+            "name": "justificationCids"
+          }
+        ]
       }
     ]
   },
@@ -1529,6 +1919,26 @@
           {
             "type": "address",
             "name": "funder"
+          },
+          {
+            "type": "address",
+            "name": "bondFunder"
+          },
+          {
+            "type": "uint96",
+            "name": "bondHeld"
+          },
+          {
+            "type": "uint64",
+            "name": "rerunDeadline"
+          },
+          {
+            "type": "uint8",
+            "name": "rounds"
+          },
+          {
+            "type": "uint8",
+            "name": "passCount"
           }
         ]
       }
@@ -1606,6 +2016,26 @@
           {
             "type": "address",
             "name": "funder"
+          },
+          {
+            "type": "address",
+            "name": "bondFunder"
+          },
+          {
+            "type": "uint96",
+            "name": "bondHeld"
+          },
+          {
+            "type": "uint64",
+            "name": "rerunDeadline"
+          },
+          {
+            "type": "uint8",
+            "name": "rounds"
+          },
+          {
+            "type": "uint8",
+            "name": "passCount"
           }
         ]
       }

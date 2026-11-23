@@ -19,6 +19,7 @@ const { bountyAmountFields } = require('./bountyAmounts');
 const { extractTaskDescription } = require('./taskDescription');
 const jobStorage = require('./jobStorage');
 const { getContractService } = require('./contractService');
+const { createRoundKeeper } = require('./roundKeeper');
 const { config } = require('../config');
 const { ethers } = require('ethers');
 const AdmZip = require('adm-zip');
@@ -54,11 +55,43 @@ const DEFAULT_WORK_PRODUCT_TYPE = 'Work Product';
 // decide whether a record needs correcting, or PassedPaid/PassedUnpaid drift
 // compares equal and is silently kept.
 const ON_CHAIN_STATUS_BY_INDEX = [
-  'Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'
+  'Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval', 'AwaitingRerun'
 ];
 const LOCAL_STATUS_BY_INDEX = [
-  'Prepared', 'PENDING_EVALUATION', 'REJECTED', 'APPROVED', 'APPROVED', 'PendingCreatorApproval'
+  'Prepared', 'PENDING_EVALUATION', 'REJECTED', 'APPROVED', 'APPROVED', 'PendingCreatorApproval', 'AWAITING_RERUN'
 ];
+
+// Local statuses of a submission whose round is in flight, as the hot poll reads it from the
+// escrow's lens (v2, item 12's Q-of-N rule):
+//   PENDING_EVALUATION              the round has no result yet
+//   ACCEPTED_PENDING_CLAIM          passes (Q of N at the threshold): finalize pays
+//   REJECTED_PENDING_FINALIZATION   hard fail (fewer than R): finalize fails it, the bond goes to the creator
+//   SOFT_FAIL_PENDING_FINALIZATION  soft fail, or a result of the wrong shape: finalize lets it re-run
+//   NO_RESULT_PENDING_CLOSE         the round ended (or must end) with no result: closeFailedRound lets it re-run
+// and, on-chain AwaitingRerun:
+//   AWAITING_RERUN                  may re-run until rerunDeadline, keeping its place and bond
+const IN_FLIGHT_LOCAL_STATUSES = new Set([
+  'PENDING_EVALUATION', 'ACCEPTED_PENDING_CLAIM', 'REJECTED_PENDING_FINALIZATION',
+  'SOFT_FAIL_PENDING_FINALIZATION', 'NO_RESULT_PENDING_CLOSE'
+]);
+
+/** The local status for a round's state (contractService.getRoundState). */
+function localStatusForRound(state) {
+  if (!state || state.error) return null;
+  if (state.hasResult) {
+    if (state.outcome === 'pass') return 'ACCEPTED_PENDING_CLAIM';
+    if (state.outcome === 'hard_fail') return 'REJECTED_PENDING_FINALIZATION';
+    return 'SOFT_FAIL_PENDING_FINALIZATION';
+  }
+  if (state.outcome === 'no_result') return 'NO_RESULT_PENDING_CLOSE';
+  return 'PENDING_EVALUATION';
+}
+
+/** Does this submission still need the hot poll (a round in flight, or a re-run to watch)? */
+function needsHotPoll(s) {
+  return IN_FLIGHT_LOCAL_STATUSES.has(s.status) || s.status === 'AWAITING_RERUN' ||
+    s.onChainStatus === 'PendingVerdikta' || s.onChainStatus === 'AwaitingRerun';
+}
 
 /** GET a CID from one gateway; returns a Buffer, or null on any HTTP/network failure. */
 async function fetchFromGateway(gateway, cid) {
@@ -459,8 +492,11 @@ class SyncService {
     // transient RPC failures by exponential backoff up to this cap.
     this.maxBackoffMs = 10 * 60 * 1000;
 
-    // Set of bountyIds with PendingVerdikta submissions — polled each cycle
+    // Set of bountyIds with rounds in flight or re-runs pending — polled each cycle
     this.hotBountyIds = new Set();
+    // Moves rounds along (draw, close, promote, close failed, expire re-run) when a keeper key is
+    // configured; undefined until first use, null without a key (see utils/roundKeeper.js).
+    this.roundKeeper = undefined;
     this._staleCheckDone = false;
     // Note: chain-fields heal (Phase D.6) and submission-level heal (D.7) both
     // run every sync cycle and gate on per-record sentinels rather than a
@@ -1354,6 +1390,7 @@ class SyncService {
               3: 'APPROVED',
               4: 'APPROVED',
               5: 'PendingCreatorApproval',
+              6: 'AWAITING_RERUN',
             };
             chainStatusString = statusMap[Number(chainSub.status)] || 'Prepared';
             creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
@@ -1398,6 +1435,10 @@ class SyncService {
           sub.status = 'PENDING_EVALUATION';
           sub.onChainStatus = 'PendingVerdikta';
           sub.verdiktaAggId = verdiktaAggId;
+          // A re-run (item 12) starts a fresh round: forget the previous round's outcome.
+          delete sub.rerunDeadline;
+          delete sub.roundOutcome;
+          delete sub.failureReason;
         } else {
           // Submission not tracked locally — add it
           if (!job.submissions) job.submissions = [];
@@ -1416,6 +1457,9 @@ class SyncService {
           const chainSub = await contractService.contract.getSubmission(bountyId, submissionId);
           const target = sub || job.submissions[job.submissions.length - 1];
           if (chainSub.funder && !/^0x0{40}$/i.test(chainSub.funder)) target.funder = chainSub.funder;
+          target.rounds = Number(chainSub.rounds ?? 1);
+          target.bondHeldWei = (chainSub.bondHeld ?? 0n).toString();
+          if (chainSub.bondFunder && !/^0x0{40}$/i.test(chainSub.bondFunder)) target.bondFunder = chainSub.bondFunder;
         } catch (e) {
           logger.debug('[event] WorkSubmitted: funder read failed (will heal)', { bountyId, submissionId, msg: e.message });
         }
@@ -1466,16 +1510,18 @@ class SyncService {
             sub.justificationCids = justificationCids;
           }
 
-          // Detect timeout: failed with zero scores = oracle timed out (failTimedOutSubmission was called)
-          if (!passed && acceptance === 0 && rejection === 0) {
-            sub.failureReason = 'ORACLE_TIMEOUT';
+          // Why it failed, when the escrow says so in place of justification CIDs (v2): a round with
+          // no result that could not re-run, or a re-run that was not taken in its window.
+          if (!passed && (justificationCids === 'NO_RESULT' || justificationCids === 'RERUN_EXPIRED')) {
+            sub.failureReason = justificationCids;
+            delete sub.justificationCids;
           }
+          delete sub.rerunDeadline;
         }
 
         // Check if bounty still has pending submissions — if not, remove from hot set
         const stillHot = (job.submissions || []).some(
-          s => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta' ||
-               s.status === 'PendingCreatorApproval'
+          s => needsHotPoll(s) || s.status === 'PendingCreatorApproval'
         );
         if (!stillHot) {
           this.hotBountyIds.delete(bountyId);
@@ -1580,6 +1626,41 @@ class SyncService {
         break;
       }
 
+      case 'RerunAwaited': {
+        // v2 (item 12): a soft fail or a round with no result; the submission keeps its place and
+        // bond and may re-run until rerunDeadline (rerunSubmission), or anyone expires it after.
+        const bountyId = Number(args.bountyId);
+        const submissionId = Number(args.submissionId);
+        const job = this._findJob(storage, bountyId, currentContract);
+        const sub = job && (job.submissions || []).find(s => s.submissionId === submissionId);
+        if (sub) {
+          sub.status = 'AWAITING_RERUN';
+          sub.onChainStatus = 'AwaitingRerun';
+          sub.rounds = Number(args.round);
+          sub.passCount = Number(args.passCount);
+          sub.roundOutcome = args.noResult ? 'no_result' : 'soft_fail';
+          sub.rerunDeadline = Number(args.rerunDeadline);
+          this.hotBountyIds.add(bountyId);
+        }
+        logger.info('[event] RerunAwaited', { bountyId, submissionId, round: Number(args.round), noResult: Boolean(args.noResult) });
+        break;
+      }
+
+      case 'BondReturned':
+      case 'BondForfeited': {
+        const bountyId = Number(args.bountyId);
+        const submissionId = Number(args.submissionId);
+        const job = this._findJob(storage, bountyId, currentContract);
+        const sub = job && (job.submissions || []).find(s => s.submissionId === submissionId);
+        if (sub) {
+          sub.bondHeldWei = '0';
+          if (name === 'BondReturned') sub.bondReturnedWei = args.amount?.toString();
+          else sub.bondForfeitedWei = args.amount?.toString();
+        }
+        logger.info(`[event] ${name}`, { bountyId, submissionId, amount: args.amount?.toString() });
+        break;
+      }
+
       default:
         logger.debug('[event] Unknown event', { name });
     }
@@ -1590,10 +1671,15 @@ class SyncService {
   // ==========================================================================
 
   async _pollHotBounties(storage, currentContract, contractService) {
+    if (this.roundKeeper === undefined) {
+      this.roundKeeper = createRoundKeeper(contractService, config.keeperPrivateKey);
+      if (this.roundKeeper) logger.info('[keeper] round keeper enabled', { address: await this.roundKeeper.address() });
+    }
     if (this.hotBountyIds.size === 0) return;
 
     const zeroHash = ethers.ZeroHash;
     let checksPerformed = 0;
+    if (this.roundKeeper) this.roundKeeper.prune();
 
     for (const bountyId of [...this.hotBountyIds]) {
       const job = this._findJob(storage, bountyId, currentContract);
@@ -1602,50 +1688,50 @@ class SyncService {
         continue;
       }
 
-      const pendingSubs = (job.submissions || []).filter(
-        s => s.status === 'PENDING_EVALUATION' ||
-             s.status === 'ACCEPTED_PENDING_CLAIM' ||
-             s.status === 'REJECTED_PENDING_FINALIZATION' ||
-             s.onChainStatus === 'PendingVerdikta'
-      );
-
-      if (pendingSubs.length === 0) {
+      const watched = (job.submissions || []).filter(needsHotPoll);
+      if (watched.length === 0) {
         this.hotBountyIds.delete(bountyId);
         continue;
       }
 
-      for (const sub of pendingSubs) {
-        // Skip submissions already in a terminal-ish state (waiting for finalize tx)
-        if (sub.status === 'ACCEPTED_PENDING_CLAIM' || sub.status === 'REJECTED_PENDING_FINALIZATION') {
-          continue;
-        }
-
+      for (const sub of watched) {
         const aggId = sub.verdiktaAggId;
         if (!aggId || aggId === zeroHash) continue;
 
         try {
-          const evalResult = await contractService.getEvaluationByAggId(aggId);
+          // One read of the escrow's lens: the round's phase, its result judged by the contract's
+          // Q-of-N rule, and the call that moves it on (nextAction).
+          const state = await contractService.getRoundState(bountyId, sub.submissionId);
           checksPerformed++;
+          if (state.error) continue;
 
-          if (evalResult.ready) {
-            const threshold = job.threshold || 50;
-            sub.status = evalResult.scores.acceptance >= threshold
-              ? 'ACCEPTED_PENDING_CLAIM'
-              : 'REJECTED_PENDING_FINALIZATION';
-            sub.acceptance = evalResult.scores.acceptance;
-            sub.rejection = evalResult.scores.rejection;
-            sub.justificationCids = evalResult.justificationCids;
-            sub.score = evalResult.scores.acceptance > 0 ? evalResult.scores.acceptance : null;
+          if (sub.status !== 'AWAITING_RERUN') {
+            const next = localStatusForRound(state);
+            if (next && next !== sub.status) {
+              sub.status = next;
+              sub.roundPhase = state.phaseName;
+              if (state.hasResult) {
+                sub.acceptance = state.scores ? state.scores.acceptance : 0;
+                sub.rejection = state.scores ? state.scores.rejection : 0;
+                sub.passCount = state.passCount;
+                sub.roundOutcome = state.outcome;
+                sub.justificationCids = state.justificationCids;
+                sub.score = sub.acceptance > 0 ? sub.acceptance : null;
+              }
+              logger.info('[hot-poll] Round state changed', {
+                bountyId, submissionId: sub.submissionId, status: sub.status, phase: state.phaseName,
+                outcome: state.outcome, passCount: state.passCount
+              });
+            } else {
+              sub.roundPhase = state.phaseName;
+            }
+          }
 
-            logger.info('[hot-poll] Oracle evaluation complete', {
-              bountyId,
-              submissionId: sub.submissionId,
-              status: sub.status,
-              acceptance: evalResult.scores.acceptance
-            });
+          if (this.roundKeeper) {
+            await this.roundKeeper.tend(bountyId, sub.submissionId, { ...state, aggId });
           }
         } catch (err) {
-          logger.debug('[hot-poll] Error checking evaluation', {
+          logger.debug('[hot-poll] Error checking round', {
             bountyId,
             submissionId: sub.submissionId,
             error: err.message
@@ -1654,8 +1740,9 @@ class SyncService {
       }
     }
 
+    if (this.roundKeeper) await this.roundKeeper.housekeeping();
     if (checksPerformed > 0) {
-      logger.info('[hot-poll] Evaluation checks completed', { checks: checksPerformed });
+      logger.info('[hot-poll] Round checks completed', { checks: checksPerformed });
     }
   }
 
@@ -1827,7 +1914,8 @@ class SyncService {
                          sub.status === 'Failed' ? 2 :
                          sub.status === 'PassedPaid' ? 3 :
                          sub.status === 'PassedUnpaid' ? 4 :
-                         sub.status === 'PendingCreatorApproval' ? 5 : -1;
+                         sub.status === 'PendingCreatorApproval' ? 5 :
+                         sub.status === 'AwaitingRerun' ? 6 : -1;
 
         switch (statusNum) {
           case 0:
@@ -1836,20 +1924,14 @@ class SyncService {
           case 1: {
             const zeroHash = '0x' + '0'.repeat(64);
             if (sub.verdiktaAggId && sub.verdiktaAggId !== zeroHash) {
-              try {
-                const evalResult = await contractService.getEvaluationByAggId(sub.verdiktaAggId);
-                if (evalResult.ready) {
-                  backendStatus = evalResult.scores.acceptance >= threshold
-                    ? 'ACCEPTED_PENDING_CLAIM'
-                    : 'REJECTED_PENDING_FINALIZATION';
-                  sub.acceptance = evalResult.scores.acceptance;
-                  sub.rejection = evalResult.scores.rejection;
-                  sub.justificationCids = evalResult.justificationCids;
-                } else {
-                  backendStatus = 'PENDING_EVALUATION';
-                }
-              } catch (error) {
-                backendStatus = 'PENDING_EVALUATION';
+              const state = await contractService.getRoundState(bountyId, sub.submissionId);
+              backendStatus = localStatusForRound(state) || 'PENDING_EVALUATION';
+              if (state && state.hasResult) {
+                sub.acceptance = state.scores ? state.scores.acceptance : 0;
+                sub.rejection = state.scores ? state.scores.rejection : 0;
+                sub.passCount = state.passCount;
+                sub.roundOutcome = state.outcome;
+                sub.justificationCids = state.justificationCids;
               }
             } else {
               backendStatus = 'PENDING_EVALUATION';
@@ -1867,6 +1949,9 @@ class SyncService {
             break;
           case 5:
             backendStatus = 'PendingCreatorApproval';
+            break;
+          case 6:
+            backendStatus = 'AWAITING_RERUN';
             break;
           default:
             backendStatus = 'UNKNOWN';
@@ -1891,6 +1976,13 @@ class SyncService {
           score: sub.acceptance > 0 ? sub.acceptance : null,
           creatorWindowEnd: sub.creatorWindowEnd || 0,
           funder: sub.funder || null,
+          // v2 (item 12)
+          bondFunder: sub.bondFunder || null,
+          bondHeldWei: sub.bondHeldWei || '0',
+          rounds: sub.rounds || 0,
+          passCount: sub.passCount ?? existing?.passCount ?? 0,
+          rerunDeadline: sub.rerunDeadline || null,
+          ...(sub.roundOutcome ? { roundOutcome: sub.roundOutcome } : {}),
         });
       }
 
@@ -1920,12 +2012,7 @@ class SyncService {
     this.hotBountyIds.clear();
     for (const job of storage.jobs) {
       if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
-      const hasPending = (job.submissions || []).some(
-        s => s.status === 'PENDING_EVALUATION' ||
-             s.status === 'ACCEPTED_PENDING_CLAIM' ||
-             s.status === 'REJECTED_PENDING_FINALIZATION' ||
-             s.onChainStatus === 'PendingVerdikta'
-      );
+      const hasPending = (job.submissions || []).some(needsHotPoll);
       if (hasPending) {
         this.hotBountyIds.add(job.jobId);
       }

@@ -133,7 +133,7 @@ const shortAddr = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
  *  - warnings: thin coverage, a single operator, priced-out arbiters, and arbiters
  *    owned by the creator's own address
  */
-async function checkClassCoverage(classId, oracleSettings, { creator } = {}) {
+async function checkClassCoverage(classId, oracleSettings, { creator, jury = 0 } = {}) {
   const cls = Number(classId);
   if (!isVerdiktaServiceAvailable()) {
     return {
@@ -145,7 +145,7 @@ async function checkClassCoverage(classId, oracleSettings, { creator } = {}) {
 
   let r;
   try {
-    r = await getVerdiktaService().getClassOracleEligibility(cls, oracleSettings);
+    r = await getVerdiktaService().getClassOracleEligibility(cls, oracleSettings, { jury });
   } catch (e) {
     logger.warn('[classPolicy] coverage read failed — proceeding unchecked', { classId: cls, msg: e.message });
     return {

@@ -12,18 +12,19 @@ const networks = {
     name: 'Base Sepolia',
     rpcUrl: 'https://sepolia.base.org',
     explorer: 'https://sepolia.basescan.org',
-    // ETH-funded ReputationAggregator (LINK rail retired)
-    verdiktaAggregatorAddress: '0xe8a385E473EA710c5a88Cc72681a16a26fe380e4',
-    verdiktaAggregatorDeployBlock: 42_598_251, // lower bound for event scans
+    // The v2 aggregators (one per jury size) are the escrow's approved list, read from the escrow
+    // at startup; VERDIKTA_AGGREGATORS_BASE_SEPOLIA (comma-separated, jury order) overrides it.
+    verdiktaAggregatorsEnv: 'VERDIKTA_AGGREGATORS_BASE_SEPOLIA',
+    // lower bound for analytics event scans: the earliest v2 aggregator's deploy block
+    verdiktaAggregatorDeployBlockEnv: 'VERDIKTA_AGGREGATORS_DEPLOY_BLOCK_BASE_SEPOLIA',
   },
   'base': {
     chainId: 8453,
     name: 'Base',
     rpcUrl: 'https://mainnet.base.org',
     explorer: 'https://basescan.org',
-    // ETH-funded ReputationAggregator (LINK rail retired)
-    verdiktaAggregatorAddress: '0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a',
-    verdiktaAggregatorDeployBlock: 47_087_827, // lower bound for event scans
+    verdiktaAggregatorsEnv: 'VERDIKTA_AGGREGATORS_BASE',
+    verdiktaAggregatorDeployBlockEnv: 'VERDIKTA_AGGREGATORS_DEPLOY_BLOCK_BASE',
   },
 };
 
@@ -80,9 +81,11 @@ const config = {
   // Contract addresses
   // BountyEscrow address selected based on NETWORK
   bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
-  // Verdikta aggregator from network config (determined by NETWORK)
-  verdiktaAggregatorAddress: networkDefaults.verdiktaAggregatorAddress,
-  verdiktaAggregatorDeployBlock: networkDefaults.verdiktaAggregatorDeployBlock || 0,
+  // The v2 aggregators (jury order), when set for this network; otherwise server.js reads the
+  // escrow's approved list. Deploy block: the lower bound for analytics event scans.
+  verdiktaAggregators: String(process.env[networkDefaults.verdiktaAggregatorsEnv] || '')
+    .split(',').map((a) => a.trim()).filter(Boolean),
+  verdiktaAggregatorDeployBlock: parseInt(process.env[networkDefaults.verdiktaAggregatorDeployBlockEnv]) || 0,
   verdiktaRpcUrl: getVerdiktaRpcUrl(),
 
   // The bounty site's public URL. A mutual wager's terms name it on their "Site" line, and
@@ -99,6 +102,11 @@ const config = {
   // Blockchain sync settings
   useBlockchainSync: process.env.USE_BLOCKCHAIN_SYNC === 'true',
   syncIntervalSeconds: parseInt(process.env.SYNC_INTERVAL_SECONDS) || 20,
+
+  // Round keeper (utils/roundKeeper.js): a funded key that moves v2 rounds along (draw, close
+  // commits, promote, close failed rounds, expire re-runs). Optional: without it every step stays
+  // available to anyone through the calldata endpoints. Keep it in the secrets file, not .env.
+  keeperPrivateKey: process.env.KEEPER_PRIVATE_KEY || '',
 
   // IPFS settings
   ipfsGateway: process.env.IPFS_GATEWAY || 'https://ipfs.io',

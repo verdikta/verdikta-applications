@@ -53,7 +53,7 @@ const bountyRoutes = require('./routes/bountyRoutes');
 const submissionRoutes = require('./routes/submissionRoutes');
 const ipfsRoutes = require('./routes/ipfsRoutes');
 const jobRoutes = require('./routes/jobRoutes');
-const { initializeContractService } = require('./utils/contractService');
+const { initializeContractService, getContractService } = require('./utils/contractService');
 const { initializeSyncService } = require('./utils/syncService');
 
 const { initializeArchivalService } = require('./utils/archivalService');
@@ -142,7 +142,7 @@ const initializeTmpDirectory = async () => {
 };
 
 // ============ ADD BLOCKCHAIN SYNC INITIALIZATION ============
-const initializeBlockchainSync = () => {
+const initializeBlockchainSync = async () => {
   if (config.useBlockchainSync) {
     logger.info('🔗 Initializing blockchain sync (read-only)...', {
       network: config.network,
@@ -164,19 +164,28 @@ const initializeBlockchainSync = () => {
         config.bountyEscrowAddress
       );
 
-      // Initialize Verdikta service for analytics
-      if (config.verdiktaAggregatorAddress) {
+      // Initialize Verdikta service for analytics: the escrow's approved v2 aggregators (one per
+      // jury size), unless VERDIKTA_AGGREGATORS_<NETWORK> names them.
+      let aggregators = config.verdiktaAggregators;
+      if (aggregators.length === 0) {
+        try {
+          aggregators = await getContractService().getAggregators();
+        } catch (err) {
+          logger.warn('Could not read the escrow\'s aggregators', { msg: err.message });
+        }
+      }
+      if (aggregators.length > 0) {
         initializeVerdiktaService(
           config.verdiktaRpcUrl,
-          config.verdiktaAggregatorAddress,
+          aggregators,
           config.verdiktaAggregatorDeployBlock
         );
         logger.info('✅ Verdikta analytics service initialized', {
-          aggregatorAddress: config.verdiktaAggregatorAddress,
+          aggregators,
           rpc: config.verdiktaRpcUrl.replace(/\/v3\/.*$/, '/v3/***') // mask Infura key
         });
       } else {
-        logger.info('ℹ️  Verdikta analytics disabled - no aggregator address configured');
+        logger.info('ℹ️  Verdikta analytics disabled - no aggregator addresses');
       }
 
       // Initialize and start sync service
@@ -316,7 +325,7 @@ const startServer = async () => {
     await initializeTmpDirectory();
     
     // ============ INITIALIZE BLOCKCHAIN SYNC ============
-    const syncService = initializeBlockchainSync();
+    const syncService = await initializeBlockchainSync();
     // ====================================================
 
     // Arbiter score spread per evaluation round (RPC; background, cached on disk)

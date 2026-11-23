@@ -40,7 +40,7 @@ function mockChain(chain, fail = {}) {
     }),
   };
 }
-const cs = { getForceFailEligibility: jest.fn(async () => ({ eligible: false, hasResult: true })) };
+const cs = { getCloseFailedEligibility: jest.fn(async () => ({ eligible: false, hasResult: true })) };
 
 const run = (jobs, contract) =>
   buildActionRequired({ jobs, creator: CREATOR, contract, cs, nowSeconds: NOW, retryDelayMs: 0 });

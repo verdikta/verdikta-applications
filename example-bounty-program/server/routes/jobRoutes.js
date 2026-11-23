@@ -40,6 +40,8 @@ const { buildActionRequired } = require('../utils/actionRequired');
 const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
 const { verifyWagerPackage } = require('../utils/wagerPackage');
 const { looksLikeMutualWager } = require('../../shared/mutualWager');
+const { CLASS_PRESETS, presetByKey, presetForBounty, usdToWei } = require('../../shared/classPresets');
+const { SUBMISSION_STATUSES } = require('../utils/aggregatorAbi');
 
 /* ======================
    Helpers / configuration
@@ -188,9 +190,23 @@ const ORACLE_MAX_FEE_SCALING = 1000;
 // the live value is read from the aggregator when available.
 const ORACLE_FEE_CEILING_WEI = ethers.parseEther('0.0004');
 
+// v2 (BountyEscrow on the v2 aggregator): the oracle struct gains the fee floor and the beacon
+// flag; the bounty names its jury (approved aggregator index), item 12's pass quota Q and forfeit
+// line R, and the hunter bond.
 const CREATE_BOUNTY_ABI =
-  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)';
+  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)';
 const createBountyIface = new ethers.Interface([CREATE_BOUNTY_ABI]);
+const UINT96_MAX = (1n << 96n) - 1n;
+
+/** Parse a boolean request field ("true"/"false", 1/0, booleans); `fallback` when absent. */
+function parseBool(v, fallback) {
+  if (v === undefined || v === null || v === '') return fallback;
+  if (typeof v === 'boolean') return v;
+  const t = String(v).trim().toLowerCase();
+  if (['true', '1', 'yes'].includes(t)) return true;
+  if (['false', '0', 'no'].includes(t)) return false;
+  throw new Error(`expected a boolean, got "${v}"`);
+}
 
 /**
  * Resolve + validate creator oracle settings from a request body.
@@ -229,13 +245,85 @@ function resolveOracleSettings(body = {}, opts = {}) {
   if (!Number.isInteger(alpha) || alpha < 0 || alpha > ORACLE_MAX_ALPHA) {
     throw new Error(`oracleAlpha must be an integer between 0 and ${ORACLE_MAX_ALPHA} (contract: "bad alpha")`);
   }
+  // v2: the fee floor (item 8; may exceed the ceiling — it prices jurors, not eligibility) and the
+  // beacon flag (item 9). Defaults: opts.minOracleFeeWei / opts.withBeacons (a class preset), else
+  // no floor and no beacons.
+  const minOracleFeeWei = parseFeeToWei(
+    body.oracleMinOracleFee != null && body.oracleMinOracleFee !== '' ? body.oracleMinOracleFee : (opts.minOracleFeeWei ?? '0'),
+    'oracleMinOracleFee'
+  );
+  if (minOracleFeeWei < 0n || minOracleFeeWei > UINT96_MAX) throw new Error('oracleMinOracleFee is out of range (contract: "bad fee floor")');
+  let withBeacons;
+  try {
+    withBeacons = parseBool(body.oracleWithBeacons, opts.withBeacons ?? false);
+  } catch (e) {
+    throw new Error(`oracleWithBeacons: ${e.message}`);
+  }
 
   return {
     maxOracleFee: maxOracleFeeWei.toString(),
     alpha,
     estimatedBaseCost: estimatedBaseCostWei.toString(),
-    maxFeeBasedScaling
+    maxFeeBasedScaling,
+    minOracleFee: minOracleFeeWei.toString(),
+    withBeacons
   };
+}
+
+/**
+ * Resolve the creator's v2 decision settings (TODO item 15's size classes, item 12's rule): the
+ * jury, pass quota Q, forfeit line R and hunter bond, plus the class's fee floor and beacon flag as
+ * defaults for resolveOracleSettings. The preset is `bountyClass` if given, else the smallest class
+ * offered for the bounty's USD amount (shared/classPresets.js); every field the creator passes
+ * overrides it. USD amounts convert at `ethUsd`; with no price, a preset that needs one throws
+ * (pass bond and oracleMinOracleFee explicitly).
+ *
+ * @returns {{ bountyClass, jury, quota, forfeitLine, bond (wei string), minOracleFeeWei, withBeacons }}
+ */
+function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null, juryCount = 4 } = {}) {
+  const key = body.bountyClass || presetForBounty(bountyUsd)?.key || 'small';
+  const preset = presetByKey(key);
+  if (!preset) throw new Error(`bountyClass must be one of ${CLASS_PRESETS.map((c) => c.key).join(', ')}`);
+  const priced = (usd, field) => {
+    if (!usd) return 0n;
+    if (!(Number(ethUsd) > 0)) throw new Error(`the ETH price is unavailable, so the ${preset.name} preset's ${field} can't be converted: pass ${field === 'bond' ? 'bond' : 'oracleMinOracleFee'} explicitly`);
+    return usdToWei(usd, ethUsd);
+  };
+  const int = (v, fallback, name) => {
+    if (v === undefined || v === null || v === '') return fallback;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error(`${name} must be an integer between 0 and 255`);
+    return n;
+  };
+  const jury = int(body.jury, preset.jury, 'jury');
+  const quota = int(body.quota, preset.quota, 'quota');
+  const forfeitLine = int(body.forfeitLine, preset.forfeitLine, 'forfeitLine');
+  if (jury >= juryCount) throw new Error(`jury must be an approved aggregator index, 0..${juryCount - 1} (contract: "bad jury")`);
+  if (quota < 1 || forfeitLine > quota) throw new Error('quota must be at least 1 and forfeitLine at most quota (contract: "bad quota")');
+  const bond = body.bond != null && body.bond !== '' ? parseFeeToWei(body.bond, 'bond') : priced(preset.bondUsd, 'bond');
+  if (bond < 0n || bond > UINT96_MAX) throw new Error('bond is out of range (contract: "bad bond")');
+  const minOracleFeeWei = body.oracleMinOracleFee != null && body.oracleMinOracleFee !== ''
+    ? null   // resolveOracleSettings reads the creator's own value
+    : priced(preset.feeFloorUsd, 'fee floor').toString();
+  return { bountyClass: preset.key, jury, quota, forfeitLine, bond: bond.toString(), minOracleFeeWei, withBeacons: preset.withBeacons };
+}
+
+/** Does resolving these settings need an ETH price (a preset USD amount the body doesn't override)? */
+function presetNeedsPrice(body = {}, bountyUsd = null) {
+  const preset = presetByKey(body.bountyClass || presetForBounty(bountyUsd)?.key || 'small');
+  if (!preset) return false;
+  const bondGiven = body.bond != null && body.bond !== '';
+  const floorGiven = body.oracleMinOracleFee != null && body.oracleMinOracleFee !== '';
+  return (!bondGiven && preset.bondUsd > 0) || (!floorGiven && preset.feeFloorUsd > 0);
+}
+
+/** Decision settings of a job record (v1-era records: v1's rule, jury 0, no bond). */
+function jobDecisionSettings(job) {
+  const d = job?.decisionSettings;
+  if (d && d.quota != null) {
+    return { bountyClass: d.bountyClass || null, jury: Number(d.jury ?? 0), quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? 0), bond: String(d.bond ?? '0') };
+  }
+  return { bountyClass: null, jury: 0, quota: 1, forfeitLine: 1, bond: '0' };
 }
 
 /**
@@ -249,14 +337,18 @@ function jobOracleSettings(job) {
       maxOracleFee: String(o.maxOracleFee),
       alpha: Number(o.alpha ?? config.submissionDefaults.alpha),
       estimatedBaseCost: String(o.estimatedBaseCost ?? config.submissionDefaults.estimatedBaseCostWei),
-      maxFeeBasedScaling: Number(o.maxFeeBasedScaling ?? config.submissionDefaults.maxFeeBasedScaling)
+      maxFeeBasedScaling: Number(o.maxFeeBasedScaling ?? config.submissionDefaults.maxFeeBasedScaling),
+      minOracleFee: String(o.minOracleFee ?? '0'),
+      withBeacons: Boolean(o.withBeacons)
     };
   }
   return {
     maxOracleFee: String(config.submissionDefaults.maxOracleFeeWei),
     alpha: Number(config.submissionDefaults.alpha),
     estimatedBaseCost: String(config.submissionDefaults.estimatedBaseCostWei),
-    maxFeeBasedScaling: Number(config.submissionDefaults.maxFeeBasedScaling)
+    maxFeeBasedScaling: Number(config.submissionDefaults.maxFeeBasedScaling),
+    minOracleFee: '0',
+    withBeacons: false
   };
 }
 
@@ -268,6 +360,7 @@ function jobOracleSettings(job) {
  */
 function buildCreateBountyTx(job) {
   const oracle = jobOracleSettings(job);
+  const decision = jobDecisionSettings(job);
   const amountWei = bountyAmountWei(job);
   const windowed = Number(job.creatorAssessmentWindowSize || 0) > 0 && job.creatorDeterminationPayment != null;
   const creatorPayWei = windowed ? ethers.parseEther(String(job.creatorDeterminationPayment)) : amountWei;
@@ -287,8 +380,14 @@ function buildCreateBountyTx(job) {
       maxOracleFee: oracle.maxOracleFee,
       alpha: String(oracle.alpha),
       estimatedBaseCost: oracle.estimatedBaseCost,
-      maxFeeBasedScaling: String(oracle.maxFeeBasedScaling)
-    }
+      maxFeeBasedScaling: String(oracle.maxFeeBasedScaling),
+      minOracleFee: oracle.minOracleFee,
+      withBeacons: oracle.withBeacons
+    },
+    jury: String(decision.jury),
+    quota: String(decision.quota),
+    forfeitLine: String(decision.forfeitLine),
+    bond: decision.bond
   };
 
   let data = null;
@@ -302,7 +401,12 @@ function buildCreateBountyTx(job) {
       creatorPayWei,
       arbiterPayWei,
       BigInt(params.creatorAssessmentWindowSize),
-      [BigInt(oracle.maxOracleFee), BigInt(oracle.alpha), BigInt(oracle.estimatedBaseCost), BigInt(oracle.maxFeeBasedScaling)]
+      [BigInt(oracle.maxOracleFee), BigInt(oracle.alpha), BigInt(oracle.estimatedBaseCost), BigInt(oracle.maxFeeBasedScaling),
+        BigInt(oracle.minOracleFee), Boolean(oracle.withBeacons)],
+      BigInt(decision.jury),
+      BigInt(decision.quota),
+      BigInt(decision.forfeitLine),
+      BigInt(decision.bond)
     ]]);
   } catch (e) {
     logger.warn('[buildCreateBountyTx] encode failed', { jobId: job.jobId, msg: e.message });
@@ -318,7 +422,7 @@ function buildCreateBountyTx(job) {
       value: valueWei.toString(),
       chainId: config.chainId
     },
-    note: 'createBounty takes ONE struct argument (no overloads). msg.value must equal max(creatorDeterminationPayment, arbiterDeterminationPayment). Parse the BountyCreated event on the receipt for bountyId, then PATCH /api/jobs/:jobId/bountyId { bountyId, txHash }.'
+    note: 'createBounty takes ONE struct argument (no overloads). msg.value must equal max(creatorDeterminationPayment, arbiterDeterminationPayment). jury picks the approved aggregator (jury size); quota/forfeitLine are item 12\'s pass quota Q and forfeit line R; bond is what each hunter posts at start (returned unless a hard fail forfeits it to you). Parse the BountyCreated event on the receipt for bountyId, then PATCH /api/jobs/:jobId/bountyId { bountyId, txHash }.'
   };
 }
 
@@ -508,24 +612,44 @@ router.post('/create', async (req, res) => {
       rubricSource,            // optional create-page hint: { source, templateKey }
     } = createBody;
 
-    // ---- Oracle settings (creator-chosen, per bounty; defaults from config) ----
+    // ---- Decision + oracle settings (creator-chosen, per bounty; defaults from the size-class
+    // preset, shared/classPresets.js, and config) ----
     let oracleSettings;
+    let decisionSettings;
     try {
+      // The ETH price the creator saw: bountyAmountUSD / bountyAmount when both are given (the
+      // website computes one from the other), else the server's price feed — fetched only when a
+      // preset's USD amounts actually need converting.
+      const ethAmt = Number(bountyAmount);
+      const usdAmt = Number(bountyAmountUSD);
+      let ethUsd = ethAmt > 0 && usdAmt > 0 ? usdAmt / ethAmt : null;
+      if (ethUsd == null && presetNeedsPrice(req.body || {}, usdAmt || null)) ethUsd = (await getEthPriceUsd()).usd;
+      let juryCount = 4;
+      try { juryCount = (await getContractService().getAggregators()).length || juryCount; } catch (_) { /* static */ }
+      decisionSettings = resolveDecisionSettings(req.body || {}, { bountyUsd: Number(bountyAmountUSD) || null, ethUsd, juryCount });
       let feeCeilingWei = null;
       if (isVerdiktaServiceAvailable()) {
         try {
-          const aggConfig = await getVerdiktaService().getAggregatorConfig();
+          const aggConfig = await getVerdiktaService().getAggregatorConfig(decisionSettings.jury);
           if (aggConfig?.maxOracleFee) feeCeilingWei = ethers.parseEther(String(aggConfig.maxOracleFee));
+          if (aggConfig?.N && decisionSettings.quota > aggConfig.N) {
+            throw new Error(`quota ${decisionSettings.quota} exceeds the jury's N (${aggConfig.N}) (contract: "bad quota")`);
+          }
         } catch (e) {
-          logger.debug('[jobs/create] aggregator ceiling read failed; using static ceiling', { msg: e.message });
+          if (/bad quota/.test(e.message)) throw e;
+          logger.debug('[jobs/create] aggregator config read failed; using static checks', { msg: e.message });
         }
       }
-      oracleSettings = resolveOracleSettings(req.body || {}, { feeCeilingWei });
+      oracleSettings = resolveOracleSettings(req.body || {}, {
+        feeCeilingWei, minOracleFeeWei: decisionSettings.minOracleFeeWei, withBeacons: decisionSettings.withBeacons
+      });
+      delete decisionSettings.minOracleFeeWei;
+      delete decisionSettings.withBeacons;
     } catch (oracleErr) {
       return res.status(400).json({
         error: 'Invalid oracle settings',
         details: oracleErr.message,
-        fix: 'Optional fields: oracleMaxOracleFee (decimal ETH or integer wei, > 0, <= 0.0004 ETH), oracleAlpha (0..1000), oracleEstimatedBaseCost (decimal ETH or wei, < oracleMaxOracleFee), oracleMaxFeeBasedScaling (1..1000). Omit them to use the server defaults.',
+        fix: 'Optional fields: bountyClass (' + CLASS_PRESETS.map((c) => c.key).join(' | ') + '; presets the rest, by default the smallest class offered for bountyAmountUSD), jury (approved aggregator index), quota (Q >= 1), forfeitLine (R <= Q), bond (decimal ETH or integer wei), oracleMaxOracleFee (decimal ETH or integer wei, > 0, <= the jury\'s ceiling), oracleMinOracleFee (fee floor, decimal ETH or wei), oracleWithBeacons (bool), oracleAlpha (0..1000), oracleEstimatedBaseCost (decimal ETH or wei, < oracleMaxOracleFee), oracleMaxFeeBasedScaling (1..1000). Omit them to use the preset and the server defaults. GET /api/classes/presets lists the presets.',
         defaults: {
           oracleMaxOracleFee: config.submissionDefaults.maxOracleFeeWei,
           oracleAlpha: config.submissionDefaults.alpha,
@@ -610,7 +734,7 @@ router.post('/create', async (req, res) => {
       });
     }
 
-    const coverageCheck = await checkClassCoverage(classIdNum, oracleSettings, { creator });
+    const coverageCheck = await checkClassCoverage(classIdNum, oracleSettings, { creator, jury: decisionSettings.jury });
     if (coverageCheck.refusal) {
       return res.status(400).json({
         error: 'No arbiters can serve this class',
@@ -912,13 +1036,15 @@ router.post('/create', async (req, res) => {
       // Creator-chosen oracle request settings (wei strings + integers). Passed
       // verbatim into createBounty's `oracle` struct and used for every evaluation.
       oracleSettings,
+      // v2: jury, Q, R and bond (wei string), passed into createBounty.
+      decisionSettings,
       rubricTemplate,
       // Which client created it (website or an agent's key), for the template-usage report.
       createdByClientType: req.clientType || 'unknown',
       createdByClientId: req.clientId || null,
     });
 
-    logger.info('[jobs/create] job created', { jobId: job.jobId, oracleSettings, rubricTemplate });
+    logger.info('[jobs/create] job created', { jobId: job.jobId, oracleSettings, decisionSettings, rubricTemplate });
 
     return res.json({
       success: true,
@@ -938,6 +1064,7 @@ router.post('/create', async (req, res) => {
         submissionCloseTimeIso: isoFromUnix(job.submissionCloseTime),
         createdAt: job.createdAt,
         oracleSettings: job.oracleSettings,
+        decisionSettings: job.decisionSettings,
         // Which template the rubric matched (GET /api/templates), if any.
         rubricTemplate: { key: rubricTemplate.key, version: rubricTemplate.version, match: rubricTemplate.match, source: rubricTemplate.source }
       },
@@ -1004,10 +1131,11 @@ router.get('/admin/diagnostics', async (req, res) => {
  * GET /api/jobs/admin/stuck
  * Find all stuck submissions and diagnose them.
  * A submission is listed as "stuck" if it has been pending for more than 10 minutes
- * (a listing heuristic only). `canTimeout` is decided by the AGGREGATOR's state,
- * exactly as BountyEscrow.failTimedOutSubmission does: no result on the aggregator
- * AND the round settled (isComplete, or responseTimeoutSeconds elapsed since start).
- * A pending submission WITH a result is reported as needing finalizeSubmission.
+ * (a listing heuristic only). `canCloseFailed` is decided by the AGGREGATOR's state,
+ * exactly as BountyEscrow.closeFailedRound does: no result, and none can come (failed,
+ * cancelled, past its deadline, or undrawn for a day). A pending submission WITH a result is
+ * reported as needing finalizeSubmission; one still moving, with the step that moves it
+ * (draw, close commits, promote). `canTimeout` is kept as an alias of canCloseFailed.
  */
 router.get('/admin/stuck', async (req, res) => {
   const TIMEOUT_SECONDS = 10 * 60; // listing heuristic only — see canTimeout
@@ -1047,7 +1175,8 @@ router.get('/admin/stuck', async (req, res) => {
         summary.byStatus[status] = (summary.byStatus[status] || 0) + 1;
 
         // Check if stuck (pending + timeout elapsed)
-        const isPending = status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation';
+        const isPending = ['pending', 'pendingverdikta', 'pending_evaluation', 'no_result_pending_close',
+          'soft_fail_pending_finalization', 'awaiting_rerun'].includes(status);
         const submittedAt = sub.submittedAt || 0;
         const elapsedSeconds = nowSeconds - submittedAt;
         const isStuck = isPending && elapsedSeconds >= TIMEOUT_SECONDS;
@@ -1075,25 +1204,33 @@ router.get('/admin/stuck', async (req, res) => {
           if (contract && onChainBountyId != null) {
             try {
               const chainSub = await contract.getSubmission(onChainBountyId, sub.submissionId);
-              const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
-              stuckInfo.onChainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
+              stuckInfo.onChainStatus = SUBMISSION_STATUSES[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
               stuckInfo.verdiktaAggId = chainSub.verdiktaAggId;
 
               if (stuckInfo.onChainStatus === 'Prepared') {
                 stuckInfo.issue = 'Never started - startPreparedSubmission not called';
                 stuckInfo.canTimeout = false;
               } else if (stuckInfo.onChainStatus === 'PendingVerdikta') {
-                const gate = await cs.getForceFailEligibility(chainSub.verdiktaAggId);
-                stuckInfo.forceFail = gate;
-                stuckInfo.canTimeout = gate.eligible === true;
+                const gate = await cs.getCloseFailedEligibility(onChainBountyId, sub.submissionId);
+                stuckInfo.closeFailed = gate;
+                stuckInfo.nextAction = gate.nextAction || null;
+                stuckInfo.canCloseFailed = gate.eligible === true;
+                stuckInfo.canTimeout = stuckInfo.canCloseFailed;
                 if (gate.hasResult) {
                   stuckInfo.canFinalize = true;
-                  stuckInfo.issue = 'Oracle result available - needs finalizeSubmission (not a timeout)';
+                  stuckInfo.issue = 'Oracle result available - needs finalizeSubmission';
                 } else if (gate.eligible) {
-                  stuckInfo.issue = 'Aggregator round settled with no result - eligible for failTimedOutSubmission';
+                  stuckInfo.issue = 'Round has no result and can get none - eligible for closeFailedRound (then the submission may re-run)';
                 } else {
                   stuckInfo.issue = `In evaluation - ${gate.hint || gate.reason}`;
                 }
+              } else if (stuckInfo.onChainStatus === 'AwaitingRerun') {
+                const rerunDeadline = Number(chainSub.rerunDeadline);
+                stuckInfo.rerunDeadline = rerunDeadline;
+                stuckInfo.canExpireRerun = nowSeconds > rerunDeadline;
+                stuckInfo.issue = stuckInfo.canExpireRerun
+                  ? 'Re-run window closed - anyone may expireRerun (returns the bond, frees the place)'
+                  : `Awaiting a re-run until unix ${rerunDeadline} (rerunSubmission by the hunter or funder)`;
               } else {
                 stuckInfo.issue = `Already finalized on-chain as ${stuckInfo.onChainStatus}`;
                 stuckInfo.canTimeout = false;
@@ -1113,7 +1250,8 @@ router.get('/admin/stuck', async (req, res) => {
 
     // Group recommendations
     const recommendations = [];
-    const canTimeoutCount = stuckSubmissions.filter(s => s.canTimeout).length;
+    const canTimeoutCount = stuckSubmissions.filter(s => s.canCloseFailed).length;
+    const canExpireCount = stuckSubmissions.filter(s => s.canExpireRerun).length;
     const canFinalizeCount = stuckSubmissions.filter(s => s.canFinalize).length;
     const neverStartedCount = stuckSubmissions.filter(s => s.onChainStatus === 'Prepared').length;
     const alreadyFinalizedCount = stuckSubmissions.filter(s =>
@@ -1121,7 +1259,10 @@ router.get('/admin/stuck', async (req, res) => {
     ).length;
 
     if (canTimeoutCount > 0) {
-      recommendations.push(`${canTimeoutCount} submission(s) can be timed out via failTimedOutSubmission`);
+      recommendations.push(`${canTimeoutCount} submission(s) have a dead round: closeFailedRound (anyone; the submission may then re-run)`);
+    }
+    if (canExpireCount > 0) {
+      recommendations.push(`${canExpireCount} submission(s) did not re-run in time: expireRerun (anyone; returns the bond)`);
     }
     if (canFinalizeCount > 0) {
       recommendations.push(`${canFinalizeCount} submission(s) have an oracle result and need finalizeSubmission`);
@@ -1401,9 +1542,10 @@ router.get('/admin/expired', async (req, res) => {
  *   - canClose: true  → ready for `closeExpiredBounty` (no pending evaluations)
  *   - canClose: false → first resolve `pendingSubmissions` (each one needs
  *                       `finalizeSubmission` if the oracle responded (`hasResult`),
- *                       else `failTimedOutSubmission` once the aggregator round has
- *                       settled with no result (`timeoutEligible`); then the bounty
- *                       can be closed)
+ *                       `closeFailedRound` if its round has no result and can get none
+ *                       (`closeFailedEligible`), or `expireRerun` if it awaits a re-run
+ *                       (`awaitingRerun`; anyone may expire it once the deadline has
+ *                       passed); then the bounty can be closed)
  *
  * Bounties whose on-chain state could not be read (RPC failure) are NOT in
  * `bounties`/`count`; they are listed in `unverified` (`unverifiedCount`) so a
@@ -1687,41 +1829,45 @@ router.post('/:jobId/close', async (req, res) => {
       });
     }
 
-    // Check for pending submissions and classify them
-    const subCount = Number(await contract.submissionCount(onChainBountyId));
+    // Check for pending submissions and classify them: every submission on the pending list (in
+    // evaluation, or awaiting a re-run) blocks closeExpiredBounty.
+    const pendingIds = (await contract.pendingSubmissionIds(onChainBountyId)).map(Number);
     const needsFinalize = [];
-    const needsTimeout = [];
+    const needsCloseFailed = [];
+    const needsExpireRerun = [];
+    const stillEvaluating = [];
 
-    for (let i = 0; i < subCount; i++) {
+    for (const i of pendingIds) {
       try {
         const chainSub = await contract.getSubmission(onChainBountyId, i);
-        if (Number(chainSub.status) === 1) { // PendingVerdikta
-          // Check if oracle evaluation is already complete
-          let evaluated = false;
-          try {
-            const evalResult = await cs.checkEvaluationReady(onChainBountyId, i);
-            evaluated = evalResult.ready;
-          } catch (_) {}
-
-          const entry = { submissionId: i, hunter: chainSub.hunter };
-          if (evaluated) {
-            needsFinalize.push(entry);
-          } else {
-            needsTimeout.push(entry);
-          }
+        const entry = { submissionId: i, hunter: chainSub.hunter };
+        if (Number(chainSub.status) === 6) { // AwaitingRerun: past the deadline anyone may expire it
+          needsExpireRerun.push(entry);
+          continue;
         }
+        const state = await cs.getRoundState(onChainBountyId, i);
+        entry.nextAction = state.nextAction || null;
+        if (state.hasResult) needsFinalize.push(entry);
+        else if (state.nextAction === 'CLOSE_FAILED') needsCloseFailed.push(entry);
+        else stillEvaluating.push(entry);
       } catch (subErr) {
         // Ignore individual submission errors
       }
     }
 
-    if (needsFinalize.length > 0 || needsTimeout.length > 0) {
+    if (needsFinalize.length || needsCloseFailed.length || needsExpireRerun.length || stillEvaluating.length) {
       const hints = [];
       if (needsFinalize.length > 0) {
-        hints.push(`${needsFinalize.length} submission(s) have completed evaluation - call POST /api/jobs/${jobId}/submissions/:subId/finalize to claim payout first`);
+        hints.push(`${needsFinalize.length} submission(s) have completed evaluation - call POST /api/jobs/${jobId}/submissions/:subId/finalize for each first`);
       }
-      if (needsTimeout.length > 0) {
-        hints.push(`${needsTimeout.length} submission(s) are still evaluating - call POST /api/jobs/${jobId}/submissions/:subId/timeout for each`);
+      if (needsCloseFailed.length > 0) {
+        hints.push(`${needsCloseFailed.length} submission(s) have a dead round - call POST /api/jobs/${jobId}/submissions/:subId/close-failed for each`);
+      }
+      if (needsExpireRerun.length > 0) {
+        hints.push(`${needsExpireRerun.length} submission(s) are awaiting a re-run that can no longer happen - call POST /api/jobs/${jobId}/submissions/:subId/expire-rerun for each`);
+      }
+      if (stillEvaluating.length > 0) {
+        hints.push(`${stillEvaluating.length} submission(s) are still evaluating - wait for their rounds to finish or fail (see GET .../diagnose)`);
       }
 
       return res.status(400).json({
@@ -1730,10 +1876,12 @@ router.post('/:jobId/close', async (req, res) => {
         error: 'Pending submissions',
         details: hints.join('. '),
         needsFinalize,
-        needsTimeout,
-        hint: needsFinalize.length > 0
-          ? `Finalize completed evaluations first: POST /api/jobs/${jobId}/submissions/:subId/finalize`
-          : `Timeout stuck submissions: POST /api/jobs/${jobId}/submissions/:subId/timeout`
+        needsCloseFailed,
+        needsExpireRerun,
+        stillEvaluating,
+        // v1 name, kept: everything that isn't a finalize
+        needsTimeout: [...needsCloseFailed, ...needsExpireRerun, ...stillEvaluating],
+        hint: hints[0]
       });
     }
 
@@ -1971,7 +2119,7 @@ router.post('/:jobId/submit/approve', async (req, res) => {
     success: false,
     error: 'LINK approval is no longer required',
     code: 'APPROVE_DEPRECATED_ETH',
-    details: 'The oracle is now ETH-funded. Skip this step. Call /submissions/:submissionId/start and attach the ethMaxBudget (from the SubmissionPrepared event) as the transaction value (msg.value).',
+    details: 'The oracle is now ETH-funded. Skip this step. Call /submissions/:submissionId/start and attach the transaction.value it returns (startValue: the prepay plus the hunter bond) as msg.value.',
     nextStep: 'POST /submissions/:submissionId/start'
   });
 });
@@ -2142,14 +2290,15 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
         });
       }
       if (liveStatusIndex !== 0 && liveStatusIndex !== 5) {
-        const names = { 1: 'PendingVerdikta', 2: 'Failed', 3: 'PassedPaid', 4: 'PassedUnpaid' };
         return res.status(400).json({
           success: false,
           code: 'SUBMISSION_ALREADY_STARTED',
-          error: `Submission is past the start step (on-chain status: ${names[liveStatusIndex] || liveStatusIndex}). startPreparedSubmission would revert.`,
+          error: `Submission is past the start step (on-chain status: ${SUBMISSION_STATUSES[liveStatusIndex] || liveStatusIndex}). startPreparedSubmission would revert.`,
           nextStep: liveStatusIndex === 1
-            ? `Oracle evaluation is in progress — poll GET /api/jobs/${jobId}/submissions, then POST /api/jobs/${jobId}/submissions/${submissionId}/finalize`
-            : `This submission is finalized — GET /api/jobs/${jobId}/submissions for its result.`
+            ? `Oracle evaluation is in progress — GET /api/jobs/${jobId}/submissions/${submissionId}/diagnose for the round's state and next step, then POST /api/jobs/${jobId}/submissions/${submissionId}/finalize`
+            : liveStatusIndex === 6
+              ? `The submission awaits a re-run — POST /api/jobs/${jobId}/submissions/${submissionId}/rerun`
+              : `This submission is finalized — GET /api/jobs/${jobId}/submissions for its result.`
         });
       }
       // Prepared (0), or PendingCreatorApproval (5) with an expired window → startable.
@@ -2190,26 +2339,25 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Contract not configured' });
     }
 
-    // The evaluation is funded by attaching the prepay as msg.value (no LINK approval).
-    // The contract checks msg.value against the LIVE requirement (requiredPrepay(bountyId):
-    // the aggregator's maxTotalFee for the bounty's fee, which can change if aggregator
-    // parameters change). The prepare-time ethMaxBudget is only an estimate, so read the
-    // live value first and fall back to the synced/body value only if the chain read fails.
-    let livePrepay = null;
+    // The evaluation is funded by attaching ETH as msg.value (no LINK approval): the round's
+    // prepay plus the bounty's hunter bond (v2, item 12) — startValue(bountyId). The contract
+    // checks it against the LIVE requirement (the aggregator's maxTotalFee for the bounty's
+    // settings can change with aggregator parameters), so read it live. There is no fallback to
+    // the prepare-time estimate: it would miss the bond and revert "wrong eth amount".
+    let valueWei = null;
+    let prepayWei = null;
     try {
-      livePrepay = (await getContractService().contract.requiredPrepay(onChainBountyId)).toString();
+      const c = getContractService().contract;
+      [valueWei, prepayWei] = (await Promise.all([c.startValue(onChainBountyId), c.requiredPrepay(onChainBountyId)])).map(String);
     } catch (e) {
-      logger.warn('[submit/start] requiredPrepay read failed; falling back to stored estimate', { jobId, msg: e.message });
-    }
-    const ethMaxBudget = livePrepay ?? req.body?.ethMaxBudget ?? submission.ethMaxBudget ?? liveEthMaxBudget;
-    if (ethMaxBudget == null) {
-      return res.status(400).json({
+      logger.warn('[submit/start] startValue read failed', { jobId, msg: e.message });
+      return res.status(503).json({
         success: false,
-        error: 'Missing ethMaxBudget — pass it (in wei) from the SubmissionPrepared event (data word 1, right after evalWallet), or wait for the submission to sync so the server can read it from chain',
-        code: 'ETH_BUDGET_UNKNOWN'
+        error: 'Could not read startValue(bountyId) from the escrow (the prepay plus the hunter bond); retry shortly',
+        code: 'START_VALUE_UNREADABLE'
       });
     }
-    const valueWei = BigInt(ethMaxBudget).toString();
+    const bondWei = (BigInt(valueWei) - BigInt(prepayWei)).toString();
 
     const iface = new ethers.Interface([
       'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable'
@@ -2226,11 +2374,13 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
       transaction: {
         to: contractAddress,
         data: calldata,
-        value: valueWei,   // ETH prepay == requiredPrepay(bountyId) read live; unspent ETH is refunded to the funder
+        value: valueWei,   // startValue(bountyId) read live: the round's prepay + the hunter bond
         chainId: config.chainId,
         gasLimit: '4000000'
       },
-      nextStep: 'After tx confirms, call /submissions/confirm, then poll /diagnose for oracleResult.'
+      prepayWei,          // escrowed with the aggregator; the unspent part is refunded to the funder
+      bondWei,            // held by the escrow; returned unless a hard fail forfeits it to the creator
+      nextStep: 'After tx confirms, the round must be drawn: POST /submissions/:id/draw (anyone may send it; the server\'s keeper usually does) from two blocks on. Then poll /diagnose for the round and its result.'
     });
 
   } catch (error) {
@@ -2285,19 +2435,36 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
       const evalResult = await contractService.checkEvaluationReady(onChainBountyId, onChainSubmissionId);
 
       if (!evalResult.ready) {
+        const noResult = evalResult.reason === 'no_result';
         return res.status(400).json({
           success: false,
-          error: 'Evaluation not ready',
+          error: noResult ? 'The round has no result and can get none' : 'Evaluation not ready',
           reason: evalResult.reason || 'unknown',
-          hint: 'Wait for the oracle to complete, or check status via GET /api/jobs/:jobId/submissions/:subId/diagnose'
+          phase: evalResult.phaseName || null,
+          nextAction: evalResult.nextAction || null,
+          hint: noResult
+            ? `Close the round first: POST /api/jobs/${jobId}/submissions/${submissionId}/close-failed (anyone). The submission then awaits a re-run, keeping its place and bond.`
+            : 'Wait for the round to finish (the server\'s keeper draws and promotes it; anyone may), or check its state via GET /api/jobs/:jobId/submissions/:subId/diagnose'
         });
       }
 
+      // item 12: the contract judges the round by Q-of-N, not by the mean score
+      const d = jobDecisionSettings(job);
       oracleResult = {
         acceptance: evalResult.scores.acceptance,
         rejection: evalResult.scores.rejection,
-        passed: evalResult.scores.acceptance >= (job.threshold || 0),
-        threshold: job.threshold || 0
+        outcome: evalResult.outcome,
+        passCount: evalResult.passCount,
+        quota: d.quota,
+        forfeitLine: d.forfeitLine,
+        passed: evalResult.outcome === 'pass',
+        threshold: job.threshold || 0,
+        effect: {
+          pass: 'paid (subject to payout priority); the bond is returned',
+          soft_fail: 'the submission awaits a re-run (2-hour window), keeping its place and bond',
+          no_result: 'the result is unusable: the submission awaits a re-run, keeping its place and bond',
+          hard_fail: 'the submission fails and the bond goes to the bounty creator'
+        }[evalResult.outcome] || null
       };
     } catch (csError) {
       // contractService may not be initialized (blockchain sync disabled) — skip check
@@ -3014,7 +3181,7 @@ router.get('/:jobId/oracle-check', async (req, res) => {
     }
 
     try {
-      const result = await getVerdiktaService().getClassOracleEligibility(classId, oracleSettings);
+      const result = await getVerdiktaService().getClassOracleEligibility(classId, oracleSettings, { jury: jobDecisionSettings(job).jury });
       const creator = String(job.creator || '').toLowerCase();
       const creatorOperatedCount = creator
         ? (result.eligibleArbiters || []).filter(a => a.owner && String(a.owner).toLowerCase() === creator).length
@@ -4100,7 +4267,10 @@ const oracleSettingsWithEth = (o) => (o ? {
   alpha: o.alpha,
   estimatedBaseCost: o.estimatedBaseCost,
   estimatedBaseCostEth: ethers.formatEther(o.estimatedBaseCost),
-  maxFeeBasedScaling: o.maxFeeBasedScaling
+  maxFeeBasedScaling: o.maxFeeBasedScaling,
+  minOracleFee: o.minOracleFee ?? '0',
+  minOracleFeeEth: ethers.formatEther(o.minOracleFee ?? '0'),
+  withBeacons: Boolean(o.withBeacons)
 } : null);
 
 router.get('/:jobId/onchain-status', async (req, res) => {
@@ -4173,13 +4343,13 @@ async function readOnchainStatus(bountyId) {
     // Agent conveniences read straight from the contract's own views, in
     // parallel. Each is best-effort: a failed read is null, not a failed response.
     const c = contractService.contract;
-    const [[requiredPrepay, prepareCutoff], effectiveOracleSettings] = await Promise.all([
+    const [[requiredPrepay, prepareCutoff, startValue], effectiveOracleSettings] = await Promise.all([
       (async () => {
         try {
-          return (await Promise.all([c.requiredPrepay(bountyId), c.prepareCutoff(bountyId)])).map(v => v.toString());
+          return (await Promise.all([c.requiredPrepay(bountyId), c.prepareCutoff(bountyId), c.startValue(bountyId)])).map(v => v.toString());
         } catch (e) {
-          logger.warn('[jobs/onchain-status] requiredPrepay/prepareCutoff read failed', { bountyId, msg: e.message });
-          return [null, null];
+          logger.warn('[jobs/onchain-status] requiredPrepay/prepareCutoff/startValue read failed', { bountyId, msg: e.message });
+          return [null, null, null];
         }
       })(),
       (async () => {
@@ -4195,7 +4365,9 @@ async function readOnchainStatus(bountyId) {
     return { status: 200, body: {
       success: true,
       bountyId,
-      requiredPrepay,                            // wei to attach at startPreparedSubmission RIGHT NOW (null if unreadable)
+      requiredPrepay,                            // wei: one round's prepay RIGHT NOW (attach to rerunSubmission; null if unreadable)
+      startValue,                                // wei to attach at startPreparedSubmission RIGHT NOW: prepay + bond
+      decisionSettings: b.decisionSettings,      // v2: jury, quota (Q), forfeitLine (R), bondWei
       prepareCutoff,                             // last unix second at which prepareSubmission can succeed (0 if not Open)
       status: eff,                               // OPEN | EXPIRED | AWARDED | CLOSED
       rawStatus,                                 // 0=Open, 1=Awarded, 2=Closed (enum)
@@ -4882,8 +5054,8 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
       response.nextStep = `Ready to submit. Use POST /api/jobs/${job.jobId}/submit with the same files, or POST /api/jobs/${job.jobId}/submit/bundle for pre-encoded transactions.`;
       response.estimatedCost = {
         gasEth: '~0.005 (gas for the on-chain transactions)',
-        oraclePrepayEth: '~0.00024 worst case (ethMaxBudget, attached as msg.value on start; usually spent in full on the arbiters; any unspent part is refunded after evaluation — actual amount depends on the bounty oracle fee setting)',
-        note: `ETH-funded — there is no LINK. Use GET /api/jobs/${job.jobId}/estimate-fee for a jury-config-specific prepay estimate.`
+        oraclePrepayEth: 'requiredPrepay(bountyId), attached with the hunter bond as msg.value on start (startValue); the unspent part of the prepay is refunded when the round resolves, and the bond comes back unless a hard fail forfeits it — both depend on the bounty\'s settings',
+        note: `ETH-funded — there is no LINK. GET /api/jobs/${job.jobId}/onchain-status returns requiredPrepay and startValue live; GET /api/jobs/${job.jobId}/estimate-fee breaks the prepay down.`
       };
     } else {
       response.nextStep = 'Fix the errors above and try dry-run again';
@@ -5603,16 +5775,20 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         {
           step: 2,
           name: 'startPreparedSubmission',
-          description: 'Triggers oracle evaluation. Replace {SUBMISSION_ID} from step 1 event, and attach {ETH_MAX_BUDGET} (from step 1 event) as the transaction value (msg.value). No LINK approval needed.',
+          description: 'Starts the oracle round. Replace {SUBMISSION_ID} from step 1 event, and attach {START_VALUE} = startValue(bountyId) (the round\'s prepay plus the hunter bond) as the transaction value (msg.value). No LINK approval needed.',
           to: escrowAddress,
           data: null,
           dataTemplate: 'startPreparedSubmission({BOUNTY_ID}, {SUBMISSION_ID})',
-          value: '{ETH_MAX_BUDGET}',
+          value: '{START_VALUE}',
           chainId,
           gasLimit: 4000000,
           note: 'Use POST /api/jobs/:id/submit/bundle/complete with step 1 txHash to get exact calldata + value'
         }
       ],
+      roundSteps: {
+        description: 'After step 2 the round must be drawn (drawJury, from two blocks on; twice for a beacon bounty) and later promoted. Anyone may send each step and the server\'s keeper usually does; POST /api/jobs/:id/submissions/:submissionId/round-step returns the one that succeeds now.',
+        endpoint: `POST /api/jobs/${jobId}/submissions/{SUBMISSION_ID}/round-step`
+      },
       postEvaluation: {
         step: 3,
         name: 'finalizeSubmission',
@@ -5623,14 +5799,14 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         value: '0',
         chainId,
         gasLimit: Number(RESOLVE_GAS_LIMIT_FALLBACK),
-        note: 'Only call after GET /api/jobs/:id/submissions/:submissionId shows EVALUATED_PASSED or EVALUATED_FAILED'
+        note: 'Only call after GET /api/jobs/:id/submissions/:submissionId/diagnose shows the round has a result. A pass is paid and returns the bond; a soft fail lets you re-run (POST .../rerun, within 2 hours; keeps your place and bond); a hard fail forfeits the bond to the creator.'
       },
       contracts: {
         escrow: escrowAddress
       },
       requirements: {
         ethForGas: '~0.005 ETH (estimate for both transactions)',
-        ethForOracle: `attach ethMaxBudget (from step 1 event) as msg.value on step 2 — worst case ~${ethers.formatEther(maxOracleFeeWei * 12n)} ETH; unspent ETH is refunded to the hunter when finalized`
+        ethForOracle: 'attach startValue(bountyId) as msg.value on step 2 (POST /start or /submit/bundle/complete returns it): the round\'s prepay, of which the unspent part is refunded when the round resolves, plus the hunter bond, returned unless a hard fail forfeits it'
       },
       // Canonical topic0 + ABI for the event step 1 emits — filter the receipt logs
       // on `event.topic0` and decode with `event.abi` rather than deriving either.
@@ -5640,7 +5816,10 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         prepareSubmission: 'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)',
         startPreparedSubmission: 'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
         finalizeSubmission: 'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
-        failTimedOutSubmission: 'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)'
+        drawJury: 'function drawJury(uint256 bountyId, uint256 submissionId)',
+        closeFailedRound: 'function closeFailedRound(uint256 bountyId, uint256 submissionId)',
+        rerunSubmission: 'function rerunSubmission(uint256 bountyId, uint256 submissionId) payable',
+        expireRerun: 'function expireRerun(uint256 bountyId, uint256 submissionId)'
       },
       nextStep: `POST /api/jobs/${jobId}/submit/bundle/complete with { "txHash": "0x..." } after broadcasting step 1`,
       tips: [
@@ -5648,13 +5827,13 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         '/submit/bundle/complete parses step 1 logs and returns exact calldata + the ETH value for steps 2 and 3',
         'PREFER the ethMaxBudget that /submit/bundle/complete returns (parsed.ethMaxBudget) — do not hand-decode the event for the budget.',
         'If you DO parse SubmissionPrepared yourself: use the full event ABI above and named access (args.ethMaxBudget). Field order is evalWallet, ethMaxBudget, then the dynamic string evaluationCid LAST; the topic0 is the keccak256 of event.signature.',
-        'The oracle settings (maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling) are fixed by the bounty creator — see oracleSettings above. prepareSubmission takes only (bountyId, evaluationCid, hunterCid); hunterCid must be a bare 46-100 char alphanumeric CID or it reverts "bad hunterCid". Each bounty accepts at most 128 submissions ("submission limit reached").',
+        'The oracle and decision settings (fee ceiling and floor, beacons, alpha, estimatedBaseCost, maxFeeBasedScaling; jury, pass quota Q, forfeit line R, bond) are fixed by the bounty creator — see oracleSettings above and decisionSettings on GET /api/jobs/:id. prepareSubmission takes only (bountyId, evaluationCid, hunterCid); hunterCid must be a bare 46-100 char alphanumeric CID or it reverts "bad hunterCid". Windowed bounties accept at most 128 submissions ("submission limit reached").',
         'If you can parse event logs yourself, extract evalWallet + submissionId + ethMaxBudget from SubmissionPrepared (full ABI)',
-        'Step 2 (startPreparedSubmission) is payable — attach the LIVE requiredPrepay(bountyId) as msg.value (the /start transaction.value; the prepare event ethMaxBudget is only an estimate). There is NO LINK approval step anymore.',
+        'Step 2 (startPreparedSubmission) is payable — attach the LIVE startValue(bountyId) as msg.value (the /start transaction.value): the round\'s prepay plus the hunter bond. The prepare event\'s ethMaxBudget is only the prepay estimate, without the bond. There is NO LINK approval step.',
         `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
         `Poll GET /api/jobs/${jobId}/submissions after step 2 until evaluation completes, then execute step 3`,
         'Step 3 (finalizeSubmission) is REQUIRED — oracle completion does NOT trigger payment automatically',
-        'If finalizeSubmission reverts with "Verdikta not ready", the oracle has not completed — wait; if it never responds, failTimedOutSubmission works once the aggregator round has settled with no result (it times out 300 s after step 2; before that it reverts "evaluation not settled"). It reverts "result available - use finalizeSubmission" if a result exists. Finalize can revert "earlier submission pending - retry after it resolves" (nextAction AWAIT_EARLIER) — that is NOT a failure. The earlier submission\'s evaluation is often already over (nextAction FINALIZE or FORCE_FAIL) and only waiting for someone to resolve it; anyone may, and it cannot change who wins. POST /finalize (and /diagnose) list them in blockedBy[], each with the transaction that resolves it: send those, then your own finalize. Check GET /api/jobs/:id/submissions/:subId/diagnose for the exact state.',
+        'If finalizeSubmission reverts with "Verdikta not ready", the round has no result yet — wait (it must be drawn and promoted; the keeper or anyone does it: POST .../round-step). If it reverts "no oracle result - use closeFailedRound", the round can get no result: closeFailedRound (POST .../close-failed; anyone) closes it and you may re-run. Finalize can revert "earlier submission pending - retry after it resolves" (nextAction AWAIT_EARLIER) — that is NOT a failure. The earlier submission is often already resolvable (nextAction FINALIZE, CLOSE_FAILED or EXPIRE_RERUN); anyone may resolve it, and it cannot change who wins. POST /finalize (and /diagnose) list them in blockedBy[], each with the transaction that resolves it: send those, then your own finalize. Check GET /api/jobs/:id/submissions/:subId/diagnose for the exact state.',
         ...(job.creatorAssessmentWindowSize > 0 ? [
           `WINDOWED BOUNTY: After step 1, the submission enters PendingCreatorApproval for ${job.creatorAssessmentWindowSize}s. The creator may approve directly. If the window expires, proceed with steps 2-3.`,
           `Poll GET /api/jobs/${jobId}/submissions/:subId/diagnose to check window status before executing step 2.`
@@ -5784,7 +5963,19 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
 
     const bountyIdNum = parseInt(jobId);
     const chainId     = config.chainId;
-    const startValue  = BigInt(ethMaxBudget).toString();
+    // v2: the start takes startValue(bountyId) — the live prepay plus the hunter bond. The event's
+    // ethMaxBudget is only the prepay at prepare time; without the bond the start would revert.
+    let startValue;
+    try {
+      startValue = (await getContractService().contract.startValue(bountyIdNum)).toString();
+    } catch (svErr) {
+      return res.status(503).json({
+        success: false,
+        error: 'Could not read startValue(bountyId) from the escrow (the prepay plus the hunter bond); retry shortly',
+        code: 'START_VALUE_UNREADABLE',
+        details: svErr.message
+      });
+    }
 
     // Encode exact calldata for steps 2 (ETH-funded start) and 3 (finalize)
     const startData = bundleEscrowIface.encodeFunctionData('startPreparedSubmission', [
@@ -6746,6 +6937,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       3: 'APPROVED',            // PassedPaid (winner!)
       4: 'APPROVED',            // PassedUnpaid (passed but someone else won)
       5: 'PendingCreatorApproval',
+      6: 'AWAITING_RERUN',      // v2, item 12: soft fail or no result; may re-run
     };
     // Low-level (chain enum) names — preserved alongside the high-level
     // status so analytics and the public submissions endpoint can
@@ -6760,6 +6952,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       3: 'PassedPaid',
       4: 'PassedUnpaid',
       5: 'PendingCreatorApproval',
+      6: 'AwaitingRerun',
     };
     const statusIndex = Number(sub.status);
     let chainStatus = statusMap[statusIndex] || 'UNKNOWN';
@@ -6774,28 +6967,33 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     let acceptScore = Number(sub.acceptance);
     let rejectScore = Number(sub.rejection);
 
-    // For PendingVerdikta, check if oracle evaluation is already complete on VerdiktaAggregator
+    // For PendingVerdikta, read the round through the escrow's lens: its phase, and its result as
+    // the contract judges it (item 12's Q-of-N rule — not the mean score against the threshold).
+    let roundState = null;
     if (statusIndex === 1) {
       const zeroHash = '0x' + '0'.repeat(64);
       const aggId = sub.verdiktaAggId;
       if (aggId && aggId !== zeroHash) {
         try {
-          const cs = getContractService();
-          const evalResult = await cs.checkEvaluationReady(onChainId, subId);
-          if (evalResult.ready) {
-            const threshold = job.threshold || 50;
-            chainStatus = evalResult.scores.acceptance >= threshold
-              ? 'ACCEPTED_PENDING_CLAIM'
-              : 'REJECTED_PENDING_FINALIZATION';
-            acceptScore = evalResult.scores.acceptance;
-            rejectScore = evalResult.scores.rejection;
-            logger.info('[refresh] Oracle evaluation complete, pending finalization', {
-              jobId, submissionId: subId, chainStatus,
-              acceptance: acceptScore, rejection: rejectScore
-            });
+          roundState = await getContractService().getRoundState(onChainId, subId);
+          if (!roundState.error) {
+            if (roundState.hasResult) {
+              chainStatus = roundState.outcome === 'pass' ? 'ACCEPTED_PENDING_CLAIM'
+                : roundState.outcome === 'hard_fail' ? 'REJECTED_PENDING_FINALIZATION'
+                : 'SOFT_FAIL_PENDING_FINALIZATION';
+              if (roundState.scores) {
+                acceptScore = roundState.scores.acceptance;
+                rejectScore = roundState.scores.rejection;
+              }
+              logger.info('[refresh] Oracle evaluation complete, pending finalization', {
+                jobId, submissionId: subId, chainStatus, outcome: roundState.outcome, passCount: roundState.passCount
+              });
+            } else if (roundState.outcome === 'no_result') {
+              chainStatus = 'NO_RESULT_PENDING_CLOSE';
+            }
           }
         } catch (err) {
-          logger.debug('[refresh] Error checking aggregator', { error: err.message });
+          logger.debug('[refresh] Error reading the round', { error: err.message });
         }
       }
     }
@@ -6806,34 +7004,18 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       chainStatus
     });
 
-    // Detect timeout vs actual evaluation failure
-    // Timeout signature: REJECTED status with zero scores and empty justificationCids
-    // This happens when Verdikta oracles don't respond (insufficient commits)
+    // Why a failed submission failed. The escrow emits NO_RESULT (a round with no result that
+    // could not re-run) or RERUN_EXPIRED (a re-run not taken in its window) in place of
+    // justification CIDs; those were recorded by the sync service from the event. Otherwise a
+    // Failed submission had a result that failed (a hard fail, or a soft fail out of re-runs).
     let failureReason = null;
     if (statusIndex === 2) { // Failed/REJECTED
-      const hasZeroScores = acceptScore === 0 && rejectScore === 0;
-      const hasNoJustification = !sub.justificationCids || sub.justificationCids === '';
-      if (hasZeroScores && hasNoJustification) {
-        failureReason = 'ORACLE_TIMEOUT';
-      } else {
-        failureReason = 'EVALUATION_FAILED';
-      }
+      const known = localSubmission?.failureReason;
+      failureReason = known === 'NO_RESULT' || known === 'RERUN_EXPIRED' ? known : 'EVALUATION_FAILED';
     }
-
-    // If bounty is expired/closed and submission is still PendingVerdikta AND the oracle
-    // check above didn't find results, treat it as stuck. But do NOT override if the oracle
-    // check already found a passing or failing result (ACCEPTED_PENDING_CLAIM or
-    // REJECTED_PENDING_FINALIZATION) — those submissions are claimable even after expiry.
-    if (statusIndex === 1 && chainStatus === 'PENDING_EVALUATION') {
-      const bountyStatus = job.status?.toUpperCase();
-      if (bountyStatus === 'EXPIRED' || bountyStatus === 'CLOSED') {
-        chainStatus = 'REJECTED';
-        failureReason = 'ORACLE_TIMEOUT';
-        logger.info('[refresh] Submission stuck on expired/closed bounty, marking as failed', {
-          jobId, submissionId: subId, bountyStatus
-        });
-      }
-    }
+    // v2: an undrawn or open round on an expired bounty is NOT failed — it still resolves (a
+    // result, closeFailedRound, or cancellation after a day), and the deadline only stops new
+    // starts and re-runs. So no local "stuck → failed" override any more.
 
     logger.info('[refresh] Parsed submission from chain', {
       jobId,
@@ -6904,9 +7086,17 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
         finalizedAt: Number(sub.finalizedAt),
         hunter: sub.hunter,
         verdiktaAggId: sub.verdiktaAggId,
-        failureReason,  // null, 'ORACLE_TIMEOUT', or 'EVALUATION_FAILED'
+        failureReason,  // null, 'EVALUATION_FAILED', 'NO_RESULT' or 'RERUN_EXPIRED'
         paidWinner,
-        passedUnpaid
+        passedUnpaid,
+        // v2: the round, as the escrow's lens reports it (PendingVerdikta only), and item 12's fields
+        round: roundState && !roundState.error ? {
+          phase: roundState.phaseName, outcome: roundState.outcome, passCount: roundState.passCount,
+          deadline: roundState.deadline || null, nextAction: roundState.nextAction
+        } : null,
+        rounds: Number(sub.rounds ?? 0),
+        rerunDeadline: Number(sub.rerunDeadline ?? 0) || null,
+        bondHeldWei: (sub.bondHeld ?? 0n).toString()
       }
     });
     
@@ -7015,208 +7205,218 @@ router.get('/withdrawable/:address', async (req, res) => {
 });
 
 /**
- * POST /api/jobs/:jobId/submissions/:submissionId/timeout
- * Validate and prepare a force-fail call for a stuck submission.
+ * The calls that move a submission's v2 round, as ready-to-sign transactions. Anyone may send
+ * each of them (the server's keeper usually does — utils/roundKeeper.js); every endpoint checks
+ * the escrow lens's nextAction first, so it never hands out a transaction that would revert.
  *
- * On-chain requirements (from BountyEscrow.failTimedOutSubmission):
- * - Status must be PendingVerdikta (PENDING_EVALUATION)
- * - No timer on-chain. The contract tries finalizeEvaluationTimeout on the
- *   aggregator, then requires: no valid result ("result available - use
- *   finalizeSubmission") AND the round settled ("evaluation not settled").
- *   The aggregator's response timeout is responseTimeoutSeconds (300 s) after
- *   startPreparedSubmission.
- * - Anyone can call (no access restriction)
- *
- * This endpoint applies EXACTLY that rule by reading the aggregator:
- *   eligible iff getEvaluation(aggId).exists === false
- *            AND (getAggregationStatus(aggId).isComplete === true
- *                 OR now >= startTimestamp + responseTimeoutSeconds)
- * If a result exists it answers canTimeout:false and points at /finalize.
- *
- * Returns contract call data for client to execute the transaction.
+ *   POST .../close-failed  closeFailedRound (escrow): a round with no result that can get none —
+ *                          failed, cancelled, past its deadline, or undrawn for a day. The
+ *                          submission then awaits a re-run, keeping its place and bond.
+ *                          (.../timeout is the v1 name, kept as an alias.)
+ *   POST .../draw          drawJury (escrow, through the submission's wallet, so the draw reward
+ *                          is refunded to the round's funder): from two blocks after the start;
+ *                          again after the beacon stage for a beacon bounty.
+ *   POST .../round-step    whichever of draw / closeCommits / promote / closeFailedRound /
+ *                          expireRerun moves the round on now (closeCommits and promote go to the
+ *                          aggregator; the promote reward goes to whoever sends it).
+ *   POST .../rerun         rerunSubmission (escrow, payable: requiredPrepay): the hunter or the
+ *                          bond's funder, while the submission awaits a re-run (item 12).
+ *   POST .../expire-rerun  expireRerun (escrow): a re-run not taken in its window; the bond goes back.
  */
-router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
+const ROUND_STEP_CALLS = {
+  DRAW: { target: 'escrow', method: 'drawJury', abi: 'function drawJury(uint256 bountyId, uint256 submissionId)' },
+  CLOSE_COMMITS: { target: 'aggregator', method: 'closeCommits', abi: 'function closeCommits(bytes32 aggId)' },
+  PROMOTE: { target: 'aggregator', method: 'promote', abi: 'function promote(bytes32 aggId)' },
+  CLOSE_FAILED: { target: 'escrow', method: 'closeFailedRound', abi: 'function closeFailedRound(uint256 bountyId, uint256 submissionId)' },
+  EXPIRE_RERUN: { target: 'escrow', method: 'expireRerun', abi: 'function expireRerun(uint256 bountyId, uint256 submissionId)' },
+};
+
+/** Load the job and the live round for a round endpoint; sends the error response and returns null on failure. */
+async function loadRound(req, res, label) {
   const { jobId, submissionId } = req.params;
-
+  const job = await jobStorage.getJob(jobId);
+  if (rejectIfNotOnChain(res, job, jobId)) return null;
+  const subId = parseInt(submissionId, 10);
+  let cs;
   try {
-    logger.info('[timeout] check', { jobId, submissionId });
+    cs = getContractService();
+  } catch (e) {
+    res.status(503).json({ success: false, error: 'Blockchain service not available', details: e.message });
+    return null;
+  }
+  let chainSub;
+  try {
+    chainSub = await cs.contract.getSubmission(job.jobId, subId);
+  } catch (e) {
+    res.status(404).json({ success: false, error: `Submission ${submissionId} not found on-chain for job ${jobId}`, details: e.message });
+    return null;
+  }
+  const state = await cs.getRoundState(job.jobId, subId);
+  if (state.error) {
+    res.status(503).json({ success: false, error: 'Could not read the round state; retry shortly', details: state.error });
+    return null;
+  }
+  logger.info(`[${label}] check`, { jobId, submissionId, nextAction: state.nextAction, phase: state.phaseName });
+  return { job, cs, subId, chainSub, state, onChainBountyId: job.jobId, status: SUBMISSION_STATUSES[Number(chainSub.status)] };
+}
 
-    const job = await jobStorage.getJob(jobId);
-    if (rejectIfNotOnChain(res, job, jobId, { canTimeout: false })) return;
-    const subId = parseInt(submissionId, 10);
-    const submission = job.submissions?.find(s => s.submissionId === subId);
+/** The transaction for one round step; null data when it can't be encoded. */
+async function roundStepTx(ctx, call, { value = '0' } = {}) {
+  const iface = new ethers.Interface([call.abi]);
+  let to = config.bountyEscrowAddress;
+  let args = [ctx.onChainBountyId, ctx.subId];
+  if (call.target === 'aggregator') {
+    to = await (await ctx.cs.getAggregatorFor(ctx.onChainBountyId)).getAddress();
+    args = [ctx.chainSub.verdiktaAggId];
+  }
+  const data = iface.encodeFunctionData(call.method, args);
+  const gas = call.target === 'escrow' ? await resolveGasGuidance(data) : null;
+  return {
+    transaction: { to, data, value, chainId: config.chainId, ...(gas ? { gasLimit: gas.gasLimit } : {}) },
+    ...(gas ? { gas: { ...gas, note: RESOLVE_GAS_NOTE } } : {}),
+    contractCall: { target: call.target, method: call.method, args: args.map(String), abi: call.abi }
+  };
+}
 
-    if (!submission) {
-      return res.status(404).json({
-        success: false,
+/** The reply when the asked-for step is not the one that will succeed now. */
+function wrongStep(res, ctx, wanted, extra = {}) {
+  const { jobId, submissionId } = { jobId: ctx.job.jobId, submissionId: ctx.subId };
+  const next = ctx.state.nextAction;
+  const pointers = {
+    FINALIZE: `The round has a result: POST /api/jobs/${jobId}/submissions/${submissionId}/finalize.`,
+    AWAIT_EARLIER: 'The round passes, but an earlier submission holds priority: see GET .../diagnose for blockedBy.',
+    AWAIT_ORACLE: 'The round is in progress (beacons, commits or reveals): wait.',
+    RERUN: `The submission awaits a re-run: POST /api/jobs/${jobId}/submissions/${submissionId}/rerun.`,
+    AWAIT_EXPIRY: 'A re-run would revert (another round already passes); wait for the re-run window to close, then expire it.',
+    START: 'The submission has not been started.',
+    DONE: 'The submission is resolved.',
+  };
+  return res.status(400).json({
+    success: false,
+    error: `${wanted} is not the step that succeeds now`,
+    nextAction: next,
+    phase: ctx.state.phaseName,
+    hint: pointers[next] || (ROUND_STEP_CALLS[next] ? `The step that succeeds now is ${next}: POST .../round-step.` : `nextAction is ${next}.`),
+    ...extra
+  });
+}
+
+async function closeFailedHandler(req, res) {
+  const { jobId, submissionId } = req.params;
+  try {
+    const ctx = await loadRound(req, res, 'close-failed');
+    if (!ctx) return;
+    if (ctx.state.nextAction !== 'CLOSE_FAILED') {
+      const gate = await ctx.cs.getCloseFailedEligibility(ctx.onChainBountyId, ctx.subId);
+      return wrongStep(res, ctx, 'closeFailedRound', {
         canTimeout: false,
-        error: 'Submission not found',
-        details: `No submission with ID ${submissionId} found for job ${jobId}`
+        canCloseFailed: false,
+        canFinalize: gate.hasResult === true,
+        onChainStatus: ctx.status,
+        deadline: gate.deadline ?? null,
+        remainingSeconds: gate.secondsUntilDeadline ?? null,
+        closeFailed: gate
       });
     }
-
-    // Get on-chain IDs
-    const onChainBountyId = job.jobId;
-    const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
-
-    // No local-status gate here: the ON-CHAIN status read below is the only one that
-    // matters. The local record can lag or be relabeled — /refresh marks a still-pending
-    // submission on an EXPIRED bounty as REJECTED / ORACLE_TIMEOUT for the GUI — and
-    // gating on it turned bounties 56/57 (base, 2026-09-16) into a dead end: chain said
-    // PendingVerdikta, this endpoint said "Submission not pending".
-    if ((submission.status || '').toUpperCase() !== 'PENDING_EVALUATION') {
-      logger.info('[timeout] local status not pending — deferring to chain', {
-        jobId, submissionId, localStatus: submission.status, onChainStatus: submission.onChainStatus
-      });
-    }
-
-    const submittedAt = submission.submittedAt || 0;
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const elapsedSeconds = nowSeconds - submittedAt;
-
-    // Aggregator-state gate (mirrors the contract). Read the live aggId from chain
-    // so a stale local record can't hand out a tx that reverts.
-    let verdiktaAggId = submission.verdiktaAggId || null;
-    let cs = null;
-    try {
-      cs = getContractService();
-      const chainSub = await cs.contract.getSubmission(onChainBountyId, onChainSubmissionId);
-      const chainStatus = Number(chainSub.status);
-      if (chainStatus !== 1) {
-        const names = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
-        return res.status(400).json({
-          success: false,
-          canTimeout: false,
-          error: 'Submission not pending on-chain',
-          details: `On-chain status is ${names[chainStatus] || chainStatus}; only PendingVerdikta submissions can be force-failed.`,
-          onChainStatus: names[chainStatus] || String(chainStatus),
-          hint: chainStatus === 0 || chainStatus === 5
-            ? 'The evaluation was never started — call /submissions/:submissionId/start (or cancel it).'
-            : 'Already finalized on-chain; run POST /api/jobs/sync/now to refresh the local record.'
-        });
-      }
-      verdiktaAggId = chainSub.verdiktaAggId;
-    } catch (chainErr) {
-      if (!cs) {
-        return res.status(503).json({
-          success: false,
-          canTimeout: false,
-          error: 'Blockchain service not available',
-          details: chainErr.message
-        });
-      }
-      logger.warn('[timeout] live submission read failed; using cached aggId', { jobId, submissionId, msg: chainErr.message });
-    }
-
-    const gate = await cs.getForceFailEligibility(verdiktaAggId);
-
-    if (gate.hasResult) {
-      return res.status(400).json({
-        success: false,
-        canTimeout: false,
-        canFinalize: true,
-        error: 'Oracle result available - use finalizeSubmission',
-        details: 'The aggregator holds a result for this submission, so failTimedOutSubmission would revert with "result available - use finalizeSubmission".',
-        hint: `Call POST /api/jobs/${jobId}/submissions/${submissionId}/finalize instead.`,
-        forceFail: gate
-      });
-    }
-
-    if (!gate.eligible) {
-      const notSettled = gate.reason === 'not_settled';
-      return res.status(notSettled ? 400 : 503).json({
-        success: false,
-        canTimeout: false,
-        error: notSettled ? 'Evaluation not settled' : 'Cannot determine force-fail eligibility',
-        details: gate.hint || gate.error || gate.reason,
-        hint: notSettled
-          ? `The aggregator round is still open; failTimedOutSubmission reverts "evaluation not settled" until it settles (timeout at unix ${gate.timeoutAt}, in ${gate.secondsUntilTimeout}s). If the oracle responds first, use /finalize.`
-          : 'Retry shortly, or check GET /diagnose.',
-        submittedAt,
-        timeoutAt: gate.timeoutAt ?? null,
-        remainingSeconds: gate.secondsUntilTimeout ?? null,
-        forceFail: gate
-      });
-    }
-
-    // All conditions met - return contract call data
-    const contractAddress = config.bountyEscrowAddress;
-
-    if (!contractAddress) {
-      return res.status(500).json({
-        success: false,
-        canTimeout: false,
-        error: 'Contract not configured',
-        details: 'BOUNTY_ESCROW_ADDRESS not set on server'
-      });
-    }
-
-    // Encode the function call data
-    const iface = new ethers.Interface([
-      'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)'
-    ]);
-    const calldata = iface.encodeFunctionData('failTimedOutSubmission', [
-      onChainBountyId,
-      onChainSubmissionId
-    ]);
-
-    const gas = await resolveGasGuidance(calldata);
-
-    logger.info('[timeout] conditions met', {
-      jobId,
-      submissionId,
-      onChainBountyId,
-      onChainSubmissionId,
-      elapsedSeconds,
-      gasLimit: gas.gasLimit,
-      gasSource: gas.source
-    });
-
+    const tx = await roundStepTx(ctx, ROUND_STEP_CALLS.CLOSE_FAILED);
+    logger.info('[close-failed] conditions met', { jobId, submissionId, gasLimit: tx.transaction.gasLimit });
     return res.json({
       success: true,
       canTimeout: true,
-      message: `Aggregator round settled with no result — the submission can be force-failed. Execute the transaction to trigger the refund. Send it with transaction.gasLimit (${gas.gasLimit}) — this call settles the oracle round and needs ~2M gas; a hand-picked lower limit fails with no revert reason.`,
-      forceFail: gate,
-      // Ready-to-sign transaction object for bots
-      transaction: {
-        to: contractAddress,
-        data: calldata,
-        value: '0',
-        chainId: config.chainId,
-        gasLimit: gas.gasLimit
-      },
-      gas: { ...gas, note: RESOLVE_GAS_NOTE },
-      // Human-readable contract call info
-      contractCall: {
-        method: 'failTimedOutSubmission',
-        args: [onChainBountyId, onChainSubmissionId],
-        abi: 'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)'
-      },
-      submission: {
-        id: subId,
-        hunter: submission.hunter,
-        status: submission.status,
-        submittedAt,
-        elapsedMinutes: Math.floor(elapsedSeconds / 60)
-      }
+      canCloseFailed: true,
+      message: `The round has no result and can get none — closeFailedRound settles or cancels it, returns what is left of the prepay to the round's funder, and lets the submission re-run (it keeps its place and bond). Send it with transaction.gasLimit (${tx.transaction.gasLimit}): settling a round can need well over 1M gas, and a hand-picked lower limit fails with no revert reason.`,
+      round: { phase: ctx.state.phaseName, deadline: ctx.state.deadline || null, rounds: ctx.state.rounds },
+      ...tx,
+      submission: { id: ctx.subId, hunter: ctx.chainSub.hunter, onChainStatus: ctx.status }
     });
-
   } catch (error) {
-    logger.error('[timeout] error', { jobId, submissionId, msg: error.message });
-    if (error.message.includes('not found')) {
-      return res.status(404).json({
-        success: false,
-        canTimeout: false,
-        error: 'Not found',
-        details: error.message
-      });
-    }
-    return res.status(500).json({
-      success: false,
-      canTimeout: false,
-      error: 'Failed to check timeout conditions',
-      details: error.message
+    logger.error('[close-failed] error', { jobId, submissionId, msg: error.message });
+    return res.status(500).json({ success: false, canTimeout: false, error: 'Failed to prepare closeFailedRound', details: error.message });
+  }
+}
+router.post('/:jobId/submissions/:submissionId/close-failed', closeFailedHandler);
+router.post('/:jobId/submissions/:submissionId/timeout', closeFailedHandler);
+
+router.post('/:jobId/submissions/:submissionId/draw', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+  try {
+    const ctx = await loadRound(req, res, 'draw');
+    if (!ctx) return;
+    if (ctx.state.nextAction !== 'DRAW') return wrongStep(res, ctx, 'drawJury');
+    return res.json({
+      success: true,
+      message: ctx.state.phase === 2
+        ? 'The beacon stage is over: this draws the jury (anyone may send it).'
+        : 'This draws the jury as the submission\'s wallet, so the draw reward comes back to the round\'s funder (anyone may send it). For a beacon bounty the first draw starts the beacon stage; draw again when nextAction says DRAW.',
+      ...(await roundStepTx(ctx, ROUND_STEP_CALLS.DRAW))
     });
+  } catch (error) {
+    logger.error('[draw] error', { jobId, submissionId, msg: error.message });
+    return res.status(500).json({ success: false, error: 'Failed to prepare drawJury', details: error.message });
+  }
+});
+
+router.post('/:jobId/submissions/:submissionId/round-step', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+  try {
+    const ctx = await loadRound(req, res, 'round-step');
+    if (!ctx) return;
+    const call = ROUND_STEP_CALLS[ctx.state.nextAction];
+    if (!call) return wrongStep(res, ctx, 'A round step');
+    return res.json({
+      success: true,
+      nextAction: ctx.state.nextAction,
+      phase: ctx.state.phaseName,
+      ...(await roundStepTx(ctx, call))
+    });
+  } catch (error) {
+    logger.error('[round-step] error', { jobId, submissionId, msg: error.message });
+    return res.status(500).json({ success: false, error: 'Failed to prepare the round step', details: error.message });
+  }
+});
+
+router.post('/:jobId/submissions/:submissionId/rerun', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+  try {
+    const ctx = await loadRound(req, res, 'rerun');
+    if (!ctx) return;
+    if (ctx.state.nextAction !== 'RERUN') return wrongStep(res, ctx, 'rerunSubmission');
+    const from = req.body?.hunter || req.body?.from;
+    if (from && ethers.isAddress(from)) {
+      const allowed = [ctx.chainSub.hunter, ctx.chainSub.bondFunder].map((a) => String(a).toLowerCase());
+      if (!allowed.includes(String(from).toLowerCase())) {
+        return res.status(403).json({ success: false, error: 'Only the hunter or the bond\'s funder may re-run (contract: "only hunter or funder")' });
+      }
+    }
+    const prepay = (await ctx.cs.contract.requiredPrepay(ctx.onChainBountyId)).toString();
+    const call = { target: 'escrow', method: 'rerunSubmission', abi: 'function rerunSubmission(uint256 bountyId, uint256 submissionId) payable' };
+    return res.json({
+      success: true,
+      message: 'A new round with a fresh jury, from the same wallet: the submission keeps its index (payout priority) and its bond. Attach requiredPrepay as msg.value; the unspent part comes back to you. Draw it like the first round.',
+      rerunDeadline: Number(ctx.chainSub.rerunDeadline),
+      rounds: Number(ctx.chainSub.rounds),
+      ...(await roundStepTx(ctx, call, { value: prepay }))
+    });
+  } catch (error) {
+    logger.error('[rerun] error', { jobId, submissionId, msg: error.message });
+    return res.status(500).json({ success: false, error: 'Failed to prepare rerunSubmission', details: error.message });
+  }
+});
+
+router.post('/:jobId/submissions/:submissionId/expire-rerun', async (req, res) => {
+  const { jobId, submissionId } = req.params;
+  try {
+    const ctx = await loadRound(req, res, 'expire-rerun');
+    if (!ctx) return;
+    if (ctx.state.nextAction !== 'EXPIRE_RERUN') return wrongStep(res, ctx, 'expireRerun');
+    return res.json({
+      success: true,
+      message: 'The re-run window has closed (or the submission can no longer re-run): expireRerun fails it, returns the bond to its funder and frees its place in the payout queue. Anyone may send it.',
+      ...(await roundStepTx(ctx, ROUND_STEP_CALLS.EXPIRE_RERUN))
+    });
+  } catch (error) {
+    logger.error('[expire-rerun] error', { jobId, submissionId, msg: error.message });
+    return res.status(500).json({ success: false, error: 'Failed to prepare expireRerun', details: error.message });
   }
 });
 
@@ -7341,24 +7541,17 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
 
         const chainSub = await contract.getSubmission(onChainBountyId, subId);
 
-        // Map status enum: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
-        const statusNames = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
-        const chainStatus = statusNames[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
+        const chainStatus = SUBMISSION_STATUSES[Number(chainSub.status)] || `Unknown(${chainSub.status})`;
 
         const submittedAtChain = Number(chainSub.submittedAt);
         const nowSeconds = Math.floor(Date.now() / 1000);
         const elapsedSeconds = nowSeconds - submittedAtChain;
-        // NOTE: BountyEscrow.failTimedOutSubmission has NO timer. It is gated on
-        // the AGGREGATOR's state: no result AND the round settled (isComplete,
-        // or responseTimeoutSeconds elapsed since the round started). We read
-        // that state below for PendingVerdikta submissions.
-        let forceFail = null;
-        if (Number(chainSub.status) === 1) {
-          forceFail = await cs.getForceFailEligibility(chainSub.verdiktaAggId);
-        }
-        const timeoutEligible = forceFail?.eligible === true;
-        const timeoutAt = forceFail?.timeoutAt ?? null;
-        const secondsUntilTimeout = forceFail?.secondsUntilTimeout ?? null;
+        // v2: the round as the escrow's lens reports it — its phase, its result judged by item 12's
+        // Q-of-N rule, and the call that moves it on now (nextAction). No timer anywhere: a dead
+        // round is closed (closeFailedRound) once the aggregator says it can get no result.
+        let round = null;
+        if (Number(chainSub.status) === 1) round = await cs.getRoundState(onChainBountyId, subId);
+        const closeFailedEligible = round?.nextAction === 'CLOSE_FAILED';
 
         diagnosis.checks.onChain = {
           found: true,
@@ -7370,6 +7563,11 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
           evalWallet: chainSub.evalWallet,
           verdiktaAggId: chainSub.verdiktaAggId,
           funder: chainSub.funder,
+          bondFunder: chainSub.bondFunder,
+          bondHeldWei: (chainSub.bondHeld ?? 0n).toString(),
+          rounds: Number(chainSub.rounds ?? 0),
+          passCount: Number(chainSub.passCount ?? 0),
+          rerunDeadline: Number(chainSub.rerunDeadline ?? 0) || null,
           submittedAt: submittedAtChain,
           submittedAtISO: new Date(submittedAtChain * 1000).toISOString(),
           finalizedAt: Number(chainSub.finalizedAt),
@@ -7377,123 +7575,130 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
           rejection: Number(chainSub.rejection),
           elapsedMinutes: Math.floor(elapsedSeconds / 60),
           elapsedSeconds,
-          timeoutEligible,
-          timeoutAt,
-          timeoutAtISO: timeoutAt ? new Date(timeoutAt * 1000).toISOString() : null,
-          secondsUntilTimeout,
-          forceFail,
-          timeoutReferenceNote:
-            'failTimedOutSubmission has no timer: it succeeds only when the aggregator round is settled with no result (responseTimeoutSeconds after startPreparedSubmission, or isComplete). If a result exists, use finalizeSubmission.'
+          round: round && !round.error ? {
+            phase: round.phaseName, phaseCode: round.phase, outcome: round.outcome, passCount: round.passCount,
+            deadline: round.deadline || null, deadlineISO: round.deadline ? new Date(round.deadline * 1000).toISOString() : null,
+            requestTime: round.requestTime || null, nextAction: round.nextAction
+          } : (round?.error ? { error: round.error } : null),
+          closeFailedEligible,
+          // v1 name, kept
+          timeoutEligible: closeFailedEligible,
+          roundNote:
+            'A v2 round is drawn (drawJury, from two blocks after the start), commits, is promoted, then revealed. Anyone may send each step (the server\'s keeper usually does): POST .../round-step returns the one that succeeds now. A round with no result that can get none is closed with closeFailedRound; the submission then awaits a re-run, keeping its place and bond.'
         };
 
         // Analyze on-chain state
         if (chainStatus === 'Prepared') {
           diagnosis.issues.push('Submission is still in Prepared state - startPreparedSubmission was never called');
-          diagnosis.recommendations.push('Call startPreparedSubmission (payable — attach the live requiredPrepay(bountyId) as msg.value; POST /start returns it as transaction.value) to begin evaluation');
+          diagnosis.recommendations.push('Call startPreparedSubmission (payable — attach the live startValue(bountyId): the prepay plus the hunter bond; POST /start returns it as transaction.value) to begin evaluation');
+        } else if (chainStatus === 'AwaitingRerun') {
+          const rerunDeadline = Number(chainSub.rerunDeadline);
+          const action = String(await contract.nextAction(onChainBountyId, subId));
+          diagnosis.checks.onChain.nextAction = action;
+          diagnosis.checks.rerun = {
+            rerunDeadline, rerunDeadlineISO: new Date(rerunDeadline * 1000).toISOString(),
+            secondsRemaining: Math.max(0, rerunDeadline - nowSeconds), rounds: Number(chainSub.rounds), maxRounds: 6
+          };
+          if (action === 'RERUN') {
+            diagnosis.recommendations.push(`The last round soft-failed or had no result. Re-run it (the hunter or the bond's funder): POST /api/jobs/${jobId}/submissions/${subId}/rerun, before ${new Date(rerunDeadline * 1000).toISOString()}. It keeps its place and bond.`);
+          } else if (action === 'EXPIRE_RERUN') {
+            diagnosis.recommendations.push(`The re-run window has closed: anyone may expire it — POST /api/jobs/${jobId}/submissions/${subId}/expire-rerun (returns the bond, frees the place).`);
+          } else if (action === 'AWAIT_EXPIRY') {
+            diagnosis.recommendations.push('Another round of this bounty already passes, so a re-run would revert; once the re-run window closes, anyone may expire this submission.');
+          } else {
+            diagnosis.recommendations.push(`nextAction is ${action}.`);
+          }
         } else if (chainStatus === 'PendingVerdikta') {
           if (!chainSub.verdiktaAggId || chainSub.verdiktaAggId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
             diagnosis.issues.push('PendingVerdikta but no verdiktaAggId - evaluation may not have started properly');
+          } else if (!round || round.error) {
+            diagnosis.checks.oracleResult = { complete: false, error: round?.error || 'unreadable' };
+            diagnosis.recommendations.push('Could not read the round state. Retry /diagnose shortly.');
           } else {
             diagnosis.checks.verdiktaAggId = chainSub.verdiktaAggId;
+            if (round.hasResult) {
+              const d = jobDecisionSettings(job);
+              diagnosis.checks.oracleResult = {
+                complete: true,
+                acceptance: round.scores ? round.scores.acceptance : 0,
+                rejection: round.scores ? round.scores.rejection : 0,
+                threshold: job.threshold || 0,
+                outcome: round.outcome,
+                passCount: round.passCount,
+                quota: d.quota,
+                forfeitLine: d.forfeitLine,
+                passed: round.outcome === 'pass'
+              };
+              diagnosis.recommendations.push({
+                pass: 'The round PASSED (Q of N at the threshold) — call finalizeSubmission to claim the bounty (and the bond back)',
+                soft_fail: 'The round soft-failed (R..Q-1 at the threshold) — call finalizeSubmission; the submission then awaits a re-run, keeping its place and bond',
+                hard_fail: 'The round hard-failed (fewer than R at the threshold) — finalizeSubmission fails the submission and the bond goes to the creator',
+                no_result: 'The round\'s result is unusable — call finalizeSubmission; the submission then awaits a re-run, keeping its place and bond'
+              }[round.outcome] || 'Call finalizeSubmission.');
+            } else {
+              diagnosis.checks.oracleResult = { complete: false, phase: round.phaseName };
 
-            // Check if oracle evaluation is already complete on VerdiktaAggregator
-            try {
-              const cs = getContractService();
-              const evalResult = await cs.checkEvaluationReady(onChainBountyId, subId);
-              if (evalResult.ready) {
-                const threshold = job.threshold || 50;
-                const passed = evalResult.scores.acceptance >= threshold;
-                diagnosis.checks.oracleResult = {
-                  complete: true,
-                  acceptance: evalResult.scores.acceptance,
-                  rejection: evalResult.scores.rejection,
-                  threshold,
-                  passed
-                };
-                diagnosis.recommendations.push(
-                  passed
-                    ? 'Oracle evaluation PASSED — call finalizeSubmission to claim bounty'
-                    : 'Oracle evaluation did not meet threshold — call finalizeSubmission to finalize'
-                );
-              } else {
-                diagnosis.checks.oracleResult = { complete: false };
-
-                // A settled round (force-fail callable) in which no polled slot committed
-                // often means the evaluation package is unusable (mirrors example-arbiters'
-                // getAggHistory/getOracleHealth "likely malformed" rule). It can also be a
-                // jury model the arbiters don't serve or no live operator for the class, so
-                // the package is checked before blaming it. Only settled rounds are
-                // inspected: getAggHistory is an archive log scan, and agents poll
-                // /diagnose throughout an evaluation.
-                let aggHistory = null;
-                if (timeoutEligible && isVerdiktaServiceAvailable()) {
-                  try {
-                    aggHistory = await getVerdiktaService().getAggHistory(chainSub.verdiktaAggId);
-                  } catch (aggHistErr) {
-                    logger.warn('[diagnose] getAggHistory failed', { jobId, submissionId, msg: aggHistErr.message });
-                  }
-                }
-
-                if (timeoutEligible) {
-                  // Force-failing is still the only way to refund the unspent prepay and
-                  // unblock closeExpiredBounty, whatever caused the round to fail.
-                  diagnosis.recommendations.push(
-                    `Oracle round settled with no result — call POST /api/jobs/${jobId}/submissions/${subId}/timeout (or failTimedOutSubmission on-chain) to force-fail and refund the prepay.`
-                  );
-
-                  if (aggHistory?.found && aggHistory.outcome === LIKELY_MALFORMED_OUTCOME) {
-                    const totalSlots = aggHistory.analysis.totalSlots;
-                    diagnosis.checks.aggHistory = {
-                      outcome: aggHistory.outcome,
-                      totalSlots,
-                      committed: aggHistory.analysis.committed,
-                      likelyMalformed: true
-                    };
-                    const packageCheck = await diagnosePackage(job, req);
-                    diagnosis.checks.packageValidation = packageCheck;
-                    const noCommits = `No arbiter committed (0 of ${totalSlots} polled slots).`;
-
-                    if (packageCheck?.unverifiable) {
-                      diagnosis.issues.push(
-                        `${noCommits} This often means the evaluation package is malformed, but the package could not be fetched to check it (${packageCheck.unverifiableReason}).`
-                      );
-                      diagnosis.recommendations.push(`Check the evaluation package: GET /api/jobs/${jobId}/validate`);
-                    } else if (packageCheck && !packageCheck.valid) {
-                      diagnosis.issues.push(`${noCommits} The evaluation package fails validation, the likely cause:`);
-                      for (const issue of packageCheck.issues.filter(i => i.severity === IssueSeverity.ERROR && !isTransientIssue(i))) {
-                        diagnosis.issues.push(`Evaluation package: ${issue.message}`);
-                      }
-                      diagnosis.recommendations.push(
-                        `Do not resubmit to this bounty until the package problem is resolved: every round will fail the same way. Details: GET /api/jobs/${jobId}/validate`
-                      );
-                    } else if (packageCheck) {
-                      diagnosis.issues.push(
-                        `${noCommits} The evaluation package passes validation, so the cause is more likely on the oracle side: a jury model the arbiters don't serve, or no live operator for class ${job.classId}.`
-                      );
-                    } else {
-                      diagnosis.issues.push(`${noCommits} This often means the evaluation package is malformed.`);
-                      diagnosis.recommendations.push(`Check the evaluation package: GET /api/jobs/${jobId}/validate`);
-                    }
-                  }
-                } else if (timeoutAt) {
-                  diagnosis.recommendations.push(
-                    `Oracle not yet complete and the aggregator round is still open. Force-fail becomes callable at ${new Date(timeoutAt * 1000).toISOString()} ` +
-                    `(unix ${timeoutAt}, in ${secondsUntilTimeout}s / ~${Math.ceil(secondsUntilTimeout / 60)} min) unless the oracle responds first (then finalize). ` +
-                    `The clock runs from startPreparedSubmission (the aggregator round start), not from prepareSubmission.`
-                  );
-                } else {
-                  diagnosis.recommendations.push(
-                    `Oracle not yet complete; force-fail eligibility could not be determined (${forceFail?.reason || 'unknown'}). Retry /diagnose shortly.`
-                  );
+              // A dead round in which no drawn juror committed often means the evaluation package
+              // is unusable (mirrors example-arbiters' "likely malformed" rule). It can also be a
+              // jury model the arbiters don't serve or no live operator for the class, so the
+              // package is checked before blaming it. Only dead rounds are inspected.
+              let aggHistory = null;
+              if (closeFailedEligible && isVerdiktaServiceAvailable()) {
+                try {
+                  const aggregator = await (await cs.getAggregatorFor(onChainBountyId)).getAddress();
+                  aggHistory = await getVerdiktaService().getAggHistory(chainSub.verdiktaAggId, { aggregator });
+                } catch (aggHistErr) {
+                  logger.warn('[diagnose] getAggHistory failed', { jobId, submissionId, msg: aggHistErr.message });
                 }
               }
-            } catch (aggErr) {
-              diagnosis.checks.oracleResult = { complete: false, error: aggErr.message };
-              if (timeoutEligible) {
-                diagnosis.recommendations.push('Could not read the oracle result, but the aggregator round is settled with no result — call /timeout.');
+
+              if (closeFailedEligible) {
+                diagnosis.recommendations.push(
+                  `The round has no result and can get none — call POST /api/jobs/${jobId}/submissions/${subId}/close-failed (or closeFailedRound on-chain; anyone). It settles or cancels the round, returns what is left of the prepay, and the submission may then re-run with its place and bond.`
+                );
+                if (aggHistory?.found && aggHistory.outcome === LIKELY_MALFORMED_OUTCOME) {
+                  const totalSlots = aggHistory.analysis.totalSlots;
+                  diagnosis.checks.aggHistory = {
+                    outcome: aggHistory.outcome,
+                    totalSlots,
+                    committed: aggHistory.analysis.committed,
+                    likelyMalformed: true
+                  };
+                  const packageCheck = await diagnosePackage(job, req);
+                  diagnosis.checks.packageValidation = packageCheck;
+                  const noCommits = `No arbiter committed (0 of ${totalSlots} drawn jurors).`;
+
+                  if (packageCheck?.unverifiable) {
+                    diagnosis.issues.push(
+                      `${noCommits} This often means the evaluation package is malformed, but the package could not be fetched to check it (${packageCheck.unverifiableReason}).`
+                    );
+                    diagnosis.recommendations.push(`Check the evaluation package: GET /api/jobs/${jobId}/validate`);
+                  } else if (packageCheck && !packageCheck.valid) {
+                    diagnosis.issues.push(`${noCommits} The evaluation package fails validation, the likely cause:`);
+                    for (const issue of packageCheck.issues.filter(i => i.severity === IssueSeverity.ERROR && !isTransientIssue(i))) {
+                      diagnosis.issues.push(`Evaluation package: ${issue.message}`);
+                    }
+                    diagnosis.recommendations.push(
+                      `Do not re-run or resubmit to this bounty until the package problem is resolved: every round will fail the same way. Details: GET /api/jobs/${jobId}/validate`
+                    );
+                  } else if (packageCheck) {
+                    diagnosis.issues.push(
+                      `${noCommits} The evaluation package passes validation, so the cause is more likely on the oracle side: a jury model the arbiters don't serve, or no live operator for class ${job.classId}.`
+                    );
+                  } else {
+                    diagnosis.issues.push(`${noCommits} This often means the evaluation package is malformed.`);
+                    diagnosis.recommendations.push(`Check the evaluation package: GET /api/jobs/${jobId}/validate`);
+                  }
+                }
+              } else if (['DRAW', 'CLOSE_COMMITS', 'PROMOTE'].includes(round.nextAction)) {
+                diagnosis.recommendations.push(
+                  `The round (${round.phaseName} phase) needs its next step: ${round.nextAction}. Anyone may send it — POST /api/jobs/${jobId}/submissions/${subId}/round-step returns it (the server's keeper usually sends it within a sync cycle).`
+                );
               } else {
                 diagnosis.recommendations.push(
-                  `Could not check oracle. ${timeoutAt ? `Force-fail becomes callable at ${new Date(timeoutAt * 1000).toISOString()} (unix ${timeoutAt}, in ${secondsUntilTimeout}s) if no result arrives.` : 'Retry shortly.'}`
+                  round.deadline
+                    ? `The round is in progress (${round.phaseName} phase). If it has no result by its deadline (${new Date(round.deadline * 1000).toISOString()}, in ${Math.max(0, round.deadline - nowSeconds)}s), anyone may close it.`
+                    : `The round is in progress (${round.phaseName} phase).`
                 );
               }
             }
@@ -8098,7 +8303,7 @@ router.get('/:jobId/estimate-fee', async (req, res) => {
 
     // Calculate the fee estimate under the bounty's own oracle settings
     const oracleSettings = jobOracleSettings(job);
-    const estimate = await calculateFeeEstimate(juryNodes, iterations, oracleSettings);
+    const estimate = await calculateFeeEstimate(juryNodes, iterations, oracleSettings, jobDecisionSettings(job));
 
     return res.json({
       success: true,
@@ -8162,103 +8367,85 @@ router.post('/estimate-fee', async (req, res) => {
 });
 
 /**
- * Calculate fee estimate based on jury configuration.
- * @param juryNodes
- * @param iterations
- * @param oracleSettings - optional per-bounty settings ({maxOracleFee, estimatedBaseCost} in wei);
- *   when given they are used as-is (the contract applies them verbatim). Otherwise
- *   the aggregator ceiling (if readable) or config defaults are used.
+ * Estimate one round's prepay (v2): the aggregator's own quote,
+ *   maxTotalFee(maxFee, minFee, withBeacons) = juror x (K + B x P [+ beacon quorum]) + eff x (draw + promote rewards),
+ * eff = min(maxFee, ceiling), juror = max(eff, minFee), for the bounty's jury. That is exactly what
+ * a start escrows (startValue adds the hunter bond); the unspent part is refunded when the round
+ * resolves. The jury models (juryNodes, iterations) run inside each arbiter and do not change it.
+ *
+ * @param juryNodes, iterations  reported back only (v1 multiplied the fee by them)
+ * @param oracleSettings  the bounty's settings ({maxOracleFee, minOracleFee, withBeacons, ...} in wei);
+ *   server defaults otherwise
+ * @param decision  { jury, bond } (wei string); jury 0 and no bond otherwise
  */
-async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null) {
-  // Default fee parameters (fallback values)
-  // These are conservative estimates based on typical Verdikta pricing
-  let maxOracleFeeWei = BigInt(config.submissionDefaults.maxOracleFeeWei); // default per-oracle fee (fallback)
-  let aggregatorConfigAvailable = false;
+async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null, decision = null) {
+  const maxFeeWei = BigInt(String(oracleSettings?.maxOracleFee ?? config.submissionDefaults.maxOracleFeeWei));
+  const minFeeWei = BigInt(String(oracleSettings?.minOracleFee ?? '0'));
+  const withBeacons = Boolean(oracleSettings?.withBeacons);
+  const jury = Number(decision?.jury ?? 0);
+  const bondWei = BigInt(String(decision?.bond ?? '0'));
 
-  if (oracleSettings?.maxOracleFee != null) {
-    maxOracleFeeWei = BigInt(String(oracleSettings.maxOracleFee));
-  } else if (isVerdiktaServiceAvailable()) {
-    // Try to get actual maxOracleFee from Verdikta aggregator
+  // The live quote and the jury's shape, when the aggregator can be read; v2 defaults otherwise
+  // (the small jury: K 6, P 3, bonus 3, rewards 2 + 1, a 2-value beacon quorum, a 0.0004 ETH ceiling).
+  let shape = { K: 6, M: 5, N: 4, P: 3, bonusMultiplier: 3, maxOracleFee: '0.0004' };
+  let quoteWei = null;
+  let aggregatorConfigAvailable = false;
+  if (isVerdiktaServiceAvailable()) {
     try {
-      const verdiktaService = getVerdiktaService();
-      const aggConfig = await verdiktaService.getAggregatorConfig();
-      if (aggConfig.maxOracleFee) {
-        // Convert from ETH string to wei
-        const parsed = parseFloat(aggConfig.maxOracleFee);
-        if (parsed > 0) {
-          maxOracleFeeWei = BigInt(Math.floor(parsed * 1e18));
-          aggregatorConfigAvailable = true;
-        }
-      }
+      const vs = getVerdiktaService();
+      shape = await vs.getAggregatorConfig(jury);
+      quoteWei = BigInt(await vs.aggregatorFor({ jury }).maxTotalFee(maxFeeWei, minFeeWei, withBeacons));
+      aggregatorConfigAvailable = true;
     } catch (err) {
-      logger.warn('[estimate-fee] Could not get aggregator config', { msg: err.message });
+      logger.warn('[estimate-fee] Could not read the aggregator', { msg: err.message });
     }
   }
+  const ceilingWei = ethers.parseEther(String(shape.maxOracleFee || '0.0004'));
+  const effWei = maxFeeWei < ceilingWei ? maxFeeWei : ceilingWei;
+  const jurorWei = minFeeWei > effWei ? minFeeWei : effWei;
+  const slots = BigInt(shape.K) + BigInt(shape.bonusMultiplier) * BigInt(shape.P) + (withBeacons ? 2n : 0n);
+  if (quoteWei == null) quoteWei = jurorWei * slots + effWei * 3n;
+  // The least a finished round spends: the K base fees (+ 2 beacon values) — bonuses and rewards
+  // only go to arbiters who earn them, and the rest comes back.
+  const minAttemptWei = jurorWei * (BigInt(shape.K) + (withBeacons ? 2n : 0n));
 
-  // Calculate total oracle calls
-  // Each jury node makes (runs) calls, repeated for each iteration
   let totalCalls = 0;
-  for (const node of juryNodes) {
-    const runs = node.runs || 1;
-    totalCalls += runs;
-  }
-  totalCalls *= iterations;
+  for (const node of juryNodes || []) totalCalls += node.runs || 1;
+  totalCalls *= iterations || 1;
 
-  // Base cost estimate (fixed overhead per evaluation)
-  const baseCostWei = oracleSettings?.estimatedBaseCost != null
-    ? BigInt(String(oracleSettings.estimatedBaseCost))
-    : BigInt(config.submissionDefaults.estimatedBaseCostWei);
-
-  // Calculate raw cost: baseCost + (totalCalls × maxOracleFee)
-  const oracleCostWei = BigInt(totalCalls) * maxOracleFeeWei;
-  const rawCostWei = baseCostWei + oracleCostWei;
-
-  // Add safety margin (20% buffer for gas price fluctuations, etc.)
-  const safetyMargin = BigInt(120); // 120%
-  const estimatedCostWei = (rawCostWei * safetyMargin) / BigInt(100);
-
-  // Convert to ETH (human-readable)
-  const estimatedEthCost = Number(estimatedCostWei) / 1e18;
-  const rawEthCost = Number(rawCostWei) / 1e18;
-  const maxOracleFeeEth = Number(maxOracleFeeWei) / 1e18;
-
-  // Oracle parameters in effect. Since the September 2026 revision these are set by
-  // the bounty CREATOR at createBounty (the `oracle` struct) — hunters no longer pass
-  // them to prepareSubmission. For a job, they are the bounty's own settings; for the
-  // ad-hoc POST /estimate-fee they are the server defaults a creator would get.
-  //
-  // alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore.
-  //   weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
-  //   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
-  // maxFeeBasedScaling: plain integer N (x-factor) — contract multiplies by 1e18
-  //   internally. Caps the fee-boost multiplier for oracles priced below maxOracleFee.
-  //   Must be >= 1. 3 = up to 3x boost for the cheapest eligible oracles.
-  const recommendedParams = {
-    alpha: String(oracleSettings?.alpha ?? config.submissionDefaults.alpha),
-    maxOracleFee: maxOracleFeeWei.toString(),
-    estimatedBaseCost: baseCostWei.toString(),
-    maxFeeBasedScaling: String(oracleSettings?.maxFeeBasedScaling ?? config.submissionDefaults.maxFeeBasedScaling),
-    note: 'Creator-side createBounty oracle settings; not prepareSubmission arguments.'
-  };
-
+  const eth = (w) => Number(ethers.formatEther(w));
   return {
-    estimatedEthCost: Math.round(estimatedEthCost * 1000000) / 1000000, // 6 decimal places
-    estimatedEthCostWei: estimatedCostWei.toString(),
+    estimatedEthCost: eth(quoteWei),
+    estimatedEthCostWei: quoteWei.toString(),
+    startValueWei: (quoteWei + bondWei).toString(),
+    startValueEth: eth(quoteWei + bondWei),
     breakdown: {
-      baseCost: Number(baseCostWei) / 1e18,
-      oracleCalls: totalCalls,
-      maxOracleFeePerCall: maxOracleFeeEth,
-      oracleCostTotal: Number(oracleCostWei) / 1e18,
-      rawCost: rawEthCost,
-      safetyMarginPercent: 20,
-      finalEstimate: estimatedEthCost
+      jury,
+      K: Number(shape.K), M: Number(shape.M), N: Number(shape.N), P: Number(shape.P),
+      bonusMultiplier: Number(shape.bonusMultiplier),
+      feeCeilingEth: eth(effWei),
+      feeFloorEth: eth(minFeeWei),
+      perJurorEth: eth(jurorWei),
+      withBeacons,
+      prepayEth: eth(quoteWei),
+      minAttemptCostEth: eth(minAttemptWei),
+      bondEth: eth(bondWei),
+      juryModelCalls: totalCalls
     },
-    recommendedParams,
+    recommendedParams: {
+      alpha: String(oracleSettings?.alpha ?? config.submissionDefaults.alpha),
+      maxOracleFee: maxFeeWei.toString(),
+      minOracleFee: minFeeWei.toString(),
+      withBeacons,
+      estimatedBaseCost: String(oracleSettings?.estimatedBaseCost ?? config.submissionDefaults.estimatedBaseCostWei),
+      maxFeeBasedScaling: String(oracleSettings?.maxFeeBasedScaling ?? config.submissionDefaults.maxFeeBasedScaling),
+      note: 'Creator-side createBounty oracle settings; not prepareSubmission arguments.'
+    },
     aggregatorConfigAvailable,
     note: aggregatorConfigAvailable
-      ? 'Fee based on current Verdikta aggregator configuration'
-      : 'Fee based on default estimates (Verdikta aggregator not available)',
-    warning: 'This is an estimate. Actual cost may vary based on network conditions and oracle availability.'
+      ? 'The prepay is the jury\'s aggregator\'s own quote (maxTotalFee) for these settings; a start attaches it plus the bond (startValue). The unspent part of the prepay is refunded when the round resolves; an attempt costs at least minAttemptCostEth.'
+      : 'Estimated with v2 defaults (the aggregator could not be read).',
+    warning: 'The quote moves with the aggregator\'s owner-set parameters; read requiredPrepay / startValue from the escrow (GET /api/jobs/:id/onchain-status) before starting.'
   };
 }
 

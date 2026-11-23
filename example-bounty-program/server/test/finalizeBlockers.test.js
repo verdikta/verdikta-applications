@@ -83,7 +83,8 @@ const LOSER = '0x4c72000000000000000000000000000000000002';
 const OTHER = '0x9999000000000000000000000000000000000003';
 const IFACE = new ethers.Interface([
   'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
-  'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
+  'function closeFailedRound(uint256 bountyId, uint256 submissionId)',
+  'function expireRerun(uint256 bountyId, uint256 submissionId)',
 ]);
 
 function app() {
@@ -122,14 +123,14 @@ describe('findFinalizeBlockers', () => {
   it('lists earlier pending submissions by other hunters, lowest first, with the resolving call', async () => {
     mockChain.pending = [3, 0, 2, 1];
     mockChain.subs = [
-      { hunter: OTHER, nextAction: 'FORCE_FAIL' },
+      { hunter: OTHER, nextAction: 'CLOSE_FAILED' },
       { hunter: WINNER, nextAction: 'FINALIZE' },          // same hunter: never blocks
       { hunter: LOSER, nextAction: 'FINALIZE' },
       { hunter: WINNER, nextAction: 'AWAIT_EARLIER' },     // the one being finalized
     ];
     const blockers = await findFinalizeBlockers(mockContract, 255, 3);
     expect(blockers).toEqual([
-      { submissionId: 0, hunter: OTHER, nextAction: 'FORCE_FAIL', method: 'failTimedOutSubmission' },
+      { submissionId: 0, hunter: OTHER, nextAction: 'CLOSE_FAILED', method: 'closeFailedRound' },
       { submissionId: 2, hunter: LOSER, nextAction: 'FINALIZE', method: 'finalizeSubmission' },
     ]);
   });
@@ -143,7 +144,7 @@ describe('findFinalizeBlockers', () => {
     ];
     const blockers = await findFinalizeBlockers(mockContract, 255, 1);
     expect(blockers).toEqual([{ submissionId: 0, hunter: LOSER, nextAction: 'AWAIT_ORACLE', method: null }]);
-    expect(blockersHint(blockers)).toMatch(/still in evaluation\. Retry after they resolve/);
+    expect(blockersHint(blockers)).toMatch(/still in evaluation or awaiting a re-run\. Retry after they resolve/);
   });
 });
 
@@ -167,10 +168,10 @@ describe('POST /:jobId/submissions/:submissionId/finalize', () => {
   });
 
   it('encodes force-fail for a blocker whose round ended with no result', async () => {
-    mockChain.subs[0].nextAction = 'FORCE_FAIL';
+    mockChain.subs[0].nextAction = 'CLOSE_FAILED';
     const res = await finalize();
-    expect(res.body.blockedBy[0].method).toBe('failTimedOutSubmission');
-    expect(res.body.blockedBy[0].transaction.data).toBe(IFACE.encodeFunctionData('failTimedOutSubmission', [255, 0]));
+    expect(res.body.blockedBy[0].method).toBe('closeFailedRound');
+    expect(res.body.blockedBy[0].transaction.data).toBe(IFACE.encodeFunctionData('closeFailedRound', [255, 0]));
   });
 
   it('adds nothing when the submission can be finalized now', async () => {

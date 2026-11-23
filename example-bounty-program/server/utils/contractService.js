@@ -9,66 +9,21 @@
 
 const { ethers } = require('ethers');
 const { fundedBountyWei } = require('./bountyAmounts');
+const { AGGREGATOR_ABI, PHASES, OUTCOMES, SUBMISSION_STATUSES } = require('./aggregatorAbi');
 const logger = require('./logger');
 
 // Largest block range per eth_getLogs call (Infura and public Base RPCs reject more).
 const GET_LOGS_MAX_BLOCKS = 10_000;
 
-// BountyEscrow ABI — functions + events
-const BOUNTY_ESCROW_ABI = [
-  // Functions
-  "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))",
-  "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
-  "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
-  "function canBeClosed(uint256 bountyId) view returns (bool)",
-  "function requiredPrepay(uint256 bountyId) view returns (uint256)",
-  "function effectiveOracleParams(uint256 bountyId) view returns (tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling))",
-  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
-  "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])",
-  "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
-  "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)",
-  "function prepareCutoff(uint256 bountyId) view returns (uint256)",
-  "function MAX_BATCH() view returns (uint256)",
-  "function submissionCount(uint256 bountyId) view returns (uint256)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
-  "function verdikta() view returns (address)",
-  "function activeEvaluations(uint256) view returns (uint256)",
-  "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])",
-  "function withdrawable(address) view returns (uint256)",
-  "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)",
-  "function recoverLeftoverEth(uint256 bountyId, uint256 submissionId)",
-  // Events
-  "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
-  "event BountyClosed(uint256 indexed bountyId, address indexed creator, uint256 amountReturned)",
-  // FIELD ORDER: ethMaxBudget BEFORE the dynamic string (September 2026 revision).
-  // Logs of the pre-September-2026 contract used (…, string evaluationCid, uint256 ethMaxBudget)
-  // and a different topic0 — see server/utils/submissionEvents.js LEGACY_* if you ever
-  // need to read that address again.
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)",
-  "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
-  // `paid` is true only for the winner in that tx (PassedPaid); false for Failed,
-  // PassedUnpaid and TIMED_OUT.
-  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, bool paid, uint256 acceptance, uint256 rejection, string justificationCids)",
-  "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
-  "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
-  "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
-  "event EthRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount)",
-  "event RefundDeferred(uint256 indexed bountyId, uint256 indexed submissionId)",
-  // Pull-payment ledger: a direct payout/refund that could not be delivered is credited
-  // to `withdrawable[to]` and claimed via withdraw().
-  "event PaymentDeferred(address indexed to, uint256 amount)",
-  "event Withdrawn(address indexed account, uint256 amount)"
-];
+// BountyEscrow ABI: the merged escrow + lens ABI generated from the contracts
+// (onchain/abi/BountyEscrow.json, scripts/build-merged-abi.js). One source for every tuple, so a
+// struct change can't leave a hand-written copy behind.
+const rawEscrowAbi = require('../../onchain/abi/BountyEscrow.json');
+const BOUNTY_ESCROW_ABI = rawEscrowAbi.abi || rawEscrowAbi;
 
-// Verdikta Aggregator ABI (for checking evaluation results + force-fail gating)
-const VERDIKTA_AGGREGATOR_ABI = [
-  "function getEvaluation(bytes32 aggId) view returns (uint256[] memory scores, string justificationCids, bool ok)",
-  "function getAggregationStatus(bytes32 aggId) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredN, uint256 clusterP, address requester, uint256 startTimestamp)",
-  "function responseTimeoutSeconds() view returns (uint256)",
-  "function maxOracleFee() view returns (uint256)",
-  "function maxTotalFee(uint256 maxFee) view returns (uint256)"
-];
+// The v2 aggregator (see aggregatorAbi.js). Each bounty's rounds run on the aggregator its jury
+// names (BountyEscrow.aggregatorOf).
+const VERDIKTA_AGGREGATOR_ABI = AGGREGATOR_ABI;
 
 /**
  * Normalize the `oracle` member of a getBounty() tuple into the serializable shape
@@ -82,11 +37,42 @@ function normalizeOracleSettings(oracle) {
       maxOracleFee: oracle.maxOracleFee.toString(),
       alpha: Number(oracle.alpha),
       estimatedBaseCost: oracle.estimatedBaseCost.toString(),
-      maxFeeBasedScaling: Number(oracle.maxFeeBasedScaling)
+      maxFeeBasedScaling: Number(oracle.maxFeeBasedScaling),
+      // v2: the creator's fee floor (item 8) and beacon flag (item 9)
+      minOracleFee: (oracle.minOracleFee ?? 0n).toString(),
+      withBeacons: Boolean(oracle.withBeacons)
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * The v2 decision settings of a getBounty() tuple: the jury (approved aggregator index), item 12's
+ * pass quota Q and forfeit line R, and the hunter bond (wei string).
+ */
+function normalizeDecisionSettings(bounty) {
+  try {
+    return {
+      jury: Number(bounty.jury),
+      quota: Number(bounty.quota),
+      forfeitLine: Number(bounty.forfeitLine),
+      bondWei: (bounty.bond ?? 0n).toString()
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The aggregated scores as percentages: [DONT_FUND, FUND] or a one-number [FUND].
+ * Returns { acceptance, rejection } on 0..100 (rejection = 100 - acceptance for one number).
+ */
+function scoresToPercent(aggregated) {
+  const v = (aggregated || []).map((x) => Number(x));
+  if (v.length === 2) return { acceptance: v[1] / 10000, rejection: v[0] / 10000 };
+  if (v.length === 1) return { acceptance: v[0] / 10000, rejection: 100 - v[0] / 10000 };
+  return null;
 }
 
 // On-chain bounty status enum: 0=Open, 1=Awarded, 2=Closed
@@ -138,45 +124,58 @@ function computeCanBeClosed(bountyStruct) {
   return now > deadline;
 }
 
-// Gas guidance for the two "resolve" calls (finalizeSubmission / failTimedOutSubmission).
-// See ContractService.estimateResolveGas for why 300k is NOT enough: settling a timed-out
-// 6-oracle round inside the call costs ~2M gas (measured 1.97M on Base mainnet).
+// Gas guidance for the "resolve" calls (finalizeSubmission / closeFailedRound / rerunSubmission).
+// See ContractService.estimateResolveGas for why 300k is NOT enough: closeFailedRound settles the
+// round on the aggregator inside a try/catch (one keeper outcome per juror: up to ~1.6M gas at
+// Jumbo's 50 jurors, measured on the v2 contracts), and finalize reads every counted score.
 const RESOLVE_GAS_LIMIT_FALLBACK = 2_500_000n;
 const RESOLVE_GAS_LIMIT_MIN = 300_000n;
 const RESOLVE_GAS_MARGIN_PCT = 25n;
-const RESOLVE_GAS_NOTE = 'finalizeSubmission and failTimedOutSubmission may need >2M gas: when the oracle round has timed out they settle it on the aggregator (per-oracle penalties + prepay refund) inside a try/catch. With a smaller limit that inner call runs out of gas, the catch swallows it, and the tx fails with no revert reason (gasUsed == gasLimit) even though eth_call/estimateGas pass. Use this gasLimit or your own estimateGas + margin; never hard-code a lower value.';
+const RESOLVE_GAS_NOTE = 'closeFailedRound may need >1.5M gas: it settles the round on the aggregator (one outcome per juror, plus the prepay refund) inside a try/catch. With a smaller limit that inner call runs out of gas, the catch swallows it, and the tx fails with no revert reason (gasUsed == gasLimit) even though eth_call/estimateGas pass. Use this gasLimit or your own estimateGas + margin; never hard-code a lower value.';
 
 class ContractService {
   constructor(providerUrl, contractAddress) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
     this.contract = new ethers.Contract(contractAddress, BOUNTY_ESCROW_ABI, this.provider);
     this.contractAddress = contractAddress;
-    this.verdiktaAggregator = null; // Lazy-loaded
-    this.verdiktaAggregatorAddress = null;
     this._iface = new ethers.Interface(BOUNTY_ESCROW_ABI);
-    // responseTimeoutSeconds is an aggregator constant (300 s) — read once.
-    this._responseTimeoutSeconds = null;
+    // The escrow's approved aggregators never change; a bounty's jury never changes either.
+    this._aggregatorAt = new Map();      // address (lowercase) -> Contract
+    this._aggregatorOfBounty = new Map(); // bountyId -> address
+    this._aggregatorList = null;
   }
 
-  /**
-   * Get the Verdikta Aggregator contract instance (lazy-loaded)
-   */
-  async getVerdiktaAggregator() {
-    if (!this.verdiktaAggregator) {
-      try {
-        this.verdiktaAggregatorAddress = await this.contract.verdikta();
-        this.verdiktaAggregator = new ethers.Contract(
-          this.verdiktaAggregatorAddress,
-          VERDIKTA_AGGREGATOR_ABI,
-          this.provider
-        );
-        logger.info('Verdikta Aggregator loaded', { address: this.verdiktaAggregatorAddress });
-      } catch (error) {
-        logger.error('Failed to get Verdikta Aggregator address', { msg: error.message });
-        throw error;
-      }
+  /** A v2 aggregator contract (read-only) at `address`, cached. */
+  getAggregatorAt(address) {
+    const key = String(address).toLowerCase();
+    let c = this._aggregatorAt.get(key);
+    if (!c) {
+      c = new ethers.Contract(address, VERDIKTA_AGGREGATOR_ABI, this.provider);
+      this._aggregatorAt.set(key, c);
     }
-    return this.verdiktaAggregator;
+    return c;
+  }
+
+  /** The aggregator a bounty's rounds run on (its jury's), cached. */
+  async getAggregatorFor(bountyId) {
+    const id = String(bountyId);
+    let addr = this._aggregatorOfBounty.get(id);
+    if (!addr) {
+      addr = await this.contract.aggregatorOf(bountyId);
+      this._aggregatorOfBounty.set(id, addr);
+    }
+    return this.getAggregatorAt(addr);
+  }
+
+  /** The escrow's approved aggregators, in jury order (fixed at deployment), cached. */
+  async getAggregators() {
+    if (!this._aggregatorList) {
+      const n = Number(await this.contract.aggregatorCount());
+      const list = [];
+      for (let i = 0; i < n; i++) list.push(await this.contract.aggregators(i));
+      this._aggregatorList = list;
+    }
+    return this._aggregatorList;
   }
 
   // ---------------------------------------------------------------------------
@@ -268,67 +267,40 @@ class ContractService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Check evaluation by aggregator ID directly — 1 RPC call.
-   * Skips the redundant getSubmission() call since callers already have the aggId.
+   * A submission's current round, as the escrow's lens reports it — 2 RPC calls, no aggregator ABI:
+   * getOracleResult (the round's phase, result and item 12's Q-of-N outcome, judged by the
+   * contract's own rule) and nextAction (the call that will succeed now).
+   *
+   * Returns { started, hasResult, phase, phaseName, outcome ('not_ready' | 'no_result' | 'pass' |
+   * 'soft_fail' | 'hard_fail'), passCount, rounds, deadline, requestTime, scores ({ acceptance,
+   * rejection } percentages, or null), justificationCids, nextAction }, or { error } on an RPC
+   * failure. Never throws.
    */
-  async getEvaluationByAggId(verdiktaAggId) {
+  async getRoundState(bountyId, submissionId) {
     try {
-      if (!verdiktaAggId || verdiktaAggId === ethers.ZeroHash) {
-        return { ready: false, reason: 'no_agg_id' };
-      }
-
-      const aggregator = await this.getVerdiktaAggregator();
-      const [scores, justCids, ok] = await aggregator.getEvaluation(verdiktaAggId);
-
-      if (!ok) {
-        return { ready: false, reason: 'not_ok' };
-      }
-
-      if (!scores || scores.length < 2) {
-        return { ready: false, reason: 'invalid_scores' };
-      }
-
-      // scores[0] = rejection likelihood, scores[1] = acceptance likelihood
-      // Scores are in 6 decimal precision (0-1000000), divide by 10000 to get percentages
-      const acceptance = Number(scores[1]) / 10000;
-      const rejection = Number(scores[0]) / 10000;
-
+      const [r, nextAction] = await Promise.all([
+        this.contract.getOracleResult(bountyId, submissionId),
+        this.contract.nextAction(bountyId, submissionId)
+      ]);
+      const phase = Number(r.phase);
       return {
-        ready: true,
-        scores: { rejection, acceptance },
-        justificationCids: justCids || ''
+        started: Boolean(r.started),
+        hasResult: Boolean(r.hasResult),
+        phase,
+        phaseName: PHASES[phase] || 'unknown',
+        outcome: OUTCOMES[Number(r.outcome)] || 'unknown',
+        passCount: Number(r.passCount),
+        rounds: Number(r.rounds),
+        deadline: Number(r.deadline),
+        requestTime: Number(r.requestTime),
+        scores: r.hasResult ? scoresToPercent(r.scores) : null,
+        justificationCids: r.justificationCids || '',
+        nextAction
       };
     } catch (error) {
-      if (error.code === 'CALL_EXCEPTION') {
-        // Try to decode custom error from the aggregator contract
-        let decoded = null;
-        if (error.data) {
-          try {
-            const agg = await this.getVerdiktaAggregator();
-            const parsed = agg.interface.parseError(error.data);
-            if (parsed) {
-              const args = parsed.args.length ? `(${parsed.args.join(', ')})` : '';
-              decoded = parsed.name + args;
-            }
-          } catch {}
-        }
-        return { ready: false, reason: decoded || 'call_exception' };
-      }
-      logger.warn('Error in getEvaluationByAggId', { verdiktaAggId, msg: error.message });
-      return { ready: false, error: error.message };
+      logger.warn('getRoundState failed', { bountyId, submissionId, msg: error.message });
+      return { error: error.message };
     }
-  }
-
-  /**
-   * The aggregator's response timeout (seconds after startPreparedSubmission at
-   * which an unanswered round is considered timed out). Cached after first read.
-   */
-  async getResponseTimeoutSeconds() {
-    if (this._responseTimeoutSeconds == null) {
-      const aggregator = await this.getVerdiktaAggregator();
-      this._responseTimeoutSeconds = Number(await aggregator.responseTimeoutSeconds());
-    }
-    return this._responseTimeoutSeconds;
   }
 
   /**
@@ -369,144 +341,72 @@ class ContractService {
   }
 
   /**
-   * Force-fail gate — mirrors BountyEscrow.failTimedOutSubmission, which has NO
-   * local timer. A PendingVerdikta submission can be force-failed iff:
-   *   getEvaluation(aggId).exists === false
-   *   AND (getAggregationStatus(aggId).isComplete === true
-   *        OR now >= startTimestamp + responseTimeoutSeconds)
-   * If a result exists the caller must finalizeSubmission instead.
+   * Close-failed gate — mirrors BountyEscrow.closeFailedRound, whose gate is the aggregator's state:
+   * the round has no result and can get none (failed or cancelled, a drawn round past its deadline,
+   * or an undrawn one past the draw's 1-day limit). The lens's nextAction says CLOSE_FAILED exactly
+   * then. A round with a result goes through finalizeSubmission.
    *
-   * Returns:
-   *   { eligible, hasResult, settled, isComplete, startTimestamp,
-   *     responseTimeoutSeconds, timeoutAt, secondsUntilTimeout, reason, hint }
-   * Never throws for a missing/zero aggId (eligible:false, reason:'no_agg_id');
-   * RPC failures are reported as { eligible:false, reason:'rpc_error', error }.
+   * Returns { eligible, hasResult, phase, phaseName, deadline, secondsUntilDeadline, nextAction,
+   * reason, hint }. Never throws; RPC failures are { eligible:false, reason:'rpc_error', error }.
    */
-  async getForceFailEligibility(verdiktaAggId) {
-    if (!verdiktaAggId || verdiktaAggId === ethers.ZeroHash) {
+  async getCloseFailedEligibility(bountyId, submissionId) {
+    const st = await this.getRoundState(bountyId, submissionId);
+    if (st.error) {
       return {
-        eligible: false, hasResult: false, settled: false, reason: 'no_agg_id',
-        hint: 'The submission has no aggregator round (it was never started).'
+        eligible: false, hasResult: false, reason: 'rpc_error', error: st.error,
+        hint: 'Could not read the round state; retry shortly.'
       };
     }
-    try {
-      const aggregator = await this.getVerdiktaAggregator();
-      const [evalRes, statusRes, responseTimeoutSeconds] = await Promise.all([
-        aggregator.getEvaluation(verdiktaAggId).then(r => ({ ok: Boolean(r[2]) })).catch(err => {
-          // CALL_EXCEPTION = no evaluation record → no result
-          if (err.code === 'CALL_EXCEPTION') return { ok: false };
-          throw err;
-        }),
-        aggregator.getAggregationStatus(verdiktaAggId),
-        this.getResponseTimeoutSeconds()
-      ]);
-
-      const hasResult = evalRes.ok;
-      const isComplete = Boolean(statusRes.isComplete);
-      const failed = Boolean(statusRes.failed);
-      const startTimestamp = Number(statusRes.startTimestamp);
-      const now = Math.floor(Date.now() / 1000);
-      const timeoutAt = startTimestamp > 0 ? startTimestamp + responseTimeoutSeconds : null;
-      const timedOut = timeoutAt != null && now >= timeoutAt;
-      const settled = isComplete || timedOut;
-      const secondsUntilTimeout = timeoutAt != null ? Math.max(0, timeoutAt - now) : null;
-
-      let eligible = false;
-      let reason;
-      let hint;
-      if (hasResult) {
-        reason = 'result_available';
-        hint = 'The oracle produced a result — call finalizeSubmission (POST /finalize) instead. failTimedOutSubmission reverts with "result available - use finalizeSubmission".';
-      } else if (startTimestamp === 0) {
-        reason = 'unknown_aggregation';
-        hint = 'The aggregator has no record of this round.';
-      } else if (!settled) {
-        reason = 'not_settled';
-        hint = `The aggregator round is still open; it times out ${responseTimeoutSeconds}s after start (at unix ${timeoutAt}, in ${secondsUntilTimeout}s). failTimedOutSubmission reverts with "evaluation not settled" until then.`;
-      } else {
-        eligible = true;
-        reason = isComplete ? 'settled_no_result' : 'timed_out_no_result';
-        hint = 'The round is settled with no result — failTimedOutSubmission will succeed and refund the unspent prepay.';
-      }
-
-      return {
-        eligible, hasResult, settled, isComplete, failed,
-        startTimestamp, responseTimeoutSeconds, timeoutAt, secondsUntilTimeout,
-        reason, hint
-      };
-    } catch (error) {
-      logger.warn('getForceFailEligibility failed', { verdiktaAggId, msg: error.message });
-      return {
-        eligible: false, hasResult: false, settled: false, reason: 'rpc_error',
-        error: error.message,
-        hint: 'Could not read the aggregator state; retry shortly.'
-      };
+    const now = Math.floor(Date.now() / 1000);
+    const base = {
+      hasResult: st.hasResult, phase: st.phase, phaseName: st.phaseName, deadline: st.deadline || null,
+      secondsUntilDeadline: st.deadline ? Math.max(0, st.deadline - now) : null, nextAction: st.nextAction
+    };
+    if (!st.started) {
+      return { ...base, eligible: false, reason: 'no_agg_id', hint: 'The submission has no aggregator round (it was never started).' };
     }
+    if (st.hasResult) {
+      return { ...base, eligible: false, reason: 'result_available',
+        hint: 'The round has a result — call finalizeSubmission (POST /finalize) instead. closeFailedRound reverts with "result available - use finalizeSubmission".' };
+    }
+    if (st.nextAction === 'CLOSE_FAILED') {
+      return { ...base, eligible: true, reason: st.phase === 8 ? 'failed' : st.phase === 9 ? 'cancelled' : 'dead',
+        hint: 'The round has no result and can get none — closeFailedRound will settle or cancel it, refund what is left of the prepay, and let the submission re-run (it keeps its place and bond).' };
+    }
+    const waiting = {
+      DRAW: 'The round is not drawn yet: drawJury (anyone, through the escrow) moves it on.',
+      CLOSE_COMMITS: 'The commit window can be closed: closeCommits on the aggregator moves it on.',
+      PROMOTE: 'The commit phase is closed: promote on the aggregator moves it on.',
+    }[st.nextAction];
+    return { ...base, eligible: false, reason: 'round_open',
+      hint: waiting || (st.deadline
+        ? `The round is still open; its deadline is unix ${st.deadline} (in ${base.secondsUntilDeadline}s). closeFailedRound reverts with "round still open" until then.`
+        : 'The round is still open (an undrawn round never times out; it can be cancelled a day after its request).') };
   }
 
   /**
-   * Check if evaluation results are ready for a submission
-   * Queries the Verdikta Aggregator contract directly
-   * @param bountyId - The bounty ID
-   * @param submissionId - The submission ID
-   * @param verdiktaAggIdHint - Optional: skip the getSubmission() call if aggId is known
-   * @returns { ready: boolean, scores?: { acceptance, rejection }, justificationCids?: string }
+   * Check if evaluation results are ready for a submission (the lens's view of its current round).
+   * @returns { ready, outcome, passCount, scores?: { acceptance, rejection }, justificationCids?,
+   *   phase, nextAction } — `ready` when the round has a result; `outcome` is item 12's verdict.
    */
-  async checkEvaluationReady(bountyId, submissionId, verdiktaAggIdHint) {
-    try {
-      let verdiktaAggId = verdiktaAggIdHint;
-
-      // Only fetch submission if we don't have the aggId
-      if (!verdiktaAggId) {
-        const sub = await this.contract.getSubmission(bountyId, submissionId);
-        verdiktaAggId = sub.verdiktaAggId;
-      }
-
-      // Skip if no aggId or it's zero
-      if (!verdiktaAggId || verdiktaAggId === ethers.ZeroHash) {
-        logger.debug('checkEvaluationReady: No verdiktaAggId', { bountyId, submissionId });
-        return { ready: false, reason: 'no_agg_id' };
-      }
-
-      const aggregator = await this.getVerdiktaAggregator();
-      const [scores, justCids, ok] = await aggregator.getEvaluation(verdiktaAggId);
-
-      if (!ok) {
-        logger.debug('checkEvaluationReady: Aggregator returned ok=false', { bountyId, submissionId, verdiktaAggId });
-        return { ready: false, reason: 'not_ok' };
-      }
-
-      if (!scores || scores.length < 2) {
-        logger.debug('checkEvaluationReady: Invalid scores', { bountyId, submissionId, scores });
-        return { ready: false, reason: 'invalid_scores' };
-      }
-
-      // scores[0] = rejection likelihood, scores[1] = acceptance likelihood
-      // Scores are in 6 decimal precision (0-1000000), divide by 10000 to get percentages
-      const acceptance = Number(scores[1]) / 10000;
-      const rejection = Number(scores[0]) / 10000;
-
-      logger.info('checkEvaluationReady: Found result', {
-        bountyId,
-        submissionId,
-        acceptance: acceptance.toFixed(1),
-        rejection: rejection.toFixed(1)
-      });
-
-      return {
-        ready: true,
-        scores: { rejection, acceptance },
-        justificationCids: justCids || ''
-      };
-    } catch (error) {
-      // CALL_EXCEPTION is expected when evaluation data doesn't exist yet
-      if (error.code === 'CALL_EXCEPTION') {
-        logger.debug('checkEvaluationReady: CALL_EXCEPTION', { bountyId, submissionId });
-        return { ready: false, reason: 'call_exception' };
-      }
-      logger.warn('Error checking evaluation ready', { bountyId, submissionId, msg: error.message, code: error.code });
-      return { ready: false, error: error.message };
+  async checkEvaluationReady(bountyId, submissionId) {
+    const st = await this.getRoundState(bountyId, submissionId);
+    if (st.error) return { ready: false, error: st.error };
+    if (!st.started) return { ready: false, reason: 'no_agg_id' };
+    if (!st.hasResult) {
+      return { ready: false, reason: st.outcome === 'no_result' ? 'no_result' : 'not_ready',
+        phase: st.phase, phaseName: st.phaseName, outcome: st.outcome, nextAction: st.nextAction };
     }
+    return {
+      ready: true,
+      outcome: st.outcome,
+      passCount: st.passCount,
+      scores: st.scores || { acceptance: 0, rejection: 0 },
+      justificationCids: st.justificationCids,
+      phase: st.phase,
+      phaseName: st.phaseName,
+      nextAction: st.nextAction
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -562,6 +462,7 @@ class ContractService {
         arbiterDeterminationPayment: ethers.formatEther(bounty.arbiterDeterminationPayment),
         creatorAssessmentWindowSize: Number(bounty.creatorAssessmentWindowSize),
         oracleSettings: normalizeOracleSettings(bounty.oracle),
+        decisionSettings: normalizeDecisionSettings(bounty),
         isAcceptingSubmissions: isAccepting,
         canBeClosed: canClose,
         syncedFromBlockchain: true,
@@ -610,6 +511,7 @@ class ContractService {
         arbiterDeterminationPayment: ethers.formatEther(bounty.arbiterDeterminationPayment),
         creatorAssessmentWindowSize: Number(bounty.creatorAssessmentWindowSize),
         oracleSettings: normalizeOracleSettings(bounty.oracle),
+        decisionSettings: normalizeDecisionSettings(bounty),
         isAcceptingSubmissions: isAccepting,
         canBeClosed: canClose,
         syncedFromBlockchain: true,
@@ -636,7 +538,7 @@ class ContractService {
           const sub = await this.contract.getSubmission(bountyId, i);
 
           // Map submission status enum to string
-          const statusMap = ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'];
+          const statusMap = SUBMISSION_STATUSES;
 
           submissions.push({
             submissionId: i,
@@ -655,9 +557,15 @@ class ContractService {
             ethMaxBudget: sub.ethMaxBudget.toString(),
             score: sub.acceptance > 0 ? Number(sub.acceptance) : null,
             creatorWindowEnd: Number(sub.creatorWindowEnd),
-            // Who attached the prepay at start (receives the unspent refund);
+            // Who funded the current round (receives its unspent refund);
             // ZeroAddress until startPreparedSubmission.
             funder: sub.funder === ethers.ZeroAddress ? null : sub.funder,
+            // v2 (item 12): the bond, the rounds run, the last pass count, the re-run deadline
+            bondFunder: sub.bondFunder === ethers.ZeroAddress ? null : sub.bondFunder,
+            bondHeldWei: (sub.bondHeld ?? 0n).toString(),
+            rounds: Number(sub.rounds ?? 0),
+            passCount: Number(sub.passCount ?? 0),
+            rerunDeadline: Number(sub.rerunDeadline ?? 0),
           });
         } catch (err) {
           logger.warn(`Failed to fetch submission ${i} for bounty ${bountyId}:`, err);
@@ -734,5 +642,8 @@ module.exports = {
   getContractService,
   ContractService,
   normalizeOracleSettings,
-  BOUNTY_ESCROW_ABI
+  normalizeDecisionSettings,
+  scoresToPercent,
+  BOUNTY_ESCROW_ABI,
+  VERDIKTA_AGGREGATOR_ABI
 };

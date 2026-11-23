@@ -3,13 +3,14 @@
  *
  * BountyEscrow pays by submission index: finalizeSubmission on a passing result reverts
  * "earlier submission pending - retry after it resolves" while a LOWER-index submission
- * by ANOTHER hunter is still PendingVerdikta (see _hasEarlierPendingByOther). That
- * earlier submission may still be in evaluation, or its oracle may have answered long
- * ago (usually a failing score nobody bothered to finalize). In the second case nothing
- * changes until somebody sends one transaction, which anyone may do: finalize it, or
- * force-fail it if the round ended with no result. Doing so cannot change who wins (the
- * contract pays the same submission whatever order the calls arrive in) and refunds that
- * hunter's unused prepay. This module lists the blockers and what each one needs.
+ * by ANOTHER hunter still holds priority: in evaluation (PendingVerdikta) or awaiting a
+ * re-run (AwaitingRerun, item 12) — see _hasEarlierPendingByOther. That earlier submission
+ * may still be in evaluation, its oracle may have answered long ago (usually a failing
+ * score nobody bothered to finalize), its round may be dead, or its re-run window may have
+ * closed. In those cases nothing changes until somebody sends one transaction, which anyone
+ * may do: finalize it, close its failed round, or expire its re-run. Doing so cannot change
+ * who wins (the contract pays the same submission whatever order the calls arrive in) and
+ * refunds that hunter's unused prepay. This module lists the blockers and what each one needs.
  *
  * 2026-10-18: mainnet bounty 255 — sub 1 passed (AWAIT_EARLIER) behind sub 0, which had
  * a failing result in for hours (FINALIZE).
@@ -20,12 +21,14 @@ const { ethers } = require('ethers');
 // nextAction values that a single permissionless transaction resolves right now.
 const RESOLVE_CALLS = {
   FINALIZE: 'finalizeSubmission',
-  FORCE_FAIL: 'failTimedOutSubmission',
+  CLOSE_FAILED: 'closeFailedRound',
+  EXPIRE_RERUN: 'expireRerun',
 };
 
 const RESOLVE_IFACE = new ethers.Interface([
   'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
-  'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
+  'function closeFailedRound(uint256 bountyId, uint256 submissionId)',
+  'function expireRerun(uint256 bountyId, uint256 submissionId)',
 ]);
 
 /**
@@ -66,8 +69,8 @@ function blockersHint(blockers) {
   const waiting = blockers.filter((b) => !b.method);
   const resolvable = blockers.filter((b) => b.method);
   if (waiting.length) {
-    return `This passing result is kept, but payout waits for earlier submission(s) ${ids(waiting)} by another hunter, still in evaluation. ` +
-      'Retry after they resolve: the oracle answers, or the round times out (about 5 minutes after it started) and anyone may force-fail it.' +
+    return `This passing result is kept, but payout waits for earlier submission(s) ${ids(waiting)} by another hunter, still in evaluation or awaiting a re-run. ` +
+      'Retry after they resolve: the round gets a result, or fails (anyone may then close it), and a re-run not taken within its 2-hour window may be expired by anyone.' +
       (resolvable.length ? ` Earlier submission(s) ${ids(resolvable)} also need resolving; anyone may send their blockedBy transactions now.` : '');
   }
   return `This passing result is kept, but payout waits for earlier submission(s) ${ids(resolvable)} by another hunter. ` +

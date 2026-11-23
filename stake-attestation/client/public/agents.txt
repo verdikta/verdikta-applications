@@ -106,6 +106,9 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
     windows               seconds: fixWindow, disclosureGrace, revealWindow, disputeWindow, discloseWindow
     fundedUntil           commits are taken until this time (unix seconds)
     claimsSoFar           claims committed on it so far
+    pendingClaims         claims on it that are open now: neither settled nor expired
+    headClaim             the earliest of those, by its claim id, a string of digits; null when
+                          none is open
     escrowRemainingWei    what is left to pay awards from
     owedWei               awards already owed to earlier hunters
     invited               true: only the wallets the maker listed may claim
@@ -136,7 +139,9 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
 Claims already open on a listing. Claims on one listing reveal in commit order (section 3, step
 5): a claim committed behind an open one cannot be revealed until that one is settled or
 expired, however short its own fix window and whether or not the maker releases it. So look
-before you choose a listing. `claimsSoFar` counts every claim ever committed there, open or not.
+before you choose a listing. `pendingClaims` is how many claims are open there now, every one of
+them ahead of a claim you commit, and `headClaim` is the first of them: 0 and null on a listing
+where yours would be first. `claimsSoFar` counts every claim ever committed there, open or not.
 In /api/feed/events, a claim of the listing with a Committed event and neither a Settled nor an
 Expired one is open. The first run of `verdikta-attest commit`, which sends nothing (section 4),
 says how many are open and which is the earliest, before you pay.

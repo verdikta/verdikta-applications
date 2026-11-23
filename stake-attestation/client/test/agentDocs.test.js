@@ -845,8 +845,29 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   assert.match(toolSrc('listing.js'), /pendingClaims: l\.pendingClaims,\s*headClaim: l\.headClaim,/);
   assert.match(flat, /The first run of `verdikta-attest commit`, which sends nothing \(section 4\), says how many are open and which is the earliest, before you pay\./);
   // the feed: claimsSoFar is every claim ever committed, and the events route names what opens and what closes one
-  assert.match(read('server', 'src', 'site', 'feed.js'), /claimsSoFar: Number\(onchain\.claimsCommitted\)/);
+  const feed = read('server', 'src', 'site', 'feed.js');
+  assert.match(feed, /claimsSoFar: Number\(onchain\.claimsCommitted\)/);
   assert.match(flat, /`claimsSoFar` counts every claim ever committed there, open or not\./);
+  // and, since batch 2, the queue itself: the contract's count of open claims and the earliest of them, null for none.
+  // A feed entry is an Open listing and a late claim is taken only on a Rolled or Closed one, so on an entry every
+  // claim in the queue is one of pendingClaims: each is ahead of a claim committed now.
+  assert.match(feed, /pendingClaims: Number\(onchain\.pendingClaims\),\s*headClaim: onchain\.headClaim === '0' \? null : onchain\.headClaim,/);
+  assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\|/, 'only an Open listing is an entry');
+  const commitBody = /function commit\([\s\S]*?\n {4}\}/.exec(logic)[0];
+  assert.match(commitBody, /s == StakeAttestation\.ListingState\.Rolled\s*\|\| \(s == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\),\s*"not accepting late claims"/, 'a late claim needs a Rolled or Closed listing');
+  assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /uint256 pendingClaims; +\/\/ claims neither settled nor expired \(P2b\); never a late claim \(P2e\)/);
+  assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /uint64 +headClaim; +\/\/ the earliest claim neither settled nor expired \(0 = none\)/);
+  assert.match(flat, /`pendingClaims` is how many claims are open there now, every one of them ahead of a claim you commit, and `headClaim` is the first of them: 0 and null on a listing where yours would be first\./);
+  const table = listedFields('Each entry of `listings`:');
+  assert.deepEqual(table.slice(table.indexOf('claimsSoFar'), table.indexOf('claimsSoFar') + 3), ['claimsSoFar', 'pendingClaims', 'headClaim'], 'the feed table lists both beside claimsSoFar');
+  assert.match(flat, /pendingClaims claims on it that are open now: neither settled nor expired headClaim the earliest of those, by its claim id, a string of digits; null when none is open/);
+  // and no listing comes back to Open from Rolled or Closed: the two places that set Open start from Listed (the
+  // opening fund) and from Depleted (a top-up), so an entry never holds a late claim from an earlier life
+  const host = read('onchain', 'contracts', 'StakeAttestation.sol');
+  const opens = [...`${host}\n${logic}`.matchAll(/l\.state = (?:StakeAttestation\.)?ListingState\.Open;/g)];
+  assert.equal(opens.length, 2, 'a listing becomes Open in two places only');
+  assert.match(host, /if \(s == ListingState\.Listed\) \{[\s\S]{0,600}?l\.state = ListingState\.Open;/);
+  assert.match(logic, /if \(l\.state == StakeAttestation\.ListingState\.Depleted && escrow >= l\.awards\[3\] && l\.owedWei == 0\) \{\s*l\.state = StakeAttestation\.ListingState\.Open;/);
   const events = new Set(JSON.parse(read('tool', 'src', 'abi', 'StakeAttestation.json')).filter((x) => x.type === 'event').map((x) => x.name));
   const named = /a claim of the listing with a (\w+) event and neither a (\w+) nor an (\w+) one is open/.exec(flat);
   assert.ok(named, 'agents.txt says which events make a claim open');

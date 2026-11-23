@@ -44,6 +44,8 @@ function Entry({ e }) {
   const hash = e.artifactHash.toLowerCase();
   const proved = e.control?.proof === 'yes';
   const noArchive = fill(F.noArchive, { reason: e.archive?.error ?? 'ARCHIVE_UNAVAILABLE' });
+  // a server from before the feed carried the queue answers without it: the rows are left out, never guessed
+  const hasQueue = Number.isInteger(e.pendingClaims);
   return (
     <section className="claim" aria-labelledby={id} data-testid={`feed-${e.listingId}`}>
       <div className="card-head">
@@ -61,11 +63,14 @@ function Entry({ e }) {
         { id: f('bond'), label: F.bond, value: eth(e.bondWei) },
         { id: f('lowest'), label: F.lowest, value: e.lowestClassCounted },
         { id: f('claims'), label: F.claims, value: String(e.claimsSoFar) },
+        hasQueue ? { id: f('open-claims'), label: F.openClaims, value: String(e.pendingClaims) } : null,
         { id: f('days-open'), label: F.daysOpen, value: String(e.daysOpen) },
       ]} />
       <Facts rows={[
         { id: f('awards'), label: F.awards, value: <AwardLine text={fill(R.awardsLine, Object.fromEntries(CLASSES.map((c) => [c, formatEth(e.awards[c])])))} lowest={e.lowestClassCounted} /> },
         { id: f('windows'), label: F.windows, value: fill(F.windowsLine, { fix: w.fixWindow / 86400, dispute: w.disputeWindow / 3600, grace: w.disclosureGrace / 3600, reveal: w.revealWindow / 86400, disclose: w.discloseWindow / 60 }) },
+        // claims reveal in commit order: which claim a new one would wait behind, if any
+        hasQueue ? { id: f('commit-order'), label: F.order, value: e.headClaim == null ? F.orderNone : fill(F.orderHead, { head: e.headClaim }) } : null,
         { id: f('opened'), label: F.opened, value: formatTime(e.openedAt) },
         { id: f('funded-until'), label: F.fundedUntil, value: formatTime(e.fundedUntil) },
         BigInt(e.owedWei) > 0n ? { id: f('owed'), label: F.owed, value: eth(e.owedWei) } : null,

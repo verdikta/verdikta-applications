@@ -32,6 +32,9 @@ export const D8 = Object.freeze({
   maxRevealDays: 90,
 });
 
+/** A class below the lowest counted: its award is never paid (ClaimRules.awardFor), whatever the field holds. */
+export const notCounted = (c, lowest) => SEVERITY_CLASSES.indexOf(c) < SEVERITY_CLASSES.indexOf(lowest);
+
 const WHOLE = /^(0|[1-9][0-9]*)$/;
 const ETH = /^(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/;
 

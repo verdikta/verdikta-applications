@@ -715,7 +715,7 @@ the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
 
 | Route | |
 |---|---|
-| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none, `null` while an archive answer the site stored before it read documents is read again, which keeps that answer as it was if the gateway fails), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15). Node P35 added two fields and changed none: `disclosureRecipient`, the age recipient (`age1…`) of the same 32 bytes as `disclosureKey` (`shared/src/disclosureKey.js`), and `sameRepository`, every other listing the site indexed whose `artifact.repo` is the entry's, exactly as listed, that opened (one that never opened takes no claims, and anyone can make one for the gas of `list()`), at any commit and in whatever state it is in now: each one's id, artifact hash, artifact, state and lapsed at the answer's block, whether it counts, and its page (`/#/fund/<id>`), oldest first |
+| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none, `null` while an archive answer the site stored before it read documents is read again, which keeps that answer as it was if the gateway fails), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, the claims open now (`pendingClaims`, and `headClaim`, the earliest of them or `null`: claims reveal in commit order, so these are the ones a new claim waits behind), escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15). Node P35 added two fields and changed none: `disclosureRecipient`, the age recipient (`age1…`) of the same 32 bytes as `disclosureKey` (`shared/src/disclosureKey.js`), and `sameRepository`, every other listing the site indexed whose `artifact.repo` is the entry's, exactly as listed, that opened (one that never opened takes no claims, and anyone can make one for the gas of `list()`), at any commit and in whatever state it is in now: each one's id, artifact hash, artifact, state and lapsed at the answer's block, whether it counts, and its page (`/#/fund/<id>`), oldest first |
 | `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
 | `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of; `documents` each counted listing's document globs, from its archive), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below); `sameRepository` (node P35): the listings of the record's repository on its other versions that opened, each as in the feed. 404 for a hash with no opened listing |
 | `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
@@ -1400,11 +1400,15 @@ goes in a URL.
   no bug is documented as intended in NatSpec or a listing document) and
   the declared value at risk. The form holds the windows to decision D8
   (fix window 0 to 90 days, dispute 24 to 2160 hours, reveal 3 to 90 days, grace no longer than
-  the fix window) and leaves every other rule to the server, whose issues it shows. It follows
+  the fix window) and leaves every other rule to the server, whose issues it shows. Since tester bounty 400's maker
+  review it also says, at the field: that the repository is public and read with no credentials; that a class below
+  the lowest counted pays nothing whatever is entered (`ClaimRules.awardFor`); and what each of the four windows
+  controls, one line each. It follows
   the listing through `GET /api/listings/:id`, shows the validation report (with the documents the jurors would read,
   for a listing that names them), and once ready
   sends `list()` with the server's arguments and `fund()` with `feeDue()` plus the escrow
-  through the maker's wallet. `list()` is sent only when those arguments carry the maker's own
+  through the maker's wallet; once that page saw the listing open, it points to the listing's own page, where it is
+  managed. `list()` is sent only when those arguments carry the maker's own
   disclosure key and terms, and not when the maker already has an active listing of the
   version (`activeListingOf`), which the page links to instead, and only from the wallet the
   listing was built for. The request names the connected wallet as the `maker`, and that wallet
@@ -1429,7 +1433,9 @@ goes in a URL.
   `expectedFeeWei` makes an opening fund that lands first from elsewhere revert this one.
   Reads are checked to come from `VITE_SA_CHAIN_ID` (`chainReader`), and every transaction asks
   the wallet whether its account and chain are still the connected ones. Its disclosure key shows
-  in both forms. Once it opened, the page lists its claims (from the record mirror's events),
+  in both forms. Once it opened, the page lists its claims (from the record mirror's events) and says which of them
+  is first in commit order and how many are open, late claims among them (`lib/listingActions.js` `listingQueue`,
+  from the listing as the chain has it),
   links to its record and lists the other listings of its repository (from the record: its
   `sameRepository`, and its own version's other listings, counted or apart); while it is
   Open or Depleted, **roll forward** offers the maker's own open listings of the same
@@ -1478,7 +1484,8 @@ goes in a URL.
   claim is a count.
 - **The feed** (`#/feed`, design §15): `GET /api/feed`, every listing that takes claims, with
   its artifact, hash, labels, award table, lowest class counted, bond, windows, times, days
-  open, claims so far, escrow remaining, value at risk, image, scope and where its requirements are said to be
+  open, claims so far, the claims open now and which is first in commit order (a claim committed now waits behind
+  them), escrow remaining, value at risk, image, scope and where its requirements are said to be
   written (its document globs), the disclosure key in both its forms, the age recipient and the bytes32, with the sentence
   that says they are one key (`shared/src/disclosureKey.js`), the other listings of its repository (their ids, commits and
   states, each a link to its page), and links to its record and its page. The record page shows each stake's globs too.
@@ -1490,7 +1497,17 @@ goes in a URL.
   statement (at most 4,096 bytes) is pinned by the server after the wallet signs its challenge,
   its CID must be the raw sha2-256 CID of the bytes or nothing is sent, the prepay is read
   again and a higher figure stops the dispute until the maker has seen it, and `dispute()`
-  pays it. Each claim read is of one block (the claim, its listing and the lens views). A
+  pays it. Each claim read is of one block (the claim, its listing and the lens views). A claim still to be
+  revealed shows its place in **commit order** (decision D5): first on its listing, or which claim it waits for
+  (the listing's `headClaim`), with its reveal deadline as the lens has it: firm once the fix window is over, the
+  latest it can be while the window is open, passed (anyone may expire it), or not set while an earlier claim is
+  open; an undisclosed claim past its disclose window is said to be expirable by anyone, whatever its place
+  (erratum E5), and a claim whose round ended with no verdict shows until when it can be sent again, after which
+  anyone may expire it. For a claim that waits, the release panel says that a release ends the fix window and not
+  that wait, and names the claim that comes first, before and after the release; if the claim it waits for was
+  settled or expired while the page was open, nothing is sent and the claim is read again
+  (`lib/claimActions.js` `queueView`, `queueRows`, `retriggerRow`; `client/test/commitOrder.test.js` tests which
+  sentence each state gets and checks the rules behind them in the contract's source). A
   **pending evaluation** (a Revealed claim, or a Disputed one) is read every 5 seconds for up to
   15 minutes, each read given at most 30 seconds and never past the 15 minutes; then the page
   says plainly that no verdict was recorded in that time and offers a re-check.

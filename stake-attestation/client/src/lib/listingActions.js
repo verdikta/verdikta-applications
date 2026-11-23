@@ -25,6 +25,23 @@ export function renewTerms(l, now) {
 }
 
 /**
+ * A listing's commit-order queue as its page states it (decision D5), from getListing's answer: the
+ * earliest claim neither settled nor expired, how many such claims there are, and how many of those
+ * are late claims. A late claim (taken only once the listing is Rolled or Closed) is in the queue and
+ * never one of pendingClaims; every one of them leaves it through expire (lateExpired) or settle
+ * (lateOutcomeCounts), so what is left of lateClaims is still open. Null when no claim is open.
+ * @param {object} l - getListing's answer
+ * @returns {null | { head: bigint, open: bigint, late: bigint }}
+ */
+export function listingQueue(l) {
+  const head = BigInt(l.headClaim);
+  if (head === 0n) return null;
+  const settledLate = [...l.lateOutcomeCounts].reduce((sum, n) => sum + BigInt(n), 0n);
+  const late = BigInt(l.lateClaims) - BigInt(l.lateExpired) - settledLate;
+  return { head, open: BigInt(l.pendingClaims) + late, late };
+}
+
+/**
  * close(): the maker ends a listing that is not Closed, has no claim pending (neither settled nor
  * expired) and owes no award; the escrow that is left comes back to the maker.
  * @param {object} l - getListing's answer

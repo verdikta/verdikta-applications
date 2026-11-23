@@ -164,13 +164,41 @@ export const STRINGS = {
       protectedPaths: 'Paths reset before every run (one glob per line)',
     },
     hints: {
+      // tester bounty 400, the maker review (C1): the builder and the site read the repository with no credentials
+      // (builder/src/git.js, shared/src/controlProof.js repoUrlCheck), and a hunter clones it
+      repo:
+        'The https address of a public repository, in the form https://host/owner/name, on a git host this site reads: ' +
+        'a listing on another host is refused. The site reads the listed commit with no credentials, and hunters ' +
+        'clone it to work.',
       awards:
         'Awards never decrease with severity, and every class from the lowest counted up pays more than 0. ' +
-        'The escrow must hold at least the CRITICAL award.',
+        'The escrow must hold at least the CRITICAL award. A valid finding below the lowest class counted is ' +
+        'published on the record and gets its bond back, with no award.',
+      // C2: ClaimRules.awardFor pays 0 below lowestClassCounted, whatever the table holds there
+      awardNotCounted: 'Below the lowest class counted: pays nothing, whatever is entered here.',
       bond: 'Each hunter posts this bond with a claim. An invalid claim forfeits it to you.',
       windows:
         'Defaults: a 14-day fix window (30 for a deployed contract), a 72-hour dispute window, ' +
         'a 48-hour disclosure grace and a 7-day reveal window. A 0-day fix window is allowed.',
+      // C3: what each window controls, by the contract's own rules (ClaimLogic disclose, release, dispute, appeal,
+      // flagBadDisclosure, reveal and expire)
+      windowLines: {
+        fixWindowDays:
+          'Fix window: from the moment a hunter discloses a claim to you, your time to fix before the hunter may ' +
+          'reveal it. You can release a claim sooner.',
+        disputeWindowHours:
+          'Dispute window: from a verdict, your time to dispute a valid one, and the hunter\'s time to appeal an ' +
+          'INVALID. Until it ends a valid verdict you have not disputed does not pay, only the hunter can settle an ' +
+          'INVALID that is not appealed, and no confirmation round starts.',
+        disclosureGraceHours:
+          'Disclosure grace: from a disclosure, your time to flag it as bad, when it cannot be fetched or is not the ' +
+          'committed archive. The record shows the flag.',
+        revealWindowDays:
+          'Reveal window: once a claim may be revealed, its fix window over and every earlier claim on the listing ' +
+          'settled or expired, the hunter\'s time to reveal it. After that anyone may expire it, and its bond goes to ' +
+          'you. It is also the hunter\'s time to send a round again after one that ended with no verdict, and, from the ' +
+          'end of the dispute window, how long an award that awaits a confirmation waits for one.',
+      },
       allowlist: 'An invited listing is shown on the record as invited.',
       // owner, 2026-11-10 (Q73 #5): a listed root cause is DUPLICATE whatever the entry says; no bug at all is NatSpec
       knownIssues:
@@ -359,6 +387,8 @@ export const STRINGS = {
     openedNoTime: 'Listing {id} is open (transaction {tx}). Its page shows until when.',
     fundLater: 'If you leave this page before funding, fund the listing from its own page:',
     fundPage: 'Listing {id}',
+    // tester bounty 400, the maker review (C4): once it is open, where the listing is managed
+    managePage: 'The listing is managed from its own page, where its claims appear and you top up the escrow, renew, roll forward or close:',
     existingListed: 'You already listed this version as listing {id}, and it is not funded yet. A version has one listing per maker until it is closed: fund that one, with its own terms, from its page:',
     existingActive: 'You already have listing {id} for this version ({state}). A version has one listing per maker until it is closed.',
     failed: 'The transaction failed: {reason}',
@@ -607,6 +637,13 @@ export const STRINGS = {
     fundedUntil: 'Listing fee paid until',
     daysOpen: 'Days open',
     claims: 'Claims so far',
+    // tester bounty 400: claims on a listing reveal in commit order (decision D5), so a hunter sees the open ones first
+    openClaims: 'Open claims',
+    order: 'Commit order',
+    orderNone: 'no claim is open: a claim committed now would be first',
+    orderHead:
+      'claim {head} is first: claims reveal in the order they were committed, so a claim committed now can be ' +
+      'revealed only once every claim open before it is settled or expired',
     escrow: 'Escrow remaining',
     owed: 'Owed to hunters',
     valueAtRisk: 'Declared value at risk',
@@ -864,6 +901,31 @@ export const STRINGS = {
     notMaker: 'Only the listing\'s maker ({maker}) can do this; your wallet is {account}.',
     failed: 'The transaction failed: {reason}',
     changed: 'Nothing was sent: the claim changed on-chain since this page read it. It has been read again.',
+    // commit order (decision D5; ClaimLogic.revealDeadline): a claim behind another on its listing waits, whatever
+    // its own fix window says, and the lens gives it no reveal deadline until it is first (tester bounty 400)
+    queue: 'Commit order',
+    queueFirst: 'first on its listing: no earlier claim is open',
+    queueWaits:
+      'waits for claim {head}: claims on a listing reveal in the order they were committed, so this one can be ' +
+      'revealed only once claim {head}, and any claim between the two, is settled or expired',
+    queueLink: 'Claim {id}, which comes first',
+    revealBefore: 'Reveal before',
+    revealFirm: '{time}',
+    revealLatest: '{time} at the latest: a release or a roll-forward ends the fix window sooner, and the reveal window runs from then',
+    // a listing that is Rolled or Closed cannot roll forward: only a release ends the window early there
+    revealLatestRelease: '{time} at the latest: a release ends the fix window sooner, and the reveal window runs from then',
+    revealOver:
+      '{time}, which has passed: the hunter can no longer reveal it, and anyone may expire it. That sends its bond to ' +
+      'the maker and makes the next claim on the listing first',
+    revealUnset: 'not set: the reveal window starts once this claim is first in commit order and its fix window is over',
+    // erratum E5: an undisclosed claim past its disclose window is expired by anyone, whatever its place
+    queueUndisclosedOver:
+      'never disclosed, and its time to disclose is over: it can no longer be revealed, and anyone may expire it, ' +
+      'whatever its place in commit order. That sends its bond to the maker and takes it out of the order',
+    // erratum E6: a claim whose round ended with no verdict keeps its place until it is expired or a round settles
+    retrigger: 'Round with no verdict',
+    retriggerUntil: 'the hunter may send the round again until {time}; the claim keeps its place in commit order meanwhile',
+    retriggerOver: 'the time to send the round again ended at {time}: anyone may expire the claim, which takes it out of commit order',
     // the settlement safeguards (design §13.2, errata E7-E9), each from the contract's own reads
     roundKind: 'Dispute-panel round',
     roundKindLine: '{kind}: {result}',
@@ -898,18 +960,31 @@ export const STRINGS = {
     title: 'Release',
     intro:
       'Releasing waives the rest of the fix window for this claim: the hunter may reveal it now and the arbiters ' +
-      'judge it. The record counts the claim as released.',
+      'judge it.',
+    // a release ends the fix window, not the wait behind an earlier claim (decision D5)
+    introWaits:
+      'Releasing waives the rest of the fix window for this claim. The hunter still cannot reveal it then: claims on ' +
+      'a listing reveal in the order they were committed, and claim {head} comes first. This one can be revealed once ' +
+      'claim {head}, and any claim between the two, is settled or expired.',
+    // said after either intro, of a claim that is not late: ClaimLogic.release counts no late claim
+    counted: 'The record counts the claim as released.',
     until: 'The fix window ends at {time}.',
     button: 'Release the claim',
     sending: 'Sending release()…',
     done: 'Released (transaction {tx}). The claim is revealable now.',
+    doneWaits:
+      'Released (transaction {tx}). The fix window is over, and the claim still waits for claim {head}, which is ' +
+      'first in commit order: the hunter can reveal it once claim {head}, and any claim between the two, is settled ' +
+      'or expired.',
+    // while the page has no read of the claim to say which, or the claim has moved on since
+    doneBare: 'Released (transaction {tx}).',
   },
   roll: {
     title: 'Roll forward',
     intro:
       'Roll the stake forward to a fixed version: your own listing of the same repository at another commit, ' +
-      'already open. This listing then takes no new claims, every claim disclosed on it is revealable at once, ' +
-      'and the record links the two versions.',
+      'already open. This listing then takes no new claims, the fix window of every claim disclosed on it ends at once ' +
+      '(each can then be revealed in commit order), and the record links the two versions.',
     loading: 'Looking for your open listings of this repository…',
     pick: 'Successor listing',
     option: 'Listing {id}: {commit}, escrow {escrow} ETH, open since {opened}',
@@ -1075,6 +1150,12 @@ export const STRINGS = {
     line: 'Claim {id}',
     unavailable: 'The claims could not be listed: {reason}. A claim can still be opened by its id.',
     record: 'Record of this version',
+    // commit order (decision D5), from the listing as the chain has it: pendingClaims and headClaim
+    open: 'Open now, neither settled nor expired: {count}.',
+    // a Rolled listing can hold claims from before the roll and late claims after it, in one queue
+    openLate: 'Open now, neither settled nor expired: {count}, of which late claims: {late}.',
+    order: 'Claims reveal in the order they were committed, and claim {head} is first: each later claim can be revealed only once every claim committed before it is settled or expired.',
+    allResolved: 'None is open now: each is settled or expired.',
   },
 };
 

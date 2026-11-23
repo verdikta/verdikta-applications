@@ -1,5 +1,5 @@
 import { MAX_DOCUMENTS } from '../lib/documents.js';
-import { SEVERITY_CLASSES, setKind, setWindow } from '../lib/draft.js';
+import { SEVERITY_CLASSES, notCounted, setKind, setWindow } from '../lib/draft.js';
 import { knownIssueEntry } from '../lib/knownIssues.js';
 import { CONTROL_FILE_FORMAT, STRINGS, fill } from '../strings.js';
 import { SelectField, TextField } from './Field.jsx';
@@ -7,6 +7,7 @@ import { SelectField, TextField } from './Field.jsx';
 const L = STRINGS.listing;
 const F = L.fields;
 const classOptions = SEVERITY_CLASSES.map((c) => ({ value: c, label: c }));
+const WINDOW_FIELDS = Object.freeze(['fixWindowDays', 'disputeWindowHours', 'disclosureGraceHours', 'revealWindowDays']);
 let rowKeys = 0;
 
 /** The label of a form field, for the "complete these first" line. */
@@ -77,7 +78,7 @@ export function ListingForm({ form, setForm, issues, keyPanel, proofPanel = null
           onChange={(v) => setForm((f) => setKind(f, v))}
           options={[{ value: 'repo', label: F.kindRepo }, { value: 'contract', label: F.kindContract }]}
         />
-        <TextField label={F.repo} value={form.repo} onChange={set('repo')} mono />
+        <TextField label={F.repo} value={form.repo} onChange={set('repo')} mono hint={L.hints.repo} />
         <TextField label={F.baseCommit} value={form.baseCommit} onChange={set('baseCommit')} mono />
         {form.kind === 'contract' && (
           <>
@@ -105,7 +106,15 @@ export function ListingForm({ form, setForm, issues, keyPanel, proofPanel = null
         <p className="hint">{L.hints.awards}</p>
         <div className="grid4">
           {SEVERITY_CLASSES.map((c) => (
-            <TextField key={c} label={fill(F.award, { class: c })} value={form.awards[c]} onChange={award(c)} inputMode="decimal" error={issueText(issues, `awards.${c}`, form.awards[c])} />
+            <TextField
+              key={c}
+              label={fill(F.award, { class: c })}
+              value={form.awards[c]}
+              onChange={award(c)}
+              inputMode="decimal"
+              hint={notCounted(c, form.lowestClassCounted) ? L.hints.awardNotCounted : null}
+              error={issueText(issues, `awards.${c}`, form.awards[c])}
+            />
           ))}
         </div>
         <SelectField label={F.lowestClassCounted} value={form.lowestClassCounted} onChange={set('lowestClassCounted')} options={classOptions} />
@@ -119,8 +128,11 @@ export function ListingForm({ form, setForm, issues, keyPanel, proofPanel = null
       <fieldset>
         <legend>{L.sections.windows}</legend>
         <p className="hint">{L.hints.windows}</p>
+        <ul className="hint" data-testid="window-hints">
+          {WINDOW_FIELDS.map((k) => <li key={k}>{L.hints.windowLines[k]}</li>)}
+        </ul>
         <div className="grid4">
-          {['fixWindowDays', 'disputeWindowHours', 'disclosureGraceHours', 'revealWindowDays'].map((k) => (
+          {WINDOW_FIELDS.map((k) => (
             <TextField key={k} label={F[k]} value={form[k]} onChange={win(k)} inputMode="numeric" error={issueText(issues, k, form[k])} />
           ))}
         </div>

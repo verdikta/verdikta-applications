@@ -4,6 +4,7 @@ import { ArrowRight, FileText } from 'lucide-react';
 import { LISTING_STATES } from '../chain/abi.js';
 import { chainReader, stakeAttestation } from '../chain/wallet.js';
 import { getFeed, getRecord } from '../lib/api.js';
+import { listingQueue } from '../lib/listingActions.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { otherListingsOfRecord } from '../lib/sameRepository.js';
 import { confirmSuccessor, successorCandidates } from '../lib/successors.js';
@@ -54,18 +55,26 @@ export function useListingRecord(listingId, artifactHash, opened) {
 }
 
 /** The listing's claims, each linking to its page, and the link to the version's record. */
-export function ListingClaims({ artifactHash, data }) {
+export function ListingClaims({ artifactHash, data, listing = null }) {
   const id = useId();
   const L = STRINGS.claims;
+  // commit order (decision D5), from the listing as the chain has it (lib/listingActions.js listingQueue): how many
+  // claims are open, late claims among them, and which is first
+  const q = listing ? listingQueue(listing) : null;
+  let queue = null;
+  if (q) queue = `${q.late > 0n ? fill(L.openLate, { count: q.open, late: q.late }) : fill(L.open, { count: q.open })} ${fill(L.order, { head: q.head })}`;
+  else if (listing && data && !data.failed && data.claims.length) queue = L.allResolved;
   let body;
   if (!data) body = null;
   else if (data.failed) body = <p className="hint">{fill(L.unavailable, { reason: data.failed })}</p>;
-  else if (!data.claims.length) body = <p>{L.none}</p>;
+  // the record mirror may trail the chain: it never says "no claim" over a queue the chain already holds
+  else if (!data.claims.length) body = q ? null : <p>{L.none}</p>;
   else body = <ul className="inline">{data.claims.map((c) => <li key={c}><a href={`#/claim/${c}`}>{fill(L.line, { id: c })}</a></li>)}</ul>;
   return (
     <section className="claim" aria-labelledby={id} data-testid="listing-claims">
       <h3 id={id}>{L.title}</h3>
       {body}
+      {queue && <p data-testid="listing-queue">{queue}</p>}
       <p className="actions"><a className="button secondary" href={`#/record/${artifactHash.toLowerCase()}`}><FileText size={16} aria-hidden="true" />{L.record}</a></p>
     </section>
   );
@@ -196,7 +205,7 @@ export function ListingMore({ listingId, listing }) {
     <>
       <div className="pair">
         <CommitOffer data={data} />
-        <ListingClaims artifactHash={listing.artifactHash} data={data} />
+        <ListingClaims artifactHash={listing.artifactHash} data={data} listing={listing} />
       </div>
       <SameRepositorySection data={data} />
       {data && !data.failed && <RollForward listingId={listingId} listing={listing} identity={data.identity} />}

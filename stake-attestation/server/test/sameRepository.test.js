@@ -151,7 +151,8 @@ describe('related listings and the two encodings of the disclosure key', () => {
 
   test('only fields are added: a feed entry and a record answer keep every field they had', async () => {
     const body = await feed();
-    for (const e of body.listings) assert.deepEqual(Object.keys(e).sort(), [...FEED_ENTRY_BEFORE, 'disclosureRecipient', 'sameRepository'].sort());
+    // pendingClaims and headClaim came later (tester bounty 400), added the same way
+    for (const e of body.listings) assert.deepEqual(Object.keys(e).sort(), [...FEED_ENTRY_BEFORE, 'disclosureRecipient', 'sameRepository', 'pendingClaims', 'headClaim'].sort());
     const rec = await (await api.get(`/api/records/${l.a.artifactHash}`)).json();
     assert.deepEqual(Object.keys(rec).sort(), [...RECORD_BEFORE, 'sameRepository'].sort());
     // the feed's apart entries are as they were

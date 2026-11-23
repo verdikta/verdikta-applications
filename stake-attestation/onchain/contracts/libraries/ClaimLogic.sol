@@ -64,8 +64,7 @@ library ClaimLogic {
         }
         require(archiveHash != bytes32(0), "bad archiveHash");
         require(ciphertextSha256 != bytes32(0), "bad ciphertextSha256");
-        uint256 fee = verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.maxOracleFee, verdikta.maxOracleFee()));
-        require(fee > 0, "bad budget");
+        uint256 fee = _roundFee(l, l.oracle.maxOracleFee, verdikta);
         uint256 bond = l.bondWei;
         require(value >= bond + fee, "payment below bond + fee");
         uint256 prepay = value - bond;
@@ -109,6 +108,10 @@ library ClaimLogic {
     ///         reads the aggregator's live ceiling and budget, and changes nothing. The only
     ///         function here without a storage argument, so it is in the library's ABI: the
     ///         aggregator is an address there, a type every ABI reader accepts.
+    ///         The v2 terms: the fee floor fits a uint96 (the aggregator keeps a juror's fee in
+    ///         one), and each round's escrow, maxTotalFee(fee, floor, withBeacons), must quote (it
+    ///         reverts for a beacon request while the aggregator has no beacon contract), be above
+    ///         0 and fit a uint88 (the aggregator's own cap on what a round receives).
     function checkOracle(StakeAttestation.OracleParams calldata o, address aggregator) external view {
         IVerdiktaAggregator verdikta = IVerdiktaAggregator(aggregator);
         uint256 ceiling = verdikta.maxOracleFee();
@@ -120,10 +123,34 @@ library ClaimLogic {
         require(o.estimatedBaseCost < o.disputeMaxOracleFee, "base cost must be below dispute fee");
         require(o.maxFeeBasedScaling >= 1 && o.maxFeeBasedScaling <= ClaimRules.MAX_FEE_SCALING_FACTOR, "bad fee scaling");
         require(o.alpha <= ClaimRules.MAX_ALPHA, "bad alpha");
-        require(
-            verdikta.maxTotalFee(o.maxOracleFee) > 0 && verdikta.maxTotalFee(o.disputeMaxOracleFee) > 0,
-            "bad budget"
-        );
+        require(o.minOracleFee <= type(uint96).max, "bad fee floor");
+        _checkBudget(verdikta, o.maxOracleFee, o.minOracleFee, o.withBeacons);
+        _checkBudget(verdikta, o.disputeMaxOracleFee, o.minOracleFee, o.withBeacons);
+    }
+
+    /// @dev checkOracle's budget check for one fee: the quote must not revert, and must be above
+    ///      0 and at most type(uint88).max.
+    function _checkBudget(IVerdiktaAggregator verdikta, uint256 fee, uint256 minFee, bool withBeacons) private view {
+        try verdikta.maxTotalFee(fee, minFee, withBeacons) returns (uint256 total) {
+            require(total > 0 && total <= type(uint88).max, "bad budget");
+        } catch {
+            revert("bad budget");
+        }
+    }
+
+    /// @notice Draw the jury of a claim's open round (see StakeAttestation.drawJury): its claim
+    ///         round while Revealed, its dispute-panel round while Disputed. Through the round's
+    ///         wallet, so the wallet is the requester to the aggregator and the draw reward comes
+    ///         back to the round's funder with the leftover. Anyone may call; the aggregator decides
+    ///         whether a draw is due (from block B+2; with beacons a first call starts the beacon
+    ///         stage and a second draws) and its revert is passed on.
+    function drawJury(StakeAttestation.Claim storage c) external {
+        StakeAttestation.ClaimState s = c.state;
+        address wallet;
+        if (s == StakeAttestation.ClaimState.Revealed) wallet = c.evalWallet;
+        else if (s == StakeAttestation.ClaimState.Disputed) wallet = c.disputeWallet;
+        else revert("no round open");
+        EvaluationWallet(payable(wallet)).drawJury();
     }
 
     /// @notice Disclose: the ciphertext CID, within DISCLOSE_WINDOW of the commit; the fix window
@@ -263,14 +290,22 @@ library ClaimLogic {
         bondTo = l.maker;
         prepayWei = c.prepayWei;
         if (c.state == StakeAttestation.ClaimState.RoundFailed) {
-            // Erratum E6: once the hunter can no longer re-trigger, the bond follows the rounds.
+            // Erratum E6: once the hunter can no longer re-trigger, the bond follows the rounds,
+            // as the v2 aggregator lets them be told apart (StakeAttestation.expire):
+            // - RoundsFailed: some round's jury answered, with a result that is no verdict
+            //   (finalize set juryAnswered): the bond goes to the maker, as E6 has it;
+            // - RoundsUnanswered: a round ran, but every one ended at the aggregator with no
+            //   answer (never drawn or cancelled, missed beacon quorum, pool shortage, too few
+            //   commits or reveals, never promoted): nothing the hunter answers for, so the bond
+            //   comes back;
+            // - SubmissionsRefused: the aggregator refused every attempt: the bond comes back.
             require(
                 block.timestamp >= ClaimRules.retriggerDeadline(c.failedAt, l.revealWindow), "retrigger window open"
             );
-            if (c.roundStarted) {
+            if (c.juryAnswered) {
                 why = StakeAttestation.Expiry.RoundsFailed;
             } else {
-                why = StakeAttestation.Expiry.SubmissionsRefused;
+                why = c.roundStarted ? StakeAttestation.Expiry.RoundsUnanswered : StakeAttestation.Expiry.SubmissionsRefused;
                 bondTo = c.hunter;
             }
             // The last attempt's prepay is held only if it was refused; a round that ran spent it.
@@ -447,9 +482,9 @@ library ClaimLogic {
 
     /// @notice Finalize by polling (erratum E4; modelled on BountyEscrow.finalizeSubmission).
     ///         Reads the claim's open round: its claim round while Revealed, its dispute round
-    ///         while Disputed. With no result, tries finalizeEvaluationTimeout and asks
-    ///         getAggregationStatus whether the round is over: still open reverts (try later),
-    ///         over without a result is a failed round. A result that is no verdict
+    ///         while Disputed. With no result, tries the aggregator's settle and cancelUnsealed
+    ///         (_poll) and reads the round's phase: still open reverts (try later), failed or
+    ///         cancelled is a failed round. A result that is no verdict
     ///         (ClaimRules.judge) is a failed round too, never a revert, so a claim is never
     ///         stuck in Revealed or Disputed.
     ///         - A claim round's verdict is stored with its outcome and judgedAt, which starts the
@@ -505,7 +540,10 @@ library ClaimLogic {
                 emit StakeAttestation.Judged(claimId, listingId, StakeAttestation.Outcome(outcome), packed, justification);
             } else {
                 // Erratum E6: the round ran and settled no verdict. The claim keeps its place
-                // and its bond, and the hunter may re-trigger it (retrigger).
+                // and its bond, and the hunter may re-trigger it (retrigger). A result that is no
+                // verdict is the jury's answer to the claim: if the claim expires, its bond goes
+                // to the maker (expire). A round with no result failed at the aggregator.
+                if (ok) c.juryAnswered = true;
                 c.state = StakeAttestation.ClaimState.RoundFailed;
                 if (c.failedAt == 0) c.failedAt = uint64(block.timestamp);
                 emit StakeAttestation.EvaluationFailed(claimId, listingId, requestId, ok);
@@ -842,10 +880,7 @@ library ClaimLogic {
         address walletImplementation
     ) private {
         StakeAttestation.Claim storage c = claims[claimId];
-        StakeAttestation.OracleParams memory o = _effectiveOracle(l.oracle, l.oracle.maxOracleFee, verdikta);
-        uint256 live = verdikta.maxTotalFee(o.maxOracleFee);
-        require(live > 0, "bad budget");
-        require(prepay >= live, "prepay below fee");
+        require(prepay >= _roundFee(l, l.oracle.maxOracleFee, verdikta), "prepay below fee");
         c.prepayWei = uint128(prepay); // at most what this claim's transactions carried
         address wallet = _newWallet(wallets, walletImplementation, c.hunter, claimId);
         c.evalWallet = wallet;
@@ -853,19 +888,13 @@ library ClaimLogic {
         // The arguments are built before the call, outside the try: a failure composing them
         // reverts the call; only the aggregator's refusal is caught.
         string[] memory cids = _requestCids(claims, l.listingCid, prior, c.bcid);
-        string memory addendum = _disclosureLine(c);
+        EvaluationWallet.Request memory q = _request(l, l.oracle.maxOracleFee, _disclosureLine(c), verdikta);
         // The request gets exactly SUBMISSION_GAS, so whether it fails cannot depend on the
         // caller's gas limit (see StakeAttestation.SUBMISSION_GAS).
         require(gasleft() >= ClaimRules.SUBMISSION_GAS_NEEDED, "gas below SUBMISSION_GAS_NEEDED");
-        try EvaluationWallet(payable(wallet)).startEvaluation{value: prepay, gas: ClaimRules.SUBMISSION_GAS}(
-            cids,
-            addendum,
-            o.alpha,
-            o.maxOracleFee,
-            o.estimatedBaseCost,
-            o.maxFeeBasedScaling,
-            o.requestedClass
-        ) returns (bytes32 requestId) {
+        try EvaluationWallet(payable(wallet)).startEvaluation{value: prepay, gas: ClaimRules.SUBMISSION_GAS}(cids, q)
+            returns (bytes32 requestId)
+        {
             c.requestId = requestId;
             c.roundStarted = true;
             c.state = StakeAttestation.ClaimState.Revealed;
@@ -900,7 +929,6 @@ library ClaimLogic {
         address walletImplementation
     ) private returns (address wallet, bytes32 requestId) {
         StakeAttestation.Claim storage c = claims[claimId];
-        StakeAttestation.OracleParams memory o = _effectiveOracle(l.oracle, l.oracle.disputeMaxOracleFee, verdikta);
         wallet = _newWallet(wallets, walletImplementation, funder, claimId);
         c.state = StakeAttestation.ClaimState.Disputed;
         c.dispute = StakeAttestation.DisputeResult.Pending;
@@ -909,24 +937,26 @@ library ClaimLogic {
         c.disputedAt = uint64(block.timestamp);
         c.disputeWallet = wallet;
         string[] memory cids = _requestCids(claims, l.disputeCid, prior, c.bcid);
+        EvaluationWallet.Request memory q = _request(l, l.oracle.disputeMaxOracleFee, addendum, verdikta);
         require(gasleft() >= ClaimRules.SUBMISSION_GAS_NEEDED, "gas below SUBMISSION_GAS_NEEDED");
-        requestId = EvaluationWallet(payable(wallet)).startEvaluation{value: value, gas: ClaimRules.SUBMISSION_GAS}(
-            cids,
-            addendum,
-            o.alpha,
-            o.maxOracleFee,
-            o.estimatedBaseCost,
-            o.maxFeeBasedScaling,
-            o.requestedClass
-        );
+        requestId = EvaluationWallet(payable(wallet)).startEvaluation{value: value, gas: ClaimRules.SUBMISSION_GAS}(cids, q);
         c.disputeRequestId = requestId;
     }
 
     /// @dev The dispute panel's live fee: the aggregator's maxTotalFee for the listing's
-    ///      (clamped) disputeMaxOracleFee, the lens's disputeFee. Reverts "bad budget" at 0.
-    function _panelFee(StakeAttestation.Listing storage l, IVerdiktaAggregator verdikta) private view returns (uint256 fee) {
-        fee = verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.disputeMaxOracleFee, verdikta.maxOracleFee()));
-        require(fee > 0, "bad budget");
+    ///      (clamped) disputeMaxOracleFee, fee floor and beacon flag, the lens's disputeFee.
+    function _panelFee(StakeAttestation.Listing storage l, IVerdiktaAggregator verdikta) private view returns (uint256) {
+        return _roundFee(l, l.oracle.disputeMaxOracleFee, verdikta);
+    }
+
+    /// @dev A round's live escrow (the prepay it needs): the aggregator's
+    ///      maxTotalFee(fee clamped to its ceiling, the listing's floor, its beacon flag), as
+    ///      ClaimRules.roundFee states it for the lens. Reverts "bad budget" at 0.
+    function _roundFee(StakeAttestation.Listing storage l, uint256 fee, IVerdiktaAggregator verdikta)
+        private view returns (uint256 total)
+    {
+        total = ClaimRules.roundFee(verdikta, fee, l.oracle.minOracleFee, l.oracle.withBeacons);
+        require(total > 0, "bad budget");
     }
 
     /// @dev Erratum E7: an appeal's round (appeal, and its re-trigger): `value`, at least the live
@@ -985,38 +1015,40 @@ library ClaimLogic {
         wallets[wallet] = StakeAttestation.WalletInfo(funder, uint64(claimId));
     }
 
-    /// @dev Read a round (erratum E4): its result, or, with none yet, settle a timed-out round at
-    ///      the aggregator and read again; reverts "evaluation not ready" while it is still open.
-    ///      `ok` false on return: the round is over without a result.
+    /// @dev Read a round (erratum E4) on the v2 aggregator: its result, valid from phase 6
+    ///      (final). With none, the round may be over without one: settle fails a drawn round
+    ///      past its deadline (phase 8), cancelUnsealed ends one that can never be drawn (phase
+    ///      9). Each reverts where it does not apply (too early, wrong phase), so each is tried
+    ///      and its revert ignored; then the phase decides. Phase 8 or 9: `ok` false, the round
+    ///      is over without a result. Any other phase reverts "evaluation not ready": the round
+    ///      is still to be drawn (an undrawn round never times out; drawJury, and after a day
+    ///      only cancelUnsealed), in its commit, promotion or reveal phase, or not yet due.
     function _poll(IVerdiktaAggregator verdikta, bytes32 requestId)
         private returns (uint256[] memory v, string memory justification, bool ok)
     {
         (v, justification, ok) = verdikta.getEvaluation(requestId);
-        if (!ok) {
-            // Timed out but not settled at the aggregator: settle it there (reverts, such as
-            // NotTimedOut or AggregationComplete, are the status check's to interpret).
-            try verdikta.finalizeEvaluationTimeout(requestId) {
-                (v, justification, ok) = verdikta.getEvaluation(requestId);
-            } catch {}
-        }
-        if (!ok) {
-            (bool complete, , , , , , , , , ) = verdikta.getAggregationStatus(requestId);
-            require(complete, "evaluation not ready");
-        }
+        if (ok) return (v, justification, ok);
+        try verdikta.settle(requestId) {} catch {}
+        try verdikta.cancelUnsealed(requestId) {} catch {}
+        (uint8 phase, , , , , , , , , , , ) = verdikta.getRoundInfo(requestId);
+        require(phase == ClaimRules.PHASE_FAILED || phase == ClaimRules.PHASE_CANCELLED, "evaluation not ready");
     }
 
-    /// @dev The oracle settings a request is sent with now, as BountyEscrow._effectiveOracle:
-    ///      `fee` (the listing's maxOracleFee, or its disputeMaxOracleFee for a dispute) clamped
-    ///      to the aggregator's live ceiling, and the base cost kept below it (the keeper
-    ///      requires base < fee; without this a lowered ceiling would make every request
-    ///      revert). alpha, scaling and class unchanged.
-    function _effectiveOracle(StakeAttestation.OracleParams storage s, uint256 fee, IVerdiktaAggregator verdikta)
-        private view returns (StakeAttestation.OracleParams memory o)
+    /// @dev A request's settings now, as BountyEscrow._effectiveOracle: `fee` (the listing's
+    ///      maxOracleFee, or its disputeMaxOracleFee for a dispute) clamped to the aggregator's
+    ///      live ceiling, and the base cost kept below it (the aggregator requires base < fee;
+    ///      without this a lowered ceiling would make every request revert); alpha, scaling,
+    ///      class, the fee floor and the beacon flag are the listing's.
+    function _request(StakeAttestation.Listing storage l, uint256 fee, string memory addendum, IVerdiktaAggregator verdikta)
+        private view returns (EvaluationWallet.Request memory q)
     {
-        o = s;
+        StakeAttestation.OracleParams storage o = l.oracle;
         fee = ClaimRules.effectiveFee(fee, verdikta.maxOracleFee());
-        o.maxOracleFee = fee;
-        if (o.estimatedBaseCost >= fee) o.estimatedBaseCost = fee > 0 ? fee - 1 : 0;
+        uint256 base = o.estimatedBaseCost;
+        if (base >= fee) base = fee > 0 ? fee - 1 : 0;
+        q = EvaluationWallet.Request(
+            addendum, o.alpha, fee, o.minOracleFee, base, o.maxFeeBasedScaling, o.requestedClass, o.withBeacons
+        );
     }
 
     /// @dev Design §13.3 with erratum E2: [the listing's archive (listingCid, or disputeCid for

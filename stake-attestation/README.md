@@ -161,7 +161,43 @@ the one-line disclosure addendum of erratum E1.
   disclose window whatever its place in the queue.
 - **Requests** go out through a fresh `EvaluationWallet` clone each, as in
   `BountyEscrow`, so the aggregator's refund of unspent prepay belongs to one
-  request. Each is sent with exactly `SUBMISSION_GAS` (10M): a reveal that
+  request. The aggregator is the v2 `ReputationAggregator` (verdikta-dispatcher,
+  `beacon` branch; its `MIGRATION.md`). A listing's oracle terms add its fee floor
+  (`minOracleFee`: every juror of every round is paid at least it) and its beacon
+  flag (`withBeacons`); every quote is the aggregator's
+  `maxTotalFee(fee clamped to the ceiling, floor, flag)`, and `list` refuses a floor
+  above `uint96` or a quote that reverts (beacons with no beacon contract) or exceeds
+  `uint88`. A request only escrows the prepay: the jury is drawn later by
+  `drawJury(claimId)`, which anyone may call (the site's keeper does) from block B+2
+  and within a day. It goes through the round's wallet, so the wallet is the
+  requester and its draw reward (2 x the clamped fee; the requester's alone for 30 s)
+  comes back to the round's funder with the leftover. With beacons it takes two
+  calls. Then the commits, `closeCommits`, `promote` and the reveals happen at the
+  aggregator (anyone may call the middle two; the keeper does). `finalize` reads the
+  result from phase 6; with none it tries the aggregator's `settle` and
+  `cancelUnsealed` and reads a round that is failed (phase 8) or cancelled (phase 9)
+  as a failed round; anything else is "evaluation not ready". An undrawn round never
+  times out: undrawn for a day, it can only be cancelled, its whole prepay to the
+  aggregator's treasury. A round with M commits that nobody promoted, and a missed
+  beacon quorum, also send the unspent prepay to the treasury, not back. The lens's
+  `openRound(claimId)` names the round open now, its wallet, phase and deadline, and
+  `jurorFees(listingId)` what each juror is paid.
+- **Failed rounds and the bond** (erratum E6, as the v2 aggregator lets it be
+  applied). A round that ends with no verdict leaves the claim `RoundFailed`; the
+  hunter may `retrigger` it (a fresh prepay) until `revealWindow` after its first
+  failure, and then anyone may `expire` it. Where the bond goes depends on how the
+  rounds failed: **to the maker** (`Expiry.RoundsFailed`) if some round's jury
+  answered with a result that is no verdict (a vector of the wrong length or sum, a
+  one-number answer: the claim's `juryAnswered`); **back to the hunter** if every
+  round that ran ended at the aggregator with no result (`Expiry.RoundsUnanswered`:
+  never drawn or cancelled, beacon quorum missed, pool shortage, too few commits or
+  reveals, M commits never promoted) or the aggregator refused every attempt
+  (`Expiry.SubmissionsRefused`). None of the no-result failures is the hunter's
+  doing, and on the v2 aggregator a jury that never commits looks the same as one
+  that abstains, so before v2 (where every round that ran forfeited the bond) a
+  listing too large for the runner, or an image outside an arbiter's registry list,
+  could take hunters' bonds for the maker. A hunter still pays for such rounds: the
+  base fees are spent at the draw, and a treasury failure keeps the rest. Each is sent with exactly `SUBMISSION_GAS` (10M): a reveal that
   cannot forward all of it reverts, so a reveal's gas limit is about 10.3M
   (only the gas used is paid). A request the aggregator refuses leaves the
   claim `RoundFailed` with its prepay held; with a fixed budget that is the
@@ -378,7 +414,7 @@ set (`memory.max` 4294967296). By hand, for memory alone: `docker run --rm --mem
    ```bash
    cd stake-attestation/onchain && npm ci
    export PRIVATE_KEY=…   # the deployer's; in the shell, never in a file in the repository
-   VERDIKTA_AGGREGATOR_BASE_SEPOLIA=0xe8a385E473EA710c5a88Cc72681a16a26fe380e4 \
+   VERDIKTA_AGGREGATOR_BASE_SEPOLIA=<the v2 ReputationAggregator> \
    SA_INITIAL_OWNER=<the owner> SA_FEE_RECIPIENT=<the fee recipient> SA_LISTING_FEE_WEI=100000000000000 \
      ./deploy_testnet.sh
    ```
@@ -762,7 +798,18 @@ broadcast transaction cannot be recalled, so a confirm is sent only two keeper c
 plus poll interval, 150 s each with the defaults) and two minutes before the deadline, and one still
 pending within one cycle and two minutes of it is replaced by a transfer to itself at once, whatever
 its age (`confirmMargins`, `server/src/site/keeper.js`); and
-`expire` only with `SA_KEEPER_EXPIRE=on`. Its key is `SA_KEEPER_PRIVATE_KEY`, read when it starts (`SA_KEEPER=off`
+`expire` only with `SA_KEEPER_EXPIRE=on`. On the v2 aggregator a request only escrows the prepay, so
+the keeper also drives every round in flight (a Revealed claim's round, a Disputed claim's
+dispute-panel round; `SA_KEEPER_ROUNDS=off` turns this off), after the claim's own calls: `drawJury(claimId)`
+on the contract from block B+2 (twice with beacons: the stage, then the jury once the quorum is in),
+through the round's wallet, so the draw reward is the round's funder's and never the keeper's; and at
+the aggregator (the contract's `verdikta()`), `closeCommits(aggId)` after T+ with at least M commits,
+`promote(aggId)` from the close block + 2, and `settle(aggId)` after a round's deadline when
+`finalize` is not due (`finalize` settles a dead round itself, so it is the one normally sent). The
+promote reward (1 x the clamped fee) is the keeper's: once its `ethOwed` at the aggregator reaches
+`SA_KEEPER_WITHDRAW_MIN_WEI` (0.0001 ETH) it sends `withdrawEth` at the end of a cycle. The in-flight
+record names the call's target and round (`to`, `aggId`), so a re-send or a cancellation is the same
+call. Its key is `SA_KEEPER_PRIVATE_KEY`, read when it starts (`SA_KEEPER=off`
 turns it off). It reads each claim on-chain and simulates the call before sending it, keeps one
 transaction in flight at its next confirmed nonce, recorded before it is broadcast, and
 resolves that record first in the next cycle or process: waited for, re-sent at the same nonce
@@ -961,8 +1008,9 @@ selection gives (`SIGNING_REPORT_MISMATCH` otherwise), and records `DOCUMENTS_SE
 **A listing's size.** For each claim an arbiter's External Adapter sends the code-runner one JSON
 body, and the runner answers 413 above 16 MiB (16,777,216 bytes). The listing's `code_review.json`,
 attestation, baseline and known issues are in that body every time, so a listing that leaves a claim
-no room makes every arbiter abstain on every claim, and under erratum E6 the bonds then go to the
-maker. So a listing may take at most 2 MiB (2,097,152 bytes) of it, measured as the body holds it:
+no room makes every arbiter abstain on every claim: no verdict for anyone, each hunter's base fees
+spent (on the v2 aggregator the bonds come back, `Expiry.RoundsUnanswered`; before it they went to the
+maker). So a listing may take at most 2 MiB (2,097,152 bytes) of it, measured as the body holds it:
 `JSON.stringify(JSON.parse(file))`, and a known-issues file, which is attested as given, at its file
 size if that's larger. `finalSpec` refuses one over the bound with `LISTING_REQUEST_TOO_LARGE`, stating
 the size and the bound; `spec` refuses known issues too large on their own, before anything is fetched;
@@ -1186,7 +1234,7 @@ the deadlines, the sweep for runs nothing follows, what the server's token can r
 required reviewers off are in `docs/builder-kms-signing.md`. So is the rule that this key is testnet-only.
 
 **Where the image is published.** An arbiter pulls only from its `CODE_RUNNER_REGISTRY_ALLOWLIST` and abstains on anything else, and a claim that
-only gets abstentions ends with the bond to the maker. What an operator's list holds can't be read from here, but the default of the runner at the pin
+only gets abstentions gets no verdict and costs its hunter the base fees (the bond comes back on the v2 aggregator, `Expiry.RoundsUnanswered`). What an operator's list holds can't be read from here, but the default of the runner at the pin
 can (`ghcr.io/verdikta`): `services.js` warns when `publish-repository` is off it, and with `signing: production` it stops.
 
 Neither workflow has a trigger of its own, and the only call in this repository is CI's dry run of the builder
@@ -1223,17 +1271,19 @@ tests use doubles only: no test holds a provider key or reaches a provider.
 
 ## The mock aggregator
 
-`onchain/contracts/mocks/MockVerdiktaAggregator.sol` stands in for the deployed
-`ReputationAggregator` (verdikta-dispatcher) in every contract test, so it must
-not do anything the real contract does not. In particular it never calls the
-requester: results are read by polling `getEvaluation` and
-`getAggregationStatus`, and unspent ETH comes back as `ethOwed` credit at
-settlement, pulled with `withdrawEth`. It has the real input limits
-(`MAX_CID_COUNT` 10, `MAX_CID_LENGTH` 100, `MAX_ADDENDUM_LENGTH` 1000), draws
-the caller's credit before `msg.value`, and settles through scripted results or
-`finalizeEvaluationTimeout`. Its test controls stand in for the real contract's
-owner settings and its oracles; the contract's header lists them. A fault the
-real contract cannot produce is not added to the mock.
+`onchain/contracts/mocks/MockVerdiktaAggregator.sol` stands in for the deployed v2
+`ReputationAggregator` (verdikta-dispatcher, `beacon` branch) in every contract test, so it must
+not do anything the real contract does not. It is example-bounty-program's mock byte for byte, as
+`IVerdiktaAggregator.sol` is that program's interface (`test/MockVerdiktaAggregator.test.js` fails
+when either copy drifts). It never calls the requester: results are read by polling
+`getEvaluation` (valid from phase 6) and `getRoundInfo`, and refunds and rewards come back as
+`ethOwed` credit, pulled with `withdrawEth`. It has the real input limits, the real escrow formula
+(`maxTotalFee(fee, floor, withBeacons)`), sequential ids from 1, the draw from block B+2 (the
+requester's reward for 30 s, a day's limit), the beacon stage, the M+ / T+ commit close, promote,
+settle after the deadline (which runs from the draw), `cancelUnsealed`, and the treasury routing of
+the real contract. Its hooks (`scriptCommits`, `scriptReveals`, `scriptResult`, `scriptBeacons`,
+`setPoolShortage`, the owner settings) stand in for the arbiters and the owner; the contract's
+header lists them. A fault the real contract cannot produce is not added to the mock.
 
 ## The hunter tool
 
@@ -1318,13 +1368,16 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   nothing without `--yes`; the amount printed is the amount sent. Its balance check and dry run come first. A saved
   re-trigger this run would send again asks for `--yes` too; one whose nonce is used, or that the node already holds, is
   only waited for, never sent again. On a claim with no failed round, `--retrigger` refuses and never reveals.
-- **`status`** reads a round that is over the way `finalize` reads it (node P32): the aggregator's result, judged by the lens's
-  `judgeVector`, or with none the aggregator's `getAggregationStatus`. So a round with no verdict reads as failed from the
-  moment the aggregator's own timeout fails it, before anyone finalizes it, with the re-trigger's quote and deadline from the
-  chain, what the round cost (the aggregator's `getEthAccounting`; the prepay alone where it has none), and the pointer to
-  `check`; `status --wait` exits 5 for it. Until `finalize` records it there is nothing to re-trigger: `reveal --retrigger`
-  refuses with `ROUND_NOT_RECORDED`, and `claim` records it. An open round never reads as failed: `finalize`'s dry run is
-  refused until the aggregator's timeout. A Committed claim says whether it is disclosed and in its fix window. The reveal deadline is the
+- **`status`** reads a round that is over the way `finalize` reads it (node P32): the lens's `openRound` (the round's v2
+  phase and deadline), the aggregator's result from phase 6, judged by the lens's `judgeVector`, or with none the round's
+  phase from `getRoundInfo`. So a round with no verdict reads as failed from the moment it is dead at the aggregator (past
+  its deadline, or cancelled), before anyone finalizes it, with the re-trigger's quote and deadline from the chain, what the
+  round cost (`getRoundInfo`: received, paid out, the leftover, and whether the leftover came back or went to the
+  aggregator's treasury), where the bond goes at expiry under E6's rule, and the pointer to `check`; `status --wait` exits 5
+  for it. A round not drawn yet says so: it never times out, anyone may draw it (the site's keeper does, and `claim` sends
+  `drawJury` through the contract when it is due), and undrawn for a day it can only be cancelled to the treasury. Until
+  `finalize` records a failure there is nothing to re-trigger: `reveal --retrigger` refuses with `ROUND_NOT_RECORDED`, and
+  `claim` records it. An open round never reads as failed: `finalize`'s dry run is refused until the round is dead. A Committed claim says whether it is disclosed and in its fix window. The reveal deadline is the
   lens's, and against what `commit` printed and recorded (`told` in `state.json`) `status` says when a release or a
   roll-forward moved it earlier; by a claim id, with nothing recorded, it says only what the chain says. A claim behind
   another in commit order has no reveal deadline on-chain until it heads the listing's queue: `status` names the claim it
@@ -1637,8 +1690,8 @@ the award and bond after the dispute window), **a gate-failing one** (a PoC that
 once, the bond to the maker, no model asked, the first claim among its prior findings), **one that fails an integrity check** (a PoC that fails as the valid
 one does and writes `.gitignore`, a path the listing protects, on real forge: `protectedPathsUnchanged`, no tamper flag, DUPLICATE at once, the bond back, no model asked; its check
 name reaches the API and the page from the real writer's justifications, through the real reader) and **an abstaining one** (a PoC that never ends:
-the runner's clock stops it, no arbiter commits, the round times out and fails, a fresh prepay, it fails again, and at expiry the bond goes
-to the maker, erratum E6). The settlement safeguards (node P18, errata E7-E9): the listing copies a confirmation size of MEDIUM's
+the runner's clock stops it, no arbiter commits, the round fails at the aggregator after its deadline, a fresh prepay, it fails again, and at
+expiry the bond comes back, erratum E6 on the v2 aggregator: no round's jury answered, `Expiry.RoundsUnanswered`). The settlement safeguards (node P18, errata E7-E9): the listing copies a confirmation size of MEDIUM's
 award and a narrow-INVALID floor of 25 points, so **the valid HIGH is confirmed** (after its dispute window the site's keeper calls
 `confirm`, the escrow pays the dispute panel's round, the panel holds it, and the keeper finalizes and settles it); then, after
 the record, **a second gate-failing claim is appealed through the tool** (`claim` warns that settling it early waives the appeal,
@@ -1726,32 +1779,40 @@ to the round's `prepare` stage and is not a second one. The `builder-docker` job
 
 ### The mock bridge
 
-`e2e/src/bridge.js` stands where the real network stands, and `e2e/src/aggregatorRound.js` is `ReputationAggregator.fulfill`,
-`_finalizeAggregation` and the settlement arithmetic, off-chain (verdikta-dispatcher at the commit in
-`e2e/test/fixtures/aggregator-lib.vectors.json`, whose answers came from the real `AggregatorLib`). For each request on the mock it runs K = 6
-jobs with the body of `chainlink-node/basicJobSpec`, reads only what the job reads, keeps the first M = 4 commits, asks those for their
-reveal as 32 lowercase hex, verifies each against its commitment, takes the first N = 3, clusters P = 2, floors their mean, comma-joins
-their CIDs, works out what the oracles spent, and gives that to the mock at the N-th reveal, as the real contract finalizes inside it, whatever jobs
-are still out. Those that land afterwards revert, as on the real contract. A round that fails stays open at the mock.
+`e2e/src/bridge.js` stands where the real network stands, and `e2e/src/aggregatorRound.js` is the v2 `ReputationAggregator`'s
+`fulfill`, `closeCommits`, `promote` and `_finalize`, with `ScoringLib` and `AggregatorLib.parseCidSalt`, off-chain
+(verdikta-dispatcher's `beacon` branch at the commit in `e2e/test/fixtures/scoring-lib.vectors.json`, whose answers came from the real
+libraries; `e2e/test/fixtures/gen-scoring-vectors.cjs` regenerates them). For each request on the mock it mines to block B+2 and waits for
+the draw (the site's keeper calls `StakeAttestation.drawJury`, so the wallet earns the reward; the bridge draws itself only if nobody has
+after 30 s, as any third party may). It then runs K = 6 jobs with the body of `chainlink-node/basicJobSpec`, reads only what the job reads,
+and gives each commit to the mock (`scriptCommits`). A commit is one number, keccak256(abi.encode(aggId, operator, scores, salt)) with a
+128-bit salt, and no CID. The M+-th commit (6 of 6 at the defaults) closes the window, or the M-th (M = 5) once T+ has passed, or
+`closeCommits` after T+ with at least M (the keeper's, or the bridge's after 10 s). From the close block + 2, `promote` (the keeper's, or the
+bridge's) draws M of the commits with the real seed, and the bridge asks exactly those for their reveal as `2:<64 lowercase hex>`. A
+reveal always has a CID (`<cid>:<32 hex salt>`), so a one-number reveal is never taken for a commit. The bridge verifies each reveal
+against its commitment, counts the first N = 4, clusters P = 3 (nearest-neighbour; the exact window for one-number answers; ties by the
+round's sealed seed), floors their mean, comma-joins their CIDs, and gives that to the mock at the N-th reveal (`scriptResult`), as the
+real contract finalizes inside it, whatever jobs are still out. A reveal that lands afterwards is late (classified, not counted); nothing
+reverts. The mock's own arithmetic, the real formula, gives the refund. A round that fails stays open at the mock until its deadline (from
+the draw), and then `settle` fails it, which `StakeAttestation.finalize` tries.
 
 | The real aggregator | The mock and the bridge | Who proves it |
 |---|---|---|
-| `selectOracles`: class, fee, reputation, entropy. It can revert | No selection. The bridge refuses a class other than `code-standard` | Dispatcher S1 and `keeper.test.js`; **G2**, a real selection on class 5555 |
+| `drawJury`: the keeper's selection as of block B with the seed from blockhash(B+1). It can fail (a pool shortage, refunded) | No selection. The bridge refuses a class other than `code-standard`, and a request with beacons | Dispatcher tests; **G2**, a real selection on class 5555 |
 | A refused request leaves `RoundFailed`, the bond back if every attempt was refused | Reachable with `setPaused`, not in this round | `StakeAttestation.claims` tests |
-| The keeper's selection and K dispatches inside exactly `SUBMISSION_GAS` | `setRequestGasCost(3M)`, a stand-in | **G2** measures it |
-| Base fee to K payees at request, bonus at finalize, refund = received − base − bonus | The same refund, computed here and set on the mock before it settles. Each oracle's fee is taken as the ceiling | `aggregatorRound.test.js`; `aggregatorEth.test.js` for the real one; **G2** reads the real fee |
-| A slot whose dispatch reverts is an uncredited no-show | All K dispatch | A larger refund, which the contract takes (`setRefundAmount` tests) |
-| An oracle inactive at finalize stays out of the sum and earns no bonus, though its CID stays in the list | Every oracle stays active | Dispatcher tests; the contract reads a vector and a string either way |
+| The request only escrows; it settles up to `settlePerRequest` due rounds inside exactly `SUBMISSION_GAS` | `setRequestGasCost(3M)`, a stand-in | **G2** measures it |
+| Base fee to K payees at the draw, bonus to the P clustered at finalize, the draw and promote rewards; refund = received − base − bonus − rewards | The same formula in the mock. Each juror's fee is taken as the ceiling (or the floor) | `aggregatorRound.test.js`, `MockVerdiktaAggregator.test.js`; **G2** reads the real fee |
+| A slot whose dispatch reverts is an uncredited no-show | All K dispatch | A larger refund, which the contract takes |
+| The promotion draw, and the reveal requests to the M slots it names | The same draw (the port's `pickPromoted` on the real seed); the mock's `promote` only moves the phase | `aggregatorRound.test.js` on the real library's answers |
 | OracleRequest, Chainlink job, EA, `fulfillOracleRequestV`, `fulfill`: `gasLimit 6,000,000`, 2 confirmations | The bridge calls the EA with the job's body, up to the job's 840 s | **G2**: the real job and `ArbiterOperator` |
-| **The callback's gas.** The N-th reveal's `fulfill` runs `_finalizeAggregation` with keeper score updates. Out of gas there, the round waits for the timeout | `scriptResult` always fits | **G2**: the N-th `fulfill` under 6M. The contract's side of a late result: `scriptLateResult` tests |
-| **Timing.** One window from the request (900 s after G2's `setResponseTimeout`), commit and reveal shared; 3 to 6 minutes a round | The same window and rule on Hardhat's clock; a round takes seconds | **G2**: a cold cache, real jurors, §11's budget |
-| **The failed round (E6).** `finalizeEvaluationTimeout`: commit phase, reveal phase, or enough responses after all | The same to a requester: `isComplete`, `failed`, the refund. Its phase is always "commit"; the late branch needs `scriptLateResult` | This round, commit phase; contract tests the rest; `aggregatorEth.test.js` the real one |
-| `getAggregationStatus`: real counts | Canned 1s. `StakeAttestation` reads only `isComplete`, and nothing else here reads it | Nothing depends on it |
-| While a round is open, `getEvaluation` answers a zero-filled scratch vector once a reveal has arrived, with `exists` false | An empty vector, with `exists` false | `_poll` reads the vector only when `exists` is true |
-| **`finalize` of a timed-out round** pays K score updates inside `finalizeEvaluationTimeout`, under `StakeAttestation`'s try/catch. Out of gas there is caught, and `finalize` then reverts "evaluation not ready" | Costs almost nothing | **G2**: the keeper's and the tool's gas estimate for a real timed-out round |
-| Reputation scores, penalties, entropy, `recordUsedOracles` | None | Dispatcher tests; not visible to a requester. §12's −20: **G2** |
+| **The N-th reveal's gas.** `fulfill` runs `_finalize` (1.3M to 6.9M by answer length); a reveal out of gas is lost | `scriptResult` always fits | **G2**: the N-th `fulfill` under the job's gas limit |
+| **Timing.** The deadline runs from the draw (900 s, G2's `setConfig`), T+ 155 s, 120 s to reveal after `promote`; 3 to 6 minutes a round | The same rules on Hardhat's clock (the bridge sets them with `setTimeouts`); a round takes seconds | **G2**: a cold cache, real jurors, §11's budget |
+| **The failed round (E6).** `settle` after the deadline: failed in commit (refund), never promoted (treasury), reveal (refund); a missed beacon quorum and a cancelled round (treasury) | The same phases and routing; this round fails in commit, no commit at all | This round, commit phase; contract tests the rest |
+| While a round is open, `getEvaluation` reports `valid` false | The same | `_poll` reads the vector only when `valid` is true |
+| **`settle`** reports K outcomes to the keeper inside `StakeAttestation.finalize`'s try/catch. Out of gas there is caught, and `finalize` then reverts "evaluation not ready" | Costs almost nothing | **G2**: the keeper's and the tool's gas estimate for a real failed round |
+| Late reveals are classified against the stored median and spread; reputation, penalties, the beacon stage | Classified in the port only; no reputation; no beacons | Dispatcher tests; not visible to a requester. §12's penalties: **G2** |
 
-The same on both: the input limits, fund-from-credit, the request id, poll-only, the pull ledger, no `receive`, pause gating requests only.
+The same on both: the input limits, fund-from-credit, sequential ids from 1, poll-only, the pull ledger, no `receive`, pause gating requests only.
 
 ### What G2 must prove
 
@@ -1759,8 +1820,8 @@ What this round cannot, because the real thing is not in it:
 
 - A real selection on class 5555 at `code-standard`'s fee, inside `SUBMISSION_GAS`.
 - The real Chainlink job and `ArbiterOperator`: the job's timeout, confirmations, the N-th `fulfill` under 6M gas.
-- `finalize` of a really timed-out round: the keeper's and the tool's gas estimates, with K score updates under the try/catch.
-- `setResponseTimeout(900)` on the real aggregator, and a real round inside it.
+- `finalize` of a really failed round: the keeper's and the tool's gas estimates, with `settle`'s K outcomes under the try/catch.
+- A 900 s round deadline (`setConfig`) on the real aggregator, and a real round inside it: draw, commits, promote, reveals.
 - An identical report hash across hosts: several operators, and real clustering of real disagreement. One EA and scripted jurors say nothing about it.
 - gVisor in the same round; the AI Node's production build; real jurors with real latency.
 - Real pinning and gateways.

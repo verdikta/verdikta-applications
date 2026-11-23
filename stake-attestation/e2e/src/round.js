@@ -14,7 +14,7 @@ import path from 'node:path';
 import { formatEther } from 'ethers';
 
 import { codeReview } from './common.js';
-import { REAL_CONFIG } from './aggregatorRound.js';
+import { AggregatorRound, REAL_CONFIG } from './aggregatorRound.js';
 import { createBridge, evaluateOver } from './bridge.js';
 import { readPages } from './browser.js';
 import { startChain } from './chain.js';
@@ -34,8 +34,12 @@ import { createTool } from './tool.js';
 
 const CLASS_PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
 const OPERATOR = '0x0000000000000000000000000000000000000001';
-/** What G2 sets on the real aggregators (design §7.2: setResponseTimeout(900)). */
+/**
+ * What G2 sets on the real aggregators (design §7.2: a 900 s round; on v2, setConfig's timeout, which runs from the
+ * draw). The bridge sets it on the mock with the rest of the real configuration (REAL_CONFIG keeps T+ and the reveal window).
+ */
 const RESPONSE_TIMEOUT_SECONDS = 900;
+const ROUND_CONFIG = Object.freeze({ ...REAL_CONFIG, responseTimeoutSeconds: RESPONSE_TIMEOUT_SECONDS });
 /** Stands in for the keeper's selection and K dispatches inside the request: L4 ran out at 3M with 30 identities. */
 const REQUEST_GAS_STAND_IN = 3_000_000;
 /** The EA's deadline (design §11): the job's 840 s less the commit reserve. */
@@ -48,7 +52,7 @@ const INTEGRITY_CHECK = 'protectedPathsUnchanged';
 const CLAIM_STATES = ['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed'];
 const DISPUTE_RESULTS = ['None', 'Pending', 'Held', 'Overturned', 'NoVerdict'];
 const DISPUTE_KINDS = ['None', 'Maker', 'Confirmation', 'Appeal'];
-const EXPIRIES = ['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused'];
+const EXPIRIES = ['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused', 'RoundsUnanswered'];
 const DEFAULT_LOG_ROOT = path.join(E2E_DIR, '.round', 'logs');
 /**
  * How long a stop waits for the main flow to come back, so that what it started gets its closer. Everything that
@@ -268,7 +272,6 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       process.kill(process.pid, 'SIGTERM');
       await owned(late.done, (name) => h.runText(docker, ['rm', '--force', '--volumes', name], { timeoutMs: 60000 }));
     }
-    await mined(chain.aggregator.setResponseTimeout(RESPONSE_TIMEOUT_SECONDS));
     await mined(chain.aggregator.setRequestGasCost(REQUEST_GAS_STAND_IN));
     const ipfs = await owned(startIpfs(h), (i) => i.close());
     const registry = await owned(startRegistryPair(h, docker, instance), (r) => r.remove());
@@ -415,11 +418,13 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       evaluate: evaluateOver(adapter.url),
       operator: OPERATOR,
       requestedClass: codeReview.CODE_CLASSES['code-standard'].classId,
+      config: ROUND_CONFIG,
       log,
     });
     closers.push(async () => { report.cancelledJobs = await bridge.stop(); });
     await bridge.start(chain.fromBlock);
-    one('mock.realFee', (await chain.aggregator.feeMultiplier()) === BigInt(REAL_CONFIG.k + REAL_CONFIG.bonus * REAL_CONFIG.p), 'maxTotalFee = fee x (K + B x P)');
+    const probeFee = 10n ** 14n;
+    one('mock.realFee', (await chain.aggregator.maxTotalFee(probeFee, 0n, false)) === AggregatorRound.required(probeFee), 'maxTotalFee = fee x (K + B x P) + fee x (draw + promote rewards)');
 
     // The builder pushed from this daemon: off it, or no run ever pulls. From here on the only copy
     // is in the registry, as on an arbiter's host. (The builder removes its own tag; the listing check's
@@ -773,7 +778,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     expect(abstainedRoundChecks('abstain.first', firstRound));
     expect(abstainRunChecks('abstain.first', { round: firstRound, ...since(before3), cause: 'step_timeout' }));
 
-    stage('abstain: the round times out at the aggregator');
+    stage('abstain: the round fails at the aggregator after its deadline (from the draw)');
     one('abstain.first.stillOpen', (await claimStateOf(abstainId)) === 'Revealed', 'an open round: nobody can finalize it yet');
     await chain.advance(RESPONSE_TIMEOUT_SECONDS + 1);
     await stateIs(abstainId, 'RoundFailed');
@@ -794,7 +799,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const afterRetrigger = await balanceAfterTx(hunter, retrigger.json.tx);
     const retriggerTx = await provider.getTransaction(retrigger.json.tx);
     const prepaid = (await sa.queryFilter(sa.filters.EvaluationRequested(abstainId), chain.fromBlock)).pop().args;
-    one('abstain.retrigger.freshPrepay', retriggerTx.value === firstRound.required && prepaid.prepayWei === firstRound.required && (await chain.aggregator.ethReceived(prepaid.requestId)) === firstRound.required, `sent ${retriggerTx.value}, the aggregator received ${await chain.aggregator.ethReceived(prepaid.requestId)}, the live fee is ${firstRound.required}`);
+    one('abstain.retrigger.freshPrepay', retriggerTx.value === firstRound.required && prepaid.prepayWei === firstRound.required && (await chain.aggregator.getRoundInfo(prepaid.requestId)).received === firstRound.required, `sent ${retriggerTx.value}, the aggregator received ${(await chain.aggregator.getRoundInfo(prepaid.requestId)).received}, the live fee is ${firstRound.required}`);
     one('abstain.retrigger.isTheHuntersTx', retriggerTx.from === hunter.address, retriggerTx.from);
     await stateIs(abstainId, 'Revealed');
     const secondRound = await roundOf(abstainId);
@@ -804,7 +809,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     await stateIs(abstainId, 'RoundFailed');
     expect(moneyChecks('abstain.second', [{ name: 'refundAtFinalize', before: afterRetrigger, after: await balance(hunter), expected: secondRound.required - secondRound.spent }]));
 
-    stage('abstain: expiry, the bond to the maker');
+    // E6 on v2: no round's jury answered (no commit at all; each round failed at the aggregator), so the bond
+    // comes back (Expiry.RoundsUnanswered). Only a result that is no verdict forfeits it.
+    stage('abstain: expiry, the bond back');
     const makerBeforeExpiry = await balance(maker);
     const hunterBeforeExpiry = await balance(hunter);
     const deadline = await sa.retriggerDeadline(abstainId);
@@ -812,8 +819,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     await stateIs(abstainId, 'Expired');
     one('abstain.keeper.expired', (await senderOf((await eventOf('Expired', abstainId))[0])) === chain.accounts.keeper.address, 'the keeper expired it, with SA_KEEPER_EXPIRE=on');
     expect(moneyChecks('abstain.expiry', [
-      { name: 'bondToMaker', before: makerBeforeExpiry, after: await balance(maker), expected: BOND_WEI },
-      { name: 'hunterGetsNothing', before: hunterBeforeExpiry, after: await balance(hunter), expected: 0n },
+      { name: 'makerGetsNothing', before: makerBeforeExpiry, after: await balance(maker), expected: 0n },
+      { name: 'bondBack', before: hunterBeforeExpiry, after: await balance(hunter), expected: BOND_WEI },
     ]));
 
     // ---------------------------------------------------------------- the record

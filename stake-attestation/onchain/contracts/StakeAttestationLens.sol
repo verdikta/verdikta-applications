@@ -70,11 +70,39 @@ contract StakeAttestationLens {
     }
 
     /// @notice What commit() takes now: the listing's bond plus the aggregator's live
-    ///         maxTotalFee for the listing's (clamped) oracle fee. More is accepted and kept as
+    ///         maxTotalFee for the listing's (clamped) oracle fee, fee floor and beacon flag
+    ///         (ClaimRules.roundFee). More is accepted and kept as
     ///         prepay; it funds the evaluation and its unspent part comes back.
     function commitPrice(uint256 listingId) external view returns (uint256) {
         StakeAttestation.Listing memory l = host.getListing(listingId);
         return l.bondWei + _liveFee(l);
+    }
+
+    /// @notice What each juror of a listing's rounds is paid at most now (ClaimRules.jurorFee): the
+    ///         listing's fee clamped to the aggregator's live ceiling, raised to its fee floor; a
+    ///         claim round's and a dispute-panel round's.
+    function jurorFees(uint256 listingId) external view returns (uint256 claimRound, uint256 disputeRound) {
+        StakeAttestation.OracleParams memory o = host.getListing(listingId).oracle;
+        uint256 ceiling = verdikta.maxOracleFee();
+        return (
+            ClaimRules.jurorFee(o.maxOracleFee, ceiling, o.minOracleFee),
+            ClaimRules.jurorFee(o.disputeMaxOracleFee, ceiling, o.minOracleFee)
+        );
+    }
+
+    /// @notice The aggregator round a claim has open now, for a keeper or tool that drives it
+    ///         without the aggregator's ABI: the claim round while Revealed, the dispute-panel
+    ///         round while Disputed (requestId 0 otherwise), and its getRoundInfo phase (1 draw, 2
+    ///         beacons, 3 commit, 4 closing, 5 reveal, 6 final, 7 settled, 8 failed, 9 cancelled)
+    ///         and deadline (0 until the draw; the aggregator's settle is due after it).
+    function openRound(uint256 claimId)
+        external view returns (bytes32 requestId, address wallet, uint8 phase, uint256 deadline)
+    {
+        StakeAttestation.Claim memory c = host.getClaim(claimId);
+        if (c.state == StakeAttestation.ClaimState.Revealed) (requestId, wallet) = (c.requestId, c.evalWallet);
+        else if (c.state == StakeAttestation.ClaimState.Disputed) (requestId, wallet) = (c.disputeRequestId, c.disputeWallet);
+        else return (requestId, wallet, 0, 0);
+        (phase, , , , , , , , deadline, , , ) = verdikta.getRoundInfo(requestId);
     }
 
     /// @notice The ETH reveal() needs on top of the claim's prepay now (erratum E3): the live
@@ -158,7 +186,8 @@ contract StakeAttestationLens {
 
     /// @notice What dispute() takes now, what confirm() takes from the escrow (erratum E9), and
     ///         what appeal() and an appeal's retrigger take from the hunter (erratum E7): the
-    ///         aggregator's live maxTotalFee for the listing's (clamped) disputeMaxOracleFee. More
+    ///         aggregator's live maxTotalFee for the listing's (clamped) disputeMaxOracleFee, fee
+    ///         floor and beacon flag (ClaimRules.roundFee). More
     ///         is accepted by dispute() and appeal(); it funds the round's request and its unspent
     ///         part comes back to whoever paid it.
     function disputeFee(uint256 listingId) external view returns (uint256) {
@@ -179,7 +208,8 @@ contract StakeAttestationLens {
 
     /// @notice A RoundFailed claim's re-trigger window (erratum E6): the hunter may retrigger
     ///         before this time, and anyone may expire the claim from it on (the bond to the
-    ///         maker if a round ran, roundStarted; else back to the hunter). For a Judged claim
+    ///         maker if a round's jury answered with no verdict, juryAnswered; else back to the
+    ///         hunter: ClaimLogic.expire). For a Judged claim
     ///         whose appeal's round settled no verdict and whose one re-trigger is unused (erratum
     ///         E7), the end of that re-trigger's window, revealWindow from the round's end: from
     ///         it on, anyone may settle the INVALID. 0 otherwise.
@@ -292,10 +322,10 @@ contract StakeAttestationLens {
     }
 
     function _disputeFee(StakeAttestation.Listing memory l) private view returns (uint256) {
-        return verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.disputeMaxOracleFee, verdikta.maxOracleFee()));
+        return ClaimRules.roundFee(verdikta, l.oracle.disputeMaxOracleFee, l.oracle.minOracleFee, l.oracle.withBeacons);
     }
 
     function _liveFee(StakeAttestation.Listing memory l) private view returns (uint256) {
-        return verdikta.maxTotalFee(ClaimRules.effectiveFee(l.oracle.maxOracleFee, verdikta.maxOracleFee()));
+        return ClaimRules.roundFee(verdikta, l.oracle.maxOracleFee, l.oracle.minOracleFee, l.oracle.withBeacons);
     }
 }

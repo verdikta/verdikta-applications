@@ -39,7 +39,7 @@ test('what the CLI itself prints across a claim\'s life passes the wording check
     await run(['reveal', dir, '--yes']);
     await run(['status', dir]);
     const { claimId } = JSON.parse(fs.readFileSync(path.join(dir, '.verdikta-claim', 'state.json'), 'utf8'));
-    await (await w.aggregator.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
+    await (await w.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
     await run(['claim', dir]);
     assert.deepEqual(wordingProblems(outs.join('\n')), []);
   } finally {

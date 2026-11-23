@@ -925,7 +925,10 @@ export const STRINGS = {
     // erratum E6: a claim whose round ended with no verdict keeps its place until it is expired or a round settles
     retrigger: 'Round with no verdict',
     retriggerUntil: 'the hunter may send the round again until {time}; the claim keeps its place in commit order meanwhile',
-    retriggerOver: 'the time to send the round again ended at {time}: anyone may expire the claim, which takes it out of commit order',
+    retriggerOver:
+      'the time to send the round again ended at {time}: anyone may expire the claim, which takes it out of commit order. ' +
+      'Its bond goes to the maker if a round\'s jury answered with a result that is no verdict, and back to the hunter ' +
+      'if every round ended with no result',
     // the settlement safeguards (design §13.2, errata E7-E9), each from the contract's own reads
     roundKind: 'Dispute-panel round',
     roundKindLine: '{kind}: {result}',
@@ -1107,10 +1110,12 @@ export const STRINGS = {
     disputeSent: 'The dispute was sent. Waiting for the dispute panel\'s verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
     appeal: 'The hunter appealed at {time} and the dispute panel\'s evaluation is requested. Waiting for its verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
     confirmation: 'The confirmation round started at {time}, paid from the escrow, and the dispute panel\'s evaluation is requested. Waiting for its verdict: this page reads the chain every {seconds} seconds for up to {minutes} minutes.',
-    typical: 'A verdict usually takes 3 to 6 minutes, and the site\'s keeper records it on-chain.',
+    typical: 'The aggregator first draws the round\'s jury (the site\'s keeper does, and anyone may); a verdict then usually takes 3 to 6 minutes, and the site\'s keeper records it on-chain.',
     timedOut:
-      'No verdict was recorded in {minutes} minutes of checking. The arbiters may still be working, or the round may ' +
-      'end without a verdict; either is recorded on-chain when it happens. This page has stopped checking.',
+      'No verdict was recorded in {minutes} minutes of checking. The round may still wait for its jury to be drawn, ' +
+      'the arbiters may still be working, or the round may end without a verdict; either is recorded on-chain when it ' +
+      'happens. A round whose jury is not drawn within a day of the request is cancelled, and ends without a verdict. ' +
+      'This page has stopped checking.',
     recheck: 'Check again',
   },
   // the baseline scan's findings (design §8.3; the server's P4b2 routes): the maker's alone

@@ -12,7 +12,7 @@ const fails = (list, name) => assert.ok(failing(list).includes(name), `${name} s
 
 const VECTOR = [0n, 700000n, 300000n];
 const jobs = (phase, n) => Array.from({ length: n }, (_, slot) => ({ phase, slot, status: 200, scores: phase === 'reveal' ? VECTOR : null }));
-const served = (over = {}) => ({ status: 'fulfilled', jobs: [...jobs('commit', 6), ...jobs('reveal', 4)], commits: 4, reveals: 3, clustered: 2, justifications: 'QmA,QmB', likelihoods: VECTOR, reverted: [], ignored: [], abstained: 0, ...over });
+const served = (over = {}) => ({ status: 'fulfilled', jobs: [...jobs('commit', 6), ...jobs('reveal', 5)], commits: 6, reveals: 4, clustered: 3, justifications: 'QmA,QmB,QmC', likelihoods: VECTOR, reverted: [], ignored: [], abstained: 0, ...over });
 
 test('cleanupVerdict: the promise: nothing of the run left, or the run has failed, and an inventory it cannot give is a failure', () => {
   const clean = { containers: [], images: [], groups: [] };
@@ -33,25 +33,25 @@ test('servedRoundChecks: K, M, N, P, or it fails', () => {
   fails(servedRoundChecks('x', served({ jobs: jobs('commit', 6) }), { vector: VECTOR }), 'x.round.revealJobs');
   fails(servedRoundChecks('x', served({ reveals: 1 }), { vector: VECTOR }), 'x.round.reveals');
   fails(servedRoundChecks('x', served({ justifications: 'QmA' }), { vector: VECTOR }), 'x.round.clustered');
-  const late = (phase) => ({ phase, reason: 'AggregationComplete' });
-  allPass(servedRoundChecks('x', served({ reverted: [late('reveal')] }), { vector: VECTOR }), 'the M - N late reveals revert, as on the real contract');
-  allPass(servedRoundChecks('x', served({ reverted: [late('reveal'), late('commit'), late('commit')] }), { vector: VECTOR }), 'and so do the K - M commits that land after it finalized');
+  allPass(servedRoundChecks('x', served({ late: 1 }), { vector: VECTOR }), 'the M - N late reveals are taken as late, as on the real contract');
+  allPass(servedRoundChecks('x', served({ commits: 5 }), { vector: VECTOR }), 'M commits after T+ close the window too');
+  fails(servedRoundChecks('x', served({ commits: 7 }), { vector: VECTOR }), 'x.round.commits');
   fails(servedRoundChecks('x', served({ reverted: [{ phase: 'reveal', reason: 'MalformedPayload' }] }), { vector: VECTOR }), 'x.round.noRevert');
-  fails(servedRoundChecks('x', served({ reverted: [late('reveal'), late('reveal'), late('commit'), late('commit')] }), { vector: VECTOR }), 'x.round.noRevert');
-  fails(servedRoundChecks('x', served({ ignored: [{ reason: 'RevealHashMismatch' }] }), { vector: VECTOR }), 'x.round.noBadReveal');
-  allPass(servedRoundChecks('x', served({ ignored: [{ reason: 'commit after the reveal phase began' }] }), { vector: VECTOR }));
+  fails(servedRoundChecks('x', served({ late: 2 }), { vector: VECTOR }), 'x.round.noRevert');
+  fails(servedRoundChecks('x', served({ ignored: [{ reason: 'hash mismatch' }] }), { vector: VECTOR }), 'x.round.noBadReveal');
+  allPass(servedRoundChecks('x', served({ ignored: [{ reason: 'commit after the window closed' }] }), { vector: VECTOR }));
   // One job in six going wrong must not hide behind the others: M commits and N reveals can still come.
   fails(servedRoundChecks('x', served({ ignored: [{ reason: 'zero commit' }] }), { vector: VECTOR }), 'x.round.noBadReveal');
   fails(servedRoundChecks('x', served({ abstained: 1 }), { vector: VECTOR }), 'x.round.noAbstain');
   // What the mock was given, and what every reveal said: the one that lost the race is outside the mean.
   fails(servedRoundChecks('x', served({ likelihoods: [0n, 800000n, 200000n] }), { vector: VECTOR }), 'x.round.vector');
   fails(servedRoundChecks('x', served({ likelihoods: null }), { vector: VECTOR }), 'x.round.vector');
-  const reveals = jobs('reveal', 4);
+  const reveals = jobs('reveal', 5);
   reveals[3] = { ...reveals[3], scores: [1000000n, 0n, 0n] };
   fails(servedRoundChecks('x', served({ jobs: [...jobs('commit', 6), ...reveals] }), { vector: VECTOR }), 'x.round.everyRevealSame');
   const same = (phase, n) => Array.from({ length: n }, () => ({ phase, slot: 0, status: 200 }));
-  fails(servedRoundChecks('x', served({ jobs: [...same('commit', 6), ...jobs('reveal', 4)] }), { vector: VECTOR }), 'x.round.polled');
-  fails(servedRoundChecks('x', served({ jobs: [...jobs('commit', 6), ...same('reveal', 4)] }), { vector: VECTOR }), 'x.round.revealJobs');
+  fails(servedRoundChecks('x', served({ jobs: [...same('commit', 6), ...jobs('reveal', 5)] }), { vector: VECTOR }), 'x.round.polled');
+  fails(servedRoundChecks('x', served({ jobs: [...jobs('commit', 6), ...same('reveal', 5)] }), { vector: VECTOR }), 'x.round.revealJobs');
 });
 
 test('abstainedRoundChecks: an abstention stays an abstention', () => {
@@ -77,15 +77,17 @@ test('abstainRunChecks: the arbiter ran it and abstained: an EA that is down lea
 
 test('requestChecks: the composition the contract owes', () => {
   const disclosure = { parsed: { archiveSha256: '0xa', ciphertextSha256: '0xb', ciphertextCid: 'QmC' }, archiveSha256: '0xa', ciphertextSha256: '0xb', ciphertextCid: 'QmC' };
-  const oracle = { alpha: 500n, maxFee: 7n, estimatedBaseCost: 1n, maxFeeBasedScaling: 3n };
+  const oracle = { alpha: 500n, maxFee: 7n, minFee: 2n, estimatedBaseCost: 1n, maxFeeBasedScaling: 3n, withBeacons: false };
   const round = { cids: ['QmL', 'QmB', 'QmP'], requestedClass: 133n, addendum: 'verdikta-disclosure: x', oracle };
-  const o = { listingCid: 'QmL', bcid: 'QmB', priorBcids: ['QmP'], requestedClass: 133, disclosure, oracle: { alpha: '500', maxOracleFee: '7', estimatedBaseCost: '1', maxFeeBasedScaling: '3' } };
+  const o = { listingCid: 'QmL', bcid: 'QmB', priorBcids: ['QmP'], requestedClass: 133, disclosure, oracle: { alpha: '500', maxOracleFee: '7', minOracleFee: '2', estimatedBaseCost: '1', maxFeeBasedScaling: '3', withBeacons: false } };
   allPass(requestChecks('x', round, o));
   fails(requestChecks('x', { ...round, cids: ['QmL', 'QmB'] }, o), 'x.request.cids');
   fails(requestChecks('x', { ...round, requestedClass: 128n }, o), 'x.request.class');
   fails(requestChecks('x', round, { ...o, disclosure: { ...disclosure, parsed: null } }), 'x.request.disclosureLine');
   fails(requestChecks('x', round, { ...o, disclosure: { ...disclosure, archiveSha256: '0xz' } }), 'x.request.disclosureLine');
   fails(requestChecks('x', { ...round, oracle: { ...oracle, maxFee: 8n } }, o), 'x.request.oracle');
+  fails(requestChecks('x', { ...round, oracle: { ...oracle, minFee: 0n } }, o), 'x.request.oracle');
+  fails(requestChecks('x', { ...round, oracle: { ...oracle, withBeacons: true } }, o), 'x.request.oracle');
 });
 
 const AVERAGE = [0n, 700000n, 300000n];
@@ -229,13 +231,14 @@ test('moneyChecks: to the wei', () => {
   fails(moneyChecks('x', [{ name: 'bond', before: 10n, after: 31n, expected: 20n }]), 'x.money.bond');
 });
 
-test('abstainEndChecks: no verdict, ever, and it ended by E6', () => {
-  const obs = { state: 'Expired', expiry: 'RoundsFailed', judgedEvents: 0, settledEvents: 0, record: { history: { noVerdict: '1' } }, uploads: [] };
+test('abstainEndChecks: no verdict, ever, and it ended by E6 with the bond back (RoundsUnanswered)', () => {
+  const obs = { state: 'Expired', expiry: 'RoundsUnanswered', judgedEvents: 0, settledEvents: 0, record: { history: { noVerdict: '1' } }, uploads: [] };
   allPass(abstainEndChecks('x', obs));
   fails(abstainEndChecks('x', { ...obs, judgedEvents: 1 }), 'x.never.judged');
   fails(abstainEndChecks('x', { ...obs, settledEvents: 1 }), 'x.never.settled');
   fails(abstainEndChecks('x', { ...obs, state: 'Settled' }), 'x.ended.expired');
   fails(abstainEndChecks('x', { ...obs, expiry: 'SubmissionsRefused' }), 'x.ended.expired');
+  fails(abstainEndChecks('x', { ...obs, expiry: 'RoundsFailed' }), 'x.ended.expired');
   fails(abstainEndChecks('x', { ...obs, record: { history: { noVerdict: '0' } } }), 'x.record.noVerdict');
   fails(abstainEndChecks('x', { ...obs, uploads: ['QmU'] }), 'x.nothingUploaded');
 });

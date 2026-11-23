@@ -35,7 +35,7 @@ const revealed = async (over = {}) => {
 };
 const script = async (claimId, v, { panel = false } = {}) => {
   const c = await w.sa.getClaim(claimId);
-  await (await w.aggregator.scriptResult(panel ? c.disputeRequestId : c.requestId, v, JUSTIFICATION_CID)).wait();
+  await (await w.scriptResult(panel ? c.disputeRequestId : c.requestId, v, JUSTIFICATION_CID)).wait();
 };
 const judged = async (v = vectorOf('INVALID'), over = {}) => {
   const r = await revealed(over);
@@ -127,7 +127,7 @@ test('appeal by claim id through the CLI, and what it refuses: a DUPLICATE, a va
 test('an appeal whose round settled no verdict: appeal re-triggers it once, for a fresh full fee, with --yes; a second round with no verdict leaves nothing to re-trigger', async () => {
   const { dir, claimId, l } = await judged();
   await w.hunter().appeal({ claimDir: dir, acknowledge: true });
-  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  await w.expireClaimRound(claimId);
   await (await w.sa.finalize(claimId)).wait();
   let s = await w.hunter({ signer: undefined }).status({ claimId });
   assert.equal(s.state, 'Judged');
@@ -146,7 +146,7 @@ test('an appeal whose round settled no verdict: appeal re-triggers it once, for 
   assert.equal(r.action, 'retrigger');
   assert.equal((await w.provider.getTransaction(r.tx)).value, fee);
   assert.equal((await w.sa.getClaim(claimId)).appealRetriggered, true);
-  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  await w.expireClaimRound(claimId);
   await (await w.sa.finalize(claimId)).wait();
   const again = await w.hunter().appeal({ claimDir: dir, acknowledge: true }).catch((e) => e);
   assert.equal(again.code, 'NOT_APPEALABLE');
@@ -303,7 +303,7 @@ test('saved bytes the node still holds are kept while they could no longer succe
 test('a saved re-trigger whose nonce another transaction used is not reported as sent', async () => {
   const { dir, claimId } = await judged();
   await w.hunter().appeal({ claimDir: dir, acknowledge: true });
-  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  await w.expireClaimRound(claimId);
   await (await w.sa.finalize(claimId)).wait();
   const rec = await saveSigned(dir, claimId, 'retrigger', await w.sa.retriggerTopUp(claimId));
   // the nonce goes to something else of this wallet's

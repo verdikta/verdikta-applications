@@ -41,7 +41,7 @@ test('out of commit order: refused while an earlier claim is unresolved, naming 
   assert.equal(w.ipfs.uploads.length, uploads);
   await w.hunter().reveal({ claimDir: first, acknowledge: true });
   const req = (await w.sa.getClaim(a.claimId)).requestId;
-  await (await w.aggregator.scriptResult(req, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
+  await (await w.scriptResult(req, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
   await (await w.sa.finalize(a.claimId)).wait();
   // A claim round's INVALID waits out its appeal window unless its hunter settles it, which
   // waives the appeal (erratum E7, node P16): the hunter does, so the clock is as before.
@@ -66,7 +66,7 @@ test('past the reveal window: refused, nothing pinned', async () => {
 
 test('reveal: the bCID pinned, the keys and any top-up sent, and the addendum\'s line opens what was committed', async () => {
   const { l, dir, claimId, ciphertextCid } = await committed();
-  await (await w.aggregator.setFeeMultiplier(5n)).wait();
+  await (await w.aggregator.setBonusMultiplier(5n)).wait();
   try {
     const topUp = await w.sa.revealTopUp(claimId);
     assert.ok(topUp > 0n);
@@ -81,7 +81,7 @@ test('reveal: the bCID pinned, the keys and any top-up sent, and the addendum\'s
     assert.equal(claim.bcid, r.bcid);
     assert.equal(sha256(w.ipfs.store.get(claim.bcid)), claim.archiveHash);
     assert.ok(w.ipfs.store.get(claim.bcid).equals(archive));
-    assert.equal(claim.prepayWei, 5n * 120000000000000n);
+    assert.equal(claim.prepayWei, 24n * 120000000000000n); // B = 5: 6 + 5 x 3 + 3
     const cids = await w.aggregator.getRequestCids(claim.requestId);
     assert.equal(cids[0], l.listingCid);
     assert.equal(cids[1], claim.bcid);
@@ -89,7 +89,7 @@ test('reveal: the bCID pinned, the keys and any top-up sent, and the addendum\'s
     const gate = codeReview.verifyDisclosure({ plaintext: new Uint8Array(w.ipfs.store.get(claim.bcid)), ciphertext: new Uint8Array(w.ipfs.store.get(ciphertextCid)), archiveSha256: claim.archiveHash, ciphertextSha256: claim.ciphertextSha256, contentKey: claim.contentKey, ephemeralKey: claim.ephemeralKey, disclosureKey: l.spec.stake.disclosureKey });
     assert.equal(gate.ok, true);
   } finally {
-    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+    await (await w.aggregator.setBonusMultiplier(3n)).wait();
   }
 });
 
@@ -184,7 +184,7 @@ test('an already revealed claim is a no-op, and an expired one says so', async (
 const failedRound = async () => {
   const { dir, claimId } = await committed();
   await w.hunter().reveal({ claimDir: dir, acknowledge: true });
-  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  await w.expireClaimRound(claimId);
   await (await w.sa.finalize(claimId)).wait();
   assert.equal(await w.sa.claimState(claimId), ROUND_FAILED);
   return { dir, claimId };
@@ -342,7 +342,7 @@ test('P32: reveal --retrigger --yes prints the transaction hash and keeps it in 
 
 test('P32: reveal without --yes is a dry run, as reveal --retrigger: what it would send and why, nothing pinned, signed or sent, exit 3', async () => {
   const { dir, claimId } = await committed();
-  await (await w.aggregator.setFeeMultiplier(5n)).wait();
+  await (await w.aggregator.setBonusMultiplier(5n)).wait();
   try {
     const topUp = await w.sa.revealTopUp(claimId);
     assert.ok(topUp > 0n);
@@ -371,7 +371,7 @@ test('P32: reveal without --yes is a dry run, as reveal --retrigger: what it wou
     assert.match(yes.stdout, /Revealed/);
     assert.ok(yes.stdout.includes(readJson(statePath(dir)).revealTx.hash), 'the reveal\'s hash');
   } finally {
-    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+    await (await w.aggregator.setBonusMultiplier(3n)).wait();
   }
 });
 
@@ -421,7 +421,7 @@ test('P32 (R1-F1): a saved re-trigger mined before the next run began is answere
 test('P32 (R1-F2): the documented way on from exit 5 before finalize: --retrigger says to record it, claim records it, then the re-trigger', async () => {
   const { dir, claimId } = await committed();
   await w.hunter().reveal({ claimDir: dir, acknowledge: true });
-  await w.increase(await w.aggregator.responseTimeoutSeconds() + 1n);
+  await w.expireClaimRound(claimId);
   const waited = await runCli(w, ['status', dir, '--wait'], { keyVia: 'none' });
   assert.equal(waited.code, 5, waited.stderr);
   assert.match(waited.stdout, /Run claim to record it/);

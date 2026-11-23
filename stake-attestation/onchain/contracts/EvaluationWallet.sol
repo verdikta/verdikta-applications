@@ -13,7 +13,9 @@ import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 ///      of the implementation's code, so every clone sees them under delegatecall; `aggId` and
 ///      `started` are per-clone storage. The implementation itself is never operated.
 ///      A start that reverts leaves `started` false, so a clone whose submission failed can be
-///      started again by its requester.
+///      started again by its requester. The v2 aggregator draws the jury in a second step
+///      (drawJury), which the requester calls through this wallet so the draw reward is the
+///      round's funder's.
 contract EvaluationWallet {
     address public immutable requester;   // the StakeAttestation contract: the only operator
     IVerdiktaAggregator public immutable verdikta;
@@ -31,31 +33,50 @@ contract EvaluationWallet {
         verdikta = verdikta_;
     }
 
+    /// @dev The request's settings (IVerdiktaAggregator.requestAIEvaluationWithApproval's arguments
+    ///      after the CIDs), as one struct, as example-bounty-program's wallet takes them: nine
+    ///      arguments would not fit the stack of the caller's try/catch.
+    struct Request {
+        string  addendumText;
+        uint256 alpha;
+        uint256 maxOracleFee;
+        uint256 minOracleFee;
+        uint256 estimatedBaseCost;
+        uint256 maxFeeBasedScaling;
+        uint64  requestedClass;
+        bool    withBeacons;
+    }
+
     /// @dev Start the evaluation, funding the request with the attached ETH. This wallet is
-    ///      msg.sender to the aggregator, so refunds accrue to ethOwed[this].
-    function startEvaluation(
-        string[] calldata cids,
-        string calldata addendumText,
-        uint256 alpha,
-        uint256 maxOracleFee,
-        uint256 estimatedBaseCost,
-        uint256 maxFeeBasedScaling,
-        uint64  requestedClass
-    ) external payable onlyRequester returns (bytes32) {
+    ///      msg.sender to the aggregator, so refunds and the draw reward accrue to ethOwed[this].
+    function startEvaluation(string[] calldata cids, Request calldata q)
+        external payable onlyRequester returns (bytes32 id)
+    {
         require(!started, "already started");
         started = true;
 
-        bytes32 id = verdikta.requestAIEvaluationWithApproval{value: msg.value}(
+        id = verdikta.requestAIEvaluationWithApproval{value: msg.value}(
             cids,
-            addendumText,
-            alpha,
-            maxOracleFee,
-            estimatedBaseCost,
-            maxFeeBasedScaling,
-            requestedClass
+            q.addendumText,
+            q.alpha,
+            q.maxOracleFee,
+            q.minOracleFee,
+            q.estimatedBaseCost,
+            q.maxFeeBasedScaling,
+            q.requestedClass,
+            q.withBeacons
         );
         aggId = id;
-        return id;
+    }
+
+    /// @dev Draw the round's jury as its requester (the v2 aggregator's second step, from block
+    ///      B+2), so the draw reward (2 x the clamped fee; the requester's alone for 30 s, anyone's
+    ///      after) is credited to this wallet and comes back to the round's funder with the
+    ///      leftover. With beacons it is called twice: the first call starts the beacon stage,
+    ///      the second draws. The aggregator's revert (too early, wrong phase, DrawExpired) is
+    ///      passed on.
+    function drawJury() external onlyRequester {
+        verdikta.drawJury(aggId);
     }
 
     /// @dev Pull any ethOwed credit from the aggregator, then hand the wallet's whole balance to

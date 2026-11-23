@@ -9,6 +9,28 @@ import { Interface } from 'ethers';
 export const STAKE_ATTESTATION_ABI = Object.freeze(JSON.parse(fs.readFileSync(new URL('./abi/StakeAttestation.json', import.meta.url), 'utf8')));
 export const stakeAttestation = new Interface(STAKE_ATTESTATION_ABI);
 
+/**
+ * What the keeper calls on the v2 Verdikta aggregator (onchain/contracts/interfaces/IVerdiktaAggregator.sol;
+ * its address is the contract's verdikta()): the round's timing, the permissionless steps of a round
+ * in flight (closeCommits, promote, settle), and the keeper's own credit (promote rewards, draw
+ * rewards after 30 s). Its settle(bytes32) and EvaluationFailed(bytes32, uint8) share their names with
+ * StakeAttestation's settle(uint256) and EvaluationFailed(uint256, uint256, bytes32, bool): the
+ * indexer reads logs at the contract's address only (indexer.js), so the aggregator's never reach the
+ * projection.
+ */
+export const AGGREGATOR_ABI = Object.freeze([
+  'function getRoundInfo(bytes32 aggId) view returns (uint8 phase, uint256 requestBlock, bytes32 sealedHash, uint256 closeBlock, uint256 received, uint256 baseFees, uint256 bonuses, uint256 rewards, uint256 deadline, uint256 windowEnd, uint256 commits, uint256 requestTime)',
+  'function closeCommits(bytes32 aggId)',
+  'function promote(bytes32 aggId)',
+  'function settle(bytes32 aggId)',
+  'function ethOwed(address account) view returns (uint256)',
+  'function withdrawEth()',
+]);
+export const aggregatorInterface = new Interface(AGGREGATOR_ABI);
+
+/** The v2 aggregator's round phases (getRoundInfo), by number. */
+export const ROUND_PHASES = Object.freeze(['None', 'Draw', 'Beacons', 'Commit', 'Closing', 'Reveal', 'Final', 'Settled', 'Failed', 'Cancelled']);
+
 /** The read side of Chainlink's AggregatorV3Interface: ETH/USD on Base (under-staked, §4.2). */
 export const ETH_USD_FEED_ABI = Object.freeze([
   'function decimals() view returns (uint8)',
@@ -24,7 +46,7 @@ export const ENUMS = Object.freeze({
   Outcome: Object.freeze(['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']),
   ArtifactKind: Object.freeze(['Repo', 'Contract']),
   ClaimState: Object.freeze(['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed']),
-  Expiry: Object.freeze(['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused']),
+  Expiry: Object.freeze(['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused', 'RoundsUnanswered']),
   DisputeResult: Object.freeze(['None', 'Pending', 'Held', 'Overturned', 'NoVerdict']),
   DisputeKind: Object.freeze(['None', 'Maker', 'Confirmation', 'Appeal']),
 });

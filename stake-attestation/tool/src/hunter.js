@@ -2,7 +2,7 @@
 // agent skill drives this directly. No wallet, key or secret is on the returned object: it holds functions only.
 import { runAppeal } from './appeal.js';
 import { runCheck } from './check.js';
-import { runClaim, runFinalize, runSettle, runWithdraw } from './claim.js';
+import { runClaim, runDraw, runFinalize, runSettle, runWithdraw } from './claim.js';
 import { runCommit } from './commit.js';
 import { fail } from './errors.js';
 import { inspectListing } from './listing.js';
@@ -38,6 +38,7 @@ export function createHunter(options = {}) {
     reveal: (o) => runReveal(ctx, o),
     /** @param {{ claimId?: bigint, claimDir?: string, wait?: boolean, maxWaitMs?: number }} o */
     status: (o) => runStatus(ctx, o),
+    drawJury: (claimId) => runDraw(ctx, claimId),
     finalize: (claimId) => runFinalize(ctx, claimId),
     /**
      * Before the lens's settleableAt, the hunter's own settle of an INVALID waives the appeal (erratum E7): refused

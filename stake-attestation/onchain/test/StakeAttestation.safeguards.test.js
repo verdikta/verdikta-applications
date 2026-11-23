@@ -23,7 +23,7 @@ const path = require("path");
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers, network } = hre;
-const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { time, mine, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const { codeReview } = require("@verdikta/common");
 const H = require("./helpers/claims");
 
@@ -32,7 +32,7 @@ const {
   LISTING_CID, DISPUTE_CID, BCID, JUSTIFICATION, TOP, AWARDS, BOND, DISPUTE_FEE, ORACLE, V,
   params, freshCommit, atCommit, deployDefaults, eventsOf, blockTime,
   listAs, openListing, claimAs, revealAs, revealedClaim, judgeAs, disputeAs, judgeDisputeAs, confirmAs,
-  lateClaimAs, recordOf, listingIn, outcomesOf,
+  lateClaimAs, recordOf, listingIn, outcomesOf, roundInfo,
 } = H;
 const { MaxUint256 } = ethers;
 
@@ -73,6 +73,56 @@ async function windowOf(sa, claimId) {
   const l = await sa.getListing(c.listingId);
   const opensAt = c.judgedAt + l.disputeWindow;
   return { opensAt, deadline: opensAt + l.revealWindow };
+}
+
+// ---- the v2 aggregator's rounds (MIGRATION.md), driven through the mock ----
+// A dispute-panel round's clamped fee on the default listing: DF = 18 x PANEL_EFF.
+const PANEL_EFF = ORACLE.disputeMaxOracleFee;
+// A round's leftover when its jurors post 1 wei: the most a drawn round can leave unspent
+// (base fees are paid at the draw), 15 x (PANEL_EFF - 1).
+const MOST_LEFT = 15n * (PANEL_EFF - 1n);
+
+// Mine to the round's block B+2 and draw it as the test's default account (the aggregator's
+// deployer), not the requester: inside the requester's 30 s it earns no reward.
+async function drawDirect(aggregator, requestId) {
+  const r = await roundInfo(aggregator, requestId);
+  const now = BigInt(await ethers.provider.getBlockNumber());
+  if (now < r.requestBlock + 2n) await mine(Number(r.requestBlock + 2n - now));
+  await aggregator.drawJury(requestId);
+}
+
+// A round run as the network runs it, at the mock: drawn once the requester's 30 s are over by the
+// default account (which takes the draw reward), M+ commits, promoted by it (the promote reward),
+// and the N reveals of `vector`. Its jurors post the fee that leaves `leftover` unspent: 15 x
+// (eff - posted), the base fees and bonuses they do not take. At the default, nothing: the whole
+// prepay is spent, as the tests written for the v1 mock (no refund unless one was set) expect.
+async function runRound(aggregator, requestId, vector, justification = JUSTIFICATION, { leftover = 0n } = {}) {
+  const q = await aggregator.requestParams(requestId);
+  const ceiling = await aggregator.maxOracleFee();
+  const eff = q.maxFee < ceiling ? q.maxFee : ceiling;
+  if (leftover % 15n !== 0n || leftover >= 15n * eff) throw new Error(`no posted fee leaves ${leftover}`);
+  await aggregator.setArbiterFee(eff - leftover / 15n);
+  await time.increase(31);
+  const r = await roundInfo(aggregator, requestId);
+  const now = BigInt(await ethers.provider.getBlockNumber());
+  if (now < r.requestBlock + 2n) await mine(Number(r.requestBlock + 2n - now));
+  await aggregator.drawJury(requestId);
+  await aggregator.scriptCommits(requestId, Number(await aggregator.K()));
+  await mine(1);
+  await aggregator.promote(requestId);
+  const n = Number(await aggregator.N());
+  await aggregator.scriptReveals(requestId, Array.from({ length: n }, () => [...vector].map(BigInt)), justification);
+  await aggregator.setArbiterFee(0n);
+  expect(await H.leftover(aggregator, requestId)).to.equal(leftover);
+}
+
+// A round that ends with no result and returns nothing: drawn without a reward, M commits that
+// nobody closes, past its deadline. finalize settles it there, its unspent prepay to the
+// aggregator's treasury (M commits never promoted), so its wallet gets nothing back.
+async function deadRound(aggregator, requestId) {
+  await drawDirect(aggregator, requestId);
+  await aggregator.scriptCommits(requestId, Number(await aggregator.M()));
+  await time.increaseTo((await roundInfo(aggregator, requestId)).deadline + 1n);
 }
 
 async function atConfirmWindow(sa, claimId) {
@@ -258,9 +308,10 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       const { claimId } = await judged(sa, aggregator, hunter, id, V.HIGH);
       await disputeAs(sa, maker, claimId); // the maker pays DF for the round
       expect((await sa.getClaim(claimId)).disputeKind).to.equal(DisputeKind.Maker);
-      const leftover = DF / 3n;
-      await aggregator.setRefundAmount(leftover);
-      // The second finalize: the maker gets back only what the round did not spend.
+      // The second finalize: the maker gets back only what the round did not spend (judgeDisputeAs
+      // draws it through drawJury, the mock's shortcut skips promotion): 18 - 6 base - 9 bonus - 2
+      // draw = 1 x PANEL_EFF, and the draw reward its wallet earned, 2 x PANEL_EFF.
+      const leftover = 3n * PANEL_EFF;
       const { rc } = await judgeDisputeAs(sa, aggregator, other, claimId, invalidWith(400_000));
       expect(eventsOf(sa, rc, "LeftoverRefunded").map((e) => [e.args.funder, e.args.amountWei])).to.deep.equal([[maker.address, leftover]]);
       const c = await sa.getClaim(claimId);
@@ -349,12 +400,11 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await expect(sa.connect(other).settle(claimId)).to.be.revertedWith("awaiting confirmation");
 
       const leftover = DF / 4n;
-      await aggregator.setRefundAmount(leftover);
       const conf = await confirmAs(sa, other, claimId);
       expect(conf.prepayWei).to.equal(DF);
       expect(eventsOf(sa, conf.rc, "ConfirmationRequested")[0].args.slice(0, 2)).to.deep.equal([claimId, id]);
       expect((await sa.getListing(id)).escrowWei).to.equal(2n * TOP - DF);
-      expect(await aggregator.ethReceived(conf.requestId)).to.equal(DF);
+      expect((await roundInfo(aggregator, conf.requestId)).received).to.equal(DF);
       const c = await sa.getClaim(claimId);
       expect([c.state, c.dispute, c.disputeKind, c.disputedOutcome]).to.deep.equal([ClaimState.Disputed, DisputeResult.Pending, DisputeKind.Confirmation, Outcome.HIGH]);
       expect([c.disputeWallet, c.disputeRequestId, c.disputedAt]).to.deep.equal([conf.wallet, conf.requestId, conf.at]);
@@ -362,7 +412,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       expect([...(await sa.walletInfo(conf.wallet))]).to.deep.equal([sa.target, claimId]);
       await expect(sa.connect(other).settle(claimId)).to.be.revertedWith("not judged");
 
-      await aggregator.scriptResult(conf.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, conf.requestId, V.HIGH, JUSTIFICATION, { leftover });
       const fin = sa.connect(other).finalize(claimId);
       await expect(fin).to.emit(sa, "DisputeJudged").withArgs(claimId, id, DisputeResult.Held, Outcome.HIGH, V.HIGH, JUSTIFICATION);
       await expect(fin).to.emit(sa, "LeftoverRefunded").withArgs(claimId, sa.target, leftover);
@@ -445,8 +495,8 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
 
       // No verdict minutes into the window: the claim waits for the window's end, then confirm.
       const b = await judged(sa, aggregator, hunters[1], id, V.HIGH);
-      await disputeAs(sa, maker, b.claimId);
-      await time.increase(300); // the mock's response timeout
+      const bd = await disputeAs(sa, maker, b.claimId);
+      await deadRound(aggregator, bd.requestId); // a few minutes: drawn, then past its deadline
       await expect(sa.connect(other).finalize(b.claimId)).to.emit(sa, "DisputeFailed");
       expect((await sa.getClaim(b.claimId)).dispute).to.equal(DisputeResult.NoVerdict);
       await expect(sa.connect(other).confirm(b.claimId)).to.be.revertedWith("dispute window open");
@@ -456,7 +506,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await time.setNextBlockTimestamp(b.judgedAt + DISPUTE);
       const conf = await confirmAs(sa, other, b.claimId);
       expect((await sa.getClaim(b.claimId)).disputeKind).to.equal(DisputeKind.Confirmation);
-      await aggregator.scriptResult(conf.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, conf.requestId, V.HIGH);
       await sa.finalize(b.claimId);
       await expect(sa.connect(other).settle(b.claimId)).to.emit(sa, "Settled").withArgs(b.claimId, id, hunters[1].address, Outcome.HIGH, AWARDS[2], 0n);
       l = await sa.getListing(id);
@@ -492,7 +542,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       const { deadline } = await windowOf(sa, claimId);
       await atConfirmWindow(sa, claimId);
       const first = await confirmAs(sa, other, claimId);
-      await time.increase(300);
+      await deadRound(aggregator, first.requestId);
       await expect(sa.connect(other).finalize(claimId)).to.emit(sa, "DisputeFailed").withArgs(claimId, id, first.requestId, false);
       let c = await sa.getClaim(claimId);
       expect([c.state, c.dispute, c.outcome]).to.deep.equal([ClaimState.Judged, DisputeResult.NoVerdict, Outcome.HIGH]);
@@ -504,7 +554,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       expect(second.requestId).to.not.equal(first.requestId);
       expect((await sa.getListing(id)).escrowWei).to.equal(2n * TOP - 2n * DF);
       // A malformed result is a round with no verdict too.
-      await aggregator.scriptResult(second.requestId, [1n, 2n, 3n], JUSTIFICATION);
+      await runRound(aggregator, second.requestId, [1n, 2n, 3n]);
       await expect(sa.connect(other).finalize(claimId)).to.emit(sa, "DisputeFailed").withArgs(claimId, id, second.requestId, true);
 
       await time.setNextBlockTimestamp(deadline - 1n);
@@ -533,7 +583,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await time.increaseTo(deadline + 100n);
       await expect(sa.connect(other).settle(claimId)).to.be.revertedWith("not judged");
       expect(await sa.settleableAt(claimId)).to.equal(0n);
-      await aggregator.scriptResult(conf.requestId, V.INVALID.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, conf.requestId, V.INVALID);
       await expect(sa.connect(other).finalize(claimId)).to.emit(sa, "DisputeJudged").withArgs(claimId, id, DisputeResult.Overturned, Outcome.INVALID, V.INVALID, JUSTIFICATION);
       const settle = sa.connect(other).settle(claimId);
       await expect(settle).to.changeEtherBalances([hunter, maker], [0n, BOND]);
@@ -551,20 +601,22 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await atConfirmWindow(sa, a.claimId);
       const conf = await confirmAs(sa, other, a.claimId);
       expect((await sa.getListing(id)).escrowWei).to.equal(TOP - DF / 2n);
-      await aggregator.setRefundAmount(DF); // the round spent nothing: all of it comes back
-      await aggregator.scriptResult(conf.requestId, V.CRITICAL.map(BigInt), JUSTIFICATION);
+      // Jurors who post 1 wei: nearly all of it comes back (a drawn round always pays its base fees).
+      const L = MOST_LEFT;
+      expect(L > DF / 2n).to.equal(true);
+      await runRound(aggregator, conf.requestId, V.CRITICAL, JUSTIFICATION, { leftover: L });
       await aggregator.setWithdrawBroken(true);
       await expect(sa.connect(other).finalize(a.claimId)).to.emit(sa, "RefundDeferred").withArgs(a.claimId, conf.wallet);
       await aggregator.setWithdrawBroken(false);
       await expect(sa.connect(other).settle(a.claimId)).to.emit(sa, "Settled").withArgs(a.claimId, id, hunters[0].address, Outcome.CRITICAL, TOP - DF / 2n, DF / 2n);
       expect((await sa.getListing(id)).owedWei).to.equal(DF / 2n);
       const rec = sa.connect(other).recoverLeftoverEth(conf.wallet);
-      await expect(rec).to.emit(sa, "LeftoverRefunded").withArgs(a.claimId, sa.target, DF);
+      await expect(rec).to.emit(sa, "LeftoverRefunded").withArgs(a.claimId, sa.target, L);
       await expect(rec).to.emit(sa, "OwedPaid").withArgs(a.claimId, id, hunters[0].address, DF / 2n, 0n);
-      await expect(rec).to.emit(sa, "ConfirmationRefunded").withArgs(a.claimId, id, DF / 2n, DF / 2n, 0n);
+      await expect(rec).to.emit(sa, "ConfirmationRefunded").withArgs(a.claimId, id, DF / 2n, L - DF / 2n, 0n);
       await expect(rec).to.changeEtherBalances([other, maker], [0n, 0n]); // nothing is pushed; the owed part is a pull credit
       let l = await sa.getListing(id);
-      expect([l.owedWei, l.escrowWei, l.state]).to.deep.equal([0n, DF / 2n, ListingState.Depleted]);
+      expect([l.owedWei, l.escrowWei, l.state]).to.deep.equal([0n, L - DF / 2n, ListingState.Depleted]);
       const c = await sa.getClaim(a.claimId);
       expect([c.paidWei, c.owedWei]).to.deep.equal([TOP, 0n]);
       expect(await sa.withdrawable(hunters[0].address)).to.equal(DF / 2n);
@@ -575,8 +627,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       const b = await judged(sa, aggregator, hunters[1], id2, V.HIGH);
       await atConfirmWindow(sa, b.claimId);
       const conf2 = await confirmAs(sa, other, b.claimId);
-      await aggregator.setRefundAmount(DF / 5n);
-      await aggregator.scriptResult(conf2.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, conf2.requestId, V.HIGH, JUSTIFICATION, { leftover: DF / 5n });
       await aggregator.setWithdrawBroken(true);
       await sa.connect(other).finalize(b.claimId);
       await aggregator.setWithdrawBroken(false);
@@ -624,7 +675,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await judgeAs(sa, aggregator, hunters[0], a.claimId, V.CRITICAL);
       await atConfirmWindow(sa, a.claimId);
       const ca = await confirmAs(sa, other, a.claimId);
-      await aggregator.scriptResult(ca.requestId, V.CRITICAL.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, ca.requestId, V.CRITICAL);
       await sa.finalize(a.claimId);
       await sa.settle(a.claimId);
       await sa.connect(maker).fund(id, 0n, { value: DF }); // pays A's owed part: the escrow is empty, nothing owed
@@ -665,8 +716,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await expect(sa.connect(hunters[1]).commit(id, H.ARCHIVE, H.CT, { value: await sa.commitPrice(id) })).to.be.revertedWith("not accepting commits");
 
       const spentPart = DF - DF / 4n;
-      await aggregator.setRefundAmount(DF / 4n);
-      await aggregator.scriptResult(requestId, V.CRITICAL.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, requestId, V.CRITICAL, JUSTIFICATION, { leftover: DF / 4n });
       await sa.finalize(claimId);
       expect((await sa.getListing(id)).escrowWei).to.equal(TOP - spentPart);
       await expect(sa.connect(other).settle(claimId)).to.emit(sa, "Settled").withArgs(claimId, id, hunters[0].address, Outcome.CRITICAL, TOP - spentPart, spentPart);
@@ -684,11 +734,11 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await atConfirmWindow(sa, claimId);
       const conf = await confirmAs(sa, other, claimId);
       expect((await sa.getListing(id)).state).to.equal(ListingState.Depleted);
-      await aggregator.setRefundAmount(DF);
-      await aggregator.scriptResult(conf.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      const L = MOST_LEFT; // above DF / 2: enough to bring the escrow back to the top award
+      await runRound(aggregator, conf.requestId, V.HIGH, JUSTIFICATION, { leftover: L });
       const fin = sa.connect(other).finalize(claimId);
-      await expect(fin).to.emit(sa, "Reopened").withArgs(id, TOP + DF / 2n);
-      await expect(fin).to.emit(sa, "ConfirmationRefunded").withArgs(claimId, id, 0n, DF, 0n);
+      await expect(fin).to.emit(sa, "Reopened").withArgs(id, TOP - DF / 2n + L);
+      await expect(fin).to.emit(sa, "ConfirmationRefunded").withArgs(claimId, id, 0n, L, 0n);
       await expect(fin).to.not.emit(sa, "Funded");
       expect((await sa.getListing(id)).state).to.equal(ListingState.Open);
     });
@@ -704,7 +754,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await judgeAs(sa, aggregator, hunters[0], a.claimId, V.CRITICAL);
       await atConfirmWindow(sa, a.claimId);
       const ca = await confirmAs(sa, other, a.claimId);
-      await aggregator.scriptResult(ca.requestId, V.CRITICAL.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, ca.requestId, V.CRITICAL);
       await sa.finalize(a.claimId);
       await sa.settle(a.claimId);
       // B: its confirmation is refused while A is owed; at its deadline it settles unconfirmed, all owed.
@@ -785,7 +835,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await expect(sa.connect(hunters[1]).reveal(b.claimId, BCID, H.CK, H.EK)).to.be.revertedWith("earlier claim unresolved");
       const conf = await confirmAs(sa, other, a.claimId); // at deadline - 1
       await expect(sa.connect(maker).close(id)).to.be.revertedWith("claims pending");
-      await aggregator.scriptResult(conf.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, conf.requestId, V.HIGH);
       await sa.finalize(a.claimId);
       await sa.settle(a.claimId);
       await expect(sa.connect(hunters[1]).reveal(b.claimId, BCID, H.CK, H.EK, { value: await sa.revealTopUp(b.claimId) })).to.emit(sa, "Revealed");
@@ -809,23 +859,28 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       expect(p.addendum).to.equal(round.addendum); // the claim round's E1 line, and nothing else
       expect(p.addendum).to.match(/^verdikta-disclosure: 0x[0-9a-f]{64} 0x[0-9a-f]{64} \S+ 0x[0-9a-f]{32} 0x[0-9a-f]{64}$/);
       expect(p.addendum).to.not.include("verdikta-dispute");
-      expect([p.maxFee, p.requestedClass, p.alpha, p.estimatedBaseCost, p.maxFeeBasedScaling])
-        .to.deep.equal([ORACLE.disputeMaxOracleFee, ORACLE.requestedClass, ORACLE.alpha, ORACLE.estimatedBaseCost, ORACLE.maxFeeBasedScaling]);
-      expect(await aggregator.ethReceived(requestId)).to.equal(DF);
+      expect([p.maxFee, p.minFee, p.requestedClass, p.alpha, p.estimatedBaseCost, p.maxFeeBasedScaling, p.withBeacons])
+        .to.deep.equal([ORACLE.disputeMaxOracleFee, ORACLE.minOracleFee, ORACLE.requestedClass, ORACLE.alpha, ORACLE.estimatedBaseCost, ORACLE.maxFeeBasedScaling, ORACLE.withBeacons]);
+      expect((await roundInfo(aggregator, requestId)).received).to.equal(DF);
     });
 
-    it("the fee is live: it follows the aggregator's multiplier and ceiling, as the lens's disputeFee quotes it; refused when the aggregator quotes no budget", async function () {
+    it("the fee is live: it follows the aggregator's settings and ceiling, as the lens's disputeFee quotes it; refused when the aggregator quotes no budget", async function () {
       const { sa, aggregator, maker, other, hunter } = await loadFixture(deployDefaults);
       const id = await openListing(sa, maker, params(), { escrow: 2n * TOP });
       const { claimId } = await judged(sa, aggregator, hunter, id, V.HIGH);
       await atConfirmWindow(sa, claimId);
       const snap = await snapshot();
-      await aggregator.setFeeMultiplier(0n);
+      await aggregator.setMaxOracleFee(0n); // a ceiling of 0: the quote is 0
       await expect(sa.connect(other).confirm(claimId)).to.be.revertedWith("bad budget");
       await restore(snap);
-      await aggregator.setFeeMultiplier(7n);
+      // A larger jury and bonus, and a ceiling below the listing's dispute fee.
+      await aggregator.setConfig(8, 6, 5, 4);
+      await aggregator.setBonusMultiplier(5);
+      const ceiling = PANEL_EFF / 2n;
+      await aggregator.setMaxOracleFee(ceiling);
       const quoted = await sa.disputeFee(id);
-      expect(quoted).to.equal(ORACLE.disputeMaxOracleFee * 7n);
+      expect(quoted).to.equal(ceiling * (8n + 5n * 4n) + ceiling * 3n);
+      expect(quoted).to.equal(H.quote(ORACLE.disputeMaxOracleFee, { ceiling, q: { ...H.QUOTE, K: 8n, B: 5n, P: 4n } }));
       const { prepayWei } = await confirmAs(sa, other, claimId);
       expect(prepayWei).to.equal(quoted);
       expect((await sa.getListing(id)).escrowWei).to.equal(2n * TOP - quoted);
@@ -842,7 +897,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await atConfirmWindow(sa, a.claimId);
       const conf = await confirmAs(sa, other, a.claimId);
       await expect(sa.connect(other).confirm(a.claimId)).to.be.revertedWith("not judged");
-      await aggregator.scriptResult(conf.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, conf.requestId, V.HIGH);
       await sa.finalize(a.claimId);
       await sa.settle(a.claimId);
       await expect(sa.connect(other).confirm(a.claimId)).to.be.revertedWith("not judged");
@@ -886,12 +941,12 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       await settleAfter(c.claimId);
       // D: the maker's dispute with no verdict, then a confirmation with none, then the deadline.
       const d = await judged(sa, aggregator, hunters[3], id, V.HIGH, { bcid: cidOf(4) });
-      await disputeAs(sa, maker, d.claimId);
-      await time.increase(300);
+      const dd = await disputeAs(sa, maker, d.claimId);
+      await deadRound(aggregator, dd.requestId);
       await sa.finalize(d.claimId);
       await atConfirmWindow(sa, d.claimId);
-      await confirmAs(sa, other, d.claimId);
-      await time.increase(300);
+      const dc = await confirmAs(sa, other, d.claimId);
+      await deadRound(aggregator, dc.requestId);
       await sa.finalize(d.claimId);
       await settleAfter(d.claimId);
 
@@ -934,7 +989,7 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
       expect([...(await sa.confirmWindow(claimId))]).to.deep.equal([opensAt, deadline]); // in case it settles no verdict
       expect(await sa.settleableAt(claimId)).to.equal(0n);
       expect(await sa.disputeDeadline(claimId)).to.equal(0n);
-      await aggregator.scriptResult(conf.requestId, V.HIGH.map(BigInt), JUSTIFICATION);
+      await runRound(aggregator, conf.requestId, V.HIGH);
       const rc = await (await sa.finalize(claimId)).wait();
       expect([...(await sa.confirmWindow(claimId))]).to.deep.equal([0n, 0n]);
       expect(await sa.settleableAt(claimId)).to.equal(await blockTime(rc));
@@ -988,7 +1043,8 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
         "confirmationsHeld", "confirmationsOverturned", "confirmationsNoVerdict",
         ...LISTING_P16,
       ]);
-      expect(names("getClaim")).to.deep.equal([...CLAIM_BEFORE, "disputeKind", "appealRetriggered"]);
+      // juryAnswered: the v2 port's (erratum E6's bond rule), appended after node P16's.
+      expect(names("getClaim")).to.deep.equal([...CLAIM_BEFORE, "disputeKind", "appealRetriggered", "juryAnswered"]);
     });
 
     it("declares an event for every state change this node adds", async function () {

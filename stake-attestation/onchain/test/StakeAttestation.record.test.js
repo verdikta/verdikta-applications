@@ -160,7 +160,7 @@ describe("StakeAttestation: the record (P2e, design §4.1, §13.4)", function ()
       const f = await claimAs(sa, h[3], id);
       await sa.connect(maker).release(f.claimId);
       await revealAs(sa, h[3], f.claimId, { bcid: cidOf(4) });
-      await time.increase(300);
+      await H.expireRound(sa, aggregator, f.claimId); // drawn, no commits by its deadline
       const failRc = await (await sa.finalize(f.claimId)).wait();
       await time.setNextBlockTimestamp((await blockTime(failRc)) + REVEAL);
       await sa.connect(other).expire(f.claimId);
@@ -174,7 +174,7 @@ describe("StakeAttestation: the record (P2e, design §4.1, §13.4)", function ()
         await disputeAs(sa, maker, claimId);
         if (panel) await judgeDisputeAs(sa, aggregator, other, claimId, panel);
         else {
-          await time.increase(300); // the dispute round times out: the first verdict stands
+          await H.expireRound(sa, aggregator, claimId); // the dispute round fails: the first verdict stands
           await sa.finalize(claimId);
         }
         await sa.settle(claimId);
@@ -484,7 +484,7 @@ describe("StakeAttestation: the record (P2e, design §4.1, §13.4)", function ()
         if (i % 5 === 0) await sa.connect(maker).flagBadDisclosure(claimId);
         await sa.connect(maker).release(claimId);
         await sa.connect(hunter).reveal(claimId, cidOf(i), H.CK, H.EK, { value: 0n });
-        const { requestId } = await sa.getClaim(claimId);
+        const requestId = await H.drawAs(sa, aggregator, claimId);
         await aggregator.scriptResult(requestId, plan(i).map(BigInt), JUSTIFICATION);
         await sa.connect(other).finalize(claimId);
         if (plan(i) === V.LOW || plan(i) === V.MEDIUM) await time.increase(DISPUTE);

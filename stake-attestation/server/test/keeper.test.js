@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 
 import { loadConfig } from '../src/config.js';
 import {
-  chainContext, commit, DAY, dispute, HOUR, increaseTime, keeperTransactions, listing, revealedClaim, siteFor, verdict,
+  chainContext, commit, DAY, deadRound, dispute, HOUR, increaseTime, keeperTransactions, listing, revealedClaim, siteFor, verdict,
 } from './helpers/scenario.js';
 
 const ClaimState = ['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed'];
@@ -88,14 +88,14 @@ describe('finalize and settle when due', () => {
     }
   });
 
-  test('a timed-out round is finalized into RoundFailed, and nothing more is sent for it', async () => {
+  test('a round past its deadline is finalized into RoundFailed, and nothing more is sent for it', async () => {
     const ctx = await chainContext();
     const { listingId } = await listing(ctx);
     const claimId = await revealedClaim(ctx, ctx.hunters[0], listingId);
     const site = siteFor(ctx);
     try {
       assert.deepEqual((await cycle(site)).sent, []);
-      await increaseTime(ctx, 301); // the mock aggregator's responseTimeoutSeconds is 300
+      await deadRound(ctx, claimId); // drawn, and past its deadline (from the draw) with too few commits
       assert.deepEqual((await cycle(site)).sent.map((s) => s.action), ['finalize']);
       assert.equal(await stateOf(ctx, claimId), 'RoundFailed');
       assert.deepEqual((await cycle(site)).sent, [], 'a failed round is the hunter\'s to re-trigger');

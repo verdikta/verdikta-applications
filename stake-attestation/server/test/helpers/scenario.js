@@ -222,10 +222,40 @@ export async function revealedClaim(ctx, hunter, listingId, opts = {}) {
   return claimId;
 }
 
-/** The jury's verdict arrives at the (mock) aggregator for the claim's open round. */
-export async function verdict(ctx, claimId, outcome, { dispute = false, justification = JUSTIFICATION } = {}) {
+/** The v2 aggregator's round of a claim, as getRoundInfo answers it. */
+export async function roundOf(ctx, requestId) {
+  return ctx.aggregator.getRoundInfo(requestId);
+}
+
+/**
+ * Draw the claim's open round (the v2 aggregator's second step) through StakeAttestation.drawJury,
+ * from `caller` (not the keeper, so the keeper's transactions stay its own): mines to block B+2
+ * first. A round already drawn is left alone.
+ */
+export async function draw(ctx, claimId, { dispute = false, caller = ctx.other } = {}) {
   const c = await ctx.sa.getClaim(claimId);
-  await (await ctx.aggregator.scriptResult(dispute ? c.disputeRequestId : c.requestId, vector(outcome).map(BigInt), justification)).wait();
+  const requestId = dispute ? c.disputeRequestId : c.requestId;
+  const r = await roundOf(ctx, requestId);
+  if (r.phase !== 1n && r.phase !== 2n) return requestId;
+  const n = BigInt(await ctx.hre.ethers.provider.getBlockNumber());
+  if (n < r.requestBlock + 1n) await mine(ctx, Number(r.requestBlock + 1n - n));
+  await (await ctx.sa.connect(caller).drawJury(claimId)).wait();
+  return requestId;
+}
+
+/** The jury's verdict arrives at the (mock) aggregator for the claim's open round, drawn first. */
+export async function verdict(ctx, claimId, outcome, { dispute = false, justification = JUSTIFICATION } = {}) {
+  const requestId = await draw(ctx, claimId, { dispute });
+  await (await ctx.aggregator.scriptResult(requestId, vector(outcome).map(BigInt), justification)).wait();
+}
+
+/** The claim's open round is drawn and its deadline passes with too few commits: a failed round once settled. */
+export async function deadRound(ctx, claimId, { dispute = false } = {}) {
+  const requestId = await draw(ctx, claimId, { dispute });
+  const { deadline } = await roundOf(ctx, requestId);
+  const now = BigInt(await latestTimestamp(ctx));
+  if (now <= deadline) await increaseTime(ctx, Number(deadline - now + 1n));
+  return requestId;
 }
 
 export async function finalize(ctx, claimId, caller = ctx.other) {
@@ -261,7 +291,12 @@ export async function dispute(ctx, claimId, maker = ctx.maker) {
   await (await ctx.sa.connect(maker).dispute(claimId, rawCid(Buffer.from(`statement for ${claimId}`)), { value: fee, gasLimit: REVEAL_GAS })).wait();
 }
 
-/** The env the site reads: the deployment, no confirmations, small chunks; `over` wins. */
+/**
+ * The env the site reads: the deployment, no confirmations, small chunks; `over` wins. The keeper's
+ * round actions (drawJury, closeCommits, promote, settle at the aggregator) are off here unless a
+ * test turns them on (SA_KEEPER_ROUNDS: 'on', keeper.rounds.test.js): the tests of finalize, settle,
+ * confirm and expire draw their rounds themselves (draw, verdict), so they count only those calls.
+ */
 export function siteEnv(ctx, dir, over = {}) {
   return {
     SA_CONTRACT_ADDRESS: ctx.address,
@@ -269,6 +304,7 @@ export function siteEnv(ctx, dir, over = {}) {
     SA_CONFIRMATIONS: '0',
     SA_DATA_DIR: dir,
     SA_KEEPER_PRIVATE_KEY: ctx.keeperKey,
+    SA_KEEPER_ROUNDS: 'off',
     ...over,
   };
 }
@@ -329,7 +365,8 @@ export function siteFor(ctx, { dir = tmpDir(), env = {}, provider = ctx.provider
 
 /**
  * Every transaction the keeper's address (or `from`) sent from `fromBlock`, mined, with its
- * function name (finalize, settle, expire, or a 0-value self-send that cancels a stale one) and
+ * function name (finalize, settle, expire, drawJury, aggregator.promote(aggId) and the other
+ * aggregator calls, or a 0-value self-send that cancels a stale one) and
  * its status.
  */
 export async function keeperTransactions(ctx, fromBlock = ctx.fromBlock, from = ctx.keeperAddress) {
@@ -345,6 +382,9 @@ export async function keeperTransactions(ctx, fromBlock = ctx.fromBlock, from = 
       if (tx.to === ctx.address) {
         const parsed = ctx.sa.interface.parseTransaction({ data: tx.data });
         fn = `${parsed.name}(${parsed.args.map(String).join(',')})`;
+      } else if (tx.to === ctx.aggregator.target) {
+        const parsed = ctx.aggregator.interface.parseTransaction({ data: tx.data });
+        fn = `aggregator.${parsed.name}(${parsed.args.map(String).join(',')})`;
       } else if (tx.to !== from || tx.value !== 0n) {
         fn = 'other';
       }

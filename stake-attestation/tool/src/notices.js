@@ -31,16 +31,16 @@ export const INTEGRITY_COSTS = 'A tamper flag costs the bond, even beside anothe
  * Design §12: nothing of this reaches the chain or IPFS, so the words are all a hunter gets. No amount is fixed here
  * (node P32): the fee follows the aggregator's, so status reads a failed round's own numbers from the chain.
  */
-export const ABSTAIN_COSTS = 'Each failed round costs you its base fees (K × the per-oracle fee), a part of its prepay; the rest of the prepay comes back at finalize, and status shows the round\'s own numbers, in ETH. If no round settles, the bond goes to the maker at expiry. Nothing on-chain or on IPFS says why.';
+export const ABSTAIN_COSTS = 'Each failed round costs you its base fees (K × the per-juror fee, paid when the jury is drawn), a part of its prepay; the rest of the prepay comes back at finalize, except where the aggregator sends it to its treasury (a round never drawn, a missed beacon quorum, commits nobody promoted), and status shows the round\'s own numbers, in ETH. If no round settles a verdict, the bond comes back at expiry, unless a round\'s jury answered with a result that is no verdict: then it goes to the maker. Nothing on-chain or on IPFS says why.';
 
 /**
  * What a round that ends with no verdict means (node P32): too few arbiters' answers in the aggregator's time, which is
- * its responseTimeoutSeconds, read from the chain when `timeoutSeconds` is given.
+ * its responseTimeoutSeconds from the draw (the v2 aggregator), read from the chain when `timeoutSeconds` is given.
  * @param {bigint|null} [timeoutSeconds]
  */
 export function noVerdictMeans(timeoutSeconds = null) {
   const time = timeoutSeconds ? `its response timeout, ${timeoutSeconds} s now` : 'its response timeout';
-  return `A round ends with no verdict when too few arbiters commit and reveal a result within the aggregator's time for it (${time}): most often every arbiter abstained on this claim, from a proof that loops or runs out of time, memory or processes, or a build the runner could not finish; or the arbiters were down.`;
+  return `A round ends with no verdict when too few arbiters commit and reveal a result within the aggregator's time for it (${time}, counted from the jury's draw): most often every arbiter abstained on this claim, from a proof that loops or runs out of time, memory or processes, or a build the runner could not finish; or the arbiters were down. It also ends with none when its jury was never drawn within a day of the request, or its beacon quorum was missed.`;
 }
 
 /** Why a re-trigger of the same claim is likely to fail as the last round did (node P32). */

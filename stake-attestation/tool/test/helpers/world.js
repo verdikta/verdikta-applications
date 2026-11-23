@@ -19,7 +19,7 @@ export const { codeReview } = require('@verdikta/common');
 export const IMAGE = `ghcr.io/verdikta/stake-env@sha256:${'4e1b2c3d'.repeat(8)}`;
 export const REPORT_MARKER = 'PLAINTEXT-REPORT-MARKER-7f3a';
 export const POC_MARKER = 'PLAINTEXT-POC-MARKER-91c2';
-export const ORACLE = { requestedClass: 133n, maxOracleFee: 120000000000000n, disputeMaxOracleFee: 200000000000000n, estimatedBaseCost: 1000000000000n, alpha: 500n, maxFeeBasedScaling: 1n };
+export const ORACLE = { requestedClass: 133n, maxOracleFee: 120000000000000n, disputeMaxOracleFee: 200000000000000n, estimatedBaseCost: 1000000000000n, alpha: 500n, maxFeeBasedScaling: 1n, minOracleFee: 0n, withBeacons: false };
 export const HUNTER_INDEX = 5;
 export const sha256 = (b) => `0x${crypto.createHash('sha256').update(b).digest('hex')}`;
 
@@ -212,6 +212,36 @@ export async function makeWorld() {
     },
     async chainNow() {
       return BigInt((await hre.ethers.provider.getBlock('latest')).timestamp);
+    },
+    /**
+     * The v2 aggregator draws a round's jury in a second step: mine to block B+2 and draw it (the deployer's call,
+     * the reward the aggregator's rule gives it). A round already drawn is left alone. Returns the round's info.
+     */
+    async draw(requestId) {
+      let r = await d.aggregator.getRoundInfo(requestId);
+      if (r.phase === 1n || r.phase === 2n) {
+        const now = BigInt(await hre.ethers.provider.getBlockNumber());
+        if (now < r.requestBlock + 2n) await this.mine(Number(r.requestBlock + 2n - now));
+        await (await d.aggregator.drawJury(requestId)).wait();
+        r = await d.aggregator.getRoundInfo(requestId);
+      }
+      return r;
+    },
+    /** The jury's result for a round: drawn first, then N identical reveals (the mock's scriptResult). */
+    async scriptResult(requestId, vector, justification) {
+      await this.draw(requestId);
+      return d.aggregator.scriptResult(requestId, vector, justification);
+    },
+    /** The round a claim has open (the lens's openRound), failed as expireRound fails it. */
+    async expireClaimRound(claimId) {
+      const { requestId } = await d.sa.openRound(claimId);
+      await this.expireRound(requestId);
+    },
+    /** A round that fails at the aggregator: drawn, then past its deadline with no commits (finalize settles it). */
+    async expireRound(requestId) {
+      const r = await this.draw(requestId);
+      const now = await this.chainNow();
+      if (now <= r.deadline) await this.increase(r.deadline - now + 1n);
     },
     /**
      * Builds, pins, lists and funds a listing. `paramsOver` changes what goes on-chain and `specOver`

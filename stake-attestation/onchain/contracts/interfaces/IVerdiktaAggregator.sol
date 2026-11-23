@@ -2,133 +2,145 @@
 pragma solidity ^0.8.20;
 
 /**
- * @title IVerdiktaAggregator
- * @notice Interface for interacting with the Verdikta AI Aggregator contract
- * @dev This interface defines the methods needed to request AI evaluations from Verdikta
+ * @title IVerdiktaAggregator (v2)
+ * @notice What a requester uses of the v2 ReputationAggregator (verdikta-dispatcher, `beacon` branch,
+ *         reputationBasedAggregator/contracts/ReputationAggregator.sol; MIGRATION.md lists the changes
+ *         from v1). This file is kept byte-identical in example-bounty-program and stake-attestation.
+ * @dev A round's life, by `getRoundInfo` phase:
+ *        1 draw      escrowed by the request (block B); drawJury from B+2, within DRAW_GRACE (1 day)
+ *        2 beacons   (requests with `withBeacons`) the first drawJury started the beacon stage; a second
+ *                    drawJury draws once the beacon quorum is in, or ends the round if it was missed
+ *        3 commit    jurors commit; the M+-th commit, or closeCommits after windowEnd with >= M, closes it
+ *        4 closing   promote from closeBlock + 2
+ *        5 reveal    the N-th counted reveal finalizes
+ *        6 final     getEvaluation / getOutcomeScores valid; refund credited; settle after `deadline`
+ *        7 settled   (from 6)
+ *        8 failed    no result. The unspent prepay was credited to the requester (pool shortage, too few
+ *                    commits or reveals), or to the treasury (beacon quorum missed; M commits but never
+ *                    promoted; a beacon round whose jury can't be drawn when the walk is partial)
+ *        9 cancelled never drawn: cancelUnsealed sends the whole prepay to the treasury
+ *      An undrawn round never times out. Ids are sequential from 1: aggId = bytes32(roundId).
+ *      Refunds and rewards are credited to ethOwed and pulled with withdrawEth.
  */
 interface IVerdiktaAggregator {
     /**
-     * @notice Request an AI evaluation, funded with ETH
-     * @dev Payable: the caller prepays the worst-case cost (maxTotalFee(_maxFee)) via
-     *      msg.value and/or an existing ethOwed credit. Unspent ETH is refunded to the
-     *      caller as an ethOwed credit at settlement (recover via withdrawEth()).
-     * @param cids Array of IPFS CIDs containing query data
-     * @param addendumText Optional additional text to append to query
-     * @param _alpha Aggregation parameter for arbiter selection
-     * @param _maxFee Maximum fee per oracle in ETH wei (clamped on-chain to maxOracleFee)
-     * @param _estimatedBaseCost Estimated base cost for the evaluation
-     * @param _maxFeeBasedScalingFactor Scaling factor for fee calculation
-     * @param _requestedClass Class ID determining which AI models to use (e.g., 128 for frontier models)
-     * @return requestId Unique identifier for this evaluation request
+     * @notice Request an evaluation, funded in ETH. Escrows maxTotalFee(maxFee, minFee, withBeacons):
+     *         msg.value first, then the caller's ethOwed credit for any shortfall; any excess value goes
+     *         to credit. The jury is drawn later by drawJury.
+     * @param cids             IPFS CIDs (1..10, each <= 100 bytes)
+     * @param addendumText     appended to the query (<= 1000 bytes)
+     * @param alpha            0..1000, quality-vs-timeliness blend in arbiter selection
+     * @param maxFee           per-arbiter fee ceiling in wei (clamped to maxOracleFee); eligibility
+     * @param minFee           fee floor in wei (0 = none): every juror and beacon is paid at least this
+     * @param estimatedBaseCost  < the clamped ceiling; price-boost baseline
+     * @param maxFeeBasedScalingFactor  1..65535, caps the price boost
+     * @param requestedClass   ClassID (the model pool)
+     * @param withBeacons      item 9's beacon flag
      */
     function requestAIEvaluationWithApproval(
         string[] memory cids,
         string memory addendumText,
-        uint256 _alpha,
-        uint256 _maxFee,
-        uint256 _estimatedBaseCost,
-        uint256 _maxFeeBasedScalingFactor,
-        uint64 _requestedClass
-    ) external payable returns (bytes32 requestId);
+        uint256 alpha,
+        uint256 maxFee,
+        uint256 minFee,
+        uint256 estimatedBaseCost,
+        uint256 maxFeeBasedScalingFactor,
+        uint64 requestedClass,
+        bool withBeacons
+    ) external payable returns (bytes32 aggId);
 
-    /**
-     * @notice Get the evaluation result for a given request ID
-     * @param _requestId The request ID to query
-     * @return likelihoods Array of likelihood scores for each outcome
-     * @return justificationCID IPFS CID containing AI justification
-     * @return exists Whether the evaluation exists
-     */
-    function getEvaluation(bytes32 _requestId)
+    /// @notice The escrow for one request: max(eff, minFee) x (K + B x P [+ beacon quorum]) +
+    ///         eff x (drawRewardFees + promoteRewardFees), eff = min(maxFee, maxOracleFee). Reverts with
+    ///         `withBeacons` when no beacon contract is set.
+    function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) external view returns (uint256);
+
+    /// @notice Draw the jury (anyone, from block B+2). The drawer earns 2 x eff: only the requester
+    ///         within 30 s of the request (or of the beacon quorum), anyone after. With beacons the first
+    ///         call starts the beacon stage and a second draws.
+    function drawJury(bytes32 aggId) external;
+
+    /// @notice Store blockhash(B+1) while it is readable (anyone; drawJury does it too).
+    function sealSeed(bytes32 aggId) external;
+
+    /// @notice Close the commit phase after windowEnd with at least M commits (anyone).
+    function closeCommits(bytes32 aggId) external;
+
+    /// @notice Draw the M promoted commits (anyone, from closeBlock + 2). The caller earns 1 x eff.
+    function promote(bytes32 aggId) external;
+
+    /// @notice After the deadline: fail the round if it never finished, and report to the keeper (anyone).
+    function settle(bytes32 aggId) external;
+
+    /// @notice A round that can never be drawn goes to the treasury (anyone, once unsealed past the
+    ///         block-hash history, or sealed and undrawn for DRAW_GRACE).
+    function cancelUnsealed(bytes32 aggId) external;
+
+    /// @notice The aggregated scores and the comma-joined justification CIDs. `valid` from phase 6.
+    function getEvaluation(bytes32 aggId)
+        external
+        view
+        returns (uint256[] memory aggregated, string memory justifications, bool valid);
+
+    /// @notice Every counted reveal's score for `outcome`, in reveal order (a short reveal gives 0).
+    ///         `valid` is false before phase 6, for a failed round, and for an outcome past the result.
+    function getOutcomeScores(bytes32 aggId, uint256 outcome)
+        external
+        view
+        returns (uint256[] memory scores, bool valid);
+
+    /// @notice The round's phase (see above), draw blocks, escrow and timing. `deadline` is 0 until the
+    ///         draw; settle is due after it. Received minus the three credited amounts is refunded.
+    function getRoundInfo(bytes32 aggId)
         external
         view
         returns (
-            uint256[] memory likelihoods,
-            string memory justificationCID,
-            bool exists
+            uint8 phase,
+            uint256 requestBlock,
+            bytes32 sealedHash,
+            uint256 closeBlock,
+            uint256 received,
+            uint256 baseFees,
+            uint256 bonuses,
+            uint256 rewards,
+            uint256 deadline,
+            uint256 windowEnd,
+            uint256 commits,
+            uint256 requestTime
         );
 
-    /**
-     * @notice Calculate the maximum total fee for an evaluation
-     * @param requestedMaxOracleFee The requested maximum oracle fee
-     * @return Maximum total fee in ETH wei
-     */
-    function maxTotalFee(uint256 requestedMaxOracleFee)
-        external
-        view
-        returns (uint256);
+    function isFailed(bytes32 aggId) external view returns (bool);
 
-    /**
-     * @notice ETH (wei) owed to an address via the pull-payment ledger
-     * @dev For a requester, this is the unspent prepay refunded at settlement.
-     * @param account The address to query
-     * @return Amount of ETH (wei) withdrawable by `account`
-     */
+    /// @notice ETH (wei) credited to `account`: refunds, rewards and payments.
     function ethOwed(address account) external view returns (uint256);
 
-    /**
-     * @notice Withdraw the caller's entire ethOwed balance to msg.sender
-     */
+    /// @notice Withdraw the caller's whole ethOwed balance.
     function withdrawEth() external;
 
-    /**
-     * @notice Lifecycle status of an aggregation round
-     * @dev `isComplete` is true once the round is settled (fulfilled, or timed out and
-     *      finalized via finalizeEvaluationTimeout). `failed` is true for a round that
-     *      timed out without enough responses; such a round has no valid result and
-     *      getEvaluation() reports exists == false for it.
-     * @param aggId The aggregation ID
-     */
-    function getAggregationStatus(bytes32 aggId)
-        external
-        view
-        returns (
-            bool isComplete,
-            bool failed,
-            bool commitPhaseComplete,
-            uint256 commitExpected,
-            uint256 commitReceived,
-            uint256 responseCount,
-            uint256 requiredN,
-            uint256 clusterP,
-            address requester,
-            uint256 startTimestamp
-        );
-
-    /**
-     * @notice The per-oracle fee ceiling (wei) the aggregator clamps every request to
-     * @dev Arbiters priced above a request's (clamped) max fee are ineligible for it.
-     */
+    /// @notice The per-arbiter fee ceiling every request is clamped to.
     function maxOracleFee() external view returns (uint256);
 
-    /**
-     * @notice Get the response timeout in seconds
-     * @return Timeout duration in seconds
-     */
-    function responseTimeoutSeconds() external view returns (uint256);
+    /// @notice Seconds from the draw to the round deadline.
+    function responseTimeoutSeconds() external view returns (uint40);
 
-    /**
-     * @notice Finalize an evaluation that has timed out
-     * @param aggId The aggregation ID that timed out
-     */
-    function finalizeEvaluationTimeout(bytes32 aggId) external;
+    function K() external view returns (uint8);
+    function M() external view returns (uint8);
+    function N() external view returns (uint8);
+    function P() external view returns (uint8);
 
-    /**
-     * @notice Event emitted when an AI evaluation is requested
-     * @param requestId Unique identifier for the request
-     * @param cids Array of IPFS CIDs containing query data
-     */
-    event RequestAIEvaluation(bytes32 indexed requestId, string[] cids);
+    /// @notice The beacon contract (address(0): requests with withBeacons revert).
+    function beacons() external view returns (address);
 
-    /**
-     * @notice Event emitted when an AI evaluation is fulfilled
-     * @param requestId Unique identifier for the request
-     * @param likelihoods Array of likelihood scores
-     * @param justificationCID IPFS CID containing justification
-     */
-    event FulfillAIEvaluation(
-        bytes32 indexed requestId,
-        uint256[] likelihoods,
-        string justificationCID
-    );
+    event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids);
+    event RequestFunded(bytes32 indexed aggRequestId, address indexed requester, uint256 fromCredit, uint256 fromValue);
+    event SeedSealed(bytes32 indexed aggRequestId, bytes32 blockHash);
+    event BeaconStageStarted(bytes32 indexed aggRequestId, uint256 beacons);
+    event JuryDrawn(bytes32 indexed aggRequestId, address indexed drawer, uint256 reward);
+    event CommitWindowClosed(bytes32 indexed aggRequestId, uint256 closeBlock);
+    event CommitPhaseComplete(bytes32 indexed aggRequestId, uint256 promoted);
+    event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, string justifications);
+    event EvaluationFailed(bytes32 indexed aggRequestId, uint8 phase);
+    event RoundSettled(bytes32 indexed aggRequestId, bool failed);
+    event RoundCancelled(bytes32 indexed aggRequestId, uint256 toTreasury);
+    event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount);
+    event EthWithdrawn(address indexed payee, uint256 amount);
 }
-

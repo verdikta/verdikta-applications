@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.23;
 
+import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
+
 /// @title ClaimRules
 /// @notice The time, fee and settlement rules of a claim, in one place. StakeAttestation
 ///         enforces them and StakeAttestationLens reports them; both compile this library in, so
@@ -98,6 +100,34 @@ library ClaimRules {
     function effectiveFee(uint256 listingFee, uint256 ceiling) internal pure returns (uint256) {
         return listingFee > ceiling ? ceiling : listingFee;
     }
+
+    /// @notice What each juror (and beacon) of a round is paid at most, the v2 aggregator's rule:
+    ///         the clamped fee, raised to the listing's fee floor (item 8; the floor may exceed
+    ///         the ceiling). The request still sends the clamped fee as its maxFee: the
+    ///         aggregator applies the floor itself, and the draw and promote rewards are on the
+    ///         clamped fee, never the floor.
+    function jurorFee(uint256 listingFee, uint256 ceiling, uint256 minFee) internal pure returns (uint256) {
+        uint256 eff = effectiveFee(listingFee, ceiling);
+        return minFee > eff ? minFee : eff;
+    }
+
+    /// @notice A round's live escrow, the prepay its request needs: the aggregator's
+    ///         maxTotalFee(fee clamped to its live ceiling, the floor, the beacon flag), that is
+    ///         jurorFee x (K + B x P [+ beacon quorum]) + clamped fee x (draw + promote rewards).
+    ///         StakeAttestation (commit, reveal, retrigger, the dispute-panel rounds) and the lens
+    ///         (commitPrice, revealTopUp, disputeFee, retriggerTopUp) both quote it here.
+    function roundFee(IVerdiktaAggregator verdikta, uint256 fee, uint256 minFee, bool withBeacons)
+        internal view returns (uint256)
+    {
+        return verdikta.maxTotalFee(effectiveFee(fee, verdikta.maxOracleFee()), minFee, withBeacons);
+    }
+
+    /// @notice The v2 aggregator's round phases a requester acts on (getRoundInfo): 1 draw,
+    ///         2 beacons, 3 commit, 4 closing, 5 reveal, 6 final (the result is valid), 7 settled
+    ///         (from 6), 8 failed, 9 cancelled (never drawn).
+    uint8 internal constant PHASE_FINAL = 6;
+    uint8 internal constant PHASE_FAILED = 8;
+    uint8 internal constant PHASE_CANCELLED = 9;
 
     /// @notice The outcome of a jury vector (design §8.7, decisions 10 and 11), as the common
     ///         package's settleBugOutcome decides it (the differential test holds them equal).

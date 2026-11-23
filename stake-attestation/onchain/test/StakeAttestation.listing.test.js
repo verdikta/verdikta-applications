@@ -40,6 +40,8 @@ const ORACLE = {
   estimatedBaseCost: parseEther("0.000001"),
   alpha: 500n,
   maxFeeBasedScaling: 1n,
+  minOracleFee: 0n, // the v2 fee floor: none
+  withBeacons: false,
 };
 
 function artifact(overrides = {}) {
@@ -172,6 +174,8 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
       expect(l.oracle.estimatedBaseCost).to.equal(ORACLE.estimatedBaseCost);
       expect(l.oracle.alpha).to.equal(ORACLE.alpha);
       expect(l.oracle.maxFeeBasedScaling).to.equal(ORACLE.maxFeeBasedScaling);
+      expect(l.oracle.minOracleFee).to.equal(0n);
+      expect(l.oracle.withBeacons).to.equal(false);
     });
 
     it("emits Listed with the artifact's identity and the two archives", async function () {
@@ -320,6 +324,8 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         ["scaling 0", { maxFeeBasedScaling: 0n }, "bad fee scaling"],
         ["scaling above 1000", { maxFeeBasedScaling: 1001n }, "bad fee scaling"],
         ["alpha above 1000", { alpha: 1001n }, "bad alpha"],
+        ["a fee floor above uint96", { minOracleFee: 2n ** 96n }, "bad fee floor"],
+        ["a quote above uint88 (the aggregator's cap on a round's escrow)", { minOracleFee: 2n ** 96n - 1n }, "bad budget"],
       ];
       for (const [name, o, reason] of cases) {
         it(`reverts on ${name}`, async function () {
@@ -341,10 +347,21 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         }
       });
 
-      it("reverts when the aggregator would quote no budget for either fee", async function () {
+      it("reverts when the aggregator's quote reverts: a beacon listing while it has no beacon contract", async function () {
         const { sa, maker, aggregator } = await loadFixture(deploy);
-        await aggregator.setFeeMultiplier(0n);
-        await expect(sa.connect(maker).list(params(), LISTING_CID, DISPUTE_CID, [])).to.be.revertedWith("bad budget");
+        await aggregator.setBeacons(false, 2);
+        await expect(sa.connect(maker).list(params({ oracle: { ...ORACLE, withBeacons: true } }), LISTING_CID, DISPUTE_CID, []))
+          .to.be.revertedWith("bad budget");
+        await expect(sa.connect(maker).list(params(), LISTING_CID, DISPUTE_CID, [])).to.emit(sa, "Listed");
+      });
+
+      it("stores the fee floor and the beacon flag as terms of the listing", async function () {
+        const { sa, maker } = await loadFixture(deploy);
+        const o = { ...ORACLE, minOracleFee: CEILING * 2n, withBeacons: true };
+        const rc = await (await sa.connect(maker).list(params({ oracle: o }), LISTING_CID, DISPUTE_CID, [])).wait();
+        const id = rc.logs.map((l) => { try { return sa.interface.parseLog(l); } catch { return null; } }).find((e) => e && e.name === "Listed").args.listingId;
+        const l = await sa.getListing(id);
+        expect([l.oracle.minOracleFee, l.oracle.withBeacons]).to.deep.equal([CEILING * 2n, true]);
       });
     });
 
@@ -862,6 +879,7 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "confirm", // anyone: a judged award above the listing's size, paid from its escrow (P17, erratum E9)
         "disclose", // the claim's hunter (P2b)
         "dispute", // the listing's maker, on its own claim's valid verdict (P2d)
+        "drawJury", // anyone: draws the open round through its wallet, whose funder gets the reward (the v2 aggregator)
         "expire", // anyone, once the claim's deadline has passed (P2b; failed rounds P2d)
         "finalize", // anyone: reads the aggregator's round for a revealed or disputed claim (P2c, P2d)
         "flagBadDisclosure", // the listing's maker (P2b)

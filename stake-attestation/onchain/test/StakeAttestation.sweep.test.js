@@ -10,7 +10,7 @@ const { spawnSync } = require("child_process");
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers } = hre;
-const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { time, mine, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const H = require("./helpers/claims");
 
 const {
@@ -47,6 +47,20 @@ describe("StakeAttestation: final sweep (P2e)", function () {
         return rc;
       };
       const claimIdOf = (rc, ev) => eventsOf(sa, rc, ev)[0].args.claimId;
+      // drawJury is a passthrough to the v2 aggregator: the aggregator records it (JuryDrawn,
+      // naming the round's wallet as the drawer), so its event is the aggregator's, not this
+      // contract's. Checked that way here; every other function emits from the contract.
+      const drawn = async (claimId) => {
+        const requestId = await H.openRequestId(sa, claimId);
+        const { requestBlock } = await H.roundInfo(aggregator, requestId);
+        const now = BigInt(await ethers.provider.getBlockNumber());
+        if (now < requestBlock + 2n) await mine(Number(requestBlock + 2n - now));
+        const rc = await (await sa.connect(other).drawJury(claimId)).wait();
+        const logs = rc.logs.filter((l) => l.address === aggregator.target).map((l) => aggregator.interface.parseLog(l));
+        expect(logs.map((e) => e.name), "drawJury: the aggregator's JuryDrawn").to.include("JuryDrawn");
+        ran.drawJury = true;
+        return requestId;
+      };
 
       // The listing.
       const p = params({ fixWindow: FIX, disclosureGrace: GRACE });
@@ -63,10 +77,10 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       await run("flagBadDisclosure", sa.connect(maker).flagBadDisclosure(a), "Flagged");
       await run("release", sa.connect(maker).release(a), "Released");
       await run("reveal", sa.connect(hunters[0]).reveal(a, BCID, CK, EK), "Revealed");
-      await aggregator.scriptResult((await sa.getClaim(a)).requestId, V.HIGH, JUSTIFICATION);
+      await aggregator.scriptResult(await drawn(a), V.HIGH, JUSTIFICATION);
       await run("finalize", sa.connect(other).finalize(a), "Judged");
       await run("dispute", sa.connect(maker).dispute(a, STATEMENT_CID, { value: DISPUTE_FEE }), "Disputed");
-      await aggregator.scriptResult((await sa.getClaim(a)).disputeRequestId, V.HIGH, JUSTIFICATION);
+      await aggregator.scriptResult(await drawn(a), V.HIGH, JUSTIFICATION);
       await run("finalize", sa.connect(other).finalize(a), "DisputeJudged");
       await run("settle", sa.connect(other).settle(a), "Settled");
 
@@ -82,11 +96,11 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       const k = claimIdOf(rc, "Committed");
       await sa.connect(hunters[4]).disclose(k, CT_CID);
       await sa.connect(hunters[4]).reveal(k, BCID, CK, EK);
-      await aggregator.scriptResult((await sa.getClaim(k)).requestId, V.HIGH, JUSTIFICATION);
+      await aggregator.scriptResult(await drawn(k), V.HIGH, JUSTIFICATION);
       await sa.connect(other).finalize(k);
       await time.increase(72 * 3600);
       await run("confirm", sa.connect(other).confirm(k), "ConfirmationRequested");
-      await aggregator.scriptResult((await sa.getClaim(k)).disputeRequestId, V.HIGH, JUSTIFICATION);
+      await aggregator.scriptResult(await drawn(k), V.HIGH, JUSTIFICATION);
       await sa.connect(other).finalize(k);
       await sa.connect(other).settle(k);
 
@@ -95,10 +109,10 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       const ap = claimIdOf(rc, "Committed");
       await sa.connect(hunters[5]).disclose(ap, CT_CID);
       await sa.connect(hunters[5]).reveal(ap, BCID, CK, EK);
-      await aggregator.scriptResult((await sa.getClaim(ap)).requestId, V.INVALID, JUSTIFICATION);
+      await aggregator.scriptResult(await drawn(ap), V.INVALID, JUSTIFICATION);
       await sa.connect(other).finalize(ap);
       await run("appeal", sa.connect(hunters[5]).appeal(ap, { value: DISPUTE_FEE }), "Appealed");
-      await aggregator.scriptResult((await sa.getClaim(ap)).disputeRequestId, V.INVALID, JUSTIFICATION);
+      await aggregator.scriptResult(await drawn(ap), V.INVALID, JUSTIFICATION);
       await sa.connect(other).finalize(ap);
       await sa.connect(other).settle(ap);
 
@@ -108,11 +122,10 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       await sa.connect(hunters[1]).disclose(b, CT_CID);
       await sa.connect(maker).release(b);
       await sa.connect(hunters[1]).reveal(b, BCID, CK, EK);
-      await time.increase(300); // the mock's response timeout
+      await H.expireRound(sa, aggregator, b); // drawn, no jury answer by its deadline
       await run("finalize", sa.connect(other).finalize(b), "EvaluationFailed");
       await run("retrigger", sa.connect(hunters[1]).retrigger(b, { value: FEE }), "Retriggered");
-      await aggregator.setRefundAmount(FEE / 2n);
-      await aggregator.scriptResult((await sa.getClaim(b)).requestId, V.DUPLICATE, JUSTIFICATION);
+      await aggregator.scriptResult(await drawn(b), V.DUPLICATE, JUSTIFICATION); // its wallet: leftover and draw reward
       await aggregator.setWithdrawBroken(true);
       await run("finalize", sa.connect(other).finalize(b), "RefundDeferred");
       await aggregator.setWithdrawBroken(false);
@@ -331,10 +344,13 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       expect(names).to.include.members(["lateClaim", "recordByHash", "recordPage", "commitPrice", "claimState"]);
     });
 
-    it("refuses a live network whose aggregator address has no code, before deploying anything", async function () {
+    it("refuses a live network whose aggregator address has no code, or is not a v2 aggregator, before deploying anything", async function () {
       await expect(D.checkAggregator(hre, ethers.Wallet.createRandom().address)).to.be.rejectedWith(/no contract/);
       const aggregator = await (await ethers.getContractFactory("MockVerdiktaAggregator")).deploy();
-      await expect(D.checkAggregator(hre, aggregator.target)).to.not.be.rejected;
+      await expect(D.checkAggregator(hre, aggregator.target)).to.eventually.equal(await aggregator.maxOracleFee());
+      // A contract that answers neither maxOracleFee() nor the v2 quote (here a requester mock).
+      const notAggregator = await (await ethers.getContractFactory("MockPollingRequester")).deploy(aggregator.target);
+      await expect(D.checkAggregator(hre, notAggregator.target)).to.be.rejected;
     });
 
     it("the Base Sepolia and mainnet shell scripts parse, load an optional .env and deploy to their own network", function () {

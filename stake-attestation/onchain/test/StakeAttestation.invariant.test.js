@@ -48,10 +48,25 @@
 // covers its wallets; the record is checked for the appeals by result; and no claim gets a
 // second dispute-panel verdict. Skipped under solidity-coverage, as P17's are:
 // StakeAttestation.appeal.test.js covers every line they reach.
+//
+// The v2 aggregator (MIGRATION.md): a request only escrows the prepay, and the jury is drawn later
+// (drawJury, from block B+2), so every result follows a draw through StakeAttestation.drawJury,
+// whose reward is credited to the round's wallet. A sixth stream drives the rounds the way the
+// network and its keepers would, or would not: draws (through the contract, or directly at the
+// aggregator by someone else, who then takes the reward), commits that close the window or do
+// not, promotion, deadlines that pass (finalize then settles the round at the aggregator: failed,
+// the unspent prepay back to the wallet, or to the aggregator's TREASURY when M commits were in
+// but nobody promoted), and rounds never drawn (sealed, then a day later finalize cancels them,
+// the whole prepay to the treasury). The treasury's ETH is outside the contract, so the equation
+// is unchanged. The aggregator's other stand-in, the jurors' posted fee, varies at random so the
+// rounds leave different leftovers. Refund attribution counts, per (funder, claim), everything
+// credited to the claim's wallets: the refunds (RequesterRefunded to a wallet), the draw rewards
+// (JuryDrawn with the wallet as drawer) and any value sent above the escrow (RequestFunded). At
+// the end every open round is ended (blocks and a day pass) and finalized.
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers } = hre;
-const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { time, mine, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const H = require("./helpers/claims");
 const { rng, split } = require("./helpers/random");
 
@@ -66,6 +81,9 @@ const REACHED = [
 ];
 const REACHED_P17 = ["ConfirmationRequested", "NarrowInvalid", "ConfirmationRefunded", "ConfirmationNoVerdict"];
 const REACHED_P16 = ["Appealed"];
+// The v2 aggregator's events, over every seed: draws, a promotion, failed rounds settled there, and
+// rounds never drawn, cancelled (their prepay to the treasury).
+const REACHED_V2 = ["JuryDrawn", "CommitPhaseComplete", "RoundSettled", "RoundCancelled", "EvaluationFailed"];
 const UNRESOLVED = new Set([ClaimState.Committed, ClaimState.Revealed, ClaimState.Judged, ClaimState.Disputed, ClaimState.RoundFailed]);
 
 async function setup() {
@@ -92,7 +110,7 @@ function randomVector(r) {
       const inv = r.int(0, s - valid);
       return [inv, s - valid - inv, a, b, c, d];
     }
-    case 8: return r.pick([[0, 0, 0], [SCALE + 1, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, SCALE - 6], split(r, SCALE, 7)]);
+    case 8: return r.pick([[0, 0, 0], [SCALE + 1, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, SCALE - 6], split(r, SCALE, 7), [SCALE]]); // [SCALE]: a one-number answer
     default: return split(r, s, 6);
   }
 }
@@ -102,6 +120,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
   const reached = {}; // events emitted, over every seed
   const reachedP17 = {}; // the safeguards' events, over the P17 seeds
   const reachedP16 = {}; // the appeal's events and results, over the P16 seeds
+  const reachedV2 = {}; // the aggregator's events and the claims' expiry reasons, over every seed
 
   const SEEDS = [
     [11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [1710, true], [17, true], [0x10ad, true],
@@ -122,6 +141,8 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       const r4 = rng(seed ^ 0x1717);
       // P16's (the appeal) a fifth, used on the appeal's seeds only.
       const r5 = rng(seed ^ 0x1616);
+      // The v2 aggregator's rounds (the draw, commits, promotion, deadlines, cancellation) a sixth.
+      const r6 = rng(seed ^ 0x2222);
       const listings = []; // { id, maker }
       const claims = []; // { id, listingId, hunter }
       const accounts = [...new Set([...makers, ...hunters].map((a) => a.target ?? a.address))];
@@ -201,6 +222,27 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         return [...out];
       };
       const openRequestOf = (k) => (k.state === ClaimState.Disputed ? k.disputeRequestId : k.requestId);
+      const phaseOf = async (requestId) => (await aggregator.getRoundInfo(requestId)).phase;
+      // Draw a claim's open round if it is still to be drawn (through StakeAttestation.drawJury, by
+      // anyone: the wallet earns the reward), mining to block B+2 first. Returns its request id.
+      const drawOpen = async (claimId) => {
+        const requestId = openRequestOf(await sa.getClaim(claimId));
+        const info = await aggregator.getRoundInfo(requestId);
+        if (info.phase !== 1n && info.phase !== 2n) return requestId;
+        const block = BigInt(await ethers.provider.getBlockNumber());
+        if (block < info.requestBlock + 2n) await mine(Number(info.requestBlock + 2n - block));
+        await attempt("draw", () => send(r6.pick([...makers, ...hunters]), "drawJury", [claimId]));
+        return requestId;
+      };
+      // The open rounds whose aggregator phase is one of `phases`.
+      const roundsIn = async (phases) => {
+        const out = [];
+        for (const c of await claimsIn([ClaimState.Revealed, ClaimState.Disputed])) {
+          const requestId = openRequestOf(await sa.getClaim(c.id));
+          if (phases.includes(await phaseOf(requestId))) out.push({ c, requestId });
+        }
+        return out;
+      };
 
       const actions = {
         async list() {
@@ -269,7 +311,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           const open = await claimsIn([ClaimState.Revealed, ClaimState.Disputed]);
           if (!open.length) return;
           const c = r.pick(open);
-          const requestId = openRequestOf(await sa.getClaim(c.id));
+          const requestId = await drawOpen(c.id);
           await attempt("result", () => aggregator.scriptResult(requestId, randomVector(r), JUSTIFICATION));
           await attempt("finalize", () => send(r.pick([...makers, ...hunters]), "finalize", [c.id]));
         },
@@ -325,7 +367,9 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await time.increase(r.next() < 0.8 ? r.pick([30, 400, 900]) : r.pick([4000, 86400, 3 * 86400]));
         },
         async refunds() {
-          await aggregator.setRefundAmount(r.pick([0n, FEE / 2n, FEE, 3n * FEE]));
+          // The jurors' posted fee (0: the round's clamped fee, all of it spent): a round leaves the
+          // base fees and bonuses they do not take unspent, which the wallet gets back.
+          await aggregator.setArbiterFee(r.pick([0n, FEE / 36n, FEE / 90n, 1n]));
         },
         async rejecting() {
           const c = r.pick(contracts);
@@ -430,7 +474,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
             const m = r4.int(200_000, 500_000);
             const band = [SCALE - m, 0, 0, m, 0, 0];
             const vector = r4.pick([H.oneHot(3), H.oneHot(4), H.oneHot(5), H.oneHot(3), H.oneHot(4), H.oneHot(2), H.oneHot(0), band, band]);
-            const { requestId } = await sa.getClaim(head);
+            const requestId = await drawOpen(head);
             await attempt("result", () => aggregator.scriptResult(requestId, vector, JUSTIFICATION));
             await attempt("finalize", () => send(r4.pick(plainSigners), "finalize", [head]));
             // An INVALID settles at once, by its hunter, who waives the appeal (erratum E7, P16). The
@@ -502,7 +546,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
             if ((await sa.getClaim(head)).state !== ClaimState.Revealed) return;
             const m = r5.int(200_000, 500_000);
             const vector = r5.pick([H.oneHot(0), H.oneHot(0), [SCALE - m, 0, 0, m, 0, 0], [SCALE - m, 0, 0, m, 0, 0], H.oneHot(1), H.oneHot(4)]);
-            const { requestId } = await sa.getClaim(head);
+            const requestId = await drawOpen(head);
             await attempt("result", () => aggregator.scriptResult(requestId, vector, JUSTIFICATION));
             await attempt("finalize", () => send(r5.pick(plainSigners), "finalize", [head]));
             const j = await sa.getClaim(head);
@@ -535,14 +579,16 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           for (const c of await claimsIn([ClaimState.Disputed])) if ((await sa.getClaim(c.id)).disputeKind === 3n) open.push(c);
           if (!open.length) return;
           const c = r5.pick(open);
-          const k = await sa.getClaim(c.id);
           const m = r5.int(200_000, 500_000);
           const outcome = r5.int(0, 9);
+          const requestId = await drawOpen(c.id);
           if (outcome < 2) {
-            await time.increase(301); // the mock's response timeout: no verdict
+            // no verdict: the round's deadline passes with no jury answer
+            const { deadline } = await aggregator.getRoundInfo(requestId);
+            if (deadline !== 0n && BigInt(await time.latest()) <= deadline) await time.increaseTo(deadline + 1n);
           } else {
             const vector = [null, null, H.oneHot(0), [SCALE - m, 0, 0, m, 0, 0], H.oneHot(1), H.oneHot(2), H.oneHot(3), H.oneHot(4), H.oneHot(5), [1, 2, 3]][outcome];
-            await attempt("result", () => aggregator.scriptResult(k.disputeRequestId, vector, JUSTIFICATION));
+            await attempt("result", () => aggregator.scriptResult(requestId, vector, JUSTIFICATION));
           }
           await attempt("finalize", () => send(r5.pick(plainSigners), "finalize", [c.id]));
           // No verdict: most often the hunter re-triggers at once.
@@ -581,6 +627,77 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         },
       };
       const bag5 = Object.entries({ drive: 5, appeal: 3, judgeAppeal: 6, retriggerAppeal: 2, settleInvalid: 3 }).flatMap(([k, w]) => Array(w).fill(k));
+      const roundActions = {
+        // A round still to be drawn is drawn: mostly through the contract (its wallet earns the
+        // reward), now and then directly at the aggregator by someone else, who takes it after
+        // the requester's 30 s (and earns nothing inside them).
+        async draw() {
+          const undrawn = await roundsIn([1n, 2n]);
+          if (!undrawn.length) return;
+          const { c, requestId } = r6.pick(undrawn);
+          if (r6.next() < 0.75) {
+            await drawOpen(c.id);
+            return;
+          }
+          const { requestBlock } = await aggregator.getRoundInfo(requestId);
+          const block = BigInt(await ethers.provider.getBlockNumber());
+          if (block < requestBlock + 2n) await mine(Number(requestBlock + 2n - block));
+          if (r6.next() < 0.5) await time.increase(31);
+          await attempt("draw", () => aggregator.connect(r6.pick(plainSigners)).drawJury(requestId));
+        },
+        // Commits arrive: the M+-th closes the window; fewer may leave it open past T+.
+        async commits() {
+          const open = await roundsIn([3n]);
+          if (!open.length) return;
+          const { requestId } = r6.pick(open);
+          await attempt("commits", () => aggregator.scriptCommits(requestId, r6.int(1, 6)));
+          // A keeper most often promotes a window that closed, from C+2 (the caller's reward).
+          if ((await phaseOf(requestId)) === 4n && r6.next() < 0.6) {
+            await mine(2);
+            await attempt("promote", () => aggregator.connect(r6.pick(plainSigners)).promote(requestId));
+          }
+        },
+        // Someone promotes a closed window (from C+2), or closes one past T+ with M commits.
+        async promote() {
+          const closing = await roundsIn([3n, 4n]);
+          if (!closing.length) return;
+          const { requestId } = r6.pick(closing);
+          const who = r6.pick(plainSigners);
+          if ((await phaseOf(requestId)) === 3n) {
+            const { windowEnd } = await aggregator.getRoundInfo(requestId);
+            if (BigInt(await time.latest()) <= windowEnd) await time.increaseTo(windowEnd + 1n);
+            await attempt("closeCommits", () => aggregator.connect(who).closeCommits(requestId));
+            return;
+          }
+          await mine(2);
+          await attempt("promote", () => aggregator.connect(who).promote(requestId));
+        },
+        // A drawn round's deadline passes with no result; finalize settles it at the aggregator.
+        async deadline() {
+          const drawn = await roundsIn([3n, 4n, 5n]);
+          if (!drawn.length) return;
+          const { c, requestId } = r6.pick(drawn);
+          const { deadline } = await aggregator.getRoundInfo(requestId);
+          if (BigInt(await time.latest()) <= deadline) await time.increaseTo(deadline + 1n);
+          await attempt("finalize", () => send(r6.pick([...makers, ...hunters]), "finalize", [c.id]));
+        },
+        // A round nobody draws: its seed sealed, and a day later finalize cancels it at the
+        // aggregator, the whole prepay to the treasury.
+        async cancel() {
+          const undrawn = await roundsIn([1n]);
+          if (!undrawn.length) return;
+          const { c, requestId } = r6.pick(undrawn);
+          const { requestBlock, sealedHash } = await aggregator.getRoundInfo(requestId);
+          if (sealedHash === ethers.ZeroHash) {
+            const block = BigInt(await ethers.provider.getBlockNumber());
+            if (block < requestBlock + 2n) await mine(Number(requestBlock + 2n - block));
+            await attempt("seal", () => aggregator.sealSeed(requestId));
+          }
+          await time.increase(24 * 3600 + 1);
+          await attempt("finalize", () => send(r6.pick([...makers, ...hunters]), "finalize", [c.id]));
+        },
+      };
+      const bag6 = Object.entries({ draw: 5, commits: 3, promote: 2, deadline: 2, cancel: 1 }).flatMap(([k, w]) => Array(w).fill(k));
 
       if (safeguards) await safeguardActions.program(true); // the first listing takes these values
       await actions.list();
@@ -609,11 +726,20 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await appealActions[extra]();
           await checkInvariant(step, `appeal ${extra}`);
         }
+        if (r6.next() < 0.3) {
+          const extra = r6.pick(bag6);
+          await roundActions[extra]();
+          await checkInvariant(step, `round ${extra}`);
+        }
       }
       // Drain: every round finalized, every wallet recovered, then refund attribution.
       await aggregator.setWithdrawBroken(false);
       if (await aggregator.paused()) await aggregator.setPaused(false);
-      await time.increase(301); // every open round is past the mock's response timeout
+      // Every open round ends: a drawn one is past its deadline (settle fails it, if it has no
+      // result), and one never drawn can be cancelled (unsealed: past the block-hash history;
+      // sealed: a day after its request).
+      await mine(8200);
+      await time.increase(2 * 24 * 3600);
       for (let pass = 0; pass < 2; pass++) {
         for (const c of await claimsIn([ClaimState.Revealed, ClaimState.Disputed])) {
           await attempt("finalize", () => sa.finalize(c.id));
@@ -626,10 +752,30 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       const credited = new Map();
       const refunded = new Map();
       const add = (m, k, v) => { if (v !== 0n) m.set(k, (m.get(k) || 0n) + v); };
+      const isWallet = new Set(wallets);
+      const toTreasury = [];
       for (const ev of await aggregator.queryFilter(aggregator.filters.RequesterRefunded())) {
+        if (!isWallet.has(ev.args.requester)) {
+          // a refund the aggregator routes to its treasury (M commits never promoted)
+          expect(ev.args.requester, `refund to ${ev.args.requester}`).to.equal(await aggregator.treasury());
+          toTreasury.push(ev.args.amount);
+          continue;
+        }
         const [funder, claimId] = await sa.walletInfo(ev.args.requester);
         expect(funder, `wallet ${ev.args.requester}`).to.not.equal(ethers.ZeroAddress);
         add(credited, `${funder}/${claimId}`, ev.args.amount);
+      }
+      // The draw rewards the wallets earned, and value sent above a round's escrow (to credit).
+      for (const ev of await aggregator.queryFilter(aggregator.filters.JuryDrawn())) {
+        if (!isWallet.has(ev.args.drawer)) continue;
+        const [funder, claimId] = await sa.walletInfo(ev.args.drawer);
+        add(credited, `${funder}/${claimId}`, ev.args.reward);
+      }
+      for (const ev of await aggregator.queryFilter(aggregator.filters.RequestFunded())) {
+        const [funder, claimId] = await sa.walletInfo(ev.args.requester);
+        expect(funder, `requester ${ev.args.requester}`).to.not.equal(ethers.ZeroAddress);
+        const { received } = await aggregator.getRoundInfo(ev.args.aggRequestId);
+        add(credited, `${funder}/${claimId}`, ev.args.fromCredit + ev.args.fromValue - received);
       }
       for (const ev of await sa.queryFilter(sa.filters.LeftoverRefunded())) {
         add(refunded, `${ev.args.funder}/${ev.args.claimId}`, ev.args.amountWei);
@@ -671,7 +817,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           expect(h.released, `${at} released`).to.equal(n(stake, (c) => c.k.released));
           expect(h.undisclosed, `${at} undisclosed`).to.equal(expired(stake, 1n));
           expect(h.unrevealed, `${at} unrevealed`).to.equal(expired(stake, 2n));
-          expect(h.noVerdict, `${at} noVerdict`).to.equal(expired(stake, 3n, 4n));
+          expect(h.noVerdict, `${at} noVerdict`).to.equal(expired(stake, 3n, 4n, 5n));
           // The maker's disputes (one per claim at most) apart from the confirmations (P17): a
           // maker's dispute with no verdict may be followed by a confirmation, which then names
           // the claim's round, so the maker's no-verdict count is what is left of its disputes.
@@ -703,7 +849,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           expect([h.narrowInvalid, h.lateNarrowInvalid], `${at} narrow INVALIDs`).to.deep.equal([narrow(stake), narrow(late)]);
           expect(h.lateClaims, `${at} lateClaims`).to.equal(BigInt(late.length));
           expect([...h.lateOutcomes], `${at} lateOutcomes`).to.deep.equal(byOutcome(late));
-          expect(h.lateExpired, `${at} lateExpired`).to.equal(expired(late, 1n, 2n, 3n, 4n));
+          expect(h.lateExpired, `${at} lateExpired`).to.equal(expired(late, 1n, 2n, 3n, 4n, 5n));
         }
         // Findings: every settled valid claim, in settlement order (= commit order on a listing).
         const valid = mine.filter((c) => c.k.state === ClaimState.Settled && c.k.outcome >= 2n);
@@ -733,6 +879,12 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       }
       expect(stats.ok.plainEth || 0).to.equal(0);
       for (const ev of REACHED) reached[ev] = (reached[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
+      for (const ev of REACHED_V2) reachedV2[ev] = (reachedV2[ev] || 0) + (await aggregator.queryFilter(aggregator.filters[ev]())).length;
+      for (const c of claims) {
+        const k = await sa.getClaim(c.id);
+        if (k.state === ClaimState.Expired) reachedV2[`expiry${k.expiry}`] = (reachedV2[`expiry${k.expiry}`] || 0) + 1;
+      }
+      reachedV2.treasury = (reachedV2.treasury || 0) + toTreasury.length;
       if (appeals) {
         for (const ev of REACHED_P16) reachedP16[ev] = (reachedP16[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
         for (const name of ["appeal", "appealRetrigger"]) reachedP16[name] = (reachedP16[name] || 0) + (stats.ok[name] || 0);
@@ -758,6 +910,13 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
 
   it("the sequences reached every path that moves money", function () {
     for (const ev of REACHED) expect(reached[ev] || 0, `${ev} ${JSON.stringify(reached)}`).to.be.greaterThan(0);
+    // The v2 rounds: drawn, promoted, failed and settled at the aggregator, cancelled, a refund to
+    // its treasury; and a failed claim expired with its bond back because no jury answered
+    // (RoundsUnanswered). RoundsFailed (a jury answered with no verdict) is rare here: the v2
+    // tests (StakeAttestation.v2.test.js) and settlement's cover it.
+    for (const k of [...REACHED_V2, "treasury", "expiry5"]) {
+      expect(reachedV2[k] || 0, `${k} ${JSON.stringify(reachedV2)}`).to.be.greaterThan(0);
+    }
     if (hre.__SOLIDITY_COVERAGE_RUNNING) return; // the safeguards' seeds did not run
     for (const ev of REACHED_P17) expect(reachedP17[ev] || 0, `${ev} ${JSON.stringify(reachedP17)}`).to.be.greaterThan(0);
     // The appeal's seeds made appeals and re-triggers, and their results: held, overturned, no verdict.

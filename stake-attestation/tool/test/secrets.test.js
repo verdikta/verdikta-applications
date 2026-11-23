@@ -52,7 +52,7 @@ test('the whole life of a claim through the CLI: no output carries a key, a cred
   const v = await run(['reveal', dir, '--yes']);
   assert.equal(v.code, 0, v.stderr);
   const { claimId } = readJson(statePath(dir));
-  await (await w.aggregator.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
+  await (await w.scriptResult((await w.sa.getClaim(claimId)).requestId, vectorOf('INVALID'), JUSTIFICATION_CID)).wait();
   const k = await run(['claim', dir]);
   assert.equal(k.code, 0, k.stderr);
   const j = await run(['status', dir, '--json']);

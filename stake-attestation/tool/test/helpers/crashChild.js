@@ -23,5 +23,6 @@ const hunter = createHunter({
     if (step === env.CRASH_STEP) process.kill(process.pid, 'SIGKILL');
   },
 });
-if (env.CRASH_VERB === 'commit') await hunter.commit({ claimDir: env.CRASH_DIR, listingId: BigInt(env.CRASH_LISTING), acknowledge: true });
+// CRASH_LATE=1: the commit is a late claim (commit --late, node P43)
+if (env.CRASH_VERB === 'commit') await hunter.commit({ claimDir: env.CRASH_DIR, listingId: BigInt(env.CRASH_LISTING), late: env.CRASH_LATE === '1', acknowledge: true });
 else await hunter.reveal({ claimDir: env.CRASH_DIR, acknowledge: true });

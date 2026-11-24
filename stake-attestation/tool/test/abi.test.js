@@ -16,10 +16,15 @@ test('every revert string of the contracts is on the allow-list, the only text r
   for (const f of fs.readdirSync(dir, { recursive: true })) {
     if (!f.endsWith('.sol') || f.startsWith('mocks') || f.startsWith('test')) continue;
     const src = fs.readFileSync(path.join(dir, f), 'utf8');
-    for (const m of src.matchAll(/(?:require\((?:[^;]*?),\s*|revert\()"([^"]+)"\)/g)) found.add(m[1]);
+    // the reason may stand on a line of its own, before the closing parenthesis (node P43: four reasons written that
+    // way were missing here, "not accepting late claims" among them, so the tool could not repeat them)
+    for (const m of src.matchAll(/(?:require\((?:[^;]*?),\s*|revert\(\s*)"([^"]+)"\s*\)/g)) found.add(m[1]);
   }
   assert.ok(found.size > 50, String(found.size));
   assert.deepEqual([...found].filter((r) => !KNOWN_REVERTS.includes(r)), []);
+  for (const reason of ['not accepting late claims', 'bad successor', 'disclose window open', 'round open']) assert.ok(found.has(reason), `${reason}: a reason on its own line is read`);
+  // and the list names nothing the contracts do not say
+  assert.deepEqual(KNOWN_REVERTS.filter((r) => !found.has(r)), []);
 });
 
 test('the committed ABI is onchain\'s merged ABI', async () => {

@@ -2507,14 +2507,17 @@ test('the README says the six things this change does to a commit, and what a fo
     '(2) `--restart` is refused with `WALLET_BUSY` while the wallet has a transaction that is not mined.',
     '(3) A prepared folder whose claim is on the chain already adopts it first.',
     '(4) Every folder saves `anchor.json` when it is prepared, and a first send whose nonce went to another transaction with no claim made ends with `COMMIT_REPLACED`.',
-    '(5) Where files were set aside, a run that finds its saved commit replaced ends with `COMMIT_REPLACED` before it signs anew.',
+    '(5) Where files were set aside, a run that finds its saved commit replaced ends with `COMMIT_REPLACED` before it signs anew (with `TX_PENDING`, to be run again, while the transaction that took the nonce is not final).',
     '(6) Such a folder signs nothing more, and the commit goes in a new folder.',
     'What a commit sends is unchanged, and `state.json` has the keys it had.',
   ]) assert.ok(flat.includes(said), said);
   // the folder that signs nothing more, with nothing recorded for it; and what a run on the restored files finds
   assert.match(flat, /The folder cannot tell, so it signs nothing more/);
   assert.match(flat, /and so does every later run of `commit` there, `--yes` or not\. Nothing is recorded for this/);
-  assert.match(flat, /The commit goes in a new folder, with one copy of the claim's files\./);
-  assert.match(flat, /It looks for the claim in the logs from the block the set was prepared at, or, where the chain was reorganized below that block and the set's anchor holds a finalized block that still stands, from that block\./);
+  assert.match(flat, /The commit goes in a new folder, with one copy of the claim's files, and only after a look for a claim of every set/);
+  assert.match(flat, /It is said only once it cannot be undone: while the transaction that took the nonce is in a block the node does not name as finalized, a reorganization can still free the nonce and let the saved commit go, so until then the run says the commit is not mined and is to be made again \(`TX_PENDING`, exit 4\)\./);
+  assert.match(flat, /and only after a look for a claim of every set of files the folder set aside and of its own two hashes, mined or pending, among the transactions of the wallet each `state\.json` names: the transaction that took the nonce, and those after it\./);
+  assert.match(flat, /and `commit` on that folder, without `--yes`\./);
+  assert.match(flat, /It looks for the claim in the logs from the block the set was prepared at, or, where the chain was reorganized below that block and the set's anchor holds a finalized block that still stands, from that block, which needs an RPC that serves the logs from there\. A run that prints a commit's terms and asks for `--yes` did not find the claim, and `--yes` there would pay for a second one\./);
   assert.match(flat, /It does not find a claim below that: for a set with no `anchor\.json` \(one an earlier version prepared\), a claim that a reorganization put below the block the set was prepared at\. The tool has no command for that case\./);
 });

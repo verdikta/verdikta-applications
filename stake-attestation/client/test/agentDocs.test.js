@@ -1210,7 +1210,10 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // later run ends there again.
   const gone = /if \(gone\) \{[\s\S]*?\n  \}\n/.exec(/async function finishCommitWait[\s\S]*?\n\}/.exec(commit)?.[0] ?? '')?.[0];
   assert.ok(gone, 'tool/src/commit.js: finishCommitWait, the gone branch');
-  assert.match(gone, /const stop = replacedAfterRestart\(ws\);\s*if \(stop\) throw fail\('COMMIT_REPLACED', stop\);[\s\S]*?const next = \{ \.\.\.withKind\(state, false\), stage: 'prepared', commitTx: null \};\s*ws\.saveState\(next\);/, 'refused before the folder is saved as prepared');
+  assert.match(gone, /const stop = replacedAfterRestart\(ws\);\s*if \(stop\) \{[\s\S]*?const taken = await nonceTakenForGood\(ctx, state\);\s*if \(taken !== 'final'\) \{[\s\S]*?throw fail\('TX_PENDING', [^\n]*\n\s*\}\s*throw fail\('COMMIT_REPLACED', stop\);\s*\}[\s\S]*?const next = \{ \.\.\.withKind\(state, false\), stage: 'prepared', commitTx: null \};\s*ws\.saveState\(next\);/, 'refused before the folder is saved as prepared, and for good only once the transaction that took the nonce is final');
+  // final: the wallet's count at the node's finalized block is past the saved nonce
+  assert.match(commit, /async function nonceTakenForGood\(ctx, state\) \{\s*const head = await blockIdAt\(ctx\);\s*const finalized = head \? await finalizedBlockOf\(ctx, head\) : null;\s*if \(!finalized\) return 'no-finalized-block';\s*return await countAt\(ctx, state\.hunter, finalized\.number\) > state\.commitTx\.nonce \? 'final' : 'not-final';/);
+  assert.equal(new ToolError('TX_PENDING').exitCode, 4);
   assert.equal(gone.split('ws.saveState(').length, 2, 'the one write of that branch comes after the refusal');
   const replaced = /function replacedAfterRestart\(ws\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
   assert.ok(replaced, 'tool/src/commit.js: replacedAfterRestart');
@@ -1220,11 +1223,12 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   const replacedText = /return `(This folder signs nothing more: [^`]*)`;/.exec(replaced)?.[1];
   assert.ok(replacedText);
   for (const said of [
-    /Look at that transaction first\./,
-    /Make a new claim folder with a \.verdikta-claim folder in it, of mode 0700; copy that stamp's archive\.zip, keys\.json, ciphertext\.age and state\.json there under those plain names, and anchor\.json too where the stamp has one, each with its mode \(cp -p\); and run commit on that folder\./,
-    /That run looks for the claim in the logs from the block the set was prepared at \(startBlock in its state\.json\), or, where the chain was reorganized below that block and the set's anchor\.json holds a finalized block that still stands, from that block; and it discloses the claim it finds\./,
+    /Before a new folder pays, look for a claim of each of them, and of this folder's own two hashes \(state\.json\), mined or pending: \$\{SAVED_STATE_NAMES\} Look among that wallet's transactions: the one that took the nonce, and those after it\./,
+    /make a new claim folder with a \.verdikta-claim folder in it, of mode 0700; copy that stamp's archive\.zip, keys\.json, ciphertext\.age and state\.json there under those plain names, and anchor\.json too where the stamp has one, each with its mode \(cp -p\); and run commit on that folder, without --yes\./,
+    /That run looks for the claim in the logs from the block the set was prepared at \(startBlock in its state\.json\), or, where the chain was reorganized below that block and the set's anchor\.json holds a finalized block that still stands, from that block, which needs an RPC that serves the logs from there; and it discloses the claim it finds\./,
+    /If it prints a commit's terms and asks for --yes instead, it did not find the claim: do not give --yes there, which would pay for a second one\./,
     /It does not find a claim below that: for a set with no anchor\.json, one that a reorganization put below startBlock\./,
-    /If the transaction is no such claim, prepare the commit in a new folder: copy finding\.json, report\.md and the patches there, and run commit on it\.$/,
+    /If no such claim exists, prepare the commit in a new folder: copy finding\.json, report\.md and the patches there, and run commit on it\.$/,
   ]) assert.match(replacedText, said);
   assert.doesNotMatch(replacedText, /#\d|--adopt|later version/);
   // (what the restored folder's run covers is anchoredClaim's: from startBlock, or from the finalized block its anchor proves)
@@ -1257,7 +1261,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
       // (4) anchor.json and COMMIT_REPLACED
       'Every folder saves anchor.json when it is prepared. A commit whose nonce went to another transaction before it was mined, with no claim made, ends with COMMIT_REPLACED, and a run again signs a new one.',
       // (5) with files set aside, COMMIT_REPLACED before anything is signed anew
-      'In a folder where --restart set files aside, a run that finds its saved commit replaced ends with COMMIT_REPLACED before it signs anew: the transaction that took the nonce may be a claim of the files set aside, sent some other way, which is paid and needs them. The text says how such a claim gets its files back, and what that run finds and does not.',
+      'In a folder where --restart set files aside, a run that finds its saved commit replaced ends with COMMIT_REPLACED before it signs anew: the transaction that took the nonce may be a claim of the files set aside, sent some other way, which is paid and needs them. While that transaction is in a block that is not final, the run says the commit is not mined (TX_PENDING, exit 4): run the same command again. The text of COMMIT_REPLACED says what to look for before a new folder pays, how a claim of the files set aside gets them back, and what that run finds and does not.',
       // (6) such a folder signs nothing more
       'Such a folder signs nothing more: every later run of `commit` there ends with COMMIT_REPLACED, and the commit goes in a new folder (copy finding.json, report.md and the patches there).',
     ]) assert.ok(nine.includes(said), said);

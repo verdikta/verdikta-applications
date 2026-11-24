@@ -478,7 +478,18 @@ async function finishCommitWait(ctx, ws, state, { receipt, gone, superseded }) {
     // later run reads from the chain that their nonce is gone and from the disk that files are set aside, and ends
     // here again. So no process that stops anywhere on the way leaves a folder that signs.
     const stop = replacedAfterRestart(ws);
-    if (stop) throw fail('COMMIT_REPLACED', stop);
+    if (stop) {
+      // And it is said only once it cannot be undone: the transaction that took the nonce is in a finalized block.
+      // Before that a reorganization can free the nonce again, and the next run would send the saved commit from a
+      // folder that had said it signs nothing more. So until then the run says what is true, that the commit is not
+      // mined, and is to be made again (TX_PENDING, exit 4).
+      const taken = await nonceTakenForGood(ctx, state);
+      if (taken !== 'final') {
+        const why = taken === 'not-final' ? 'in a block that is not final yet' : 'and this node names no finalized block, so it cannot show that the block is final: use an RPC that does';
+        throw fail('TX_PENDING', `Transaction ${state.commitTx.hash}. Another transaction of this wallet has its nonce, ${why}. If that stands, this folder signs nothing more, since --restart set files aside here, and this command says so then. Nothing was signed or sent.`);
+      }
+      throw fail('COMMIT_REPLACED', stop);
+    }
     // nothing is signed any more, so the folder names no kind: the next run's flag says which is sent
     const next = { ...withKind(state, false), stage: 'prepared', commitTx: null };
     ws.saveState(next);
@@ -591,7 +602,20 @@ const SIGN_AGAIN = 'Run commit again: it signs a new one.';
 function replacedAfterRestart(ws) {
   const stamps = ws.setAsideClaims();
   if (stamps.length === 0) return null;
-  return `This folder signs nothing more: --restart set files aside here (${asideNames(stamps)}), and the transaction that took the nonce may be a claim of the two hashes in one of those state.json files, sent some other way. Look at that transaction first. If it is such a claim, it is paid, its disclosure window is running, and it needs those files. Make a new claim folder with a .verdikta-claim folder in it, of mode 0700; copy that stamp's archive.zip, keys.json, ciphertext.age and state.json there under those plain names, and anchor.json too where the stamp has one, each with its mode (cp -p); and run commit on that folder. That run looks for the claim in the logs from the block the set was prepared at (startBlock in its state.json), or, where the chain was reorganized below that block and the set's anchor.json holds a finalized block that still stands, from that block; and it discloses the claim it finds. It does not find a claim below that: for a set with no anchor.json, one that a reorganization put below startBlock. If the transaction is no such claim, prepare the commit in a new folder: copy finding.json, report.md and the patches there, and run commit on it.`;
+  return `This folder signs nothing more: --restart set files aside here (${asideNames(stamps)}), and the transaction that took the nonce may be a claim of the two hashes in one of those state.json files, sent some other way. Before a new folder pays, look for a claim of each of them, and of this folder's own two hashes (state.json), mined or pending: ${SAVED_STATE_NAMES} Look among that wallet's transactions: the one that took the nonce, and those after it. A claim that exists is paid, its disclosure window is running, and it needs its files. For a claim of files that were set aside: make a new claim folder with a .verdikta-claim folder in it, of mode 0700; copy that stamp's archive.zip, keys.json, ciphertext.age and state.json there under those plain names, and anchor.json too where the stamp has one, each with its mode (cp -p); and run commit on that folder, without --yes. That run looks for the claim in the logs from the block the set was prepared at (startBlock in its state.json), or, where the chain was reorganized below that block and the set's anchor.json holds a finalized block that still stands, from that block, which needs an RPC that serves the logs from there; and it discloses the claim it finds. If it prints a commit's terms and asks for --yes instead, it did not find the claim: do not give --yes there, which would pay for a second one. It does not find a claim below that: for a set with no anchor.json, one that a reorganization put below startBlock. If no such claim exists, prepare the commit in a new folder: copy finding.json, report.md and the patches there, and run commit on it.`;
+}
+
+/**
+ * Whether the transaction that took a saved commit's nonce is there for good: the wallet's count at the node's
+ * finalized block is past that nonce. Until then a reorganization can take that transaction out and leave the nonce
+ * free, and the saved commit can still go out, so nothing is to be said that only holds if it cannot.
+ * @returns {Promise<'final'|'not-final'|'no-finalized-block'>}
+ */
+async function nonceTakenForGood(ctx, state) {
+  const head = await blockIdAt(ctx);
+  const finalized = head ? await finalizedBlockOf(ctx, head) : null;
+  if (!finalized) return 'no-finalized-block';
+  return await countAt(ctx, state.hunter, finalized.number) > state.commitTx.nonce ? 'final' : 'not-final';
 }
 
 /**

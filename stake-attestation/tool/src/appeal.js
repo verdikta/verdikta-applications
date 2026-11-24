@@ -42,6 +42,8 @@ async function readAppeal(ctx, claimId) {
     claimId,
     listingId: claim.listingId,
     hunter: claim.hunter,
+    // a late claim (node P43): the notice says what an overturned INVALID pays on one, which is no award
+    late: claim.late === true,
     state: CLAIM_STATES[Number(await ctx.read('claimState', [claimId], at))],
     outcome: OUTCOMES[Number(claim.outcome)],
     kind: DISPUTE_KINDS[Number(claim.disputeKind)],

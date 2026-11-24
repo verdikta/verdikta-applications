@@ -1334,6 +1334,7 @@ export VERDIKTA_CONTRACT=0x…  VERDIKTA_IPFS_GATEWAY=https://…  VERDIKTA_PIN_
 export CODE_RUNNER_URL=http://127.0.0.1:8090  CODE_RUNNER_TOKEN=…   # for check
 verdikta-attest check  ./claim --listing 12        # free, and nothing leaves this machine
 verdikta-attest commit ./claim --listing 12 --yes  # bond + prepay; asks for --yes after saying what that means
+verdikta-attest commit ./claim --listing 12 --late --yes  # a late claim, where the listing takes no commit any more: no award
 verdikta-attest status ./claim                     # the fix window, and what comes next
 verdikta-attest reveal ./claim --yes               # the plaintext and the reveal; asks for --yes after saying what it sends
 verdikta-attest status ./claim --wait              # polls the evaluation, up to 15 minutes; exit 5 for a round with no verdict
@@ -1370,12 +1371,152 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   memory".
 - **`commit`** refuses a listing the builder did not sign, or whose on-chain key or terms are not what was signed; says P9's warning
   and the §8.6 diligence text, and the listing's disclosure key as an age recipient beside the bytes32 the chain stores, with the
-  sentence that says they are one key; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
+  sentence that says they are one key; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age`, `anchor.json` and `state.json` in
   `<claim>/.verdikta-claim/` at 0600. **Back that folder up: without its keys a claim cannot be revealed, and the bond is lost.**
   It sends `commit` with the bond and the live fee, and only once that is mined pins the ciphertext and calls `disclose`.
   Claims on a listing reveal in commit order, so the terms it prints before it pays say how many claims on the listing
   are open and which is the earliest (`queueNotice`, from the listing's `pendingClaims` and `headClaim`), and its result
   names the claim it is behind (`waitsFor`), with the reveal deadline said as the earliest it can be.
+- **`commit --late`** (node P43; design §13.2, decision D6) files a **late claim**: `lateClaim` in `commit`'s place, with the
+  same two hashes and the same price (`commitPrice`), on a listing that takes no commit any more. The lens says which
+  listing that is (`acceptsLateClaims`: Rolled, Closed after it opened, or held by its maker), so the tool reads no hold
+  and works against a contract that has none. Before it pays it says the listing's warning, the terms, and three
+  warnings in place of what a commit says of its award (`LATE_CLAIM_WARNINGS`, `src/notices.js`): a late claim pays no
+  award at any class; the bond is forfeited on INVALID (to the maker, unless the INVALID is narrow) and comes back on
+  any other outcome; the prepay is spent on the evaluation. Its commit-order line counts the listing's open late claims
+  with its `pendingClaims`, and an invited listing is open to it, as `lateClaim` has no allowlist. The wrong kind for
+  the listing is refused before anything is drawn, pinned or signed: a `commit` without `--late` on a listing that takes
+  late claims only (`LATE_CLAIMS_ONLY`, whose text names the flag), `--late` on one that takes commits
+  (`LISTING_TAKES_COMMITS`) or neither (`NO_LATE_CLAIMS`). `--late` is read until a commit or a late claim is signed:
+  the signed transaction is saved with its kind (`late` in `state.json`, on a late claim's only), a resume sends those
+  bytes whatever its flag, and before any signature the tool looks for a `Committed` and for a `LateClaim` log of the
+  folder's two hashes, so neither kind is paid for twice. `status`, `reveal`, `claim` and `appeal` then work as on any
+  claim: `status` and `claim` print "Late claim" and that no award rides on it (`late` with `--json`), and `appeal`'s
+  notice says an overturned INVALID returns the bond and pays nothing more.
+- **A claim that went out some other way.** A prepared folder whose two hashes already have a claim on the chain, a
+  commit's or a late claim's, is adopted first, before the listing, the wallet's balance, the flag or `--restart` can
+  refuse the run or remove the keys that claim needs, and the transaction it records is the one that made the claim.
+  That is before `--yes` is read too: such a folder is under way, as one with a signed commit is, and any run adopts
+  the claim and discloses it.
+- **The anchor.** The logs are read from the block the folder was prepared at (`startBlock`), and that bound holds only
+  while that block is still on the chain: a reorganization that rolled the chain back under it can mine a claim of the
+  folder's hashes, sent some other way since, in a block below it. So preparation saves an anchor before any key is
+  drawn, in a file of its own (`.verdikta-claim/anchor.json`; `state.json` is what it was): the head, whose number is
+  `startBlock`, and the node's `finalized` block, each by number and hash (the head's alone where a node names no
+  finalized block). The folder's two hashes do not exist before its keys are drawn. So while the block at
+  `startBlock` still has the saved hash, every claim of those hashes is in a later block and the scan from
+  `startBlock` is complete: one more read, nothing else. When it has another hash, or the chain is shorter, the saved
+  finalized block is held to its hash, and the logs are read from it to the head, in the scan's own pages: a
+  finalized block is not reorganized, so that scan is complete whatever happened above it, and a claim found there is
+  adopted from its log, with its transaction and its depth. When neither can be shown (no anchor, as in a folder an
+  earlier version prepared; an anchor of another block; no finalized block saved; one that is gone; or a scan that
+  cannot be read through), the logs prove nothing, so a late claim is not signed: `START_UNPROVEN`, which says why,
+  that nothing was signed, sent, pinned or set aside, that the folder's keys stay where they are, and what to do. That differs with the reason. Where a node did not give the logs, the same
+  folder can still show its bound through an RPC that serves them from the block the text names, and a new folder is
+  not the way on: the claim may be in the logs that were not read. Where the folder itself cannot show it, the way on
+  is a new folder, which is new hashes, so the text says first to look for a claim of the old ones among the wallet's
+  transactions: a claim from a new folder would pay a second bond beside it. This is asked where a late claim is
+  about to be paid for: inside the reads below before one is signed, on any run with `--late` of a prepared folder
+  before its terms, and before saved late-claim bytes are sent again on a resume (a reorganization since they were
+  signed can have mined the same hashes in another transaction, of a lower nonce, and left theirs free: then the
+  saved bytes are not sent and that claim is adopted once it is deep enough, the folder keeping the bytes until it
+  is, since their nonce was not shown to be used; behind an earlier transaction that is not mined they wait,
+  `WALLET_BUSY`). And wherever a folder's claim is looked for, the logs are read from the bound the anchor proves,
+  whatever the flag and the kind: on any resume of a prepared folder, and when a saved transaction's nonce is gone.
+  A commit is signed as it always was, and no run without `--late` is refused for its anchor: `--restart` without
+  `--late` reads from the proven bound when there is one, so it finds a commit below the old height, and from
+  `startBlock` when there is none, as it did.
+- **Reads that decide.** An adopted claim's depth is measured against a head read after its log, and the log's block
+  is then held to its hash, so a claim a reorganization moved is looked for again and not pinned early. A late claim is signed only when no claim of its
+  hashes can be on the chain unseen (`nonceAndClaimAt`, `src/commit.js`): the wallet's nonce and the logs are read at
+  one block, and the pending count after them. A count above that nonce is a transaction not mined yet, or mined past
+  that block, which may be the same late claim: nothing is signed (`WALLET_BUSY`, exit 4), and a run again finds it.
+  And the late claim is signed at that nonce, so a transaction that takes it afterwards leaves the signature unusable,
+  and the claim on the chain is adopted. A commit is signed as it always was. The block those reads were made at is
+  read again by its hash, and a run that saw it change signs nothing (`RPC_UNAVAILABLE`): a reorganization between
+  them would have the nonce count a claim the logs no longer hold. Each of those reads is asked of the node
+  (`provider.send`), never answered from a provider's own memory of an earlier one. `--restart` asks the same, whatever
+  the flag, since a prepared folder names no kind, and it loses nothing: the prepared files, the anchor and `state.json`
+  with them, are set aside under one stamp (`*.set-aside-…`), for the one case no read can see, a claim someone holds and has not
+  sent yet. They are copied before any original is removed, `state.json` first, so a `--restart` that stops half way
+  leaves either the prepared claim whole or no claim with the whole set aside. And it sets them aside only once the
+  listing, the wallet's balance and `--yes` have let the new commit through: a run that is refused before that, or
+  that only prints the terms, leaves the prepared folder whole, the active one, with its keys. Those reads take their
+  time, so the old files' claim is looked for once more, the last thing before they are set aside: one mined meanwhile
+  is adopted, and `--restart` is refused. From then on the old files are under their set-aside names whatever becomes
+  of the new commit, and a refusal after that point leaves the new prepared claim the active one.
+- **A folder that set files aside, and a commit that lost its nonce.** If the new commit then loses its nonce to
+  another transaction of the wallet (`COMMIT_REPLACED`), that transaction may be a claim of the files set aside, sent
+  some other way: it is paid, and its disclosure window runs. The folder cannot tell, so it signs nothing more (the
+  owner's decision of 2026-11-24). A run that finds the saved commit replaced ends with `COMMIT_REPLACED` before it
+  signs anew, and so does every later run of `commit` there, `--yes` or not. Nothing is recorded for this: the
+  signed bytes stay saved, and each run reads from the chain that their nonce is gone and from the disk that files
+  are set aside, so a process that stops anywhere on the way leaves no folder that signs. It is said only once it
+  cannot be undone: while the transaction that took the nonce is in a block the node does not name as finalized, a
+  reorganization can still free the nonce and let the saved commit go, so until then the run says the commit is not
+  mined and is to be made again (`TX_PENDING`, exit 4). That text names the files set aside and the way back for a
+  claim of them at once, since such a claim's disclosure window does not wait for finality; it holds back only the
+  advice to pay from a new folder. Once the nonce is used for good, the reads that decide come in an order no fork
+  change gets between: the saved commit's own receipt is asked for (a reorganization can have mined it), a claim of
+  the folder's hashes is looked for once more, and only with neither is the commit replaced. The receipt is asked of
+  the node itself, never of a provider's memory of an earlier answer, and the one that comes back is the one used,
+  once it is where it says and as deep as a commit must be: it is not waited for a second time. A receipt is evidence
+  only of what its block holds: one that is not this transaction's, or names a block that does not hold it, is acted
+  on by no run, and the signed bytes stay. That goes for a revert the wait itself brings back too: a revert reopens
+  the folder, so it is believed only as the chain bears it out now, and once the revert the chain has is as deep as a
+  commit must be: against a head read after the receipt, with the receipt's block then held to its hash once more.
+  And no receipt is not yet another transaction: a commit that reverted used its nonce too. So what used the nonce
+  is read from the chain itself, in the block where the wallet's count passed it: if the saved commit were mined, it
+  would be there. If it is, the run is to be made again for its receipt. If the block is whole and does not hold it,
+  something else used the nonce, and the text of `COMMIT_REPLACED` names the wallet's transaction with that nonce,
+  or says that the block has none (an authorization sent by another account uses a nonce too). If the node does not
+  show it (it keeps no count that far back, or gives a block with an entry that has no hash), nothing is said to be
+  for good. Logs that a node did not give are no proof that no other transaction made
+  the claim, so then the run is to be made again through an RPC that serves them. An anchor that can never show its
+  bound is no reason to run again: the saved commit can never be mined, so the folder signs nothing more, and the
+  look for a claim of its own two hashes is the hunter's with the rest. And a run whose wait ended after it saw the
+  nonce used goes the same way, the look for the folder's own claim first and then these reads, so a wait shorter
+  than the time a receipt is given to appear still adopts a claim that is there and still comes to the end. The
+  commit goes in a new
+  folder, with one copy of the claim's files, and only after a look for a claim of every set of files the folder set
+  aside and of its own two hashes, mined or pending, among the transactions of the wallet each `state.json` names,
+  whatever their nonce: the transaction that took the nonce, those before it and those after it. The text says so,
+  names every set, and says how a claim of files set aside gets them back: a new claim folder with a `.verdikta-claim` of mode 0700 in it, that stamp's `archive.zip`, `keys.json`,
+  `ciphertext.age` and `state.json` there under those plain names (and `anchor.json` where the stamp has one), each
+  with its mode, and `commit` on that folder, without `--yes`. It also says what that run finds. It looks for the
+  claim in the logs from the block the set was prepared at, or, where the chain was reorganized below that block and
+  the set's anchor holds a finalized block that still stands, from that block, which needs an RPC that serves the
+  logs from there. A run that prints a commit's terms and asks for `--yes` did not find the claim, and `--yes` there
+  would pay for a second one. It does not find a claim below that: for a set with no `anchor.json` (one an earlier
+  version prepared), a claim that a reorganization put below the block the set was prepared at. The tool has no
+  command for that case.
+- **What this changes for a commit.** A late claim is new; these six things differ for a commit, each on the safe
+  side. (1) `--restart` sets the old files aside where it deleted them, and only once the listing, the wallet's
+  balance and `--yes` have passed. (2) `--restart` is refused with `WALLET_BUSY` while the wallet has a transaction
+  that is not mined. (3) A prepared folder whose claim is on the chain already adopts it first. (4) Every folder
+  saves `anchor.json` when it is prepared, and a first send whose nonce went to another transaction with no claim
+  made ends with `COMMIT_REPLACED`. (5) Where files were set aside, a run that finds its saved commit replaced ends
+  with `COMMIT_REPLACED` before it signs anew (with `TX_PENDING`, to be run again, while the transaction that took
+  the nonce is not final). (6) Such a folder signs nothing more, and the commit goes in a new folder. What a commit
+  sends is unchanged, and `state.json` has the keys it had.
+- **No late claim in a folder that set a claim aside.** `--restart` starts a commit over, not a late claim, and a
+  late claim is never signed in a folder where `--restart` has set a claim's files aside: `LATE_NEEDS_NEW_FOLDER`,
+  before the terms are said and before any key is drawn, and again at the one place a late claim is signed. Such a
+  folder knows nothing of the earlier files. What could protect their claim while the new one is signed (the nonce
+  `--restart` read, the block it read it at) is gone when that run ends, a reorganization can change which claim a
+  nonce made, and the reads before a late claim look for the folder's own two hashes alone: a claim of the earlier
+  hashes, sent some other way and mined afterwards, would be followed by a second bond and left without its keys. A
+  new folder has neither problem. The late claim is prepared there (the same `finding.json`, `report.md` and patches),
+  and the old folder stays whole: its keys do not move, and any run of `commit` in it still finds and discloses a
+  claim of the hashes it holds prepared. The refusal names every set of files the folder set aside, and the prepared
+  claim with them: before a new folder pays, a claim of each is to be looked for, mined or pending, among the
+  transactions of the wallet its `state.json` names (`hunter`, beside the chain, the contract, the listing and the
+  two hashes), which need not be the wallet of the run. `START_UNPROVEN` names the sets too wherever it sends the
+  hunter to a new folder. A commit in such a folder is signed as it always was.
+- **A fee that moved, a nonce that went.** A live fee that moved between the terms and the signature is said before
+  it is signed, for either kind. And a signed commit whose
+  nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was
+  pinned, and a run again signs anew (in a folder that set no files aside: see above for one that did).
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. Then, as `commit`,

@@ -209,15 +209,45 @@ export function openWorkspace(claimDir) {
      */
     keepAside() {
       const stamp = `${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
-      for (const name of ['archive.zip', 'keys.json', 'ciphertext.age']) {
+      for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'anchor.json']) {
         if (readOptional(name) !== null) fs.renameSync(pathOf(name), pathOf(`${name}.set-aside-${stamp}`));
       }
       fsyncDir(dir);
     },
-    /** Removes a prepared claim's files: the caller has checked nothing was signed. */
-    removePrepared() {
-      for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) fs.rmSync(pathOf(name), { force: true });
+    /**
+     * Sets a prepared claim's files aside, its anchor and state.json with them, under one stamp: --restart starts over with new keys
+     * and loses nothing. The caller has checked that nothing was signed here and that no claim of these hashes is on
+     * the chain or pending, and no check can see a transaction that someone holds and has not sent yet: should a claim
+     * of the old hashes turn up after all, the keys it needs are still on this disk, beside the state that names them.
+     *
+     * A process can die between any two lines here too. So the files are copied first, each written whole and synced,
+     * and only then are the originals removed, state.json before the others. Stopped while copying, the folder is the
+     * prepared claim it was, complete, and a run goes on with it. Stopped after state.json is gone, the folder holds
+     * no claim and the whole set stands under its one stamp. At no point is a prepared claim left without a file it
+     * needs, and no set is ever split over two stamps.
+     */
+    setAsidePrepared() {
+      const stamp = `${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
+      const copied = [];
+      for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'anchor.json', 'state.json']) {
+        const bytes = readOptional(name);
+        if (bytes === null) continue;
+        writePrivate(`${name}.set-aside-${stamp}`, bytes);
+        copied.push(name);
+      }
+      // the turn: with no state.json the folder holds no claim, and every copy is already there
+      fs.rmSync(pathOf('state.json'), { force: true });
       fsyncDir(dir);
+      for (const name of copied) fs.rmSync(pathOf(name), { force: true });
+      fsyncDir(dir);
+    },
+    /**
+     * The stamps of the claims set aside here: each state.json that setAsidePrepared kept. (keepAside sets aside files
+     * that had no state.json, so no claim that this folder ever named.)
+     */
+    setAsideClaims() {
+      if (!fs.existsSync(dir)) return [];
+      return fs.readdirSync(dir).filter((name) => name.startsWith('state.json.set-aside-')).map((name) => name.slice('state.json.set-aside-'.length)).sort();
     },
   };
 }

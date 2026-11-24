@@ -450,7 +450,7 @@ test('node P33: step 8 says what claim and status report of a settle: the event\
 // tools/src/commit.js asks for --yes only before a commit is signed; a resumed one goes on without it (R1-F1).
 test('what they say commit does without --yes is what commit.js does', () => {
   const commit = toolSrc('commit.js');
-  const asksOnlyFirst = /if \(!state \|\| state\.stage === 'prepared'\) \{\s*const \{ listing, inputs \} = await readyToCommit\(/.test(commit);
+  const asksOnlyFirst = /if \(!state \|\| state\.stage === 'prepared'\) \{\s*const \{ listing, inputs, price \} = await readyToCommit\(/.test(commit);
   assert.ok(asksOnlyFirst, 'commit.js reads the acknowledgement only for a folder with no commit signed (readyToCommit)');
   assert.match(/function readyToCommit[\s\S]*?\n\}/.exec(commit)[0], /NEEDS_ACKNOWLEDGEMENT/);
   const text = agents().replace(/\s+/g, ' ');
@@ -1000,7 +1000,9 @@ test('bounty 400: tamper flags and integrity checks are common\'s, each kind sai
   // the feed: what `listings` holds, and the labels the server computes
   const feed = read('server', 'src', 'site', 'feed.js');
   assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\| BigInt\(onchain\.escrowWei\) < BigInt\(onchain\.awards\[3\]\)\) continue;/);
-  assert.match(section(2), /every listing that takes claims now: open, its paid period not ended, its escrow at least its CRITICAL award/);
+  assert.match(feed, /const candidates = \[\.\.\.projection\.listings\.values\(\)\]\.filter\(\(l\) => l\.opened && !l\.rolled && !l\.closed && l\.heldAt === null\);/, 'and a held listing is no candidate');
+  // what an entry takes is commits: one that takes late claims only (Rolled, Closed, held) is never one (node P43)
+  assert.match(section(2), /every listing that takes commits now: open, not held by its maker, its paid period not ended, its escrow at least its CRITICAL award\. A listing that takes late claims only is not here \(section 3, "Late claims"\)/);
   const labels = read('server', 'src', 'record', 'labels.js');
   for (const key of ['stake', 'invited', 'lapsed', 'live']) {
     assert.match(labels, new RegExp(`\\n {4}${key}[:,]`), `listingLabels returns ${key}`);
@@ -1039,4 +1041,369 @@ test('bounty 400: what a commit carries, who pays a confirmation, a dry run\'s n
   // the observable: with no quote the whole recorded message must be there (the tool's own words for it)
   assert.match(toolSrc('observable.js'), /Without a quote, the whole recorded message must appear in the observable as written\./);
   assert.match(section(6), /a quoted fragment that is not in the recorded failure on every run fails `claimedObservable`, and so does an observable with no quote at all unless the whole recorded message appears in it as written\. The claim then settles INVALID\./);
+});
+
+// ------------------------------------------------------------------------------------------------ node P43
+
+// A late claim (design §13.2, decision D6; issue #230): a finding on a listing that takes no commit any more, filed
+// with `verdikta-attest commit --late`. Wrong here costs a bond for nothing, so each statement of agents.txt on it is
+// held to the contract's source and to the tool's: when a listing takes one, what it costs, what it pays, the command.
+test('node P43: a late claim is what the contract and the tool make of it: when a listing takes one, what it costs, what it pays, and the command', () => {
+  const text = agents();
+  const raw = /\nLate claims\. [\s\S]*?(?=\n\n## 4\. )/.exec(text)?.[0];
+  assert.ok(raw, 'agents.txt section 3 says what a late claim is, after step 8');
+  const block = raw.replace(/\s+/g, ' ');
+  const logic = read('onchain', 'contracts', 'libraries', 'ClaimLogic.sol');
+  const host = read('onchain', 'contracts', 'StakeAttestation.sol');
+  const lens = read('onchain', 'contracts', 'StakeAttestationLens.sol');
+  const commit = toolSrc('commit.js');
+  const cli = toolSrc('cli.js');
+  const notices = toolSrc('notices.js');
+
+  // the call: lateClaim, with a commit's arguments (the ABI test holds the names), sent by the tool in commit's place
+  assert.ok(block.includes('`lateClaim(listingId, archiveHash, ciphertextSha256)` in place of `commit`'));
+  assert.match(commit, /const data = ctx\.encode\(late \? 'lateClaim' : 'commit', \[listingId, state\.archiveSha256, state\.ciphertextSha256\]\);/, 'the tool sends lateClaim or commit, with the same two hashes');
+  assert.match(commit, /estimate = await ctx\.estimate\(\{ data, value: price \}\);/, 'and the price it read, either way');
+
+  // when a listing takes one: the lens's acceptsLateClaims, which is ClaimLogic.commit's own rule (the bounty 400 test
+  // above holds that one), and the tool asks the lens, never the hold
+  const accepts = /function acceptsLateClaims\([\s\S]*?\n {4}\}/.exec(lens)?.[0];
+  assert.ok(accepts, 'StakeAttestationLens.sol: acceptsLateClaims');
+  assert.match(accepts, /return l\.state == StakeAttestation\.ListingState\.Rolled\s*\|\| \(l\.state == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\)\s*\|\| host\.heldAt\(listingId\) != 0;/);
+  assert.ok(block.includes('When a listing takes one: while `acceptsLateClaims(listingId)` is true: the listing rolled forward (state Rolled), or closed after it opened (state Closed), or its maker holds it (`hold(listingId)`: the state stays Open or Depleted, and no commit is taken from then on).'));
+  assert.ok(block.includes('A listing that never opened takes neither a commit nor a late claim.'));
+  for (const state of ['Open', 'Depleted', 'Rolled', 'Closed']) assert.ok(solidityEnum('ListingState').includes(state), `${state} is a listing state`);
+  assert.match(commit, /ctx\.read\('acceptsLateClaims', \[listingId\]\)/, 'the tool asks the lens whether the listing takes a late claim');
+  assert.doesNotMatch(toolSources(), /\('heldAt'|\('hold'/, 'and reads no hold: a contract without one answers acceptsLateClaims all the same');
+  assert.ok(raw.includes('\n      cast call "$VERDIKTA_CONTRACT" "acceptsLateClaims(uint256)(bool)" <listingId> --rpc-url https://sepolia.base.org\n'), 'the line that reads it');
+  const view = ABI.find((f) => f.name === 'acceptsLateClaims');
+  assert.deepEqual([view.inputs.map((i) => `${i.type} ${i.name}`), view.outputs.map((o) => o.type)], [['uint256 listingId'], ['bool']]);
+
+  // open to every wallet: commit asks isAllowed, lateClaim does not, and the tool's check follows
+  const lateFn = /function lateClaim\([\s\S]*?\n {4}\}/.exec(host)?.[0];
+  const commitFn = /function commit\([\s\S]*?\n {4}\}/.exec(host)?.[0];
+  assert.ok(lateFn && commitFn, 'StakeAttestation.sol: lateClaim and commit');
+  assert.match(commitFn, /require\(isAllowed\(listingId, msg\.sender\), "not allowed"\);/);
+  assert.doesNotMatch(lateFn, /isAllowed|not allowed/);
+  assert.ok(block.includes('It is open to every wallet, invited listing or not.'));
+
+  // what it costs: commitPrice, as a commit (lateClaim's own note, and the lens's)
+  assert.match(host, /@dev msg\.value as commit's: at least bondWei plus the live maxTotalFee \(commitPrice\)\./);
+  assert.match(lens, /commitPrice quotes what it takes, as for a commit\./);
+  assert.ok(block.includes('What it costs: what a commit costs, `commitPrice(listingId)`: the listing\'s `bondWei` plus the live prepay (section 4).'));
+  assert.match(commit, /const price = await ctx\.read\('commitPrice', \[listingId\]\);/);
+  assert.match(section(4), /A late claim sends `commitPrice\(listingId\)` too, read and sent the same way, for no award \(section 3, "Late claims"\)\./);
+
+  // what it pays: settle gives a late claim no award at any class, counts it under `later`, and sends an INVALID's
+  // bond to the maker unless it is narrow, late or not. The tool's three warnings say so, and agents.txt says them
+  // word for word
+  const settle = /function settle\([\s\S]*?\n {4}\}/.exec(logic)?.[0];
+  assert.ok(settle, 'ClaimLogic.sol: settle');
+  assert.match(settle, /uint256 award = late \? 0 : ClaimRules\.awardFor\(l\.awards, uint8\(l\.lowestClassCounted\), outcome\);/);
+  assert.match(settle, /if \(late\) l\.lateOutcomeCounts\[outcome\] \+= 1;\s*else l\.outcomeCounts\[outcome\] \+= 1;/);
+  assert.match(settle, /payee = hunter;\s*if \(outcome == ClaimRules\.INVALID\) \{[\s\S]*?if \(ClaimRules\.isNarrowInvalid\(outcome, mass, l\.narrowInvalidFloor\)\) \{[\s\S]*?\} else \{\s*payee = l\.maker;\s*\}\s*\}\s*amount = c\.bondWei;/);
+  const warnings = quoted(/export const LATE_CLAIM_WARNINGS = Object\.freeze\(\[([\s\S]*?)\]\);/.exec(notices)?.[1] ?? '');
+  assert.equal(warnings.length, 3, 'tool/src/notices.js holds the late claim\'s three warnings');
+  assert.match(warnings[0], /^A late claim pays no award\b/);
+  assert.match(warnings[1], /^The bond is forfeited on INVALID\b/);
+  assert.match(warnings[2], /^The prepay is spent on the evaluation\b/);
+  for (const line of warnings) assert.ok(block.includes(line), `agents.txt says it word for word: ${line}`);
+  assert.match(notices, /LATE_CLAIM_WARNINGS\.map\(/, 'and the notice commit --late prints before it pays carries them');
+  // the third warning's second half: finalize makes the refund in a call that is caught, and a refund deferred that
+  // way is the hunter's still: anyone may call recoverLeftoverEth, which pays the round's funder
+  assert.match(logic, /try EvaluationWallet\(payable\(wallet\)\)\.refundLeftoverEth\{gas: ClaimRules\.INLINE_REFUND_GAS_LIMIT\}\(\)[\s\S]*?\} catch \{\s*emit StakeAttestation\.RefundDeferred\(claimId, wallet\);\s*\}/);
+  assert.match(host, /Retry the recovery of a wallet's unspent prepay and pay it to the wallet's funder\s+\/\/\/\s+\(walletInfo: the hunter for a claim round or an appeal, the maker for a dispute\)\. Anyone may\s+\/\/\/\s+call\./);
+  assert.deepEqual(ABI.find((f) => f.name === 'recoverLeftoverEth').inputs.map((i) => `${i.type} ${i.name}`), ['address wallet']);
+  assert.match(warnings[2], /comes back when the round is finalized or, if the refund fails then, when anyone calls recoverLeftoverEth\(wallet\) on the contract, with the wallet of that round\.$/);
+  assert.match(host, /function recoverLeftoverEth\(address wallet\) external nonReentrant \{/, 'the entry point is the contract\'s, and takes the round\'s wallet');
+  assert.match(section(1), /A late claim, on a listing that takes no commit any more \(section 3, "Late claims"\), pays no award in any outcome/);
+
+  // the command: the flag is the parser's and commit's, a first run is a dry run as a commit's is, and the later verbs
+  // are a claim's; status says which kind it is
+  assert.ok(setLiteral(cli, 'FLAGS').includes('--late'));
+  assert.ok(usageFlags().per.get('commit').has('--late'), 'the help documents --late for commit');
+  assert.match(/case 'commit': \{[\s\S]*?\n {4}\}/.exec(cli)[0], /late: options\['--late'\] === true/);
+  assert.match(/function readyToCommit[\s\S]*?\n\}/.exec(commit)[0], /commitPreflight\(ctx, listingId, hunter, late\)[\s\S]*NEEDS_ACKNOWLEDGEMENT/, 'the listing is asked, then the terms are said, then --yes');
+  assert.ok(block.includes('The command: `verdikta-attest commit ./claim --listing <listingId> --late` prints the terms, the price and those three warnings, and sends nothing (exit 3); with --yes it sends `lateClaim`, then pins and discloses as a commit does.'));
+  assert.match(toolSrc('status.js'), /\n {4}late: claim\.late,\n/, 'status reads the claim\'s kind from the chain');
+  assert.match(/function printStatus[\s\S]*?\n\}/.exec(cli)[0], /if \(s\.late\) out\(LATE_CLAIM_NOTE\);/);
+  assert.match(notices, /export const LATE_CLAIM_NOTE = 'A late claim: [^\n]*pays no award\./);
+  assert.ok(block.includes('`status`, `reveal`, `claim` and `appeal` then work as on any claim, and `status` says it is a late claim with no award (with --json, `late` is true).'));
+  const s5 = text.slice(text.indexOf('\n## 5. '), text.indexOf('\n## 6. '));
+  for (const line of [
+    '    verdikta-attest commit ./claim --listing <listingId> --late         # first run: its terms and the price; sends nothing\n',
+    '    verdikta-attest commit ./claim --listing <listingId> --late --yes   # late claim, pin, disclose\n',
+  ]) assert.ok(s5.includes(line), `section 5: ${line.trim()}`);
+
+  // commit order: a late claim joins the listing's one queue, and pendingClaims never counts it (the bounty 400
+  // test above holds both to ClaimLogic.commit and resolve); the tool's count adds the late claims still open
+  assert.ok(block.includes('It reveals in commit order with the listing\'s other claims: behind every claim still open there, the stake\'s own and earlier late claims, and `pendingClaims` counts only the stake\'s own.'));
+  assert.match(toolSrc('listing.js'), /l\.lateClaims - l\.lateExpired - /, 'the late claims still open: made, less expired, less settled');
+  assert.match(logic, /if \(c\.late\) l\.lateExpired \+= 1;/);
+
+  // the refusals: each code is the tool's, ends with exit 1, and the ordinary commit's names the flag
+  const preflight = /async function commitPreflight[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(preflight, 'tool/src/commit.js: commitPreflight');
+  for (const code of ['LATE_CLAIMS_ONLY', 'LISTING_TAKES_COMMITS', 'NO_LATE_CLAIMS']) {
+    assert.ok(Object.hasOwn(ERROR_TEXTS, code), `${code} is an error of the tool`);
+    assert.equal(new ToolError(code).exitCode, 1, code);
+    assert.ok(preflight.includes(`'${code}'`), `${code} is decided before anything is drawn, pinned or signed`);
+    assert.ok(block.includes(`(${code})`), `agents.txt names ${code}`);
+  }
+  assert.match(ERROR_TEXTS.LATE_CLAIMS_ONLY, /commit --late/);
+  assert.ok(block.includes('The wrong kind is refused before anything is pinned or sent: `commit` without --late on a listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).'));
+  assert.match(section(3), /One that takes none may take a late claim instead \("Late claims", after step 8\)\./);
+
+  // a late claim is not signed while the wallet has a transaction pending, which may be the same claim sent some
+  // other way with no log to find yet; a commit is signed as it always was
+  // The wallet's nonce and the logs are read at one block, the pending count after them, and the late claim is signed
+  // at that nonce: a transaction that takes it afterwards leaves the signature unusable
+  const at = /async function nonceAndClaimAt[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(at, 'tool/src/commit.js: nonceAndClaimAt');
+  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await countAt\(ctx, state\.hunter, head\.number\);[\s\S]*?const \{ existing, from, unproven \} = await anchoredClaim\(ctx, ws, state, head\.number\);\s*const pending = existing \? nonce : await countAt\(ctx, state\.hunter, 'pending'\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
+  // each of those reads is the node's own answer (provider.send), never a provider's memory of an earlier one
+  for (const method of ['eth_blockNumber', 'eth_getBlockByNumber', 'eth_getTransactionCount', 'eth_getLogs']) assert.ok(commit.includes(`ctx.provider.send('${method}'`), `${method} is asked of the node`);
+  assert.doesNotMatch(commit, /ctx\.provider\.getLogs\(|ctx\.provider\.getTransactionCount\(/, 'none of them through a method the provider may answer from memory');
+  const send = /async function sendCommit[\s\S]*?\n\}/.exec(commit)[0];
+  assert.match(send, /const at = late \? await nonceAndClaimAt\(ctx, ws, state\) : \{ existing: await findCommitted\(ctx, state\) \};/, 'a late claim asks; a commit looks for its log as it always did');
+  assert.match(send, /if \(late && at\.pending > at\.nonce\) throw fail\('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond\.'\);/);
+  assert.match(send, /await ctx\.sign\(\{ data, value: price, gasLimit: [^}]*\.\.\.\(late \? \{ nonce: at\.nonce \} : \{\}\) \}\);/, 'a late claim at the nonce it checked, a commit as it always was');
+  assert.equal(new ToolError('WALLET_BUSY').exitCode, 4);
+  assert.ok(block.includes('It signs nothing while your wallet has a transaction that is not mined yet (WALLET_BUSY, exit 4): that one may be this late claim, sent some other way, and a second one would pay a second bond.'));
+  // the amount printed is the amount sent: a fee that moved since the terms is said before the signature
+  assert.match(commit, /if \(price !== quoted\) ctx\.notice\(priceMovedNotice\(\{ late, quoted, price \}\)\);\s*const data = ctx\.encode\(/);
+  assert.match(section(4), /A commit or a late claim whose fee moved between its terms and its signature says the new amount before it signs\./);
+
+  // --restart sets the prepared files aside, state.json with them, and deletes nothing: no read can see a claim of
+  // those hashes that someone holds and has not sent yet
+  // and only once the new claim may go out: after the listing, the wallet and --yes have had their say, so a refusal
+  // leaves the prepared folder whole
+  assert.match(commit, /const startOver = Boolean\(state && restart\);/);
+  // and the old files' claim is looked for once more, the last thing before they are set aside (the reads before it
+  // take their time)
+  assert.match(commit, /const \{ listing, inputs, price \} = await readyToCommit\(ctx, ws, startOver \? null : state, id, hunter, acknowledge, late\);\s*if \(startOver\) \{[\s\S]*?await lookFirst\(\);\s*if \(state\.stage !== 'prepared'\) throw fail\('RESTART_REFUSED'\);[\s\S]*?ws\.setAsidePrepared\(\);\s*state = null;\s*\}\s*if \(!state\) state = await prepare\(ctx, ws, listing, inputs, hunter, id\);\s*state = await sendCommit\(ctx, ws, state, id, late, price\);/);
+  assert.equal(commit.split('ws.setAsidePrepared()').length, 2, 'the one place a prepared folder is set aside');
+  // A late claim is signed only in a folder that never set a claim's files aside, and --restart does not start one
+  // over: refused before the terms and before any key is drawn, and again at the one place a late claim is signed.
+  const guard = /function lateNeedsNewFolder\(ws, state = null\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(guard, 'tool/src/commit.js: lateNeedsNewFolder');
+  assert.match(guard, /const stamps = ws\.setAsideClaims\(\);\s*if \(stamps\.length === 0\) return;[\s\S]*?throw fail\('LATE_NEEDS_NEW_FOLDER', `This folder holds files that --restart set aside \(\$\{asideNames\(stamps\)\}\)\. Before a new folder pays for a late claim, look for a claim of each of them\$\{own\}: \$\{SAVED_STATE_NAMES\} Look among that wallet's transactions, mined or pending\. /, 'every claim set aside is named, and looked for before a new folder pays, in the wallet its state names');
+  assert.match(commit, /const SAVED_STATE_NAMES = 'every one of those state\.json files names the wallet \(hunter\), the chain, the contract, the listing and the two hashes of one claim\.';/);
+  // START_UNPROVEN names the sets too, wherever it sends the hunter to a new folder
+  assert.match(commit, /unproven: existing \? null : withSetAside\(ws, start\.unproven \?\? null\) \};/);
+  assert.match(commit, /function withSetAside\(ws, unproven\) \{\s*const stamps = ws\.setAsideClaims\(\);\s*if \(!unproven \|\| !unproven\.endsWith\(NEW_FOLDER\) \|\| stamps\.length === 0\) return unproven;\s*return `\$\{unproven\} This folder also holds files that --restart set aside \(\$\{asideNames\(stamps\)\}\): look for a claim of each of those too, before a new folder pays\. And \$\{SAVED_STATE_NAMES\}`;/);
+  assert.match(commit, /const asideNames = \(stamps\) => stamps\.map\(\(stamp\) => `\*\.set-aside-\$\{stamp\}`\)\.join\(', '\);/);
+  assert.match(toolSrc('workspace.js'), /setAsideClaims\(\) \{[\s\S]*?name\.startsWith\('state\.json\.set-aside-'\)/, 'a claim set aside is a state.json set aside');
+  assert.match(commit, /if \(late && \(!state \|\| state\.stage === 'prepared'\)\) \{\s*lateNeedsNewFolder\(ws, state\);\s*if \(state && restart\) throw fail\('LATE_NEEDS_NEW_FOLDER', /);
+  {
+    const run = /export async function runCommit[\s\S]*$/.exec(commit)[0];
+    const refused = run.indexOf('lateNeedsNewFolder(ws, state);');
+    assert.ok(refused > 0);
+    assert.ok(run.indexOf('if (state?.stage === \'prepared\') await lookFirst();') < refused, 'a claim of the folder\'s own hashes is adopted first');
+    assert.ok(refused < run.indexOf('await readyToCommit('), 'refused before the terms');
+    assert.ok(refused < run.indexOf('ws.setAsidePrepared()') && refused < run.indexOf('await prepare('), 'and before anything is set aside or drawn');
+  }
+  assert.match(commit, /async function sendCommit\(ctx, ws, state, listingId, late, quoted\) \{\s*(?:\/\/[^\n]*\n\s*)*if \(late\) lateNeedsNewFolder\(ws, state\);/, 'and where a late claim is signed');
+  // A commit that lost its nonce in a folder where --restart set files aside (the owner's decision of 2026-11-24):
+  // the transaction that took it may be a claim of those files, paid and waiting for them, so the folder signs nothing
+  // more. The refusal comes where the nonce is found gone, before any state is saved: the signed bytes stay, and every
+  // later run ends there again.
+  const gone = /if \(gone\) \{[\s\S]*?\n  \}\n/.exec(/async function finishCommitWait[\s\S]*?\n\}/.exec(commit)?.[0] ?? '')?.[0];
+  assert.ok(gone, 'tool/src/commit.js: finishCommitWait, the gone branch');
+  assert.match(gone, /if \(ws\.setAsideClaims\(\)\.length > 0\) return replacedOrNot\(ctx, ws, state\);[\s\S]*?const next = \{ \.\.\.withKind\(state, false\), stage: 'prepared', commitTx: null \};\s*ws\.saveState\(next\);/, 'decided before the folder is saved as prepared');
+  // Whether the commit is replaced: the nonce used for good first; then the saved commit's own receipt, asked of the
+  // node and used once, where it says and deep enough; then a claim of the folder's hashes by another transaction,
+  // which logs that cannot be read through do not rule out. Everything short of all three is to be run again.
+  const decide = /async function replacedOrNot\(ctx, ws, state\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(decide, 'tool/src/commit.js: replacedOrNot');
+  assert.match(decide, /const \{ taken, at \} = await nonceTakenForGood\(ctx, state\);\s*if \(taken !== 'final'\) \{\s*throw fail\('TX_PENDING', pendingAfterRestart\(ws, state, taken === 'not-final' \? NONCE\.notFinal : NONCE\.noFinalizedBlock\)\);\s*\}\s*const receipt = await receiptNow\(ctx, state\.commitTx\.hash\);\s*if \(receipt\) \{[\s\S]*?if \(!receipt\.borneOut\) throw fail\('TX_PENDING', pendingAfterRestart\(ws, state, NONCE\.ownReceiptContradicted\)\);\s*const depth = await depthOf\(ctx, receipt\);\s*if \(depth !== 'deep'\) throw fail\('TX_PENDING', pendingAfterRestart\(ws, state, depth === 'shallow' \? NONCE\.ownReceiptShallow : NONCE\.ownReceiptContradicted\)\);\s*return finishCommitWait\(ctx, ws, state, \{ receipt \}\);\s*\}[\s\S]*?const used = await usedNonce\(ctx, state, at\);\s*if \(!used\) throw fail\('TX_PENDING', pendingAfterRestart\(ws, state, NONCE\.usedByUnshown\)\);\s*if \(used\.own\) \{\s*throw fail\('TX_PENDING', [^\n]*\n\s*\}\s*const now = await anchoredClaim\(ctx, ws, state\);\s*if \(now\.existing\) return adoptLogged\(ctx, ws, state, now\.existing, now\.from\);/);
+  // (no receipt is not yet "another transaction": which transaction used the nonce is read from the chain, in the
+  // block where the wallet's count passed it)
+  const usedBy = /async function usedNonce\(ctx, state, upTo\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(usedBy, 'tool/src/commit.js: usedNonce');
+  assert.match(usedBy, /while \(hi - lo > 1\) \{\s*const mid = lo \+ Math\.floor\(\(hi - lo\) \/ 2\);\s*if \(await countAt\(ctx, wallet, mid\) > nonce\) hi = mid;\s*else lo = mid;\s*\}\s*const block = await ctx\.rpc\(\(\) => ctx\.provider\.send\('eth_getBlockByNumber', \[quantity\(hi\), true\]\)\);\s*if \(!Array\.isArray\(block\?\.transactions\)\) return null;[\s\S]*?if \(!txs\.every\(\(t\) => isTxHash\(t\.hash\)\)\) return null;\s*if \(txs\.some\(\(t\) => t\.hash === saved\)\) return \{ own: true, blockNumber: hi, hash: saved \};\s*const named = txs\.find\(\(t\) => t\.from === wallet && Number\(BigInt\(t\.nonce\)\) === nonce\);\s*return \{ own: false, blockNumber: hi, hash: named \? named\.hash : null \};/, 'a block that is whole and does not hold the saved commit shows that something else used the nonce; one that is not whole shows nothing');
+  // the depth of a receipt: a head read after it, and then its block held to its hash once more
+  assert.match(commit, /async function depthOf\(ctx, receipt\) \{\s*if \(await headNow\(ctx\) - receipt\.blockNumber \+ 1 < ctx\.confirmations\) return 'shallow';\s*return \(await blockIdAt\(ctx, receipt\.blockNumber\)\)\?\.hash === receipt\.blockHash \? 'deep' : 'gone';/);
+  // logs a node did not give: to be run again through one that does. An anchor that can never show its bound: the
+  // end all the same, since the saved commit can never be mined, with the look for the folder's own hashes left to
+  // the hunter.
+  assert.match(decide, /const cut = now\.unproven \? now\.unproven\.indexOf\(NEW_FOLDER\) : -1;\s*if \(now\.unproven && cut < 0\) \{[\s\S]*?throw fail\('TX_PENDING', `\$\{pendingAfterRestart\(ws, state, NONCE\.logsUnread\)\} As for this folder's own two hashes: \$\{now\.unproven\}`\);\s*\}\s*if \(now\.unproven\) \{[\s\S]*?throw fail\('COMMIT_REPLACED', `\$\{replacedAfterRestart\(ws, used\)\} This folder's own anchor cannot show from which block the logs hold every claim of its two hashes: \$\{now\.unproven\.slice\(0, cut\)\.trim\(\)\} So a claim of them that a reorganization put below that block is not found here: your look covers them too\.`\);\s*\}\s*throw fail\('COMMIT_REPLACED', replacedAfterRestart\(ws, used\)\);/);
+  assert.doesNotMatch(decide, /waitMined|saveState/, 'no second wait, and nothing saved');
+  // the receipt is the node's own answer, and evidence only of what its block holds: this transaction's hash, a
+  // mined status, and a block at that height, now, with that hash and this transaction in it
+  const receiptRead = /async function receiptNow\(ctx, hash\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(receiptRead, 'tool/src/commit.js: receiptNow');
+  assert.match(receiptRead, /const raw = await ctx\.rpc\(\(\) => ctx\.provider\.send\('eth_getTransactionReceipt', \[hash\]\)\);/);
+  assert.match(receiptRead, /String\(raw\.transactionHash\)\.toLowerCase\(\) === hash\.toLowerCase\(\) && \(receipt\.status === 0 \|\| receipt\.status === 1\)/);
+  assert.match(receiptRead, /const block = await ctx\.rpc\(\(\) => ctx\.provider\.send\('eth_getBlockByNumber', \[quantity\(receipt\.blockNumber\), false\]\)\);\s*const holds = String\(block\?\.hash\)\.toLowerCase\(\) === receipt\.blockHash && Array\.isArray\(block\?\.transactions\)\s*&& block\.transactions\.some\(\(tx\) => String\(tx\?\.hash \?\? tx\)\.toLowerCase\(\) === hash\.toLowerCase\(\)\);\s*return \{ \.\.\.receipt, borneOut: holds \};/);
+  // a wait that ran out after it saw the nonce used goes on to the same reads, on a resume and on the run that signed
+  assert.match(toolSrc('context.js'), /throw Object\.assign\(fail\('TX_PENDING', `Transaction \$\{rec\.hash\}\.`\), \{ nonceUsed: movedAt !== null \}\);/);
+  assert.match(commit, /const sawNonceUsed = \(ws, err\) => err\?\.code === 'TX_PENDING' && err\.nonceUsed === true && ws\.setAsideClaims\(\)\.length > 0;/);
+  // (the way a gone nonce goes: the look for the folder's own claim first, then the reads that decide)
+  assert.match(commit, /if \(sawNonceUsed\(ws, err\)\) return null;\s*throw err;\s*\}\);\s*return finishCommitWait\(ctx, ws, state, outcome \?\? \{ gone: true \}\);/);
+  assert.match(commit, /if \(sawNonceUsed\(ws, err\)\) return null;\s*throw err;\s*\}\);\s*return finishCommitWait\(ctx, ws, next, outcome \?\? \{ gone: true \}\);/);
+  // a revert reopens the folder, so where files are set aside it is believed only as the chain bears it out now
+  assert.match(commit, /if \(receipt\.status !== 1\) \{\s*const hash = state\.commitTx\.hash;[\s\S]*?if \(receipt\.borneOut !== true && ws\.setAsideClaims\(\)\.length > 0\) \{\s*const now = await receiptNow\(ctx, hash\);\s*if \(!now \|\| now\.borneOut !== true \|\| now\.status !== 0\) throw fail\('TX_PENDING', pendingAfterRestart\(ws, state, NONCE\.revertNotBorneOut\)\);[\s\S]*?const depth = await depthOf\(ctx, now\);\s*if \(depth !== 'deep'\) throw fail\('TX_PENDING', pendingAfterRestart\(ws, state, depth === 'shallow' \? NONCE\.revertShallow : NONCE\.revertNotBorneOut\)\);\s*\}\s*const next = \{ \.\.\.withKind\(state, false\), stage: 'prepared', commitTx: null \};\s*ws\.saveState\(next\);\s*throw fail\('COMMIT_REVERTED'/);
+  // final: the wallet's count at the node's finalized block is past the saved nonce
+  assert.match(commit, /async function nonceTakenForGood\(ctx, state\) \{\s*const head = await blockIdAt\(ctx\);\s*const finalized = head \? await finalizedBlockOf\(ctx, head\) : null;\s*if \(!finalized\) return \{ taken: 'no-finalized-block' \};[\s\S]*?count = await countAt\(ctx, state\.hunter, finalized\.number\);[\s\S]*?return \{ taken: count > state\.commitTx\.nonce \? 'final' : 'not-final', at: finalized\.number \};/);
+  assert.equal(new ToolError('TX_PENDING').exitCode, 4);
+  assert.equal(gone.split('ws.saveState(').length, 2, 'the one write of that branch comes after the refusal');
+  const replaced = /function replacedAfterRestart\(ws, used\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(replaced, 'tool/src/commit.js: replacedAfterRestart');
+  // the text: what to look for before a new folder pays, how a claim of the files set aside gets them back, what that
+  // run finds and what it does not, and where the commit goes otherwise. It promises no command the tool does not have.
+  assert.match(replaced, /\? `transaction \$\{used\.hash\} of this wallet has its nonce, in block \$\{used\.blockNumber\}, for good\.`\s*: `its nonce was used in block \$\{used\.blockNumber\}, for good, by something other than this transaction: no transaction of this wallet in that block has the nonce \(an authorization sent by another account uses one too\)\.`;/);
+  assert.match(replaced, /return `This folder signs nothing more: \$\{by\} \$\{setAsideMayBePaid\(stamps\)\} Before a new folder pays, look for a claim of each of them, and of this folder's own two hashes \(state\.json\), mined or pending: \$\{WHERE_TO_LOOK\} \$\{RESTORE\} If no such claim exists, prepare the commit in a new folder: copy finding\.json, report\.md and the patches there, and run commit on it\.`;/);
+  assert.match(commit, /const setAsideMayBePaid = \(stamps\) => `--restart set files aside here \(\$\{asideNames\(stamps\)\}\), and a claim of the two hashes in one of those state\.json files may have been sent some other way: by the transaction that took the nonce, or by another\.`;/);
+  // no nonce bounds the search
+  assert.match(commit, /const WHERE_TO_LOOK = `\$\{SAVED_STATE_NAMES\} Look through that wallet's transactions on the contract, whatever their nonce: the one that took the nonce, those before it and those after it\. A claim that exists is paid, its disclosure window is running, and it needs its files\.`;/);
+  const restore = /const RESTORE = '([^\n]*)';\n/.exec(commit)?.[1].replace(/\\'/g, '\'');
+  assert.ok(restore, 'tool/src/commit.js: RESTORE');
+  for (const said of [
+    /^For a claim of files that were set aside: make a new claim folder with a \.verdikta-claim folder in it, of mode 0700; copy that stamp's archive\.zip, keys\.json, ciphertext\.age and state\.json there under those plain names, and anchor\.json too where the stamp has one, each with its mode \(cp -p\); and run commit on that folder, without --yes\./,
+    /That run looks for the claim in the logs from the block the set was prepared at \(startBlock in its state\.json\), or, where the chain was reorganized below that block and the set's anchor\.json holds a finalized block that still stands, from that block, which needs an RPC that serves the logs from there; and it discloses the claim it finds\./,
+    /If it prints a commit's terms and asks for --yes instead, it did not find the claim: do not give --yes there, which would pay for a second one\./,
+    /It does not find a claim below that: for a set with no anchor\.json, one that a reorganization put below startBlock\.$/,
+  ]) assert.match(restore, said);
+  assert.doesNotMatch(`${replaced} ${restore}`, /#\d|--adopt|later version/);
+  // before finality the run says the same of the files set aside, and holds back only the advice to pay anew
+  const pending = /function pendingAfterRestart\(ws, state, what\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(pending, 'tool/src/commit.js: pendingAfterRestart');
+  assert.match(pending, /return `Transaction \$\{state\.commitTx\.hash\}: it stays saved, and no other was signed\. \$\{what\} If another transaction has the nonce for good, this folder signs nothing more, and this command says so then\. Do not pay from a new folder before this command has said that this folder signs nothing more\. Meanwhile, \$\{setAsideMayBePaid\(stamps\)\} Look for a claim of each of them now, mined or pending: \$\{WHERE_TO_LOOK\} \$\{RESTORE\}`;/);
+  assert.doesNotMatch(pending, /prepare the commit in a new folder|Nothing was signed/);
+  // (what the restored folder's run covers is anchoredClaim's: from startBlock, or from the finalized block its anchor proves)
+  assert.match(/async function provenStart[\s\S]*?\n\}/.exec(commit)?.[0] ?? '', /return \{ from: anchor\.finalized\.number, reorganized: true \};/);
+  // with nothing set aside the folder is prepared again, and a run again signs a new one, as it did
+  assert.match(commit, /const SIGN_AGAIN = 'Run commit again: it signs a new one\.';/);
+  assert.match(commit, /if \(state\.stage === 'prepared'\) throw fail\('COMMIT_REPLACED', SIGN_AGAIN\);/);
+  assert.match(ERROR_TEXTS.COMMIT_REPLACED, /^Another transaction of this wallet took the commit's nonce before it was mined, so this commit made no claim, and nothing was pinned\.$/);
+  assert.equal(new ToolError('COMMIT_REPLACED').exitCode, 1);
+  assert.equal(new ToolError('LATE_NEEDS_NEW_FOLDER').exitCode, 1);
+  for (const said of [/--restart does not start one over/, /Nothing was signed, sent, pinned or set aside\./, /Prepare the late claim in a new folder: /, /Keep this folder as it is\.$/]) assert.match(ERROR_TEXTS.LATE_NEEDS_NEW_FOLDER, said);
+  assert.ok(block.includes('--restart does not start a late claim over, and a late claim is not signed in a folder where --restart has set a claim\'s files aside (LATE_NEEDS_NEW_FOLDER): such a folder knows nothing of the earlier files, and a claim of their hashes that is mined afterwards would be followed by a second bond. Its text names every set of files set aside: before a new folder pays, look for a claim of each, and of the claim the folder holds prepared. Every state.json there, set aside or not, names the wallet (`hunter`), the chain, the contract, the listing and the two hashes of one claim: look among that wallet\'s transactions, mined or pending. Then prepare the late claim in a new folder (copy finding.json, report.md and the patches there), and keep the old folder as it is: its keys stay where they are, and any run of `commit` in it still finds and discloses a claim of the hashes it holds prepared.'));
+  assert.match(toolSrc('usage.js').replace(/\s+/g, ' '), /--restart starts a commit over, not a late claim: a late claim is prepared in a new folder, and is not signed in one where --restart has set a claim's files aside/);
+  const setAside = /setAsidePrepared\(\) \{[\s\S]*?\n {4}\},/.exec(toolSrc('workspace.js'))?.[0];
+  assert.ok(setAside, 'tool/src/workspace.js: setAsidePrepared');
+  // each file is copied whole under the stamp before any original is removed, and state.json goes first
+  assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'anchor\.json', 'state\.json'\]\) \{\s*const bytes = readOptional\(name\);\s*if \(bytes === null\) continue;\s*writePrivate\(`\$\{name\}\.set-aside-\$\{stamp\}`, bytes\);/);
+  assert.match(setAside, /copied\.push\(name\);\s*\}[\s\S]*?fs\.rmSync\(pathOf\('state\.json'\), \{ force: true \}\);\s*fsyncDir\(dir\);\s*for \(const name of copied\) fs\.rmSync\(pathOf\(name\), \{ force: true \}\);/, 'every copy is written before an original is removed, and state.json is removed first');
+  // Section 9 says the six things this change does to a commit's folder, each as the tool does it
+  {
+    const nine = section(9).replace(/\s+/g, ' ');
+    assert.match(nine, /a change stops `commit` with INPUTS_CHANGED, and --restart starts the commit over with new keys \(a late claim is not started over: section 3, "Late claims"\)/);
+    for (const said of [
+      // (3) adoption first
+      'A claim of the folder\'s two hashes that is on the chain already is adopted first, before the listing, your balance, --yes or --restart is asked (section 4).',
+      // (1) set aside, not deleted, and only after --yes
+      '--restart sets the old files aside in the same folder, under set-aside names: it deletes nothing. It sets them aside only once the listing, your balance and --yes have let the new commit through: a run refused before that leaves the folder as it was.',
+      // (2) WALLET_BUSY on --restart
+      '--restart is refused while your wallet has a transaction that is not mined (WALLET_BUSY, exit 4): it may be the folder\'s own claim.',
+      // (4) anchor.json and COMMIT_REPLACED
+      'Every folder saves anchor.json when it is prepared. A commit whose nonce went to another transaction before it was mined, with no claim made, ends with COMMIT_REPLACED, and a run again signs a new one.',
+      // (5) with files set aside, COMMIT_REPLACED before anything is signed anew
+      'In a folder where --restart set files aside, a run that finds its saved commit replaced ends with COMMIT_REPLACED before it signs anew: the transaction that took the nonce may be a claim of the files set aside, sent some other way, which is paid and needs them. While that cannot be said for good yet (that transaction is in a block that is not final, or the run could not read what shows it), the run says the commit is not mined (TX_PENDING, exit 4): run the same command again, and do not pay from a new folder yet. Either text names the files set aside and says, at once, where to look for a claim of them (the wallet\'s whole history on the contract, not only the transaction that took the nonce), how such a claim gets its files back, and what that run finds and does not.',
+      // (6) such a folder signs nothing more
+      'Such a folder signs nothing more: every later run of `commit` there ends with COMMIT_REPLACED, and the commit goes in a new folder (copy finding.json, report.md and the patches there).',
+    ]) assert.ok(nine.includes(said), said);
+    assert.match(commit, /else if \(restart && at\.pending > at\.nonce\) throw fail\('WALLET_BUSY', /);
+  }
+
+  // a claim of the folder's hashes that is on the chain already is found before the acknowledgement is read; so a run
+  // without --yes is no dry run there
+  const runBody = /export async function runCommit[\s\S]*$/.exec(commit)[0];
+  const first = runBody.indexOf('if (state?.stage === \'prepared\') await lookFirst();');
+  assert.ok(first > 0 && first < runBody.indexOf('await readyToCommit('), 'adopted before the terms and --yes');
+  // the logs are read from the block the folder was prepared at, as they always were, and state.json is what it was
+  assert.match(commit, /async function findCommitted\(ctx, state, upTo = null, start = state\.startBlock\) \{/);
+  assert.match(commit, /let page = Math\.max\(1, Math\.floor\(ctx\.logPageBlocks\)\);\s*for \(let from = start; from <= head;\) \{/);
+  assert.doesNotMatch(commit, /startBlockHash/);
+
+  // The anchor (a design review of rounds 7 to 10): that bound is proven, not guessed. Preparation saves the head and
+  // the node's finalized block, by number and hash, in a file of its own, before any key is drawn, and state.json
+  // gets none of it
+  const prepare = /async function prepare\([\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(prepare, 'tool/src/commit.js: prepare');
+  assert.match(prepare, /const head = await blockIdAt\(ctx\);[\s\S]*?const finalized = await finalizedBlockOf\(ctx, head\);\s*const startBlock = head\.number;\s*ws\.keepAside\(\);\s*ws\.write\(ANCHOR_FILE, Buffer\.from\(`\$\{JSON\.stringify\(\{ version: 1, head, finalized \}, null, 2\)\}\\n`\)\);/);
+  assert.ok(prepare.indexOf('ws.write(ANCHOR_FILE') < prepare.indexOf('generateDisclosureSecrets()'), 'the anchor is saved before the keys are drawn');
+  assert.match(commit, /const ANCHOR_FILE = 'anchor\.json';/);
+  assert.match(prepare, /disclosureKey,\s*startBlock,\s*\};/, 'state.json ends where it did');
+  // what it proves: the block at startBlock with its saved hash, or else the saved finalized block with its own
+  const proven = /async function provenStart[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(proven, 'tool/src/commit.js: provenStart');
+  assert.match(proven, /if \(!anchor\) return \{ unproven: /);
+  assert.match(proven, /if \(anchor\.head\.number !== state\.startBlock\) return \{ unproven: /);
+  assert.match(proven, /if \(\(await blockIdAt\(ctx, state\.startBlock\)\)\?\.hash === anchor\.head\.hash\) return \{ from: state\.startBlock \};/);
+  assert.match(proven, /if \(!anchor\.finalized\) return \{ unproven: /);
+  assert.match(proven, /if \(\(await blockIdAt\(ctx, anchor\.finalized\.number\)\)\?\.hash !== anchor\.finalized\.hash\) return \{ unproven: [^\n]*\n\s*return \{ from: anchor\.finalized\.number, reorganized: true \};/);
+  // where nothing proves it, a late claim is not signed and --restart --late sets nothing aside; a commit is never asked
+  assert.match(send, /if \(at\.existing\) return adoptLogged\(ctx, ws, state, at\.existing, at\.from\);[\s\S]*?if \(late && at\.unproven\) throw fail\('START_UNPROVEN', at\.unproven\);/);
+  assert.match(commit, /if \(at\.existing\) state = await adoptLogged\(ctx, ws, state, at\.existing, at\.from\);\s*else if \(late && at\.unproven\) throw fail\('START_UNPROVEN', at\.unproven\);\s*else if \(restart && at\.pending > at\.nonce\) throw fail\('WALLET_BUSY'/, 'a prepared folder: adopted, or refused with --late, before the terms and before --restart sets it aside');
+  // wherever a folder's claim is looked for, the logs are read from the bound the anchor proves, whatever the flag and
+  // the kind: on a resume of a prepared folder, and when a saved transaction's nonce is gone
+  assert.match(commit, /const at = restart \? await nonceAndClaimAt\(ctx, ws, state\) : await anchoredClaim\(ctx, ws, state\);\s*if \(at\.existing\) state = await adoptLogged\(/);
+  const waited = /async function finishCommitWait[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(waited, 'tool/src/commit.js: finishCommitWait');
+  assert.match(waited, /if \(gone\) \{[\s\S]*?const at = await anchoredClaim\(ctx, ws, state\);\s*if \(at\.existing\) return adoptLogged\(ctx, ws, state, at\.existing, at\.from\);/);
+  // saved late-claim bytes go out again only on the proof they were signed on, read again: a claim of these hashes
+  // made by another transaction is adopted and they are not sent; unproven, or behind a transaction that is not
+  // mined, they are not sent either
+  const resend = /async function settleCommit[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(resend, 'tool/src/commit.js: settleCommit');
+  assert.match(resend, /if \(state\.late !== true\) return undefined;[\s\S]*?const at = await nonceAndClaimAt\(ctx, ws, state\);[\s\S]*?if \(at\.existing\) return \{ existing: at\.existing, from: at\.from \};[\s\S]*?if \(at\.unproven\) throw fail\('START_UNPROVEN', [^\n]*\n\s*if \(at\.nonce < state\.commitTx\.nonce\) throw fail\('WALLET_BUSY', /);
+  assert.match(toolSrc('context.js'), /const superseded = beforeResend \? await beforeResend\(\) : undefined;\s*if \(superseded\) return \{ superseded \};\s*await ctx\.broadcast\(rec\);/, 'asked before the bytes are sent, and only then');
+  // and the bytes are kept until that claim is adopted: their nonce was not shown to be used
+  assert.match(waited, /if \(superseded\) return adoptLogged\(ctx, ws, state, superseded\.existing, superseded\.from\);\s*if \(gone\) \{/);
+  const raised = [...commit.matchAll(/^.*fail\('START_UNPROVEN'.*$/gm)].map((m) => m[0].trim());
+  assert.equal(raised.length, 3, 'START_UNPROVEN is raised in three places');
+  assert.deepEqual(raised.slice(1), ['if (late && at.unproven) throw fail(\'START_UNPROVEN\', at.unproven);', 'else if (late && at.unproven) throw fail(\'START_UNPROVEN\', at.unproven);'], 'for --late alone where a claim would be signed or a folder set aside');
+  assert.ok(resend.includes(raised[0]), 'and for a late claim\'s saved bytes, in settleCommit');
+  assert.equal(new ToolError('START_UNPROVEN').exitCode, 1);
+  for (const said of [/a late claim sent now could be a second one, for a second bond\./, /Nothing was signed, sent, pinned or set aside, and this folder's keys stay where they are\.$/]) assert.match(ERROR_TEXTS.START_UNPROVEN, said);
+  // what to do, by the reason: through a node that gives the logs the same folder can show it; where the folder
+  // itself cannot, a new folder, after a look for a claim of the old hashes
+  const newFolder = /const NEW_FOLDER = '([^\n]*)';\n/.exec(commit)?.[1].replace(/\\'/g, '\'');
+  assert.ok(newFolder, 'tool/src/commit.js: NEW_FOLDER');
+  assert.match(newFolder, /^If you sent this folder's two hashes some other way \(state\.json has them\), find that claim among this wallet's transactions first: it needs this folder's keys, and a claim from a new folder would pay a second bond\. If you did not, prepare the claim in a new folder: /);
+  assert.equal(proven.split('${NEW_FOLDER}').length, 5, 'each reason the folder itself cannot show its bound ends with it');
+  assert.match(commit, /const otherRpc = \(from\) => `Run the same command again through an RPC that serves the logs from block \$\{from\}: [^\n]*A new folder is not the way on here: a claim of these hashes may be in the logs that were not read\.`;/);
+  assert.match(commit, /start\.unproven = `[^\n]*the node did not give all the logs since the finalized block saved with it\. \$\{otherRpc\(start\.from\)\}`;/);
+  assert.ok(block.includes('When `commit` prepares a folder it saves an anchor there (anchor.json): the block the folder was prepared at and the node\'s finalized block. If the chain is reorganized below the first, the logs are read from the second, and a claim of the folder\'s hashes found there is adopted, not paid for again. The same is asked before a late claim that was signed and saved is sent again.'));
+  assert.ok(block.includes('Where the folder cannot show either, nothing is signed or sent (START_UNPROVEN). Its text says what to do, by the reason. If the node did not give the logs, run the same command again through an RPC that serves them from the block the text names: do not start a new folder, the claim may be in the logs that were not read. If the folder has no anchor, or the reorganization went below the finalized block too, a new folder is the way on, and it is new hashes: if you sent this folder\'s hashes some other way, find that claim among your wallet\'s transactions first, since a claim from a new folder would pay a second bond. Keep the old folder either way: its keys stay where they are.'));
+  assert.match(section(9), /`commit` writes `claim\/\.verdikta-claim\/`: archive\.zip, keys\.json, ciphertext\.age, anchor\.json and state\.json, each mode 0600/);
+  assert.match(section(4), /A folder that `commit` has prepared and whose two hashes already have a claim on the chain, sent some other way than by this tool, is under way too: any run of `commit` there adopts that claim, pins its ciphertext and sends the disclose, --yes or not/);
+  assert.match(toolSrc('usage.js').replace(/\s+/g, ' '), /a claim of the folder's two hashes that is on the chain already, sent some other way, is under way like a signed one: any run adopts it and discloses it, --yes or not/);
+
+  // a resume: the flag is read until something is signed, and the saved transaction decides from then on
+  assert.match(section(4), /Once a commit or a late claim is signed, a later run resumes that one, with --late or without it\./);
+  assert.match(commit, /if \(state\?\.stage === 'commit-signed'\) state = await settleCommit\(ctx, ws, state\);/, 'a signed one is settled before the flag is read');
+
+  // the index names it too
+  assert.match(read('client', 'public', 'llms.txt'), /late claims/);
+});
+
+// The lines a hunter types, as they were before node P43: a published film shows them, so --late is added in lines of
+// its own and nothing here is reworded.
+test('node P43: the command lines agents.txt had are as they were, character for character', () => {
+  const text = agents();
+  for (const line of [
+    '    verdikta-attest check ./claim --listing <listingId>          # before you commit; needs a runner: section 8',
+    '    verdikta-attest commit ./claim --listing <listingId>         # first run: the terms and the price; sends nothing',
+    '    verdikta-attest commit ./claim --listing <listingId> --yes   # commit, pin, disclose',
+    '    verdikta-attest status ./claim                               # where the claim stands, and what is next',
+    '    verdikta-attest reveal ./claim                               # after the fix window: what it sends; sends nothing',
+    '    verdikta-attest reveal ./claim --yes                         # pin the plaintext and reveal',
+    '    verdikta-attest status ./claim --wait --max-wait-ms <ms>     # polls the evaluation',
+    '    verdikta-attest claim ./claim                                # finalize, settle, withdraw: whatever is due',
+    '    ln -sf verdikta-attest.js bin/verdikta-attest && export PATH="$PWD/bin:$PATH"',
+    '    export VERDIKTA_CONTRACT="$(curl -fsS https://verifiers.verdikta.org/api/status | jq -r .contract)"',
+    '    git clone --branch main https://github.com/verdikta/verdikta-applications.git',
+    '    cd verdikta-applications/stake-attestation/shared && npm ci --ignore-scripts',
+    '    cd ../tool && npm ci --ignore-scripts',
+    '    node bin/verdikta-attest.js --help',
+    '5. `verdikta-attest commit ./claim --listing <listingId> --yes`, then back the folder up (9).',
+    '6. After the fix window, `verdikta-attest reveal ./claim --yes`, then `status` and `claim`',
+  ]) assert.ok(text.includes(`\n${line}\n`), line.trim());
+  const block = text.slice(text.indexOf('The commands, in order'), text.indexOf('\nIf it is judged INVALID'));
+  assert.equal(block.split('\n').filter((l) => l.startsWith('    verdikta-attest ')).length, 8, 'the commands block holds the eight lines it held');
+  assert.doesNotMatch(block, /--late/, 'and the late claim\'s lines stand apart from it');
 });

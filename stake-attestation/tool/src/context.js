@@ -146,10 +146,14 @@ export function makeContext(options = {}) {
     return ctx.provider.estimateGas({ from, to: ctx.contract, data, value });
   });
 
-  /** Signs a call: the record to save before it is sent. The signed bytes stay on this machine until then. */
-  ctx.sign = async ({ data, value = 0n, gasLimit }) => {
+  /**
+   * Signs a call: the record to save before it is sent. The signed bytes stay on this machine until then. The nonce
+   * is the wallet's next one counting what is pending, unless the caller names the one it has checked (`nonce`: a late
+   * claim, commit.js).
+   */
+  ctx.sign = async ({ data, value = 0n, gasLimit, nonce: checked }) => {
     const from = await ctx.hunterAddress();
-    const nonce = await ctx.rpc(() => ctx.provider.getTransactionCount(from, 'pending'));
+    const nonce = checked ?? await ctx.rpc(() => ctx.provider.getTransactionCount(from, 'pending'));
     const fee = await ctx.feeCap();
     let raw;
     try {
@@ -198,21 +202,30 @@ export function makeContext(options = {}) {
           movedAt = null;
         }
       }
-      if (ctx.now() >= until) throw fail('TX_PENDING', `Transaction ${rec.hash}.`);
+      if (ctx.now() >= until) {
+        // what the wait saw goes with the error: a caller may have more to say when the nonce was already used
+        // (commit.js: a folder where --restart set files aside)
+        throw Object.assign(fail('TX_PENDING', `Transaction ${rec.hash}.`), { nonceUsed: movedAt !== null });
+      }
       await ctx.sleep(ctx.pollMs ?? TX_POLL_MS);
     }
   };
 
   /**
    * A resume's view of saved bytes: mined, gone, or sent again and waited on. `beforeResend` runs only if they are
-   * about to go out again, and can refuse: sending them may be what spends the money.
+   * about to go out again, and can refuse: sending them may be what spends the money. It can also answer with what
+   * makes them unneeded (what they were signed to do is done already, by another transaction): then they are not
+   * sent, and the caller gets that answer as `superseded`. It is not `gone`: their nonce was not shown to be used,
+   * so the caller keeps them until what it was handed holds.
+   * @returns {Promise<{ receipt: object } | { gone: true } | { superseded: object }>}
    */
   ctx.settleSaved = async (rec, { beforeResend = null, ...options_ } = {}) => {
     const receipt = await ctx.rpc(() => ctx.provider.getTransactionReceipt(rec.hash));
     if (!receipt) {
       const next = await ctx.rpc(() => ctx.provider.getTransactionCount(rec.from, 'latest'));
       if (next <= rec.nonce) {
-        if (beforeResend) beforeResend();
+        const superseded = beforeResend ? await beforeResend() : undefined;
+        if (superseded) return { superseded };
         await ctx.broadcast(rec);
       }
     }

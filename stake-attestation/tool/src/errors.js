@@ -13,6 +13,7 @@ export const ERROR_TEXTS = Object.freeze({
   CIPHERTEXT_CID_DIFFERS: 'The pin target answered a CID other than the one disclosed. Nothing was sent.',
   CLAIM_ENDED: 'This claim has ended.',
   CLAIM_MISMATCH: 'The claim on-chain is not the one this folder committed. Nothing was pinned or sent.',
+  COMMIT_REPLACED: 'Another transaction of this wallet took the commit\'s nonce before it was mined, so this commit made no claim, and nothing was pinned.',
   COMMIT_REVERTED: 'The commit transaction reverted, so no claim exists and nothing was pinned. Run commit again to price it afresh.',
   CONTRACT_REFUSED: 'The contract refused the call.',
   DISCLOSE_REVERTED: 'The disclose transaction reverted. Run commit again to resume.',
@@ -26,12 +27,16 @@ export const ERROR_TEXTS = Object.freeze({
   INPUTS_CHANGED: 'The claim files changed since this commit was prepared, and nothing has been signed. Restore them, or pass --restart to draw new keys for the new files.',
   INSUFFICIENT_FUNDS: 'This wallet cannot pay for this. Nothing was sent.',
   INTERNAL: 'The tool failed unexpectedly.',
+  LATE_CLAIMS_ONLY: 'This listing takes no commits now, only late claims. A late claim is judged and recorded, and pays no award: commit --late prints its terms and its price, and with --yes files one. Nothing was pinned or sent.',
   LISTING_ARCHIVE_INVALID: 'That is no listing archive this tool can read.',
   LISTING_NOT_ACCEPTING: 'This listing takes no commits now.',
   LISTING_NOT_FOUND: 'No such listing on this contract.',
+  LATE_NEEDS_NEW_FOLDER: 'A late claim is not signed in a folder that has set an earlier claim\'s files aside, and --restart does not start one over. The folder would know nothing of the earlier files, and a claim of their two hashes, sent some other way and mined afterwards, would be left without its keys while the new claim pays a second bond. Nothing was signed, sent, pinned or set aside. Prepare the late claim in a new folder: copy finding.json, report.md and the patches there, and run commit --late on it. Keep this folder as it is.',
+  LISTING_TAKES_COMMITS: 'This listing takes commits, so it takes no late claim: --late is for a listing that takes none any more. Run commit without --late. Nothing was pinned or sent.',
   NEEDS_ACKNOWLEDGEMENT: 'Read the above, then run again with --yes. Nothing was sent.',
   NETWORK_NOT_ALLOWED: 'This tool is for Base Sepolia and local nodes for now. Refused.',
   NOTHING_TO_WITHDRAW: 'This wallet has nothing to withdraw.',
+  NO_LATE_CLAIMS: 'This listing takes no late claim now. A listing takes one once its stake has rolled forward, or closed after it opened, or while its maker holds it. Nothing was pinned or sent.',
   NOT_APPEALABLE: 'This claim cannot be appealed now. Nothing was sent.',
   NOT_YOUR_CLAIM: 'This wallet is not the claim\'s hunter, and only the hunter may appeal. Nothing was sent.',
   NEEDS_WAIVER: 'Settling your own INVALID now waives the appeal. Read the above, then run again with --waive-appeal. Nothing was sent.',
@@ -66,11 +71,12 @@ export const ERROR_TEXTS = Object.freeze({
   RUNNER_NOT_LOCAL: 'CODE_RUNNER_URL is not this machine, and a runner reads the plaintext claim. Pass --remote-runner if you mean it.',
   RUNNER_UNAUTHORIZED: 'The code-runner refused the token in CODE_RUNNER_TOKEN.',
   RUNNER_UNREACHABLE: 'The code-runner could not be reached at CODE_RUNNER_URL.',
+  START_UNPROVEN: 'This folder cannot show from which block the logs hold every claim of its two hashes, so the tool cannot tell that none was made already, and a late claim sent now could be a second one, for a second bond. Nothing was signed, sent, pinned or set aside, and this folder\'s keys stay where they are.',
   STATE_INVALID: 'state.json cannot be read. It was left as it is; nothing was drawn or sent.',
   STATE_MISMATCH: 'This folder belongs to another wallet, listing, chain or contract.',
   TX_PENDING: 'The transaction is not mined yet. It stays saved: run the same command again to wait for it, and no second one is sent.',
   USAGE: 'Usage error.',
-  WALLET_BUSY: 'A transaction of this wallet is not mined yet, and it may be this appeal: run appeal again once it is. Nothing was sent.',
+  WALLET_BUSY: 'A transaction of this wallet is not mined yet, and it may be this very call, sent before: run the same command again once it is mined. Nothing was sent.',
   WALLET_KEY_FILE: 'The wallet key file must be a regular file only you can read (0600 or 0400). A Windows drive, mounted in WSL or not, cannot give a file that mode: keep it on a Linux or macOS path.',
   WALLET_KEY_INVALID: 'The wallet key is not 32 bytes of hex.',
   WALLET_KEY_MISSING: 'This needs a wallet: VERDIKTA_WALLET_KEY in the environment, or --key-file <path>.',
@@ -102,7 +108,7 @@ export const fail = (code, detail) => new ToolError(code, detail);
 // Every revert string in onchain/contracts (test/abi.test.js holds this list to them). Only these are ever
 // repeated from a failure: anything else stays unnamed, since a node's message can quote the calldata.
 export const KNOWN_REVERTS = Object.freeze([
-  'active listing exists', 'allowlist too long', 'already closed', 'already disclosed', 'already disputed', 'already flagged', 'already held', 'already retriggered', 'already started', 'amount owed', 'appeal window open', 'appeal window over', 'awaiting confirmation', 'awards decrease', 'awards owed', 'bad allowlist', 'bad alpha', 'bad archiveHash', 'bad baseCommit', 'bad bcid', 'bad budget', 'bad ciphertextCid', 'bad ciphertextSha256', 'bad claimId', 'bad dispute oracle fee', 'bad disputeCid', 'bad fee recipient', 'bad fee scaling', 'bad knownIssueIds', 'bad listingCid', 'bad listingId', 'bad lowestClassCounted', 'bad oracle fee', 'bad repo', 'bad statementCid', 'base cost must be below dispute fee', 'base cost must be below fee', 'claims pending', 'confirmation deadline over', 'contract artifact needs a deployment', 'counted class pays nothing', 'disclose window over', 'dispute oracle fee above ceiling', 'dispute window open', 'dispute window over', 'dispute window too long', 'dispute window too short', 'earlier claim unresolved', 'escrow below fee', 'escrow below top award', 'evaluation not ready', 'fee changed', 'fee not paid', 'fix window open', 'fix window too long', 'floor out of bounds', 'gas below INLINE_REFUND_GAS_NEEDED', 'gas below SUBMISSION_GAS_NEEDED', 'grace exceeds fix window', 'grace over', 'no confirmation due', 'no disclosure key', 'no value', 'not INVALID', 'not a valid outcome', 'not accepting commits', 'not allowed', 'not committed', 'not disclosed', 'not failed', 'not fundable', 'not hunter', 'not in fix window', 'not judged', 'not maker', 'not renewable', 'not requester', 'not revealed', 'not rollable', 'nothing to recover', 'nothing to withdraw', 'oracle fee above ceiling', 'payment below bond + fee', 'plain ETH refused', 'prepay below fee', 'reentrant', 'repatriate failed', 'repo artifact has a deployment', 'retrigger window open', 'retrigger window over', 'reveal window open', 'reveal window over', 'reveal window too long', 'reveal window too short', 'self only', 'too many known issues', 'unknown function', 'unknown wallet', 'withdraw failed', 'wrong fee', 'zero aggregator',
+  'active listing exists', 'allowlist too long', 'already closed', 'already disclosed', 'already disputed', 'already flagged', 'already held', 'already retriggered', 'already started', 'amount owed', 'appeal window open', 'appeal window over', 'awaiting confirmation', 'awards decrease', 'awards owed', 'bad allowlist', 'bad alpha', 'bad archiveHash', 'bad baseCommit', 'bad bcid', 'bad budget', 'bad ciphertextCid', 'bad ciphertextSha256', 'bad claimId', 'bad dispute oracle fee', 'bad disputeCid', 'bad fee recipient', 'bad fee scaling', 'bad knownIssueIds', 'bad listingCid', 'bad listingId', 'bad lowestClassCounted', 'bad oracle fee', 'bad repo', 'bad statementCid', 'bad successor', 'base cost must be below dispute fee', 'base cost must be below fee', 'claims pending', 'confirmation deadline over', 'contract artifact needs a deployment', 'counted class pays nothing', 'disclose window open', 'disclose window over', 'dispute oracle fee above ceiling', 'dispute window open', 'dispute window over', 'dispute window too long', 'dispute window too short', 'earlier claim unresolved', 'escrow below fee', 'escrow below top award', 'evaluation not ready', 'fee changed', 'fee not paid', 'fix window open', 'fix window too long', 'floor out of bounds', 'gas below INLINE_REFUND_GAS_NEEDED', 'gas below SUBMISSION_GAS_NEEDED', 'grace exceeds fix window', 'grace over', 'no confirmation due', 'no disclosure key', 'no value', 'not INVALID', 'not a valid outcome', 'not accepting commits', 'not accepting late claims', 'not allowed', 'not committed', 'not disclosed', 'not failed', 'not fundable', 'not hunter', 'not in fix window', 'not judged', 'not maker', 'not renewable', 'not requester', 'not revealed', 'not rollable', 'nothing to recover', 'nothing to withdraw', 'oracle fee above ceiling', 'payment below bond + fee', 'plain ETH refused', 'prepay below fee', 'reentrant', 'repatriate failed', 'repo artifact has a deployment', 'retrigger window open', 'retrigger window over', 'reveal window open', 'reveal window over', 'reveal window too long', 'reveal window too short', 'round open', 'self only', 'too many known issues', 'unknown function', 'unknown wallet', 'withdraw failed', 'wrong fee', 'zero aggregator',
 ]);
 
 // Longest first, so 'not disclosed' cannot shadow something that contains it.

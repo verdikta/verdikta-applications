@@ -50,6 +50,8 @@ DUPLICATE holds at least as much as INVALID, else INVALID. What each pays when t
   your bond comes back, with no award.
 - The prepay pays for the evaluation in every outcome. What a round does not spend comes back to
   you when the round is finalized.
+- A late claim, on a listing that takes no commit any more (section 3, "Late claims"), pays no
+  award in any outcome: its bond comes back or not as above, and its prepay is spent the same way.
 
 A failed gate (the patch does not apply or touches a path it may not, the build fails, your test
 does not fail on every run, the observable is not seen, or a tamper flag) puts all the mass on
@@ -89,8 +91,9 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
 - GET https://verifiers.verdikta.org/api/status
     chainId, contract     the chain and the StakeAttestation address the site indexes
 - GET https://verifiers.verdikta.org/api/feed
-    listings              every listing that takes claims now: open, its paid period not ended,
-                          its escrow at least its CRITICAL award
+    listings              every listing that takes commits now: open, not held by its maker, its
+                          paid period not ended, its escrow at least its CRITICAL award. A listing
+                          that takes late claims only is not here (section 3, "Late claims")
     notCounted            listings the site does not offer, each with its reason: do not claim there
     fresh                 false when the site's index is behind the chain
   Each entry of `listings`:
@@ -111,7 +114,8 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
                           none is open
     escrowRemainingWei    what is left to pay awards from
     owedWei               awards already owed to earlier hunters
-    invited               true: only the wallets the maker listed may claim
+    invited               true: only the wallets the maker listed may commit (a late claim, section 3,
+                          is open to every wallet)
     valueAtRiskUsd        the value the maker says the code holds, in USD; 0 when none is declared
     labels                how the site labels the stake: `stake` (scanned, staked or under-staked,
                           by its top award and the declared value), `invited`, `lapsed`, and
@@ -193,6 +197,7 @@ each deadline of your claim and what comes next.
 1. Commit: `commit(listingId, archiveHash, ciphertextSha256)`, paying the listing's bond plus
    the live prepay (section 4). Only two hashes go on-chain. The listing must take commits
    (`acceptsCommits(listingId)`) and allow your wallet (`isAllowed(listingId, hunter)`).
+   One that takes none may take a late claim instead ("Late claims", after step 8).
 2. Pin the encrypted proof only after the commit is mined. The tool waits for the commit's
    confirmations before it pins: pinned earlier, the maker could read it before your commit
    lands.
@@ -284,6 +289,64 @@ each deadline of your claim and what comes next.
    contract could not push to you waits in `withdrawable(address)`, and
    `verdikta-attest claim` withdraws it and prints the transaction and the amount.
 
+Late claims. A finding on a version whose listing takes no commit any more can still go on that
+version's record, as a late claim: `lateClaim(listingId, archiveHash, ciphertextSha256)` in place
+of `commit`. `verdikta-attest commit` files one with --late.
+
+- When a listing takes one: while `acceptsLateClaims(listingId)` is true: the listing rolled
+  forward (state Rolled), or closed after it opened (state Closed), or its maker holds it
+  (`hold(listingId)`: the state stays Open or Depleted, and no commit is taken from then on). A
+  listing that never opened takes neither a commit nor a late claim. A feed entry's and a
+  record's `sameRepository` give each related listing's state (section 2); read the answer
+  itself from the contract:
+      cast call "$VERDIKTA_CONTRACT" "acceptsLateClaims(uint256)(bool)" <listingId> --rpc-url https://sepolia.base.org
+- What it costs: what a commit costs, `commitPrice(listingId)`: the listing's `bondWei` plus the
+  live prepay (section 4).
+- What it pays. A late claim pays no award, whatever class the arbiters give it: it is judged and
+  recorded on the record, under "later". The bond is forfeited on INVALID, as on any claim: it
+  goes to the maker, unless the INVALID is narrow. On any other outcome it comes back, with no
+  award. The prepay is spent on the evaluation whatever the verdict: what a round does not spend
+  comes back when the round is finalized or, if the refund fails then, when anyone calls
+  recoverLeftoverEth(wallet) on the contract, with the wallet of that round.
+- Everything else is a claim's: steps 2 to 8 above, with the listing's own windows. It is open to
+  every wallet, invited listing or not. It reveals in commit order with the listing's other
+  claims: behind every claim still open there, the stake's own and earlier late claims, and
+  `pendingClaims` counts only the stake's own.
+- The command: `verdikta-attest commit ./claim --listing <listingId> --late` prints the terms,
+  the price and those three warnings, and sends nothing (exit 3); with --yes it sends
+  `lateClaim`, then pins and discloses as a commit does. `status`, `reveal`, `claim` and `appeal`
+  then work as on any claim, and `status` says it is a late claim with no award (with --json,
+  `late` is true).
+- It signs nothing while your wallet has a transaction that is not mined yet (WALLET_BUSY, exit
+  4): that one may be this late claim, sent some other way, and a second one would pay a second
+  bond. Run the same command again once it is mined.
+- It signs only where the folder's logs can be shown to hold every claim of its hashes. When
+  `commit` prepares a folder it saves an anchor there (anchor.json): the block the folder was
+  prepared at and the node's finalized block. If the chain is reorganized below the first, the
+  logs are read from the second, and a claim of the folder's hashes found there is adopted, not
+  paid for again. The same is asked before a late claim that was signed and saved is sent
+  again. Where the folder cannot show either, nothing is signed or sent (START_UNPROVEN). Its
+  text says what to do, by the reason. If the node did not give the logs, run the same command
+  again through an RPC that serves them from the block the text names: do not start a new
+  folder, the claim may be in the logs that were not read. If the folder has no anchor, or the
+  reorganization went below the finalized block too, a new folder is the way on, and it is new
+  hashes: if you sent this folder's hashes some other way, find that claim among your wallet's
+  transactions first, since a claim from a new folder would pay a second bond. Keep the old
+  folder either way: its keys stay where they are.
+- --restart does not start a late claim over, and a late claim is not signed in a folder where
+  --restart has set a claim's files aside (LATE_NEEDS_NEW_FOLDER): such a folder knows nothing
+  of the earlier files, and a claim of their hashes that is mined afterwards would be followed
+  by a second bond. Its text names every set of files set aside: before a new folder pays, look
+  for a claim of each, and of the claim the folder holds prepared. Every state.json there, set
+  aside or not, names the wallet (`hunter`), the chain, the contract, the listing and the two
+  hashes of one claim: look among that wallet's transactions, mined or pending. Then prepare
+  the late claim in a new folder (copy finding.json, report.md and the patches there), and keep
+  the old folder as it is: its keys stay where they are, and any run of `commit` in it still
+  finds and discloses a claim of the hashes it holds prepared.
+- The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
+  listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
+  (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
+
 ## 4. Costs, read live
 
 Never take an amount from this file or from an earlier read: the fees follow the aggregator's
@@ -294,6 +357,8 @@ live fee and the listing's terms.
   signs and sends exactly that. It is the whole amount the commit carries, not a fee on top of
   the bond. The bond comes back or not by the outcome (section 1); of the prepay, what the rounds
   do not spend comes back.
+- A late claim sends `commitPrice(listingId)` too, read and sent the same way, for no award
+  (section 3, "Late claims").
 - A reveal sends `revealTopUp(claimId)`: any rise in that fee since the commit.
 - A failed round spends its base fees, a part of its prepay; the rest comes back at finalize.
   `status` shows a failed round's own numbers in ETH, as the aggregator accounts for them.
@@ -314,9 +379,15 @@ contract's own address):
 Or let the tool say it: `commit` on a folder with no commit signed yet, `reveal`,
 `reveal --retrigger` and `appeal` print what they will send and send nothing without --yes
 (exit 3). The amount printed is the amount sent; a reveal reads its top-up again as it signs.
+A commit or a late claim whose fee moved between its terms and its signature says the new amount
+before it signs.
 Once a commit is signed, `commit` resumes it on every run, --yes or not: it sends the saved
 commit and then the disclose. So read a price for a claim already under way with cast, not with
-`commit`.
+`commit`. `commit --late` is a dry run in the same way. Once a commit or a late claim is signed,
+a later run resumes that one, with --late or without it. A folder that `commit` has prepared and
+whose two hashes already have a claim on the chain, sent some other way than by this tool, is
+under way too: any run of `commit` there adopts that claim, pins its ciphertext and sends the
+disclose, --yes or not, since its bond is paid and its disclose window is running.
 
 A dry run needs the wallet key (for your address, the balance and the allowlist: it signs
 nothing), the gateway and VERDIKTA_PIN_BACKEND, not VERDIKTA_PIN_TOKEN, which is read only when
@@ -379,6 +450,11 @@ holds what `commit` printed, against which `status` tells a moved reveal deadlin
 the result as JSON on stdout. `status --wait` polls for up to 15 minutes; --max-wait-ms shortens
 it, so keep it under your shell's command timeout and run it again on exit 4. `commit` and
 `reveal` wait for their transactions too: if your shell stops one, run the same command again.
+
+A late claim (section 3, "Late claims") takes the same commands, with --late on `commit`:
+
+    verdikta-attest commit ./claim --listing <listingId> --late         # first run: its terms and the price; sends nothing
+    verdikta-attest commit ./claim --listing <listingId> --late --yes   # late claim, pin, disclose
 
 Exit codes:
   0  done
@@ -569,7 +645,7 @@ why. `check` is the one place you can see it.
 
 ## 9. Keep the claim's local state
 
-`commit` writes `claim/.verdikta-claim/`: archive.zip, keys.json, ciphertext.age and state.json,
+`commit` writes `claim/.verdikta-claim/`: archive.zip, keys.json, ciphertext.age, anchor.json and state.json,
 each mode 0600, in a folder of mode 0700.
 
 - keys.json holds the keys `reveal` publishes, and nothing can make them again. Without them the
@@ -580,8 +656,32 @@ each mode 0600, in a folder of mode 0700.
 - Never delete state.json and run `commit` again: without it the tool draws new keys and
   commits again, for a second bond.
 - Once the commit is sent, the claim is the archive.zip saved there: editing the folder's files
-  changes nothing that is revealed. Before that, a change stops `commit` with INPUTS_CHANGED
-  (--restart starts over with new keys).
+  changes nothing that is revealed. Before that, a change stops `commit` with INPUTS_CHANGED,
+  and --restart starts the commit over with new keys (a late claim is not started over: section
+  3, "Late claims").
+- What `commit` and --restart do with a folder that holds a prepared or a signed commit:
+    - A claim of the folder's two hashes that is on the chain already is adopted first, before
+      the listing, your balance, --yes or --restart is asked (section 4).
+    - --restart sets the old files aside in the same folder, under set-aside names: it deletes
+      nothing. It sets them aside only once the listing, your balance and --yes have let the
+      new commit through: a run refused before that leaves the folder as it was.
+    - --restart is refused while your wallet has a transaction that is not mined (WALLET_BUSY,
+      exit 4): it may be the folder's own claim.
+    - Every folder saves anchor.json when it is prepared. A commit whose nonce went to another
+      transaction before it was mined, with no claim made, ends with COMMIT_REPLACED, and a run
+      again signs a new one.
+    - In a folder where --restart set files aside, a run that finds its saved commit replaced
+      ends with COMMIT_REPLACED before it signs anew: the transaction that took the nonce may
+      be a claim of the files set aside, sent some other way, which is paid and needs them.
+      While that cannot be said for good yet (that transaction is in a block that is not
+      final, or the run could not read what shows it), the run says the commit is not mined
+      (TX_PENDING, exit 4): run the same command again, and do not pay from a new folder yet.
+      Either text names the files set aside and says, at once, where to look for a claim of
+      them (the wallet's whole history on the contract, not only the transaction that took the
+      nonce), how such a claim gets its files back, and what that run finds and does not.
+    - Such a folder signs nothing more: every later run of `commit` there ends with
+      COMMIT_REPLACED, and the commit goes in a new folder (copy finding.json, report.md and
+      the patches there).
 - Do not run two copies of the tool on one folder (FOLDER_BUSY).
 
 ## 10. The full reference

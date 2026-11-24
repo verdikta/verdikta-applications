@@ -139,6 +139,10 @@
         {
           "version": "mutual-wager-v3",
           "fingerprint": "57db9f3b3391a6b9"
+        },
+        {
+          "version": "mutual-wager-v6",
+          "fingerprint": "f969eabb3a16d501"
         }
       ],
       "kind": "rubric"
@@ -245,6 +249,10 @@
         {
           "version": "mutual-wager-v5",
           "fingerprint": "8a385a0b776791b2"
+        },
+        {
+          "version": "mutual-wager-v7",
+          "fingerprint": "dc29b96e79661921"
         }
       ]
     }

@@ -10,7 +10,7 @@
  * The server cannot see the event. Its timing is the terms' scheduled start and settlement deadline:
  * a claim is advised from 5 hours after the start (about 2 hours after a typical final, so juror web
  * tools no longer serve a cached in-progress page), but never later than the deadlines allow.
- * A question wager (mutual-wager-v5, or v4) states its own times: bets close (its `start`), Resolves at and
+ * A question wager (mutual-wager-v7; v5 or v4 before it) states its own times: bets close (its `start`), Resolves at and
  * Claims open, from which a claim is advised.
  */
 const wager = require('../../shared/mutualWager');
@@ -22,7 +22,7 @@ const pendingSubs = (b) => (b.job?.submissions || []).filter((s) => s.status ===
 
 const expectOf = (b) => ({
   classId: b.status.classId, threshold: b.status.threshold, oracle: b.status.oracleSettings,
-  jury: b.job?.juryNodes, iterations: b.job?.iterations,
+  decision: b.status.decisionSettings, jury: b.job?.juryNodes, iterations: b.job?.iterations,
 });
 
 /**
@@ -223,7 +223,7 @@ function wagerStatus(bounties, { now, site, wallet } = {}) {
     const pair = {
       wagerId: f.wagerId,
       state: result.state,
-      // 'game' (mutual-wager-v3: event, market, start) or 'question' (v4, v5: question, start = bets close, resolvesAt, claimsOpen).
+      // 'game' (mutual-wager-v6, v3: event, market, start) or 'question' (v7, v5, v4: question, start = bets close, resolvesAt, claimsOpen).
       kind: chosen.a.terms.kind,
       event: f.event ?? null,
       market: f.market ?? null,

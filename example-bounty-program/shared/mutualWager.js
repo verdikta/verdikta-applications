@@ -15,15 +15,23 @@
 //   mutual-wager-v3  games: an Event with a scheduled start, settled on the official final score.
 //   mutual-wager-v4  questions: a Question that resolves at a stated time, settled on a published
 //                    value or fact from the Resolution sources (YES or NO, or no winner).
-//   mutual-wager-v5  questions, the current template: v4's lines, settled on the answer rather than
-//                    one exact value (sources that differ slightly but give the same answer agree),
-//                    two or more cited sources with at least one on a listed source's site, up to 5
-//                    Resolution sources, Claims open 3 hours after Resolves at. v4 bounties already
-//                    posted are still read, checked, answered and claimed as v4.
+//   mutual-wager-v5  questions: v4's lines, settled on the answer rather than one exact value
+//                    (sources that differ slightly but give the same answer agree), two or more cited
+//                    sources with at least one on a listed source's site, up to 5 Resolution sources,
+//                    Claims open 3 hours after Resolves at.
+//   mutual-wager-v6  games, the current template: v3 for the v2 escrow. The terms add a Decision
+//                    settings line (the jury index, pass quota Q, forfeit line R and the hunter bond,
+//                    always 0 for a wager) and the fee floor and beacon flag to the Oracle settings
+//                    line, and the jury checks that the counter bounty uses the same ones.
+//   mutual-wager-v7  questions, the current template: v5 with v6's decision settings.
+// v3, v4 and v5 bounties already posted are still read, checked and claimed under their own
+// template. They predate the v2 escrow's per-bounty decision settings, which their terms cannot
+// fix, so new bounties are never built, created or answered with them.
 //
 // terms = { wagerId, event, shortEvent, start (ISO UTC), market, noWinner?, stake (ETH),
 //           settle (ISO UTC), classId, threshold, jury: [{ provider, model, weight, runs }],
-//           iterations?, oracle: { maxOracleFeeEth, estimatedBaseCostEth, maxFeeBasedScaling, alpha },
+//           iterations?, oracle: { maxOracleFeeEth, estimatedBaseCostEth, maxFeeBasedScaling, alpha,
+//           minOracleFeeEth, withBeacons }, decision: { jury, quota, forfeitLine, bondWei: '0' },
 //           site, escrow, chain, criteria?: [id] }
 // v4 terms replace event, shortEvent and market with question, resolvesAt, claimsOpen, yes, no and
 // sources ([https URL]); their `start` is the Bets close time (both bounties exist before it).
@@ -32,7 +40,10 @@
 // These are each bettor's own checks, run before funding and before claiming. The jury never
 // depends on them: a bounty that passes them still pays only on the jury's verdict.
 
-const MUTUAL_WAGER_RUBRIC = 'mutual-wager-v3';
+const MUTUAL_WAGER_V3_RUBRIC = 'mutual-wager-v3';
+const MUTUAL_WAGER_V6_RUBRIC = 'mutual-wager-v6';
+// The game template new wagers use. Read the template of a posted bounty from its terms (wagerSpec).
+const MUTUAL_WAGER_RUBRIC = MUTUAL_WAGER_V6_RUBRIC;
 const MUTUAL_WAGER_CRITERIA = ['terms_match', 'event_final', 'result_sources', 'claimant_side_won',
   'counter_bounty_onchain', 'counter_bounty_terms', 'integrity'];
 const MUTUAL_WAGER_TERMS_HEADER = '=== MUTUAL WAGER TERMS';
@@ -63,15 +74,20 @@ const WAGER_CHAIN_NAMES = { 8453: 'Base Mainnet', 84532: 'Base Sepolia Testnet' 
 // ---- questions: mutual-wager-v4, and v5 (current) ----
 const QUESTION_WAGER_V4_RUBRIC = 'mutual-wager-v4';
 const QUESTION_WAGER_V5_RUBRIC = 'mutual-wager-v5';
+const QUESTION_WAGER_V7_RUBRIC = 'mutual-wager-v7';
 // The question template new wagers use. Read the template of a posted bounty from its terms (wagerSpec).
-const QUESTION_WAGER_RUBRIC = QUESTION_WAGER_V5_RUBRIC;
-const QUESTION_WAGER_RUBRICS = [QUESTION_WAGER_V5_RUBRIC, QUESTION_WAGER_V4_RUBRIC];
+const QUESTION_WAGER_RUBRIC = QUESTION_WAGER_V7_RUBRIC;
+const QUESTION_WAGER_RUBRICS = [QUESTION_WAGER_V7_RUBRIC, QUESTION_WAGER_V5_RUBRIC, QUESTION_WAGER_V4_RUBRIC];
 const QUESTION_WAGER_CRITERIA = ['terms_match', 'resolved', 'resolution_sources', 'claimant_side_won',
   'counter_bounty_onchain', 'counter_bounty_terms', 'integrity'];
 const V4_DEFAULT_QUESTION_NO_WINNER = 'the value is exactly at the line, the question is ambiguous or cannot be resolved as stated, or no reputable source shows the answer before the settlement deadline';
 const DEFAULT_QUESTION_NO_WINNER = 'the value is exactly at the line, reputable sources put the value on different sides of the line, the question is ambiguous or cannot be resolved as stated, or no reputable source shows the answer before the settlement deadline';
 // A question's sides are always these two; the YES wins if / NO wins if lines say what each means.
 const QUESTION_SIDES = ['YES', 'NO'];
+// A wager has no hunter bond: both stakes are already in escrow, and a bond would only add to what the
+// claimant risks on a failed round (owner decision, 2026-11-24). The terms state it, and the checks
+// refuse any other value.
+const WAGER_BOND_WEI = '0';
 // Right after a value is published, sources and juror web caches can still show an earlier page
 // (an intraday quote before an official close). Claims open this long after the resolution time
 // unless the terms set Claims open later. Canary 2026-10-21 (MSFT close, 16 juror runs per point):
@@ -95,7 +111,7 @@ const MIN_CLAIM_SOURCES = 2;
 // in October 2026. v2 added the stale-page rule to integrity. v3 (security review of PR #106) fails
 // closed without web access and checks the counter's every terms line, word-for-word criteria, jury,
 // oracle settings and package link.
-const MUTUAL_WAGER_TEMPLATE = deepFreeze({
+const MUTUAL_WAGER_V3_TEMPLATE = deepFreeze({
   version: 'rubric-1',
   title: 'Mutual Wager Settlement (mutual-wager-v3)',
   description: 'Put the MUTUAL WAGER TERMS block in the Job Description: the jury reads the terms only there. Both bettors post a bounty with this rubric unchanged, the same terms with Poster and Claimant swapped, the other bettor as Target Hunter and no approval window.',
@@ -270,14 +286,31 @@ const QUESTION_WAGER_V5_TEMPLATE = deepFreeze({
     'Fabricated or altered evidence',
   ],
 });
-const QUESTION_WAGER_TEMPLATE = QUESTION_WAGER_V5_TEMPLATE;
+
+// v6 (games) and v7 (questions): v3 and v5 for the v2 escrow. Each bounty also carries decision settings
+// (the jury index, pass quota Q, forfeit line R, hunter bond) and a fee floor and beacon flag, which
+// decide whether a claim passes as much as the oracle settings do, so the jury checks the counter's
+// against the terms. Only counter_bounty_onchain and the title change.
+const DECISION_CHECK = 'every oracleSettings value equals the oracle settings in the terms; every decisionSettings value equals the decision settings in the terms;';
+const withDecisionCheck = (template, title) => deepFreeze({
+  ...JSON.parse(JSON.stringify(template)),
+  title,
+  criteria: template.criteria.map((c) => (c.id !== 'counter_bounty_onchain' ? { ...c } : {
+    ...c,
+    instructions: c.instructions.replace('every oracleSettings value equals the oracle settings in the terms;', DECISION_CHECK),
+  })),
+});
+const MUTUAL_WAGER_V6_TEMPLATE = withDecisionCheck(MUTUAL_WAGER_V3_TEMPLATE, 'Mutual Wager Settlement (mutual-wager-v6)');
+const QUESTION_WAGER_V7_TEMPLATE = withDecisionCheck(QUESTION_WAGER_V5_TEMPLATE, 'Question Wager Settlement (mutual-wager-v7)');
+const MUTUAL_WAGER_TEMPLATE = MUTUAL_WAGER_V6_TEMPLATE;
+const QUESTION_WAGER_TEMPLATE = QUESTION_WAGER_V7_TEMPLATE;
 
 function deepFreeze(o) {
   Object.values(o).forEach((v) => { if (v && typeof v === 'object') deepFreeze(v); });
   return Object.freeze(o);
 }
 
-/** A fresh, editable copy of a template (the create page keeps it in form state). kind: 'game' (v3) or 'question' (v5). */
+/** A fresh, editable copy of a template (the create page keeps it in form state). kind: 'game' (v6) or 'question' (v7). */
 function mutualWagerTemplate(kind = 'game') {
   return JSON.parse(JSON.stringify(kindSpec(kind).template));
 }
@@ -335,21 +368,29 @@ const QUESTION_LINES = [
   ['sources', 'Resolution sources (start here, then search the web): '],
   ...LINES.filter(([key]) => !['wagerId', 'event', 'start', 'market', 'noWinner'].includes(key)),
 ];
+// v6 and v7: the same lines plus Decision settings, after Oracle settings.
+const withDecisionLine = (lines) => lines.flatMap((line) => (line[0] === 'oracle' ? [line, ['decision', 'Decision settings (both bounties): ']] : [line]));
+const LINES_V6 = withDecisionLine(LINES);
+const QUESTION_LINES_V7 = withDecisionLine(QUESTION_LINES);
 // Lines the two bounties of a pair may not share: the parties swap, and each names its own counter.
 const MIRRORED = new Set(['poster', 'claimant', 'pays', 'counter']);
 
 // One entry per template; a terms block names its template in the header. `current` marks the one
-// new wagers of a kind are built with; the others are still read and checked.
+// new wagers of a kind are built with; the others are still read and checked. `decision` marks the
+// templates whose terms fix the v2 escrow's decision settings: only those are created or answered.
 const SPECS = {
-  [MUTUAL_WAGER_RUBRIC]: { rubric: MUTUAL_WAGER_RUBRIC, kind: 'game', current: true, template: MUTUAL_WAGER_TEMPLATE, criteria: MUTUAL_WAGER_CRITERIA, lines: LINES },
-  [QUESTION_WAGER_V5_RUBRIC]: { rubric: QUESTION_WAGER_V5_RUBRIC, kind: 'question', current: true, template: QUESTION_WAGER_V5_TEMPLATE, criteria: QUESTION_WAGER_CRITERIA, lines: QUESTION_LINES,
+  [MUTUAL_WAGER_V6_RUBRIC]: { rubric: MUTUAL_WAGER_V6_RUBRIC, kind: 'game', current: true, decision: true, template: MUTUAL_WAGER_V6_TEMPLATE, criteria: MUTUAL_WAGER_CRITERIA, lines: LINES_V6 },
+  [MUTUAL_WAGER_V3_RUBRIC]: { rubric: MUTUAL_WAGER_V3_RUBRIC, kind: 'game', current: false, decision: false, template: MUTUAL_WAGER_V3_TEMPLATE, criteria: MUTUAL_WAGER_CRITERIA, lines: LINES },
+  [QUESTION_WAGER_V7_RUBRIC]: { rubric: QUESTION_WAGER_V7_RUBRIC, kind: 'question', current: true, decision: true, template: QUESTION_WAGER_V7_TEMPLATE, criteria: QUESTION_WAGER_CRITERIA, lines: QUESTION_LINES_V7,
     maxSources: MAX_RESOLUTION_SOURCES, defaultNoWinner: DEFAULT_QUESTION_NO_WINNER },
-  [QUESTION_WAGER_V4_RUBRIC]: { rubric: QUESTION_WAGER_V4_RUBRIC, kind: 'question', current: false, template: QUESTION_WAGER_V4_TEMPLATE, criteria: QUESTION_WAGER_CRITERIA, lines: QUESTION_LINES,
+  [QUESTION_WAGER_V5_RUBRIC]: { rubric: QUESTION_WAGER_V5_RUBRIC, kind: 'question', current: false, decision: false, template: QUESTION_WAGER_V5_TEMPLATE, criteria: QUESTION_WAGER_CRITERIA, lines: QUESTION_LINES,
+    maxSources: MAX_RESOLUTION_SOURCES, defaultNoWinner: DEFAULT_QUESTION_NO_WINNER },
+  [QUESTION_WAGER_V4_RUBRIC]: { rubric: QUESTION_WAGER_V4_RUBRIC, kind: 'question', current: false, decision: false, template: QUESTION_WAGER_V4_TEMPLATE, criteria: QUESTION_WAGER_CRITERIA, lines: QUESTION_LINES,
     maxSources: V4_MAX_RESOLUTION_SOURCES, defaultNoWinner: V4_DEFAULT_QUESTION_NO_WINNER },
 };
-/** The template a terms block (or a rubric name) is written in; v3 for an unknown name, which the checks then refuse. */
+/** The template a terms block (or a rubric name) is written in; the current game template for an unknown name, which the checks then refuse. */
 const specOf = (termsOrRubric) => SPECS[typeof termsOrRubric === 'string' ? termsOrRubric : termsOrRubric?.rubric] || SPECS[MUTUAL_WAGER_RUBRIC];
-/** The current template of a kind: 'game' (mutual-wager-v3) or 'question' (mutual-wager-v5). Throws on any other kind. */
+/** The current template of a kind: 'game' (mutual-wager-v6) or 'question' (mutual-wager-v7). Throws on any other kind. */
 function kindSpec(kind) {
   const spec = Object.values(SPECS).find((s) => s.kind === kind && s.current);
   if (!spec) throw new Error(`Unknown wager kind "${kind}": use "game" or "question".`);
@@ -414,18 +455,56 @@ function parseJuryLine(line) {
   return jury.every(Boolean) ? { jury, iterations: Number(m[2]) } : null;
 }
 
-/** "maxOracleFeeEth 0.00002, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500": onchain-status names. */
-function formatOracle(o) {
+/**
+ * "maxOracleFeeEth 0.00002, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500": onchain-status
+ * names. With full (v6, v7), the v2 escrow's fee floor and beacon flag follow:
+ * ", minOracleFeeEth 0.0, withBeacons false" (a missing floor is 0, a missing flag false).
+ */
+function formatOracle(o, { full = false } = {}) {
   if (!o) return '<oracle settings>';
-  return `maxOracleFeeEth ${eth(o.maxOracleFeeEth)}, estimatedBaseCostEth ${eth(o.estimatedBaseCostEth)}, maxFeeBasedScaling ${Number(o.maxFeeBasedScaling)}, alpha ${Number(o.alpha)}`;
+  const v1 = `maxOracleFeeEth ${eth(o.maxOracleFeeEth)}, estimatedBaseCostEth ${eth(o.estimatedBaseCostEth)}, maxFeeBasedScaling ${Number(o.maxFeeBasedScaling)}, alpha ${Number(o.alpha)}`;
+  return full ? `${v1}, minOracleFeeEth ${eth(o.minOracleFeeEth ?? '0')}, withBeacons ${beaconFlag(o.withBeacons)}` : v1;
+}
+const beaconFlag = (v) => (v === true || String(v).toLowerCase() === 'true' ? 'true' : 'false');
+
+/** The oracle settings an Oracle settings line names (v6, v7: with minOracleFeeEth and withBeacons), or null. */
+function parseOracleLine(line) {
+  const m = /^maxOracleFeeEth (\S+), estimatedBaseCostEth (\S+), maxFeeBasedScaling (\d+), alpha (\d+)(?:, minOracleFeeEth (\S+), withBeacons (true|false))?\.?$/.exec(norm(line));
+  if (!m || toWei(m[1]) == null || toWei(m[2]) == null || (m[5] !== undefined && toWei(m[5]) == null)) return null;
+  const o = { maxOracleFeeEth: m[1], estimatedBaseCostEth: m[2], maxFeeBasedScaling: Number(m[3]), alpha: Number(m[4]) };
+  return m[5] === undefined ? o : { ...o, minOracleFeeEth: m[5], withBeacons: m[6] === 'true' };
 }
 
-/** The oracle settings an Oracle settings line names, or null. */
-function parseOracleLine(line) {
-  const m = /^maxOracleFeeEth (\S+), estimatedBaseCostEth (\S+), maxFeeBasedScaling (\d+), alpha (\d+)\.?$/.exec(norm(line));
-  if (!m || toWei(m[1]) == null || toWei(m[2]) == null) return null;
-  return { maxOracleFeeEth: m[1], estimatedBaseCostEth: m[2], maxFeeBasedScaling: Number(m[3]), alpha: Number(m[4]) };
+/**
+ * "jury 0, quota 3, forfeitLine 1, bondWei 0": the v2 escrow's decision settings in onchain-status's
+ * decisionSettings names. jury is the escrow's aggregator index, quota (Q) the arbiter scores at or
+ * above the threshold a claim needs, forfeitLine (R) the count below which it fails outright.
+ */
+function formatDecision(d) {
+  if (!d) return '<decision settings>';
+  // A create-page skeleton keeps its <placeholders>; everything else reads as an integer.
+  const n = (v) => (/^<[^<>]*>$/.test(String(v)) ? String(v) : Number(v));
+  return `jury ${n(d.jury)}, quota ${n(d.quota)}, forfeitLine ${n(d.forfeitLine)}, bondWei ${String(d.bondWei ?? d.bond ?? WAGER_BOND_WEI)}`;
 }
+
+/** The decision settings a Decision settings line names, or null. */
+function parseDecisionLine(line) {
+  const m = /^jury (\d+), quota (\d+), forfeitLine (\d+), bondWei (\d+)\.?$/.exec(norm(line));
+  return m ? { jury: Number(m[1]), quota: Number(m[2]), forfeitLine: Number(m[3]), bondWei: m[4] } : null;
+}
+
+/** Why decision settings are not ones a wager may use (the contract's rules, and no bond), or null. */
+function decisionProblem(d) {
+  if (!d || typeof d !== 'object') return 'decision must be { jury, quota, forfeitLine }: the escrow\'s jury index, the pass quota Q and the forfeit line R (GET /api/classes/presets lists them per size class).';
+  const int = (v, lo, hi) => Number.isInteger(Number(v)) && String(v).trim() !== '' && Number(v) >= lo && Number(v) <= hi;
+  if (!int(d.jury, 0, 255)) return 'decision.jury must be the escrow\'s aggregator index, an integer from 0.';
+  if (!int(d.quota, 1, 255)) return 'decision.quota (Q) must be an integer of at least 1.';
+  if (!int(d.forfeitLine, 0, 255) || Number(d.forfeitLine) > Number(d.quota)) return 'decision.forfeitLine (R) must be an integer from 0 to quota.';
+  const bond = d.bondWei ?? d.bond;
+  if (bond !== undefined && bond !== null && String(bond) !== WAGER_BOND_WEI && !(toWei(bond) === 0n)) return 'A wager has no hunter bond: leave decision.bond out, or set it to 0.';
+  return null;
+}
+const decisionOf = (d) => ({ jury: Number(d.jury), quota: Number(d.quota), forfeitLine: Number(d.forfeitLine), bondWei: WAGER_BOND_WEI });
 
 const bothLine = (threshold, classId, ids = MUTUAL_WAGER_CRITERIA, rubric = MUTUAL_WAGER_RUBRIC) => `rubric ${rubric} (must-pass criteria ${ids.join(', ')}), threshold ${threshold}, class ${classId}, approval window 0.`;
 const siteLine = (terms) => `${terms.site}; escrow ${terms.escrow} on ${terms.chain}; no cancel or edit.`;
@@ -455,36 +534,50 @@ function claimLine(spec, site, counterNumber) {
     : `To claim (Claimant, after the event and before the settlement deadline): submit claim.md with the final score, two sources (URL + quote) ${steps}`;
 }
 
-const counterLineFor = (stake, poster, counter) => (counter
-  ? `Counter bounty: #${counter.number}, verified by the Poster before posting (created by the Claimant, targeted at the Poster, ${stake} ETH, created ${counter.createdAt}, deadline ${counter.deadline}, mirrored terms, same rubric, jury and oracle settings). It pays the Poster only if ${poster.label}.`
+/** What the counter line says the Poster verified: v6 and v7 add the decision settings. */
+const verifiedSame = (spec) => (spec.decision ? 'same rubric, jury, oracle and decision settings' : 'same rubric, jury and oracle settings');
+const counterLineFor = (stake, poster, counter, spec = SPECS[MUTUAL_WAGER_RUBRIC]) => (counter
+  ? `Counter bounty: #${counter.number}, verified by the Poster before posting (created by the Claimant, targeted at the Poster, ${stake} ETH, created ${counter.createdAt}, deadline ${counter.deadline}, mirrored terms, ${verifiedSame(spec)}). It pays the Poster only if ${poster.label}.`
   : `Counter bounty: REQUIRED: the Claimant's bounty targeted at the Poster that pays the Poster only if ${poster.label}.`);
 
-/** Title and description of the bounty that `poster` creates; it pays `claimant` if the claimant's side wins. */
+/** The Oracle settings and Decision settings line values a template writes for these terms. */
+const settingsFields = (terms, spec) => ({
+  oracle: `${formatOracle(terms.oracle, { full: spec.decision })}.`,
+  ...(spec.decision ? { decision: `${formatDecision(terms.decision)}.` } : {}),
+});
+
+/**
+ * Title and description of the bounty that `poster` creates; it pays `claimant` if the claimant's side
+ * wins. terms.rubric picks the version (mutual-wager-v3 rebuilds a v3 bounty); new wagers are v6.
+ */
 function buildMutualWagerBounty(terms, poster, claimant, counter = null) {
   if (SPECS[terms.rubric]?.kind === 'question' || terms.question !== undefined) return buildQuestionWagerBounty(terms, poster, claimant, counter);
-  const counterLine = counterLineFor(terms.stake, poster, counter);
+  const spec = SPECS[terms.rubric]?.kind === 'game' ? SPECS[terms.rubric] : SPECS[MUTUAL_WAGER_RUBRIC];
+  const fields = {
+    wagerId: terms.wagerId,
+    event: terms.event,
+    start: terms.start,
+    market: terms.market,
+    poster: `${poster.wallet}; side: ${poster.label}.`,
+    claimant: `${claimant.wallet}; side: ${claimant.label}.`,
+    pays: `${claimant.label}.`,
+    noWinner: `${terms.noWinner || DEFAULT_NO_WINNER}.`,
+    stake: `${terms.stake} ETH per side.`,
+    settle: terms.settle,
+    both: bothLine(terms.threshold, terms.classId, terms.criteria, spec.rubric),
+    jury: `${formatJury(terms.jury, terms.iterations ?? 1)}.`,
+    ...settingsFields(terms, spec),
+    counter: counterLineFor(terms.stake, poster, counter, spec).slice('Counter bounty: '.length),
+    site: siteLine(terms),
+  };
   const description = [
     'Settles one side of a two-bounty wager.',
     '',
-    `${MUTUAL_WAGER_TERMS_HEADER} (${MUTUAL_WAGER_RUBRIC}) ===`,
-    `Wager ID: ${terms.wagerId}`,
-    `Event: ${terms.event}`,
-    `Scheduled start: ${terms.start}`,
-    `Market: ${terms.market}`,
-    `Poster (creator): ${poster.wallet}; side: ${poster.label}.`,
-    `Claimant (target, the only wallet that can claim): ${claimant.wallet}; side: ${claimant.label}.`,
-    `Pays the Claimant only if ${claimant.label}.`,
-    `No winner (this bounty must not pay): ${terms.noWinner || DEFAULT_NO_WINNER}.`,
-    `Stake: ${terms.stake} ETH per side.`,
-    `Settlement deadline: ${terms.settle}`,
-    `Both bounties: ${bothLine(terms.threshold, terms.classId, terms.criteria)}`,
-    `Jury (both bounties): ${formatJury(terms.jury, terms.iterations ?? 1)}.`,
-    `Oracle settings (both bounties): ${formatOracle(terms.oracle)}.`,
-    counterLine,
-    `Site: ${siteLine(terms)}`,
+    `${MUTUAL_WAGER_TERMS_HEADER} (${spec.rubric}) ===`,
+    ...spec.lines.map(([key, prefix]) => `${prefix}${fields[key]}`),
     TERMS_END,
     '',
-    claimLine(SPECS[MUTUAL_WAGER_RUBRIC], terms.site, counter ? counter.number : null),
+    claimLine(spec, terms.site, counter ? counter.number : null),
   ].join('\n');
   const pays = claimant.short ? `${claimant.short} win` : claimant.label;
   const title = terms.shortEvent ? `Wager ${terms.wagerId}: ${terms.shortEvent}, pays if ${pays}` : `Wager ${terms.wagerId}: pays if ${pays}`;
@@ -500,7 +593,7 @@ const sentence = (s) => `${norm(s).replace(/\.$/, '')}.`;
 
 /**
  * buildMutualWagerBounty for a question. Sides are "YES wins" and "NO wins". terms.rubric picks the
- * version (mutual-wager-v4 rebuilds a v4 bounty); new wagers are mutual-wager-v5.
+ * version (mutual-wager-v4 rebuilds a v4 bounty); new wagers are mutual-wager-v7.
  */
 function buildQuestionWagerBounty(terms, poster, claimant, counter = null) {
   const spec = SPECS[terms.rubric]?.kind === 'question' ? SPECS[terms.rubric] : SPECS[QUESTION_WAGER_RUBRIC];
@@ -521,8 +614,8 @@ function buildQuestionWagerBounty(terms, poster, claimant, counter = null) {
     settle: terms.settle,
     both: bothLine(terms.threshold, terms.classId, QUESTION_WAGER_CRITERIA, spec.rubric),
     jury: `${formatJury(terms.jury, terms.iterations ?? 1)}.`,
-    oracle: `${formatOracle(terms.oracle)}.`,
-    counter: counterLineFor(terms.stake, poster, counter).slice('Counter bounty: '.length),
+    ...settingsFields(terms, spec),
+    counter: counterLineFor(terms.stake, poster, counter, spec).slice('Counter bounty: '.length),
     site: siteLine(terms),
   };
   const description = [
@@ -538,7 +631,7 @@ function buildQuestionWagerBounty(terms, poster, claimant, counter = null) {
 }
 
 /** mutualWagerTermsSkeleton for a question: the create page's "Add a terms block" when the Question Wager template is chosen. */
-function questionWagerTermsSkeleton({ posterWallet, claimantWallet, stake, threshold, classId, jury, iterations, oracle, site, escrow, chain }) {
+function questionWagerTermsSkeleton({ posterWallet, claimantWallet, stake, threshold, classId, jury, iterations, oracle, decision, site, escrow, chain }) {
   const known = (v, hint) => (v === undefined || v === null || v === '' ? `<${hint}>` : v);
   const terms = {
     wagerId: '<Wager ID, new for every pair, e.g. VW-MSFT-CLOSE-20261022>',
@@ -555,7 +648,7 @@ function questionWagerTermsSkeleton({ posterWallet, claimantWallet, stake, thres
     settle: '<settlement deadline, ISO UTC, at least 2 hours after Claims open and at or before both bounty deadlines>',
     threshold: known(threshold, 'threshold'),
     classId: known(classId, 'class'),
-    jury, iterations: iterations ?? 1, oracle,
+    jury, iterations: iterations ?? 1, oracle, decision: skeletonDecision(decision),
     site: known(site, 'bounty site URL'),
     escrow: known(escrow, 'escrow address'),
     chain: known(chain, 'chain'),
@@ -569,7 +662,7 @@ function questionWagerTermsSkeleton({ posterWallet, claimantWallet, stake, thres
  * The terms block with what the create form already knows filled in and <...> placeholders
  * for the rest. The first poster's version: the counter bounty does not exist yet.
  */
-function mutualWagerTermsSkeleton({ posterWallet, claimantWallet, stake, threshold, classId, jury, iterations, oracle, site, escrow, chain }) {
+function mutualWagerTermsSkeleton({ posterWallet, claimantWallet, stake, threshold, classId, jury, iterations, oracle, decision, site, escrow, chain }) {
   const known = (v, hint) => (v === undefined || v === null || v === '' ? `<${hint}>` : v);
   const terms = {
     wagerId: '<Wager ID, new for every pair, e.g. VW-WSH-SF-20261019>',
@@ -580,7 +673,7 @@ function mutualWagerTermsSkeleton({ posterWallet, claimantWallet, stake, thresho
     settle: '<settlement deadline, ISO UTC, at or before both bounty deadlines>',
     threshold: known(threshold, 'threshold'),
     classId: known(classId, 'class'),
-    jury, iterations: iterations ?? 1, oracle,
+    jury, iterations: iterations ?? 1, oracle, decision: skeletonDecision(decision),
     site: known(site, 'bounty site URL'),
     escrow: known(escrow, 'escrow address'),
     chain: known(chain, 'chain'),
@@ -589,6 +682,12 @@ function mutualWagerTermsSkeleton({ posterWallet, claimantWallet, stake, thresho
   const claimant = { wallet: known(claimantWallet, "Claimant's wallet (the Target Hunter)"), label: "<the Claimant's side, e.g. the Washington Commanders win>" };
   return buildMutualWagerBounty(terms, poster, claimant, null).description;
 }
+
+/** The form's decision settings, with the wager's bond (always 0); placeholders for what it lacks. */
+const skeletonDecision = (d) => {
+  const v = (x, hint) => (x === undefined || x === null || x === '' ? `<${hint}>` : Number(x));
+  return { jury: v(d?.jury, 'jury index'), quota: v(d?.quota, 'quota Q'), forfeitLine: v(d?.forfeitLine, 'forfeit line R'), bondWei: WAGER_BOND_WEI };
+};
 
 /** True when a description already carries a terms block. */
 function hasMutualWagerTerms(description) {
@@ -629,7 +728,7 @@ function parseMutualWagerTerms(description) {
   return {
     found: true, count, closed: end >= 0, block, duplicates, unknown,
     rubric,
-    // 'game' (v3) or 'question' (v4, v5): which lines were read. An unknown rubric is read as v3 and refused by the checks.
+    // 'game' (v6, v3) or 'question' (v7, v5, v4): which lines were read. An unknown rubric is read as the current game template and refused by the checks.
     kind: spec.kind,
     fields,
     poster: party(fields.poster), claimant: party(fields.claimant),
@@ -641,7 +740,7 @@ function parseMutualWagerTerms(description) {
 /** The Counter bounty line (after "Counter bounty: ") as buildMutualWagerBounty writes it for these terms. */
 function expectedCounterLine(t) {
   if (t.counter) {
-    return `#${t.counter.number}, verified by the Poster before posting (created by the Claimant, targeted at the Poster, ${parseStakeLine(t.fields.stake)} ETH, created ${t.counter.createdAt}, deadline ${t.counter.deadline}, mirrored terms, same rubric, jury and oracle settings). It pays the Poster only if ${t.poster.side}.`;
+    return `#${t.counter.number}, verified by the Poster before posting (created by the Claimant, targeted at the Poster, ${parseStakeLine(t.fields.stake)} ETH, created ${t.counter.createdAt}, deadline ${t.counter.deadline}, mirrored terms, ${verifiedSame(specOf(t))}). It pays the Poster only if ${t.poster.side}.`;
   }
   return `REQUIRED: the Claimant's bounty targeted at the Poster that pays the Poster only if ${t.poster.side}.`;
 }
@@ -764,6 +863,7 @@ function wagerTextProblems(t, text) {
  * problems is empty. Codes: WAGER_TERMS (the block itself), WAGER_TARGET (who can claim),
  * WAGER_MISMATCH (terms vs the bounty's fields), WAGER_TIMING, WAGER_RUBRIC.
  * expect = { posterWallet, targetHunter, stake, threshold, classId, jury, iterations, oracle,
+ *            decision: { jury, quota, forfeitLine, bondWei } (v6, v7: the bounty's decision settings),
  *            approvalWindow, deadline (unix), now (unix), site, escrow, chain,
  *            rubric: { title, description, criteria, forbiddenContent }  (or criteria +
  *            forbiddenContent at the top level), template? (default: the mutual-wager template) }
@@ -779,7 +879,8 @@ function checkMutualWagerTerms(description, expect) {
   }
   if (t.count > 1) add('WAGER_TERMS', `The Job Description has ${t.count} terms blocks. Keep exactly one.`);
   if (!t.closed) add('WAGER_TERMS', `The terms block has no "${TERMS_END}" line.`);
-  if (!SPECS[t.rubric]) add('WAGER_TERMS', `The terms name rubric ${t.rubric || '(none)'}; the wager templates are ${MUTUAL_WAGER_RUBRIC} (games) and ${QUESTION_WAGER_RUBRIC} (questions; ${QUESTION_WAGER_V4_RUBRIC} bounties already posted are still accepted).`);
+  if (!SPECS[t.rubric]) add('WAGER_TERMS', `The terms name rubric ${t.rubric || '(none)'}; the wager templates are ${MUTUAL_WAGER_RUBRIC} (games) and ${QUESTION_WAGER_RUBRIC} (questions).`);
+  else if (!SPECS[t.rubric].decision) add('WAGER_TERMS', `The terms name rubric ${t.rubric}, which predates the v2 escrow: its terms cannot fix the jury, pass quota, forfeit line and bond that decide a claim, so new bounties do not use it. Build the wager with ${SPECS[t.rubric].kind === 'question' ? QUESTION_WAGER_RUBRIC : MUTUAL_WAGER_RUBRIC} (POST /api/wagers/propose or /answer, or "Add a terms block").`);
   const spec = specOf(t);
   const placeholder = /<[^<>\n]+>/.exec(t.block);
   if (placeholder) add('WAGER_TERMS', `Replace every <...> placeholder in the terms block (first: ${placeholder[0]}).`);
@@ -802,13 +903,22 @@ function checkMutualWagerTerms(description, expect) {
 
   const stakeWei = toWei(parseStakeLine(f.stake)), formWei = toWei(expect.stake);
   if (stakeWei == null || formWei == null || stakeWei !== formWei) add('WAGER_MISMATCH', `The stake in the terms (${f.stake}) is not the payout amount (${expect.stake} ETH).`);
+  // A wager has no hunter bond (WAGER_BOND_WEI), whatever both bounties would agree on.
+  const termsDecision = parseDecisionLine(f.decision);
+  if (!termsDecision) add('WAGER_TERMS', 'The "Decision settings" line must read "jury <index>, quota <Q>, forfeitLine <R>, bondWei 0."');
+  else {
+    const why = decisionProblem(termsDecision);
+    if (why) add('WAGER_TERMS', `The "Decision settings" line: ${why}`);
+  }
+  if (expect.decision && decisionProblem(expect.decision)) add('WAGER_MISMATCH', `This bounty's decision settings cannot back a wager: ${decisionProblem(expect.decision)}`);
   const want = {
     both: bothLine(expect.threshold, expect.classId, spec.criteria, spec.rubric),
     jury: `${formatJury(expect.jury, expect.iterations ?? 1)}.`,
-    oracle: `${formatOracle(expect.oracle)}.`,
+    oracle: `${formatOracle(expect.oracle, { full: true })}.`,
+    decision: `${formatDecision(expect.decision)}.`,
     site: siteLine(expect),
   };
-  const labels = { both: 'Both bounties', jury: 'Jury', oracle: 'Oracle settings', site: 'Site' };
+  const labels = { both: 'Both bounties', jury: 'Jury', oracle: 'Oracle settings', decision: 'Decision settings', site: 'Site' };
   // The jury is compared as a jury, the way the counter check and the rubric compare it: a
   // provider in any letter case ("openai" for "OpenAI"), in any node order, is the same jury.
   const juryKey = (line) => {
@@ -860,7 +970,7 @@ const QUESTION_TEXT_FIELDS = [['question', 'Question'], ['yes', 'YES wins if'], 
 const HTTPS_URL = /^https:\/\/[^\s<>"'`]+$/i;
 const isHttpsUrl = (u) => { if (!HTTPS_URL.test(u)) return false; try { return new URL(u).hostname.includes('.'); } catch { return false; } };
 
-/** Question lines (v4, v5) the template writes with content of a fixed shape: sides, question, YES/NO and sources. */
+/** Question lines (v4, v5, v7) the template writes with content of a fixed shape: sides, question, YES/NO and sources. */
 function questionLinesProblems(t) {
   const out = [];
   const f = t.fields;
@@ -902,7 +1012,7 @@ function questionTimingProblems(f, expect) {
  * The jury trusts a named counter, so this runs before the second bounty is funded.
  * Returns a list of problems; empty means the pair matches.
  * terms = parseMutualWagerTerms of the bounty that names (or will claim with) the counter;
- * expect = that bounty's { classId, threshold, oracle, jury, iterations, template? }.
+ * expect = that bounty's { classId, threshold, oracle, decision, jury, iterations, template? }.
  * number = the counter's number when the terms do not name it (a REQUIRED counter at claim time).
  */
 function checkCounterBounty({ terms, status, job, expect, number }) {
@@ -928,7 +1038,13 @@ function checkCounterBounty({ terms, status, job, expect, number }) {
   if (terms.counter?.createdAt && Date.parse(terms.counter.createdAt) !== Number(status.createdAt) * 1000) p(`it was created ${status.createdAtIso}, not ${terms.counter.createdAt} as your terms say.`);
   if (terms.counter?.deadline && Date.parse(terms.counter.deadline) !== Number(status.submissionDeadline) * 1000) p(`its deadline is ${status.submissionDeadlineIso}, not ${terms.counter.deadline} as your terms say.`);
   const o = status.oracleSettings || {};
-  if (formatOracle(o) !== formatOracle(expect.oracle)) p(`its oracle settings (${formatOracle(o)}) differ from yours. A bounty with a lower fee ceiling may never be evaluated.`);
+  const full = !!specOf(terms).decision;
+  if (formatOracle(o, { full }) !== formatOracle(expect.oracle, { full })) p(`its oracle settings (${formatOracle(o, { full })}) differ from yours. A bounty with a lower fee ceiling may never be evaluated, and a higher fee floor or beacons make each claim cost more.`);
+  if (full) {
+    const ds = status.decisionSettings;
+    if (!ds) p('the site does not show its decision settings (jury, quota, forfeit line, bond).');
+    else if (formatDecision(ds) !== formatDecision(expect.decision)) p(`its decision settings (${formatDecision(ds)}) differ from yours (${formatDecision(expect.decision)}): a claim on it would be judged by another rule${String(ds.bondWei ?? ds.bond) !== WAGER_BOND_WEI ? ', and it asks the claimant for a bond' : ''}.`);
+  }
 
   const theirs = parseMutualWagerTerms(job?.description);
   if (!theirs.found || theirs.count !== 1 || !theirs.closed) p('its description has no single, complete terms block.');
@@ -990,7 +1106,7 @@ function mirrorMutualWagerTerms(counterDescription, { number, createdAt, deadlin
     if (key === 'poster') return `Poster (creator): ${t.claimant.wallet}; side: ${t.claimant.side}.`;
     if (key === 'claimant') return `Claimant (target, the only wallet that can claim): ${t.poster.wallet}; side: ${t.poster.side}.`;
     if (key === 'pays') return `Pays the Claimant only if ${t.poster.side}.`;
-    if (key === 'counter') return `Counter bounty: #${number}, verified by the Poster before posting (created by the Claimant, targeted at the Poster, ${stake} ETH, created ${createdAt}, deadline ${deadline}, mirrored terms, same rubric, jury and oracle settings). It pays the Poster only if ${t.claimant.side}.`;
+    if (key === 'counter') return `Counter bounty: #${number}, verified by the Poster before posting (created by the Claimant, targeted at the Poster, ${stake} ETH, created ${createdAt}, deadline ${deadline}, mirrored terms, ${verifiedSame(spec)}). It pays the Poster only if ${t.claimant.side}.`;
     return raw;
   });
   return {
@@ -1061,13 +1177,16 @@ function textProblem(field, value, { max = 400 } = {}) {
  * are input errors, and createBody is null while there are any.
  * input = { creator, opponent, wagerId, event, start, market?, noWinner?,
  *           sides: { creator, opponent }, stake, settle, classId?, threshold?, jury?, iterations?,
- *           oracle?, submissionDeadline?, publicSubmissions? }
- * ctx = { site, escrow, chain, defaults: { oracle, jury? } }
+ *           oracle?, decision?, submissionDeadline?, publicSubmissions? }
+ * decision = { jury, quota, forfeitLine } (the escrow's jury index, pass quota Q, forfeit line R); a
+ * wager's bond is always 0. oracle may carry minOracleFeeEth and withBeacons.
+ * ctx = { site, escrow, chain, defaults: { oracle, jury?, decision? } }: the server fills oracle and
+ * decision from the size-class preset for the stake (shared/classPresets.js).
  */
 function proposeMutualWager(input = {}, ctx = {}) {
   const kind = input.kind ?? (input.question !== undefined ? 'question' : 'game');
   if (kind === 'question') return proposeQuestionWager(input, ctx);
-  if (kind !== 'game') return { problems: [{ code: 'WAGER_INPUT', field: 'kind', message: 'kind must be "game" (mutual-wager-v3: a game settled on its final score) or "question" (mutual-wager-v5).' }], createBody: null };
+  if (kind !== 'game') return { problems: [{ code: 'WAGER_INPUT', field: 'kind', message: 'kind must be "game" (mutual-wager-v6: a game settled on its final score) or "question" (mutual-wager-v7).' }], createBody: null };
   const problems = [];
   const bad = (field, message) => problems.push({ code: 'WAGER_INPUT', field, message });
   const sides = input.sides || {};
@@ -1100,7 +1219,7 @@ function proposeMutualWager(input = {}, ctx = {}) {
     wagerId: String(input.wagerId), event: norm(input.event), shortEvent, start: input.start,
     market: norm(input.market) || DEFAULT_MARKET, noWinner: norm(input.noWinner).replace(/\.$/, '') || DEFAULT_NO_WINNER,
     stake: params.stake, settle: input.settle,
-    classId: params.classId, threshold: params.threshold, jury: params.jury, iterations: params.iterations, oracle: params.oracle,
+    classId: params.classId, threshold: params.threshold, jury: params.jury, iterations: params.iterations, oracle: params.oracle, decision: params.decision, bountyClass: params.bountyClass,
     site: ctx.site, escrow: ctx.escrow, chain: ctx.chain,
   };
   const deadlineIso = params.deadlineIso;
@@ -1121,7 +1240,7 @@ function partyProblems(input, bad) {
   if (!WAGER_ID.test(String(input.wagerId || ''))) bad('wagerId', 'wagerId must be 3-64 letters, digits, ".", "_" or "-" (e.g. VW-WSH-SF-20261019), new for every pair.');
 }
 
-/** stake, threshold, class, jury, iterations, oracle settings and the bounty deadline, read and checked the same for every template. */
+/** stake, threshold, class, jury, iterations, oracle and decision settings and the bounty deadline, read and checked the same for every template. */
 function bountyParams(input, ctx, bad, template) {
   const stakeWei = toWei(input.stake);
   if (stakeWei == null || stakeWei <= 0n) bad('stake', 'stake must be a positive decimal ETH amount, e.g. "0.0005".');
@@ -1135,10 +1254,22 @@ function bountyParams(input, ctx, bad, template) {
   if (!juryOk) bad('jury', 'jury must be a non-empty array of { provider, model, weight (0-1], runs }.');
   const iterations = input.iterations ?? 1;
   if (!Number.isInteger(Number(iterations)) || Number(iterations) < 1) bad('iterations', 'iterations must be a positive integer.');
-  const oracle = input.oracle ?? ctx.defaults?.oracle;
+  // The fee floor and beacon flag default to the preset's (ctx.defaults.oracle), as the rest of oracle does.
+  const oracleIn = input.oracle ?? ctx.defaults?.oracle;
+  const oracle = oracleIn && {
+    ...oracleIn,
+    minOracleFeeEth: oracleIn.minOracleFeeEth ?? ctx.defaults?.oracle?.minOracleFeeEth ?? '0',
+    withBeacons: oracleIn.withBeacons ?? ctx.defaults?.oracle?.withBeacons ?? false,
+  };
   const oracleOk = !!oracle && toWei(oracle.maxOracleFeeEth) != null && toWei(oracle.estimatedBaseCostEth) != null
-    && Number.isInteger(Number(oracle.maxFeeBasedScaling)) && Number.isInteger(Number(oracle.alpha));
-  if (!oracleOk) bad('oracle', 'oracle must be { maxOracleFeeEth, estimatedBaseCostEth (decimal ETH strings), maxFeeBasedScaling, alpha (integers) }.');
+    && Number.isInteger(Number(oracle.maxFeeBasedScaling)) && Number.isInteger(Number(oracle.alpha))
+    && toWei(oracle.minOracleFeeEth) != null && toWei(oracle.minOracleFeeEth) >= 0n && typeof oracle.withBeacons === 'boolean';
+  if (!oracleOk) bad('oracle', 'oracle must be { maxOracleFeeEth, estimatedBaseCostEth, minOracleFeeEth? (decimal ETH strings), maxFeeBasedScaling, alpha (integers), withBeacons? (boolean) }.');
+  const decision = input.decision ?? ctx.defaults?.decision;
+  const decisionWhy = decision === undefined
+    ? (ctx.defaults?.decisionUnavailable || 'decision is required: { jury, quota, forfeitLine } (GET /api/classes/presets lists them per size class).')
+    : decisionProblem(decision);
+  if (decisionWhy) bad('decision', decisionWhy);
   const settleUnix = unixOf(input.settle);
   if (input.submissionDeadline !== undefined) {
     if (!ISO_WHOLE_SECOND.test(String(input.submissionDeadline))) bad('submissionDeadline', 'submissionDeadline must be an ISO UTC time to the second; leave it out to use the settlement deadline.');
@@ -1148,7 +1279,11 @@ function bountyParams(input, ctx, bad, template) {
     stake: stakeWei != null && stakeWei > 0n ? formatEthWei(stakeWei).replace(/\.0$/, '') : null,
     threshold: Number(threshold), classId: Number(classId),
     jury: juryOk ? jury.map(juryNode) : null, iterations: Number(iterations),
-    oracle: oracleOk ? { maxOracleFeeEth: eth(oracle.maxOracleFeeEth), estimatedBaseCostEth: eth(oracle.estimatedBaseCostEth), maxFeeBasedScaling: Number(oracle.maxFeeBasedScaling), alpha: Number(oracle.alpha) } : null,
+    oracle: oracleOk ? { maxOracleFeeEth: eth(oracle.maxOracleFeeEth), estimatedBaseCostEth: eth(oracle.estimatedBaseCostEth), maxFeeBasedScaling: Number(oracle.maxFeeBasedScaling), alpha: Number(oracle.alpha),
+      minOracleFeeEth: eth(oracle.minOracleFeeEth), withBeacons: oracle.withBeacons } : null,
+    decision: decisionWhy ? null : decisionOf(decision),
+    // The preset the defaults came from (job records show it); none when the proposer chose the settings.
+    bountyClass: input.decision === undefined ? ctx.defaults?.bountyClass : undefined,
     deadlineIso: input.submissionDeadline ?? input.settle,
   };
 }
@@ -1216,7 +1351,7 @@ function resolutionSourceWarnings(urls) {
  * propose for a question (mutual-wager-v5). input = { kind: 'question', creator, opponent, wagerId,
  *   question, betsClose, resolvesAt, claimsOpen?, yes, no, noWinner?, sources: [https URL],
  *   side: 'YES' | 'NO' (the creator's), stake, settle, classId?, threshold?, jury?, iterations?,
- *   oracle?, submissionDeadline?, publicSubmissions? }. claimsOpen defaults to resolvesAt + 3 hours.
+ *   oracle?, decision?, submissionDeadline?, publicSubmissions? }. claimsOpen defaults to resolvesAt + 3 hours.
  * Returns what proposeMutualWager returns, plus warnings about the sources.
  */
 function proposeQuestionWager(input, ctx) {
@@ -1257,7 +1392,7 @@ function proposeQuestionWager(input, ctx) {
     yes: norm(input.yes).replace(/\.$/, ''), no: norm(input.no).replace(/\.$/, ''),
     noWinner: norm(input.noWinner).replace(/\.$/, '') || DEFAULT_QUESTION_NO_WINNER, sources,
     stake: params.stake, settle: input.settle,
-    classId: params.classId, threshold: params.threshold, jury: params.jury, iterations: params.iterations, oracle: params.oracle,
+    classId: params.classId, threshold: params.threshold, jury: params.jury, iterations: params.iterations, oracle: params.oracle, decision: params.decision, bountyClass: params.bountyClass,
     site: ctx.site, escrow: ctx.escrow, chain: ctx.chain,
   };
   const poster = { wallet: input.creator, label: `${side} wins`, short: side };
@@ -1293,6 +1428,14 @@ function createBodyFor({ terms, poster, claimant, title, description, submission
     oracleEstimatedBaseCost: terms.oracle.estimatedBaseCostEth,
     oracleMaxFeeBasedScaling: terms.oracle.maxFeeBasedScaling,
     oracleAlpha: terms.oracle.alpha,
+    // v2 escrow: every value the terms fix is sent, so no size-class preset or ETH price can change it.
+    oracleMinOracleFee: eth(terms.oracle.minOracleFeeEth ?? '0'),
+    oracleWithBeacons: beaconFlag(terms.oracle.withBeacons) === 'true',
+    jury: terms.decision.jury,
+    quota: terms.decision.quota,
+    forfeitLine: terms.decision.forfeitLine,
+    bond: WAGER_BOND_WEI,
+    ...(terms.bountyClass ? { bountyClass: terms.bountyClass } : {}),
   };
 }
 
@@ -1328,8 +1471,13 @@ function answerMutualWager({ number, status, job }, input = {}) {
   const both = parseBothLine(t.fields.both);
   const jury = parseJuryLine(t.fields.jury);
   const oracle = parseOracleLine(t.fields.oracle);
+  const decision = parseDecisionLine(t.fields.decision);
   const site = /^(\S+); escrow (\S+) on (.+); no cancel or edit\.?$/.exec(norm(t.fields.site));
-  const unreadable = [['Stake', stake != null && toWei(stake) != null], ['Both bounties', both], ['Jury', jury], ['Oracle settings', oracle], ['Site', site],
+  // An offer in a template from before the v2 escrow names no decision settings, so an answer could not fix them.
+  const v2 = !!SPECS[t.rubric]?.decision;
+  if (!v2) bad('WAGER_TERMS', 'counter', `Bounty #${n} uses rubric ${t.rubric || '(none)'}, which predates the v2 escrow: its terms do not fix the jury, pass quota, forfeit line and bond that decide a claim. Do not answer it; ask for a new offer (${MUTUAL_WAGER_RUBRIC} or ${QUESTION_WAGER_RUBRIC}).`);
+  const unreadable = [['Stake', stake != null && toWei(stake) != null], ['Both bounties', both], ['Jury', jury], ['Oracle settings', oracle && (!v2 || oracle.minOracleFeeEth !== undefined)],
+    ...(v2 ? [['Decision settings', decision && !decisionProblem(decision)]] : []), ['Site', site],
     ['Settlement deadline', unixOf(t.fields.settle) != null]].filter(([, ok]) => !ok).map(([label]) => label);
   if (unreadable.length) bad('WAGER_TERMS', 'counter', `Bounty #${n}'s terms cannot be answered as they are: unreadable ${unreadable.join(', ')} line${unreadable.length > 1 ? 's' : ''}. Do not answer it.`);
   // The settlement deadline, to the whole second at or after it (a create-page block may give minutes or milliseconds).
@@ -1344,7 +1492,7 @@ function answerMutualWager({ number, status, job }, input = {}) {
 
   const terms = {
     kind: t.kind, rubric: t.rubric, wagerId: t.fields.wagerId, shortEvent: t.kind === 'question' ? null : shortEventOf(t.fields.event), stake,
-    threshold: both.threshold, classId: both.classId, jury: jury.jury, iterations: jury.iterations, oracle,
+    threshold: both.threshold, classId: both.classId, jury: jury.jury, iterations: jury.iterations, oracle, decision: decisionOf(decision),
   };
   const poster = { wallet: t.poster.wallet, label: t.poster.side };
   const claimant = { wallet: t.claimant.wallet, label: t.claimant.side, short: sideShort(t.claimant.side) };
@@ -1680,6 +1828,17 @@ function wagerClaimTimingFor(terms, { deadline, finalAt, now }) {
 
 module.exports = {
   MUTUAL_WAGER_RUBRIC,
+  MUTUAL_WAGER_V3_RUBRIC,
+  MUTUAL_WAGER_V6_RUBRIC,
+  MUTUAL_WAGER_V3_TEMPLATE,
+  QUESTION_WAGER_V7_RUBRIC,
+  QUESTION_WAGER_V5_TEMPLATE,
+  QUESTION_WAGER_LINES_V7: QUESTION_LINES_V7,
+  MUTUAL_WAGER_LINES_V6: LINES_V6,
+  WAGER_BOND_WEI,
+  formatDecision,
+  parseDecisionLine,
+  wagerDecisionProblem: decisionProblem,
   MUTUAL_WAGER_CRITERIA,
   QUESTION_WAGER_RUBRIC,
   QUESTION_WAGER_V4_RUBRIC,

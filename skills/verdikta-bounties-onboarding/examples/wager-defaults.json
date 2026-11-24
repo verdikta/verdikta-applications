@@ -1,10 +1,11 @@
 {
   "fixture_only": true,
-  "_note": "Shape example for ~/.config/verdikta-bounties/wager-defaults.json, optional: without it wager.js propose uses class 128, OpenAI gpt-5.6-terra + Anthropic claude-sonnet-5 (weight 0.5, 1 run each) and the website's oracle defaults. Copy it, remove fixture_only, pick real models of the class from GET /api/classes/:classId/models, keep the oracle settings at or below the live ceiling. An answer always takes the first bounty's values instead.",
+  "_note": "Shape example for ~/.config/verdikta-bounties/wager-defaults.json, optional: without it wager.js propose uses class 128, OpenAI gpt-5.6-terra + Anthropic claude-sonnet-5 (weight 0.5, 1 run each), the website's oracle defaults with no fee floor and no beacons, and the Bondless Small decision settings (jury 0, quota 3, forfeitLine 1). Copy it, remove fixture_only, pick real models of the class from GET /api/classes/:classId/models, keep the oracle settings at or below the live ceiling. decision is the v2 escrow's jury index, pass quota Q and forfeit line R (GET /api/classes/presets lists them per size class); a wager has no hunter bond, so a bond is refused. The terms state all of these and both bounties must carry them. An answer always takes the first bounty's values instead.",
   "classId": 128,
   "jury": [
     { "provider": "OpenAI", "model": "gpt-5.6-terra", "weight": 0.5, "runs": 1 },
     { "provider": "Anthropic", "model": "claude-sonnet-5", "weight": 0.5, "runs": 1 }
   ],
-  "oracle": { "maxOracleFeeEth": "0.00002", "estimatedBaseCostEth": "0.00001", "maxFeeBasedScaling": 3, "alpha": 500 }
+  "oracle": { "maxOracleFeeEth": "0.00002", "estimatedBaseCostEth": "0.00001", "maxFeeBasedScaling": 3, "alpha": 500, "minOracleFeeEth": "0", "withBeacons": false },
+  "decision": { "jury": 0, "quota": 3, "forfeitLine": 1 }
 }

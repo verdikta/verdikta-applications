@@ -834,6 +834,7 @@ router.post('/create', async (req, res) => {
         // The deadline that goes on chain: an exact one is checked as given, not re-derived from now.
         payments: { ...payments, submissionDeadline: exactDeadline },
         oracleSettings,
+        decisionSettings,
         rubric: rubricDoc,
         now: Math.floor(Date.now() / 1000),
         readCounter: (n) => readWagerRecords(n, req.app.locals.ipfsClient),
@@ -8472,7 +8473,7 @@ async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null
 
 // What routes/wagerRoutes.js reads bounties with (server.js passes it in), so the wager
 // endpoints see a bounty exactly as GET /:id and /:id/onchain-status serve it.
-router._wagerDeps = { readWagerRecords, linkedWagerJobs, resolveOracleSettings };
+router._wagerDeps = { readWagerRecords, linkedWagerJobs, resolveOracleSettings, resolveDecisionSettings };
 
 // Exposed for unit tests only.
 router._chainHelpers = { readWithLagRetry, readChainSubmissionWithRetry, ensureLocalSubmission, submissionRecordFromChain };

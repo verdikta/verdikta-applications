@@ -35,7 +35,7 @@ import { walletEnvironment, withTimeout } from '../services/injectedProvider';
 import { classifyCreateFailure, describeCreateFailure, accountTypeFromCode } from '../utils/createFailure';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
-import { mutualWagerTermsSkeleton, questionWagerTermsSkeleton, mirrorMutualWagerTerms, hasMutualWagerTerms, parseMutualWagerTerms, canonicalWagerText, checkMutualWagerTerms, checkCounterBounty, findWagerTwin } from '../utils/mutualWagerTerms';
+import { mutualWagerTermsSkeleton, questionWagerTermsSkeleton, mirrorMutualWagerTerms, hasMutualWagerTerms, parseMutualWagerTerms, parseDecisionLine, parseOracleLine, canonicalWagerText, checkMutualWagerTerms, checkCounterBounty, findWagerTwin } from '../utils/mutualWagerTerms';
 import ClassSelector from '../components/ClassSelector';
 import ClassCoverage from '../components/ClassCoverage';
 import CriterionEditor from '../components/CriterionEditor';
@@ -51,7 +51,7 @@ const ORACLE_DEFAULTS = {
   oracleEstimatedBaseCostEth: ethers.formatEther(config.submissionDefaults.estimatedBaseCostWei),
   oracleMaxFeeBasedScaling: String(config.submissionDefaults.maxFeeBasedScaling),
 };
-// The rubric templates of a mutual wager: a game (mutual-wager-v3) or a question (mutual-wager-v5).
+// The rubric templates of a mutual wager: a game (mutual-wager-v6) or a question (mutual-wager-v7).
 const WAGER_TEMPLATES = ['mutualWager', 'questionWager'];
 
 /**
@@ -184,9 +184,11 @@ function CreateBounty({ walletState }) {
   const autoClassKey = payoutUsd != null && payoutUsd > 0 ? presetForBounty(payoutUsd).key : 'small';
   const classKey = pickedClassKey || autoClassKey;
   const bountyClass = presetByKey(classKey);
+  // A mutual wager has no hunter bond (shared/mutualWager.js WAGER_BOND_WEI): both stakes are in escrow.
+  const wagerSelected = WAGER_TEMPLATES.includes(selectedTemplate);
   const decisionForm = useMemo(
-    () => ({ ...classDefaults(classKey, formData.ethPriceUSD), ...decisionOverrides }),
-    [classKey, formData.ethPriceUSD, decisionOverrides]
+    () => ({ ...classDefaults(classKey, formData.ethPriceUSD), ...decisionOverrides, ...(wagerSelected ? { bondEth: '0' } : {}) }),
+    [classKey, formData.ethPriceUSD, decisionOverrides, wagerSelected]
   );
   const decisionError = validateDecision(decisionForm, classKey);
   const pickClass = (key) => { setPickedClassKey(key); setDecisionOverrides({}); };
@@ -635,12 +637,43 @@ function CreateBounty({ walletState }) {
   // the form knows (wallets, stake, threshold, class, jury, oracle settings, network) and <...>
   // placeholders for the rest. handleSubmit checks the block against the form before funding.
   const wagerJury = () => juryNodes.map(({ provider, model, weight, runs }) => ({ provider, model, weight, runs }));
+  // v2 escrow (mutual-wager-v6, -v7): the terms also fix the fee floor, the beacon flag and the decision
+  // settings (the class's jury, Q, R; never a bond), and the jury checks the counter's against them.
   const wagerOracle = () => ({
     maxOracleFeeEth: formData.oracleMaxOracleFeeEth,
     estimatedBaseCostEth: formData.oracleEstimatedBaseCostEth,
     maxFeeBasedScaling: formData.oracleMaxFeeBasedScaling,
     alpha: formData.oracleAlpha,
+    // Without the ETH price a preset's USD floor has no ETH value yet: a placeholder until it loads or is set.
+    minOracleFeeEth: decisionForm.feeFloorEth === '' ? '<fee floor in ETH>' : decisionForm.feeFloorEth,
+    withBeacons: Boolean(decisionForm.withBeacons),
   });
+  const wagerDecision = () => ({
+    jury: bountyClass?.jury,
+    quota: decisionForm.quota,
+    forfeitLine: decisionForm.forfeitLine,
+    bondWei: (() => { try { return ethers.parseEther(String(decisionForm.bondEth || '0')).toString(); } catch { return String(decisionForm.bondEth); } })(),
+  });
+  // The class and overrides that give the form the decision settings an offer's terms name (answering it).
+  const adoptWagerSettings = (description) => {
+    const t = parseMutualWagerTerms(description);
+    const d = parseDecisionLine(t.fields?.decision);
+    const o = parseOracleLine(t.fields?.oracle);
+    if (!d) return false;
+    // The jury index picks the class; jury 0 is Bondless Small (a wager has no bond either way).
+    const key = (CLASS_PRESETS.find((c) => c.jury === d.jury && c.bondUsd === 0) || CLASS_PRESETS.find((c) => c.jury === d.jury))?.key;
+    if (!key) return false;
+    setPickedClassKey(key);
+    setDecisionOverrides({
+      quota: String(d.quota), forfeitLine: String(d.forfeitLine),
+      ...(o?.minOracleFeeEth !== undefined ? { feeFloorEth: o.minOracleFeeEth, withBeacons: o.withBeacons } : {}),
+    });
+    if (o) {
+      setFormData((prev) => ({ ...prev, oracleMaxOracleFeeEth: o.maxOracleFeeEth, oracleEstimatedBaseCostEth: o.estimatedBaseCostEth,
+        oracleMaxFeeBasedScaling: o.maxFeeBasedScaling, oracleAlpha: o.alpha }));
+    }
+    return true;
+  };
   const wagerChain = `${currentNetwork.name} (chain ID ${currentNetwork.chainId})`;
   const addMutualWagerTerms = async () => {
     if (hasMutualWagerTerms(formData.description)) return;
@@ -657,13 +690,14 @@ function CreateBounty({ walletState }) {
         if (!mirrored) { toast.warning(`Bounty #${n} has no complete MUTUAL WAGER TERMS block to answer.`); return; }
         append(mirrored.description);
         if (!formData.targetHunter) setFormData((prev) => ({ ...prev, targetHunter: mirrored.claimant }));
-        toast.success(`Bounty #${n}'s terms copied with the sides swapped. Set the payout to ${mirrored.stake} ETH and match its jury and oracle settings; they are checked before funding.`);
+        const adopted = adoptWagerSettings(mirrored.description);
+        toast.success(`Bounty #${n}'s terms copied with the sides swapped. Set the payout to ${mirrored.stake} ETH and match its jury${adopted ? '' : ', oracle and decision settings'}; ${adopted ? 'its size class, pass rule and oracle settings were copied, and ' : ''}everything is checked before funding.`);
       } catch (err) {
         toast.warning(`Could not read bounty #${n}: ${messageFromAxios(err)}`);
       }
       return;
     }
-    // A question wager (mutual-wager-v5; v4 before it) has its own lines: question, bets close, resolves at, sources, YES/NO sides.
+    // A question wager (mutual-wager-v7) has its own lines: question, bets close, resolves at, sources, YES/NO sides.
     const skeleton = selectedTemplate === 'questionWager' ? questionWagerTermsSkeleton : mutualWagerTermsSkeleton;
     const terms = skeleton({
       posterWallet: walletState.address,
@@ -674,6 +708,7 @@ function CreateBounty({ walletState }) {
       jury: wagerJury(),
       iterations,
       oracle: wagerOracle(),
+      decision: wagerDecision(),
       site: window.location.origin,
       escrow: currentNetwork.bountyEscrowAddress,
       chain: wagerChain,
@@ -959,6 +994,7 @@ function CreateBounty({ walletState }) {
         jury: wagerJury(),
         iterations,
         oracle: wagerOracle(),
+        decision: wagerDecision(),
         approvalWindow: formData.enableApprovalWindow,
         now,
         deadline: now + Math.round(submissionWindowHours * 3600),
@@ -1648,7 +1684,9 @@ function CreateBounty({ walletState }) {
                       <tr>
                         <th>Hunter bond</th>
                         <td>
-                          {decisionOverrides.bondEth !== undefined
+                          {wagerSelected
+                            ? 'None (a mutual wager has no hunter bond)'
+                            : decisionOverrides.bondEth !== undefined
                             ? `${decisionForm.bondEth || '0'} ETH (your setting)`
                             : <>
                                 {formatUsd(bountyClass.bondUsd)}
@@ -1753,8 +1791,10 @@ function CreateBounty({ walletState }) {
                           id="classBondEth"
                           value={decisionForm.bondEth}
                           placeholder="from the class"
+                          disabled={wagerSelected}
                           onChange={(e) => setDecisionField('bondEth', e.target.value)}
                         />
+                        {wagerSelected && <small className="helper-text">A mutual wager has no hunter bond: both stakes are already in escrow.</small>}
                       </div>
                       <div className="form-group">
                         <label htmlFor="classFeeFloorEth">Fee floor (ETH per arbiter)</label>

@@ -48,7 +48,7 @@ describe('GET /api/templates', () => {
     expect(res.status).toBe(200);
     const keys=res.body.templates.map(t=>t.key);
     expect(keys).toEqual(expect.arrayContaining([...Object.keys(templateData.templates),'source-check-v1','review-v1']));
-    expect(res.body.templates.find(t=>t.key==='mutualWager')).toMatchObject({kind:'rubric',version:'mutual-wager-v3',recommendedThreshold:80,mustPass:7,detail:'/api/templates/mutualWager'});
+    expect(res.body.templates.find(t=>t.key==='mutualWager')).toMatchObject({kind:'rubric',version:'mutual-wager-v6',recommendedThreshold:80,mustPass:7,detail:'/api/templates/mutualWager'});
     expect(res.body.templates.find(t=>t.key==='source-check-v1')).toMatchObject({kind:'service',docs:expect.stringContaining('verdikta-discover')});
     expect(res.body.usage.byKey).toMatch(/rubricTemplate/);
   });
@@ -93,7 +93,7 @@ describe('POST /jobs/create with rubricTemplate', () => {
     ['an unknown key', {rubricTemplate:'nope'}, 'UNKNOWN_TEMPLATE', /one of: blogPost/],
     ['a work-order template', {rubricTemplate:'review-v1'}, 'UNKNOWN_TEMPLATE', /verdikta-discover/],
     ['a key with a rubric too', {rubricTemplate:'general',rubricCid:cid}, 'RUBRIC_TEMPLATE_CONFLICT', /not more than one/],
-    ['an old version', {rubricTemplate:'mutualWager',rubricTemplateVersion:'mutual-wager-v1'}, 'TEMPLATE_VERSION_CHANGED', /now mutual-wager-v3/],
+    ['an old version', {rubricTemplate:'mutualWager',rubricTemplateVersion:'mutual-wager-v1'}, 'TEMPLATE_VERSION_CHANGED', /now mutual-wager-v6/],
   ])('refuses %s before anything is pinned', async (_label, extra, code, details) => {
     const res=await request(app).post('/api/jobs/create').set(FRONTEND).send({...body,...extra});
     expect(res.status).toBe(400);

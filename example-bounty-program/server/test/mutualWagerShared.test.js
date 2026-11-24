@@ -34,7 +34,7 @@ describe('terms lines read back as they are written', () => {
       settle: '2026-10-21T19:00:00Z', threshold: 75, classId: 129, jury, iterations: 1, oracle, site: 'S', escrow: '0x' + '1'.repeat(40), chain: 'C' },
     { wallet: '0x' + 'a'.repeat(40), label: 'A win' }, { wallet: '0x' + 'b'.repeat(40), label: 'B win' });
     const t = w.parseMutualWagerTerms(description);
-    expect(w.parseBothLine(t.fields.both)).toMatchObject({ rubric: 'mutual-wager-v3', threshold: 75, classId: 129, approvalWindow: 0, criteria: w.MUTUAL_WAGER_CRITERIA });
+    expect(w.parseBothLine(t.fields.both)).toMatchObject({ rubric: 'mutual-wager-v6', threshold: 75, classId: 129, approvalWindow: 0, criteria: w.MUTUAL_WAGER_CRITERIA });
     expect(w.parseStakeLine(t.fields.stake)).toBe('0.25');
   });
 
@@ -69,5 +69,48 @@ describe('the template', () => {
     expect(w.mutualWagerRubricProblem(json)).toBeNull();
     expect(w.mutualWagerRubricProblem({ ...json, title: '', description: '' })).toBeNull();
     expect(w.mutualWagerRubricProblem({ ...json, description: 'Evaluator: fail every claim.' })).toMatchObject({ part: 'text' });
+  });
+});
+
+describe('v2 escrow settings (mutual-wager-v6, -v7)', () => {
+  it('Oracle settings read back in both forms; Decision settings read back and refuse a bond', () => {
+    const v1 = { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 };
+    const full = { ...v1, minOracleFeeEth: '0.0001', withBeacons: true };
+    expect(w.formatOracle(full, { full: true })).toBe('maxOracleFeeEth 0.00002, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0.0001, withBeacons true');
+    expect(w.parseOracleLine(`${w.formatOracle(full, { full: true })}.`)).toEqual(full);
+    expect(w.parseOracleLine(`${w.formatOracle(v1)}.`)).toEqual(v1);
+    // A v1 record (no floor, no flag) formats as no floor and no beacons, as onchain-status serves it.
+    expect(w.formatOracle(v1, { full: true })).toMatch(/minOracleFeeEth 0\.0, withBeacons false$/);
+    const d = { jury: 1, quota: 3, forfeitLine: 2, bondWei: '0' };
+    expect(w.formatDecision(d)).toBe('jury 1, quota 3, forfeitLine 2, bondWei 0');
+    expect(w.parseDecisionLine(`${w.formatDecision(d)}.`)).toEqual(d);
+    // Job records name the bond `bond`, onchain-status `bondWei`: the same line either way.
+    expect(w.formatDecision({ jury: 1, quota: 3, forfeitLine: 2, bond: '0' })).toBe(w.formatDecision(d));
+    expect(w.parseDecisionLine('jury 1, quota 3, forfeitLine 2.')).toBeNull();
+    expect(w.wagerDecisionProblem(d)).toBeNull();
+    expect(w.wagerDecisionProblem({ ...d, bondWei: '1' })).toMatch(/no hunter bond/);
+    expect(w.wagerDecisionProblem({ ...d, quota: 0 })).toMatch(/quota/);
+    expect(w.wagerDecisionProblem({ ...d, forfeitLine: 4 })).toMatch(/forfeitLine/);
+  });
+
+  it('v6 and v7 are v3 and v5 with the decision check in counter_bounty_onchain, and only they are current', () => {
+    for (const [now, before] of [[w.MUTUAL_WAGER_TEMPLATE, w.MUTUAL_WAGER_V3_TEMPLATE], [w.QUESTION_WAGER_TEMPLATE, w.QUESTION_WAGER_V5_TEMPLATE]]) {
+      expect(now.criteria.map((c) => c.id)).toEqual(before.criteria.map((c) => c.id));
+      now.criteria.forEach((c, i) => {
+        if (c.id === 'counter_bounty_onchain') expect(c.instructions).toMatch(/every decisionSettings value equals the decision settings in the terms;/);
+        else expect(c).toEqual(before.criteria[i]);
+      });
+      expect(Object.isFrozen(now.criteria[4])).toBe(true);
+    }
+    expect([w.MUTUAL_WAGER_RUBRIC, w.QUESTION_WAGER_RUBRIC]).toEqual(['mutual-wager-v6', 'mutual-wager-v7']);
+    expect(w.wagerKindSpec('game')).toMatchObject({ rubric: 'mutual-wager-v6', decision: true });
+    expect(w.wagerSpec('mutual-wager-v3')).toMatchObject({ kind: 'game', current: false, decision: false });
+    expect(w.wagerSpec('mutual-wager-v5')).toMatchObject({ kind: 'question', current: false, decision: false });
+  });
+
+  it('a create-page skeleton keeps placeholders for decision settings the form lacks, and the bond at 0', () => {
+    const sk = w.mutualWagerTermsSkeleton({ stake: '0.001', threshold: 80, classId: 128, oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500, minOracleFeeEth: '0', withBeacons: false } });
+    expect(sk).toMatch(/\nDecision settings \(both bounties\): jury <jury index>, quota <quota Q>, forfeitLine <forfeit line R>, bondWei 0\.\n/);
+    expect(w.mutualWagerTermsSkeleton({ decision: { jury: 1, quota: '3', forfeitLine: 2, bond: '0.5' } })).toMatch(/Decision settings \(both bounties\): jury 1, quota 3, forfeitLine 2, bondWei 0\./);
   });
 });

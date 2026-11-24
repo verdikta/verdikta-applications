@@ -11,15 +11,16 @@ const { validateRubric } = require('../../../server/utils/validation.js');
 const { measureEvaluationQuery } = require('../../../server/utils/archiveGenerator.js');
 const { maxEvaluationQueryChars } = require('../../../server/utils/bountyValidator.js');
 
-// The Commanders @ 49ers wager that settled on mainnet (bounties #301/#303), as a v3 pair.
+// The Commanders @ 49ers wager that settled on mainnet (bounties #301/#303), as a v6 pair (v2 escrow).
 const jury = [{ provider: 'OpenAI', model: 'gpt-5.6-terra', weight: 0.5, runs: 1 }, { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.5, runs: 1 }];
-const oracle = { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500' };
+const oracle = { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: false };
+const decision = { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' };
 const site = 'https://bounties.verdikta.org', escrow = '0xA741eFf41Bcf14793E61CEbB4179E05C9124D3f6', chain = 'Base (chain ID 8453)';
 const terms = {
   wagerId: 'VW-WSH-SF-20261019', shortEvent: 'Commanders @ 49ers',
   event: "NFL 2026 regular season, Week 6: Washington Commanders (WAS) at San Francisco 49ers (SF), Levi's Stadium, Santa Clara, California.",
   start: '2026-10-20T00:15:00Z', market: 'straight-up winner on the official final score, overtime included. No point spread.',
-  stake: '0.0005', settle: '2026-10-22T00:00:00Z', classId: 128, threshold: 80, jury, iterations: 1, oracle, site, escrow, chain,
+  stake: '0.0005', settle: '2026-10-22T00:00:00Z', classId: 128, threshold: 80, jury, iterations: 1, oracle, decision, site, escrow, chain,
 };
 const sf = { wallet: '0xA3b423861e6D6501a05e87d1f500fFff2402f7B1', label: 'the San Francisco 49ers win', short: 'the 49ers' };
 const wsh = { wallet: '0xF6DD9256D0091c6E773EBfDFC79783f9663e65Fc', label: 'the Washington Commanders win', short: 'the Commanders' };
@@ -40,7 +41,7 @@ const first = buildMutualWagerBounty(terms, wsh, sf, null).description;
 const second = buildMutualWagerBounty(terms, sf, wsh, { number: 301, createdAt: created.iso, deadline: deadline.iso }).description;
 // The form state the create page checks the second bounty's terms against.
 const expectFor = (over = {}) => ({
-  posterWallet: sf.wallet, targetHunter: wsh.wallet, stake: '0.0005', threshold: 80, classId: 128, jury, iterations: 1, oracle,
+  posterWallet: sf.wallet, targetHunter: wsh.wallet, stake: '0.0005', threshold: 80, classId: 128, jury, iterations: 1, oracle, decision,
   approvalWindow: false, now: NOW, deadline: NOW + 52 * 3600, site, escrow, chain,
   criteria: template.criteria, forbiddenContent: template.forbiddenContent, template, ...over,
 });
@@ -50,7 +51,9 @@ const counterStatus = (over = {}) => ({
   bountyAmountWei: '500000000000000', arbiterDeterminationPaymentEth: '0.0005', creatorAssessmentWindowSize: 0,
   classId: 128, threshold: 80, createdAt: created.unix, createdAtIso: created.iso,
   submissionDeadline: deadline.unix, submissionDeadlineIso: deadline.iso, evaluationCid: 'QmCounterPackage',
-  oracleSettings: { maxOracleFee: '20000000000000', maxOracleFeeEth: '0.00002', alpha: 500, estimatedBaseCost: '10000000000000', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3 },
+  oracleSettings: { maxOracleFee: '20000000000000', maxOracleFeeEth: '0.00002', alpha: 500, estimatedBaseCost: '10000000000000', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3,
+    minOracleFee: '0', minOracleFeeEth: '0.0', withBeacons: false },
+  decisionSettings: { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' },
   linkage: { state: 'linked' }, ...over,
 });
 const counterJob = (over = {}) => ({
@@ -79,7 +82,7 @@ test('the Mutual Wager template is offered and passes the server rubric check', 
   assert.match(text.result_sources, /retrieved no page confirming the score \(for example, it has no web access\)/);
   assert.doesNotMatch(text.result_sources + text.counter_bounty_onchain, /without web access|no web access judges/);
   assert.match(text.counter_bounty_onchain, /copied values are never evidence/);
-  assert.match(text.counter_bounty_onchain, /every oracleSettings value equals the oracle settings in the terms; linkage.state = linked/);
+  assert.match(text.counter_bounty_onchain, /every oracleSettings value equals the oracle settings in the terms; every decisionSettings value equals the decision settings in the terms; linkage.state = linked/);
   assert.match(text.counter_bounty_terms, /job.evaluationCid equals the evaluationCid on the onchain-status page/);
   assert.match(text.counter_bounty_terms, /every line equals this bounty's/);
   assert.match(text.counter_bounty_terms, /compare the text, not just the ids: one changed word is a FAIL\); forbiddenContent is the same/);
@@ -99,7 +102,9 @@ test('the two bounties of a wager carry mirrored terms', () => {
   assert.equal(a.counter, null);
   assert.deepEqual(b.counter, { number: 301, createdAt: created.iso, deadline: deadline.iso });
   assert.match(b.fields.jury, /^OpenAI gpt-5.6-terra weight 0.5, 1 run \+ Anthropic claude-sonnet-5 weight 0.5, 1 run; 1 iteration\.$/);
-  assert.equal(b.fields.oracle, 'maxOracleFeeEth 0.00002, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500.');
+  assert.equal(b.fields.oracle, 'maxOracleFeeEth 0.00002, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0.0, withBeacons false.');
+  assert.equal(b.fields.decision, 'jury 0, quota 3, forfeitLine 1, bondWei 0.');
+  assert.match(b.fields.counter, /mirrored terms, same rubric, jury, oracle and decision settings\)/);
   assert.equal(b.fields.noWinner, 'a tie, or no official final score before the settlement deadline.');
 });
 
@@ -145,7 +150,7 @@ test('incomplete or stale terms are refused before funding (review P2)', () => {
   hasProblem(checkMutualWagerTerms('Just a description', expectFor()).problems, /no MUTUAL WAGER TERMS block/);
   hasProblem(checkMutualWagerTerms(`${second}\n\n${second}`, expectFor()).problems, /2 terms blocks/);
   hasProblem(checkMutualWagerTerms(second.replace('=== END WAGER TERMS ===', ''), expectFor()).problems, /no "=== END WAGER TERMS ===" line/);
-  hasProblem(checkMutualWagerTerms(second.replaceAll('mutual-wager-v3', 'mutual-wager-v2'), expectFor()).problems, /terms name rubric mutual-wager-v2/);
+  hasProblem(checkMutualWagerTerms(second.replaceAll('mutual-wager-v6', 'mutual-wager-v2'), expectFor()).problems, /terms name rubric mutual-wager-v2/);
   hasProblem(checkMutualWagerTerms(second.replace(/^No winner.*$/m, ''), expectFor()).problems, /no "No winner \(this bounty must not pay\):" line/);
   // Form edited after the block was inserted.
   hasProblem(checkMutualWagerTerms(second, expectFor({ stake: '0.001' })).problems, /stake in the terms/);

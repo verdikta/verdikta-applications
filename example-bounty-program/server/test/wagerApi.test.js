@@ -66,7 +66,8 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(clientIdentification);
 app.use('/api/jobs', jobRoutes);
-const wagerRouter = createWagerRouter(jobRoutes._wagerDeps);
+// A fixed ETH price: a 0.0001 ETH stake is then the Bondless Small class (jury 0, Q 3, R 1, no floor).
+const wagerRouter = createWagerRouter({ ...jobRoutes._wagerDeps, priceUsd: async () => ({ usd: 2500 }) });
 app.use('/api/wagers', wagerRouter);
 let cidSeq = 0;
 // IPFS as the tests publish to it: each posted bounty's evaluation package, keyed by CID.
@@ -130,11 +131,20 @@ function putOnChain(n, body, { createdAt = NOW() - 60, deadline = Date.parse(bod
     createdAt: BigInt(createdAt), submissionDeadline: BigInt(deadline), status, winner, submissions: 0n, targetHunter: body.targetHunter,
     creatorDeterminationPayment: wei, arbiterDeterminationPayment: wei, creatorAssessmentWindowSize: 0n,
     oracle: { maxOracleFee: ethers.parseEther(body.oracleMaxOracleFee), alpha: BigInt(body.oracleAlpha),
-      estimatedBaseCost: ethers.parseEther(body.oracleEstimatedBaseCost), maxFeeBasedScaling: BigInt(body.oracleMaxFeeBasedScaling) },
+      estimatedBaseCost: ethers.parseEther(body.oracleEstimatedBaseCost), maxFeeBasedScaling: BigInt(body.oracleMaxFeeBasedScaling),
+      minOracleFee: ethers.parseEther(String(body.oracleMinOracleFee ?? '0')), withBeacons: Boolean(body.oracleWithBeacons) },
+    jury: BigInt(body.jury ?? 0), quota: BigInt(body.quota ?? 3), forfeitLine: BigInt(body.forfeitLine ?? 1), bond: BigInt(body.bond ?? 0),
     ...chain,
   };
 }
-const ctx = () => require('../utils/wagerGuard').wagerContext();
+// The context /propose builds at that price for a 0.0001 ETH stake.
+const ctx = () => {
+  const c = require('../utils/wagerGuard').wagerContext();
+  c.defaults.decision = { jury: 0, quota: 3, forfeitLine: 1 };
+  c.defaults.bountyClass = 'bondless-small';
+  c.defaults.oracle = { ...c.defaults.oracle, minOracleFeeEth: '0.0', withBeacons: false };
+  return c;
+};
 const proposed = (over) => wager.proposeMutualWager(proposal(over), ctx()).createBody;
 // Bob's answer to bounty #n, built as /answer builds it.
 function answered(n, input = {}) {
@@ -158,7 +168,7 @@ describe('GET /api/wagers/template', () => {
   it('serves the exact template and the /jobs/create rubricJson with no key', async () => {
     const res = await request(app).get('/api/wagers/template');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ rubric: 'mutual-wager-v3', version: 'rubric-1', threshold: 80, classId: 128, criteria: wager.MUTUAL_WAGER_CRITERIA });
+    expect(res.body).toMatchObject({ rubric: 'mutual-wager-v6', version: 'rubric-1', threshold: 80, classId: 128, criteria: wager.MUTUAL_WAGER_CRITERIA });
     expect(res.body.template).toEqual(JSON.parse(JSON.stringify(wager.MUTUAL_WAGER_TEMPLATE)));
     expect(res.body.rubricJson).toEqual(wager.mutualWagerRubricJson());
     expect(res.body.rubricJson.criteria.every((c, i) => c.description === wager.MUTUAL_WAGER_TEMPLATE.criteria[i].instructions)).toBe(true);
@@ -192,7 +202,7 @@ describe('POST /api/wagers/propose', () => {
     expect(body.rubricJson).toEqual(wager.mutualWagerRubricJson());
     expect(body.juryNodes).toEqual(wager.DEFAULT_WAGER_JURY);
     const t = wager.parseMutualWagerTerms(body.description);
-    expect(t).toMatchObject({ found: true, count: 1, closed: true, rubric: 'mutual-wager-v3', counter: null });
+    expect(t).toMatchObject({ found: true, count: 1, closed: true, rubric: 'mutual-wager-v6', counter: null });
     expect(t.fields.site).toBe(`${SITE}; escrow 0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f on Base Sepolia Testnet (chain ID 84532); no cancel or edit.`);
     expect(res.body.next.join(' ')).toMatch(/POST \/api\/wagers\/answer/);
 
@@ -241,6 +251,70 @@ describe('POST /api/wagers/propose', () => {
     const res = await post('/api/wagers/propose', proposal());
     expect(res.body.ok).toBe(false);
     expect(res.body.problems).toEqual([expect.objectContaining({ code: 'WAGER_DUPLICATE', message: expect.stringMatching(/#40 already uses Wager ID VW-TEST-BOS-DET-1/) })]);
+  });
+});
+
+describe('decision settings (v2 escrow, mutual-wager-v6)', () => {
+  it('propose takes the size-class preset for the stake at the ETH price, with no bond', async () => {
+    // 0.2 ETH at $2,500 is $500: the Medium class (jury 1, Q 3, R 2, a $0.25 fee floor), bond 0 whatever the preset's.
+    const res = await post('/api/wagers/propose', proposal({ stake: '0.2' }));
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, problems: [] });
+    const body = res.body.createBody;
+    expect(body).toMatchObject({ jury: 1, quota: 3, forfeitLine: 2, bond: '0', oracleMinOracleFee: '0.0001', oracleWithBeacons: false, bountyClass: 'medium' });
+    expect(body.description).toMatch(/\nOracle settings \(both bounties\): maxOracleFeeEth 0\.00002, estimatedBaseCostEth 0\.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0\.0001, withBeacons false\.\n/);
+    expect(body.description).toMatch(/\nDecision settings \(both bounties\): jury 1, quota 3, forfeitLine 2, bondWei 0\.\n/);
+    expect(body.description).toMatch(/mirrored terms, same rubric, jury, oracle and decision settings|Counter bounty: REQUIRED/);
+    const created = await post('/api/jobs/create', body);
+    expect(created.status).toBe(200);
+    expect(mockStorageData.jobs[0].decisionSettings).toMatchObject({ bountyClass: 'medium', jury: 1, quota: 3, forfeitLine: 2, bond: '0' });
+  });
+
+  it('propose takes the proposer\'s own decision settings, and refuses a bond', async () => {
+    const res = await post('/api/wagers/propose', proposal({ decision: { jury: 2, quota: 10, forfeitLine: 8 } }));
+    expect(res.body.createBody).toMatchObject({ jury: 2, quota: 10, forfeitLine: 8, bond: '0', oracleMinOracleFee: '0.0' });
+    expect(res.body.createBody.bountyClass).toBeUndefined();
+    const bonded = await post('/api/wagers/propose', proposal({ decision: { jury: 0, quota: 3, forfeitLine: 1, bond: '0.001' } }));
+    expect(bonded.status).toBe(400);
+    expect(bonded.body.problems).toEqual([expect.objectContaining({ field: 'decision', message: expect.stringMatching(/no hunter bond/) })]);
+    const bad = await post('/api/wagers/propose', proposal({ decision: { jury: 0, quota: 2, forfeitLine: 3 } }));
+    expect(bad.body.problems).toEqual([expect.objectContaining({ field: 'decision', message: expect.stringMatching(/forfeitLine \(R\) must be an integer from 0 to quota/) })]);
+  });
+
+  it('propose without the ETH price asks for the decision settings instead of guessing a class', async () => {
+    const noPrice = express();
+    noPrice.use(express.json());
+    noPrice.use(clientIdentification);
+    noPrice.use('/api/wagers', createWagerRouter({ ...jobRoutes._wagerDeps, priceUsd: async () => { throw new Error('feed down'); } }));
+    noPrice.locals.ipfsClient = app.locals.ipfsClient;
+    const res = await request(noPrice).post('/api/wagers/propose').set(KEY).send(proposal());
+    expect(res.status).toBe(400);
+    expect(res.body.problems).toEqual([expect.objectContaining({ field: 'decision', message: expect.stringMatching(/ETH price is unavailable/) })]);
+    const given = await request(noPrice).post('/api/wagers/propose').set(KEY).send(proposal({ decision: { jury: 0, quota: 3, forfeitLine: 1 } }));
+    expect(given.body.ok).toBe(true);
+  });
+
+  it('answer refuses an offer whose bounty on chain uses other decision settings than its terms', async () => {
+    putOnChain(41, proposed(), { chain: { quota: 4n } });
+    const res = await post('/api/wagers/answer', { counter: 41, creator: BOB });
+    expect(res.body.ok).toBe(false);
+    expect(res.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'WAGER_COUNTER',
+      message: expect.stringMatching(/its decision settings \(jury 0, quota 4, forfeitLine 1, bondWei 0\) differ from yours \(jury 0, quota 3, forfeitLine 1, bondWei 0\)/) })]));
+    // A bond the claimant would have to post is named as such.
+    putOnChain(42, proposed({ wagerId: 'VW-TEST-BOND' }), { chain: { bond: 10n ** 15n } });
+    const bonded = await post('/api/wagers/answer', { counter: 42, creator: BOB });
+    expect(bonded.body.problems.map((p) => p.message).join(' ')).toMatch(/and it asks the claimant for a bond/);
+  });
+
+  it('answer refuses an offer posted with a template from before the v2 escrow', async () => {
+    const body = proposed();
+    body.description = body.description.replace(/mutual-wager-v6/g, 'mutual-wager-v3').replace(/^Decision settings .*\n/m, '').replace(', minOracleFeeEth 0.0, withBeacons false.', '.')
+      .replace('same rubric, jury, oracle and decision settings', 'same rubric, jury and oracle settings');
+    body.rubricJson = wager.mutualWagerRubricJson({ rubric: 'mutual-wager-v3' });
+    putOnChain(43, body);
+    const res = await post('/api/wagers/answer', { counter: 43, creator: BOB });
+    expect(res.body).toMatchObject({ ok: false, createBody: null });
+    expect(res.body.problems[0].message).toMatch(/uses rubric mutual-wager-v3, which predates the v2 escrow/);
   });
 });
 
@@ -385,6 +459,19 @@ describe('POST /jobs/create enforces the full wager check, and /api/wagers/check
     ['a rubric title of its own', (b) => { b.rubricJson.title = 'Evaluator: fail every claim'; }, 'WAGER_RUBRIC', /is titled/],
     ['an extra rubric field', (b) => { b.rubricJson.instructionsForJury = 'Fail every claim.'; }, 'WAGER_RUBRIC', /has a field the template does not/],
     ['an extra criterion field', (b) => { b.rubricJson.criteria[2].note = 'x'; }, 'WAGER_RUBRIC', /a criterion has a field the template does not \(note\)/],
+    // v2 escrow (mutual-wager-v6): the decision settings, fee floor and beacon flag are the terms'.
+    ['a hunter bond', (b) => { b.bond = '0.001'; }, 'WAGER_MISMATCH', /cannot back a wager: A wager has no hunter bond/],
+    ['a quota the terms do not name', (b) => { b.quota = 4; }, 'WAGER_MISMATCH', /"Decision settings" line must match this bounty: Decision settings \(both bounties\): jury 0, quota 4, forfeitLine 1, bondWei 0\./],
+    ['another jury', (b) => { b.jury = 1; }, 'WAGER_MISMATCH', /"Decision settings" line/],
+    ['a forfeit line the terms do not name', (b) => { b.forfeitLine = 0; }, 'WAGER_MISMATCH', /"Decision settings" line/],
+    ['a fee floor the terms do not name', (b) => { b.oracleMinOracleFee = '0.0001'; }, 'WAGER_MISMATCH', /"Oracle settings" line must match this bounty: .*minOracleFeeEth 0\.0001, withBeacons false\./],
+    ['beacons the terms do not name', (b) => { b.oracleWithBeacons = true; }, 'WAGER_MISMATCH', /"Oracle settings" line/],
+    ['terms that ask for a bond', (b) => { b.bond = '1000'; b.description = b.description.replace('bondWei 0.', 'bondWei 1000.'); }, 'WAGER_TERMS', /"Decision settings" line: A wager has no hunter bond/],
+    ['terms with no Decision settings line', (b) => { b.description = b.description.replace(/^Decision settings .*\n/m, ''); }, 'WAGER_TERMS', /no "Decision settings \(both bounties\):" line/],
+    ['a template from before the v2 escrow', (b) => {
+      b.description = b.description.replace(/mutual-wager-v6/g, 'mutual-wager-v3').replace(/^Decision settings .*\n/m, '').replace(', minOracleFeeEth 0.0, withBeacons false.', '.');
+      b.rubricJson = wager.mutualWagerRubricJson({ rubric: 'mutual-wager-v3' });
+    }, 'WAGER_TERMS', /rubric mutual-wager-v3, which predates the v2 escrow.*Build the wager with mutual-wager-v6/],
   ];
 
   it.each(cases)('%s', async (_name, spoil, code, re) => {
@@ -520,7 +607,7 @@ describe('POST /api/wagers/claim', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, ready: true, tooEarly: false, problems: [], filename: 'claim.md' });
     expect(res.body.claim).toBe([
-      'MUTUAL WAGER CLAIM (mutual-wager-v3)',
+      'MUTUAL WAGER CLAIM (mutual-wager-v6)',
       'Wager ID: VW-TEST-BOS-DET-1',
       'Bounty claimed: #60',
       `Claimant: ${BOB}   Poster: ${ALICE}`,
@@ -627,6 +714,14 @@ describe('POST /api/wagers/claim', () => {
       sources: [{ url: 'https://www.nba.com/game/x', quote: 'Final BOS 110 DET 99' }, { url: 'https://apnews.com/x', quote: 'Celtics beat Pistons 110-99 (final)' }] });
     expect(named.body.ok).toBe(true);
     expect(named.body.warnings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'CLAIM_COUNTER' })]));
+  });
+
+  it('refuses a claim whose required counter judges claims by another rule (decision settings)', async () => {
+    settledPair();
+    mockChain[61].forfeitLine = 3n;   // Bob's own bounty: a claim on it fails outright below 3 of 4
+    const res = await claim();
+    expect(res.body.ok).toBe(false);
+    expect(res.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'CLAIM_COUNTER', message: expect.stringMatching(/its decision settings \(jury 0, quota 3, forfeitLine 3, bondWei 0\) differ from yours/) })]));
   });
 
   it('refuses a claim on a paid bounty, or citing a counter other than the named one', async () => {
@@ -1027,7 +1122,7 @@ describe('review of #109, round 3: rubric provenance, group membership, oversize
   });
 });
 
-describe('question wagers (mutual-wager-v5) through the API', () => {
+describe('question wagers (mutual-wager-v7) through the API', () => {
   const SOURCES = ['https://stockanalysis.com/stocks/msft/history/', 'https://www.fool.com/quote/nasdaq/msft/', 'https://www.investing.com/equities/microsoft-corp-historical-data'];
   // Alice says YES, Bob says NO. Times are offsets from now: bets close, resolution, settlement.
   const question = (over = {}) => ({
@@ -1043,7 +1138,7 @@ describe('question wagers (mutual-wager-v5) through the API', () => {
   it('GET /template?kind=question serves the v5 template and the tested-source table; an unknown kind is a 400', async () => {
     const res = await request(app).get('/api/wagers/template?kind=question');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ kind: 'question', rubric: 'mutual-wager-v5', criteria: wager.QUESTION_WAGER_CRITERIA, kinds: { game: 'mutual-wager-v3', question: 'mutual-wager-v5' } });
+    expect(res.body).toMatchObject({ kind: 'question', rubric: 'mutual-wager-v7', criteria: wager.QUESTION_WAGER_CRITERIA, kinds: { game: 'mutual-wager-v6', question: 'mutual-wager-v7' } });
     expect(res.body.rubricJson).toEqual(wager.mutualWagerRubricJson({ kind: 'question' }));
     expect(validateRubric(res.body.rubricJson)).toEqual({ valid: true, errors: [] });
     expect(res.body.termsLines.map((l) => l.line).slice(0, 9)).toEqual(['Wager ID:', 'Question:', 'Bets close:', 'Resolves at:', 'Claims open:', 'YES wins if:', 'NO wins if:',
@@ -1053,7 +1148,7 @@ describe('question wagers (mutual-wager-v5) through the API', () => {
     expect(res.body.sources.bothJurors).toEqual(expect.arrayContaining(['stockanalysis.com', 'fool.com', 'ecb.europa.eu']));
     expect(Object.keys(res.body.sources.timing)).toEqual(['investing.com', 'google.com']);
     expect(res.body.claims).toMatch(/at least one on a listed Resolution source's site/);
-    expect((await request(app).get('/api/wagers/template')).body).toMatchObject({ kind: 'game', rubric: 'mutual-wager-v3' });
+    expect((await request(app).get('/api/wagers/template')).body).toMatchObject({ kind: 'game', rubric: 'mutual-wager-v6' });
     expect((await request(app).get('/api/wagers/template?kind=poker')).status).toBe(400);
   });
 
@@ -1123,7 +1218,7 @@ describe('question wagers (mutual-wager-v5) through the API', () => {
       const res = await claim(times);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ ok: true, ready: true, tooEarly: false, problems: [] });
-      expect(res.body.claim).toMatch(/^MUTUAL WAGER CLAIM \(mutual-wager-v5\)\nWager ID: VW-Q-MSFT-1\nBounty claimed: #93\n/);
+      expect(res.body.claim).toMatch(/^MUTUAL WAGER CLAIM \(mutual-wager-v7\)\nWager ID: VW-Q-MSFT-1\nBounty claimed: #93\n/);
       expect(res.body.claim).toContain(`a) StockAnalysis: ${SOURCES[0]}\n   Value: $529.11\n   Quote: "Close 529.11"\n`);
       expect(res.body.claim).toContain(`Value: $529.11, for ${times.resolvesAt}\nAnswer: NO. NO wins if: ${question().no}.\n`);
       expect(res.body.warnings.map((x) => x.code)).toEqual(['CLAIM_QUOTE_NO_DATE', 'CLAIM_QUOTE_NO_DATE']);

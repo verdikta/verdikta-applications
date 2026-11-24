@@ -76,7 +76,7 @@ describe('classifyRubric', () => {
 
   it('recognises the mutual-wager versions agents built before the template existed', () => {
     expect(templateRegistry.templates.mutualWager.versions.map((v) => v.version))
-      .toEqual(['mutual-wager-v1', 'mutual-wager-v2', 'mutual-wager-v3']);
+      .toEqual(['mutual-wager-v1', 'mutual-wager-v2', 'mutual-wager-v3', 'mutual-wager-v6']);
   });
 });
 

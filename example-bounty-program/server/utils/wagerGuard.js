@@ -9,6 +9,8 @@
 const { ethers } = require('ethers');
 const { config } = require('../config');
 const wager = require('../../shared/mutualWager');
+const { presetForBounty, usdToWei } = require('../../shared/classPresets');
+const { getEthPriceUsd } = require('./ethPrice');
 
 /** Site, escrow and chain as the create page writes them on the Site line, and the defaults a proposal fills in. */
 function wagerContext() {
@@ -31,6 +33,30 @@ function wagerContext() {
   };
 }
 
+/**
+ * wagerContext with the decision settings a new wager's terms default to: the size-class preset for the
+ * stake's USD value (jury, Q, R, fee floor, beacons), with no bond. The preset needs the ETH price; without
+ * it the proposer must pass decision (and the floor, in oracle) explicitly. A proposal that passes
+ * decision gets no preset: its oracle floor and beacon flag default to none.
+ */
+async function wagerContextFor(input = {}, { priceUsd = getEthPriceUsd } = {}) {
+  const ctx = wagerContext();
+  if (input.decision !== undefined) return ctx;
+  const stake = Number(input.stake);
+  if (!(stake > 0)) return ctx;   // the stake's own problem is reported
+  let usd = null;
+  try { usd = Number((await priceUsd()).usd); } catch { /* reported below */ }
+  if (!(usd > 0)) {
+    ctx.defaults.decisionUnavailable = 'The ETH price is unavailable, so the size-class preset for this stake cannot be chosen: pass decision { jury, quota, forfeitLine } (GET /api/classes/presets) and, for a fee floor, oracle.minOracleFeeEth.';
+    return ctx;
+  }
+  const preset = presetForBounty(stake * usd);
+  ctx.defaults.bountyClass = preset.key;
+  ctx.defaults.decision = { jury: preset.jury, quota: preset.quota, forfeitLine: preset.forfeitLine };
+  ctx.defaults.oracle = { ...ctx.defaults.oracle, minOracleFeeEth: wager.formatEthWei(usdToWei(preset.feeFloorUsd, usd)), withBeacons: preset.withBeacons };
+  return ctx;
+}
+
 const sameAddress = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
 
 /**
@@ -39,7 +65,8 @@ const sameAddress = (a, b) => String(a || '').toLowerCase() === String(b || '').
  * { wager: true, issues: [{ code, message }], terms, expect }; create only when issues is empty.
  *   body            the /jobs/create request body
  *   payments        normalizeBountyPayments(body)
- *   oracleSettings  resolveOracleSettings(body): { maxOracleFee, estimatedBaseCost (wei), alpha, maxFeeBasedScaling }
+ *   oracleSettings  resolveOracleSettings(body): { maxOracleFee, estimatedBaseCost, minOracleFee (wei), alpha, maxFeeBasedScaling, withBeacons }
+ *   decisionSettings resolveDecisionSettings(body): { jury, quota, forfeitLine, bond (wei) }
  *   rubric          the rubric that will be pinned (rubricJson, or the rubricCid's JSON)
  *   now             unix seconds
  *   readCounter(n)  -> { status, job }: GET /api/jobs/n/onchain-status's body (null if none)
@@ -50,7 +77,7 @@ const sameAddress = (a, b) => String(a || '').toLowerCase() === String(b || '').
  * WAGER_COUNTER (the named counter does not match its live record), WAGER_COUNTER_UNVERIFIED and
  * WAGER_RUBRIC_UNVERIFIED (a record could not be read now; 503, retry).
  */
-async function checkWagerCreate({ body, payments, oracleSettings, rubric, now, readCounter, listCreatorJobs, ctx = wagerContext() }) {
+async function checkWagerCreate({ body, payments, oracleSettings, decisionSettings, rubric, now, readCounter, listCreatorJobs, ctx = wagerContext() }) {
   if (!wager.looksLikeMutualWager(body?.description, rubric)) return { wager: false, issues: [] };
   // A rubricCid that could not be read now is not an edited rubric: say so, and let the caller retry.
   if (!rubric && body.rubricCid) {
@@ -72,7 +99,12 @@ async function checkWagerCreate({ body, payments, oracleSettings, rubric, now, r
       estimatedBaseCostEth: wager.formatEthWei(BigInt(oracleSettings.estimatedBaseCost)),
       maxFeeBasedScaling: oracleSettings.maxFeeBasedScaling,
       alpha: oracleSettings.alpha,
+      minOracleFeeEth: wager.formatEthWei(BigInt(oracleSettings.minOracleFee ?? 0)),
+      withBeacons: Boolean(oracleSettings.withBeacons),
     },
+    decision: decisionSettings ? {
+      jury: decisionSettings.jury, quota: decisionSettings.quota, forfeitLine: decisionSettings.forfeitLine, bondWei: String(decisionSettings.bond ?? decisionSettings.bondWei),
+    } : undefined,
     approvalWindow: Number(payments.creatorAssessmentWindowSize) > 0,
     deadline: payments.submissionDeadline ?? now + payments.submissionWindowSeconds,
     now,
@@ -125,4 +157,4 @@ function isLinkedWagerJob(job) {
   return !!job && (job.onChain || job.syncedFromBlockchain) && job.status !== 'ORPHANED' && wager.hasMutualWagerTerms(job.description);
 }
 
-module.exports = { wagerContext, checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress };
+module.exports = { wagerContext, wagerContextFor, checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress };

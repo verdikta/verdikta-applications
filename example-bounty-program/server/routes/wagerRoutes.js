@@ -2,7 +2,7 @@
  * Mutual wagers for agents: the create page's wager protections as API calls, under /api/wagers.
  * A wager is two directed bounties, one per bettor (see shared/mutualWager.js).
  *
- *   GET  /template   the rubric template, exact JSON (public, no key); ?kind=question for mutual-wager-v5
+ *   GET  /template   the rubric template, exact JSON (public, no key); ?kind=question for mutual-wager-v7
  *   POST /propose    first bettor: structured terms -> title, description and the /jobs/create body
  *   POST /answer     second bettor: bounty #N -> its terms mirrored with the sides swapped
  *   POST /check      a /jobs/create body -> every wager problem /jobs/create would refuse
@@ -16,7 +16,7 @@
 const express = require('express');
 const logger = require('../utils/logger');
 const wager = require('../../shared/mutualWager');
-const { wagerContext, checkWagerCreate, sameAddress } = require('../utils/wagerGuard');
+const { wagerContext, wagerContextFor, checkWagerCreate, sameAddress } = require('../utils/wagerGuard');
 const { wagerStatus, counterProblems } = require('../utils/wagerStatus');
 const { normalizeBountyPayments, validateProcurement } = require('../utils/validation');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
@@ -36,6 +36,7 @@ const RATE_WINDOW_MS = 60000;
 const RATE_MAX = 30;
 
 const isoOf = (sec) => new Date(sec * 1000).toISOString();
+const DECISION_DEFAULTS_NOTE = 'the size-class preset for the stake\'s USD value at the server\'s ETH price (GET /api/classes/presets): jury, quota, forfeitLine, and oracle.minOracleFeeEth and withBeacons; pass decision { jury, quota, forfeitLine } to choose your own. A wager has no hunter bond.';
 const asBountyNumber = (v) => (v === null || v === undefined || v === '' || !/^\d+$/.test(String(v)) ? null : Number(v));
 
 function inputError(res, problems, message = 'Invalid wager input') {
@@ -52,9 +53,10 @@ function inputError(res, problems, message = 'Invalid wager input') {
  * deps: what jobRoutes reads bounties with (jobRoutes._wagerDeps), so these endpoints see a bounty
  * exactly as GET /api/jobs/:id and /:id/onchain-status serve it.
  *   readWagerRecords(n, ipfsClient) -> { status, job }; linkedWagerJobs(filter) -> jobs;
- *   resolveOracleSettings(body) -> wei settings; clock() -> unix seconds (tests).
+ *   resolveOracleSettings(body, opts) -> wei settings; resolveDecisionSettings(body, opts) -> the v2
+ *   decision settings; clock() -> unix seconds (tests); priceUsd() -> { usd } (the ETH price; tests).
  */
-module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs, resolveOracleSettings, clock = () => Math.floor(Date.now() / 1000) }) {
+module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs, resolveOracleSettings, resolveDecisionSettings, clock = () => Math.floor(Date.now() / 1000), priceUsd }) {
   const router = express.Router();
   const limiter = createRateLimiter({ windowMs: RATE_WINDOW_MS, max: RATE_MAX });
   router.use((req, res, next) => {
@@ -80,9 +82,15 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
     if (procurement) input.push({ code: 'WAGER_INPUT', message: procurement });
     if (!ADDRESS.test(String(body.creator || ''))) input.push({ code: 'WAGER_INPUT', message: 'creator must be the wallet that signs createBounty (0x + 40 hex digits).' });
     if (body.rubricJson != null && (typeof body.rubricJson !== 'object' || Array.isArray(body.rubricJson))) input.push({ code: 'WAGER_INPUT', message: 'rubricJson must be a JSON object, not a string: GET /api/wagers/template returns it as rubricJson.' });
-    let payments, oracleSettings;
+    let payments, oracleSettings, decisionSettings;
     try { payments = normalizeBountyPayments(body); } catch (err) { input.push({ code: 'WAGER_INPUT', message: err.message }); }
-    try { oracleSettings = resolveOracleSettings(body); } catch (err) { input.push({ code: 'WAGER_INPUT', message: `Oracle settings: ${err.message}` }); }
+    // As /jobs/create resolves them: the decision settings (a preset fills what the body leaves out), then
+    // the oracle settings with the preset's fee floor and beacon flag. A wager body states them all.
+    try {
+      const ethAmt = Number(body.bountyAmount), usdAmt = Number(body.bountyAmountUSD);
+      decisionSettings = resolveDecisionSettings(body, { bountyUsd: usdAmt || null, ethUsd: ethAmt > 0 && usdAmt > 0 ? usdAmt / ethAmt : null });
+      oracleSettings = resolveOracleSettings(body, { minOracleFeeWei: decisionSettings.minOracleFeeWei, withBeacons: decisionSettings.withBeacons });
+    } catch (err) { input.push({ code: 'WAGER_INPUT', message: `Oracle or decision settings: ${err.message}` }); }
     if (input.length) return { wager: true, issues: input };
     let rubric = body.rubricJson;
     if (!rubric && body.rubricCid) {
@@ -93,6 +101,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
       body: { ...body, classId: Number(body.classId ?? 128) },
       payments,
       oracleSettings,
+      decisionSettings,
       rubric,
       now: clock(),
       readCounter: (n) => (counter && counter.number === n ? counter.records : readWagerRecords(n, req.app.locals.ipfsClient)),
@@ -148,7 +157,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   router.get('/template', (req, res) => {
     const ctx = wagerContext();
     const kind = req.query.kind === undefined ? 'game' : String(req.query.kind);
-    if (!['game', 'question'].includes(kind)) return inputError(res, [{ code: 'WAGER_INPUT', field: 'kind', message: 'kind must be "game" (mutual-wager-v3, the default) or "question" (mutual-wager-v5).' }]);
+    if (!['game', 'question'].includes(kind)) return inputError(res, [{ code: 'WAGER_INPUT', field: 'kind', message: 'kind must be "game" (mutual-wager-v6, the default) or "question" (mutual-wager-v7).' }]);
     res.set('Cache-Control', 'public, max-age=300');
     if (kind === 'question') return res.json(questionTemplateResponse(ctx));
     return res.json({
@@ -174,6 +183,9 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
         market: wager.DEFAULT_WAGER_MARKET,
         noWinner: wager.DEFAULT_NO_WINNER,
         oracle: ctx.defaults.oracle,
+        // v2 escrow: propose picks the size-class preset for the stake (jury, Q, R, fee floor, beacons); never a bond.
+        decision: DECISION_DEFAULTS_NOTE,
+        bond: wager.WAGER_BOND_WEI,
         workProductType: wager.WAGER_WORK_PRODUCT_TYPE,
       },
       site: { url: ctx.site, escrow: ctx.escrow, chain: ctx.chain },
@@ -188,7 +200,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
     });
   });
 
-  // GET /template?kind=question: the same response for mutual-wager-v5.
+  // GET /template?kind=question: the same response for mutual-wager-v7.
   function questionTemplateResponse(ctx) {
     const t = wager.QUESTION_WAGER_TEMPLATE;
     return {
@@ -211,6 +223,9 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
         noWinner: wager.DEFAULT_QUESTION_NO_WINNER,
         sourceDelaySeconds: wager.DEFAULT_SOURCE_DELAY_SECONDS,
         oracle: ctx.defaults.oracle,
+        // v2 escrow: propose picks the size-class preset for the stake (jury, Q, R, fee floor, beacons); never a bond.
+        decision: DECISION_DEFAULTS_NOTE,
+        bond: wager.WAGER_BOND_WEI,
         workProductType: wager.WAGER_WORK_PRODUCT_TYPE,
       },
       site: { url: ctx.site, escrow: ctx.escrow, chain: ctx.chain },
@@ -233,7 +248,7 @@ module.exports = function createWagerRouter({ readWagerRecords, linkedWagerJobs,
   /* ---------- POST /api/wagers/propose ---------- */
   router.post('/propose', async (req, res) => {
     try {
-      const built = wager.proposeMutualWager(req.body || {}, wagerContext());
+      const built = wager.proposeMutualWager(req.body || {}, await wagerContextFor(req.body || {}, priceUsd ? { priceUsd } : {}));
       if (built.problems.length) return inputError(res, built.problems);
       const check = await checkBody(built.createBody, req);
       const lock = built.terms.kind === 'question' ? 'bets close' : 'the start';

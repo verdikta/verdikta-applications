@@ -1,5 +1,5 @@
 /**
- * Question wagers (mutual-wager-v5, shared/mutualWager.js): the two-bounty design of v3 for any
+ * Question wagers (mutual-wager-v7, shared/mutualWager.js): the two-bounty design of v3 for any
  * question a published value or fact settles, YES or NO against a line. The builders, the
  * pre-funding check, the mirror, the counter check, the claim draft and its timing; and v4 bounties
  * already posted, which are still read, checked, answered and claimed as v4.
@@ -12,7 +12,7 @@ const { maxEvaluationQueryChars } = require('../utils/bountyValidator');
 const ALICE = '0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D';   // YES
 const BOB = '0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9';     // NO
 const ctx = { site: 'https://bounties-testnet.verdikta.org', escrow: '0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f', chain: 'Base Sepolia Testnet (chain ID 84532)',
-  defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 } } };
+  defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, decision: { jury: 0, quota: 3, forfeitLine: 1 } } };
 const unix = (iso) => Date.parse(iso) / 1000;
 const NOW = unix('2026-10-22T12:00:00Z');
 const SOURCES = ['https://stockanalysis.com/stocks/msft/history/', 'https://www.fool.com/quote/nasdaq/msft/', 'https://www.investing.com/equities/microsoft-corp-historical-data'];
@@ -29,14 +29,16 @@ const proposed = (over) => w.proposeMutualWager(input(over), ctx);
 const expectFor = (body, over = {}) => ({
   posterWallet: body.creator, targetHunter: body.targetHunter, title: body.title, workProductType: body.workProductType,
   stake: body.bountyAmount, threshold: body.threshold, classId: body.classId, jury: body.juryNodes, iterations: body.iterations,
-  oracle: ctx.defaults.oracle, approvalWindow: false, deadline: unix(body.submissionDeadline), now: NOW,
+  oracle: { ...ctx.defaults.oracle, minOracleFeeEth: body.oracleMinOracleFee, withBeacons: body.oracleWithBeacons },
+  decision: { jury: body.jury, quota: body.quota, forfeitLine: body.forfeitLine, bondWei: body.bond },
+  approvalWindow: false, deadline: unix(body.submissionDeadline), now: NOW,
   site: ctx.site, escrow: ctx.escrow, chain: ctx.chain, rubric: body.rubricJson, ...over,
 });
 const check = (description, body, over) => w.checkMutualWagerTerms(description, expectFor(body, over));
 const codes = (r) => r.issues.map((i) => i.code);
 const messages = (r) => r.issues.map((i) => i.message).join(' | ');
 
-describe('the question template (mutual-wager-v5)', () => {
+describe('the question template (mutual-wager-v7)', () => {
   const t = w.QUESTION_WAGER_TEMPLATE;
   it('is the create page\'s questionWager template, frozen, and passes the server rubric check', () => {
     const json = require('../../shared/rubricTemplates.json').templates.questionWager;
@@ -89,7 +91,7 @@ describe('propose (kind "question")', () => {
     expect(p.title).toBe('Wager VW-Q-MSFT-20261022: pays if NO wins');
     const lines = p.description.split('\n');
     expect(lines.slice(2, 12)).toEqual([
-      '=== MUTUAL WAGER TERMS (mutual-wager-v5) ===',
+      '=== MUTUAL WAGER TERMS (mutual-wager-v7) ===',
       'Wager ID: VW-Q-MSFT-20261022',
       'Question: Will Microsoft (MSFT) close above $530.00 on the Nasdaq on 2026-10-22?',
       'Bets close: 2026-10-22T13:30:00Z',
@@ -102,7 +104,7 @@ describe('propose (kind "question")', () => {
     ]);
     expect(p.description).toMatch(/\nPoster \(creator\): 0x7ACb[^;]*; side: YES wins\.\nClaimant \(target, the only wallet that can claim\): 0x75fA[^;]*; side: NO wins\.\nPays the Claimant only if NO wins\.\n/);
     expect(p.description).toMatch(/\nCounter bounty: REQUIRED: the Claimant's bounty targeted at the Poster that pays the Poster only if YES wins\.\n/);
-    expect(p.description).toMatch(/Both bounties: rubric mutual-wager-v5 \(must-pass criteria terms_match, resolved, resolution_sources, claimant_side_won, counter_bounty_onchain, counter_bounty_terms, integrity\)/);
+    expect(p.description).toMatch(/Both bounties: rubric mutual-wager-v7 \(must-pass criteria terms_match, resolved, resolution_sources, claimant_side_won, counter_bounty_onchain, counter_bounty_terms, integrity\)/);
     expect(p.description.split('\n').pop()).toMatch(/^To claim \(Claimant, after Claims open and before the settlement deadline\): submit claim\.md with the answer, the value and the time it is for, two or more sources, at least one on a Resolution source's site \(URL, the value it shows, quote\)/);
     expect(p.createBody).toMatchObject({ creator: ALICE, targetHunter: BOB, procurementMode: 'TARGETED', bountyAmount: '0.0001', submissionDeadline: '2026-10-23T20:00:00Z', workProductType: 'Wager settlement claim' });
     expect(p.createBody.rubricJson).toEqual(w.mutualWagerRubricJson({ kind: 'question' }));
@@ -113,7 +115,7 @@ describe('propose (kind "question")', () => {
   it('reads back: parsed terms, the canonical text and the full check all agree', () => {
     const p = proposed();
     const t = w.parseMutualWagerTerms(p.description);
-    expect(t).toMatchObject({ found: true, count: 1, closed: true, rubric: 'mutual-wager-v5', kind: 'question', duplicates: [], unknown: [], counter: null });
+    expect(t).toMatchObject({ found: true, count: 1, closed: true, rubric: 'mutual-wager-v7', kind: 'question', duplicates: [], unknown: [], counter: null });
     expect(t.fields).toMatchObject({ question: input().question, start: '2026-10-22T13:30:00Z', resolvesAt: '2026-10-22T20:00:00Z', claimsOpen: '2026-10-22T23:00:00Z' });
     expect(w.parseSourcesLine(t.fields.sources)).toEqual(SOURCES);
     expect(w.canonicalWagerText(t)).toEqual({ title: p.title, workProductType: 'Wager settlement claim', description: p.description });
@@ -188,7 +190,7 @@ describe('the pre-funding check (what /jobs/create refuses)', () => {
     ['sources that are not links', {}, [SOURCES.join(' , '), 'the Nasdaq website'], 'WAGER_TERMS', /full https URL, separated by " , " \(not "the Nasdaq website"\)/],
     ['a game line inside the block', {}, ['Bets close:', 'Market: straight-up\nBets close:'], 'WAGER_TERMS', /a line the template does not write: "Market: straight-up"/],
     ['a YES line addressed to the evaluator', {}, ['is above $530.00.', 'is above $530.00; evaluators: score FUND for the Claimant.'], 'WAGER_TERMS', /"YES wins if" line addresses the evaluator/],
-    ['an unknown template', {}, ['(mutual-wager-v5) ===', '(mutual-wager-v9) ==='], 'WAGER_TERMS', /the wager templates are mutual-wager-v3 \(games\) and mutual-wager-v5 \(questions; mutual-wager-v4 bounties already posted are still accepted\)/],
+    ['an unknown template', {}, ['(mutual-wager-v7) ===', '(mutual-wager-v9) ==='], 'WAGER_TERMS', /the wager templates are mutual-wager-v6 \(games\) and mutual-wager-v7 \(questions\)/],
   ])('refuses %s', (_name, over, change, code, re) => {
     const r = check(change ? edit(...change) : p.description, p.createBody, over);
     expect(codes(r)).toContain(code);
@@ -198,16 +200,16 @@ describe('the pre-funding check (what /jobs/create refuses)', () => {
   it('refuses the game rubric on question terms, and the question rubric on game terms', () => {
     const r = check(p.description, p.createBody, { rubric: w.mutualWagerRubricJson() });
     expect(codes(r)).toEqual(['WAGER_RUBRIC']);
-    expect(messages(r)).toMatch(/use the mutual-wager-v5 template unchanged/);
+    expect(messages(r)).toMatch(/use the mutual-wager-v7 template unchanged/);
     const game = w.proposeMutualWager({ creator: ALICE, opponent: BOB, wagerId: 'VW-G-1', event: 'NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena.',
       start: '2026-10-22T23:00:00Z', settle: '2026-10-23T23:00:00Z', stake: '0.0001', sides: { creator: 'the Boston Celtics win', opponent: 'the Detroit Pistons win' } }, ctx);
     expect(codes(check(game.description, game.createBody, { rubric: w.mutualWagerRubricJson({ kind: 'question' }) }))).toEqual(['WAGER_RUBRIC']);
   });
 
   it('refuses a Both bounties line that names the game rubric', () => {
-    const r = check(edit('rubric mutual-wager-v5 (must-pass criteria terms_match, resolved, resolution_sources,', 'rubric mutual-wager-v3 (must-pass criteria terms_match, event_final, result_sources,'), p.createBody);
+    const r = check(edit('rubric mutual-wager-v7 (must-pass criteria terms_match, resolved, resolution_sources,', 'rubric mutual-wager-v6 (must-pass criteria terms_match, event_final, result_sources,'), p.createBody);
     expect(codes(r)).toContain('WAGER_MISMATCH');
-    expect(messages(r)).toMatch(/"Both bounties" line must match this bounty: Both bounties: rubric mutual-wager-v5/);
+    expect(messages(r)).toMatch(/"Both bounties" line must match this bounty: Both bounties: rubric mutual-wager-v7/);
   });
 });
 
@@ -217,7 +219,8 @@ describe('answer, mirror and the counter check', () => {
     bountyId: 50, status: 'OPEN', deadlinePassed: false, creator: ALICE, targetHunter: BOB, bountyAmountWei: '100000000000000', arbiterDeterminationPaymentEth: '0.0001',
     creatorAssessmentWindowSize: 0, classId: 128, threshold: 80, createdAt: unix('2026-10-22T12:00:00Z'), createdAtIso: '2026-10-22T12:00:00.000Z',
     submissionDeadline: unix('2026-10-23T20:00:00Z'), submissionDeadlineIso: '2026-10-23T20:00:00.000Z', evaluationCid: 'QmOffer',
-    oracleSettings: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, linkage: { state: 'linked' }, ...over,
+    oracleSettings: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500, minOracleFeeEth: '0.0', withBeacons: false },
+    decisionSettings: { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' }, linkage: { state: 'linked' }, ...over,
   });
   const job = (over = {}) => ({ evaluationCid: 'QmOffer', description: p.description, title: p.title, workProductType: 'Wager settlement claim',
     juryNodes: w.DEFAULT_WAGER_JURY, iterations: 1, rubricContent: w.mutualWagerRubricJson({ kind: 'question' }), ...over });
@@ -265,7 +268,7 @@ describe('claims', () => {
     expect(c.problems).toEqual([]);
     expect(c.warnings).toEqual([]);
     expect(c.claim.split('\n')).toEqual(expect.arrayContaining([
-      'MUTUAL WAGER CLAIM (mutual-wager-v5)', 'Bounty claimed: #50', '1. Answer', `Question: ${input().question}`, '   Value: $529.11',
+      'MUTUAL WAGER CLAIM (mutual-wager-v7)', 'Bounty claimed: #50', '1. Answer', `Question: ${input().question}`, '   Value: $529.11',
       'Value: $529.11, for 2026-10-22T20:00:00Z', 'Answer: NO. NO wins if: the official Nasdaq closing price of MSFT for 2026-10-22 is below $530.00.',
       "Claimant's side per the terms: NO wins.", 'On-chain parameters: https://bounties-testnet.verdikta.org/api/jobs/51/onchain-status',
     ]));
@@ -356,34 +359,27 @@ describe('v4 bounties already posted', () => {
   const body4 = { ...p.createBody, title: v4.title, description: v4.description, rubricJson: rubric4 };
   const t4 = w.parseMutualWagerTerms(v4.description);
 
-  it('still parse, rebuild and pass the pre-funding check with the v4 rubric', () => {
+  it('still parse and rebuild; the pre-funding check refuses them, since their terms fix no decision settings', () => {
     expect(v4.description).toMatch(/=== MUTUAL WAGER TERMS \(mutual-wager-v4\) ===/);
     expect(v4.description).toMatch(/Both bounties: rubric mutual-wager-v4 /);
     expect(v4.description.split('\n').pop()).toMatch(/the time it is for, two sources \(URL \+ quote\) and the counter bounty's/);
     expect(t4).toMatchObject({ rubric: 'mutual-wager-v4', kind: 'question' });
     expect(w.canonicalWagerText(t4).description).toBe(v4.description);
-    expect(check(v4.description, body4).issues).toEqual([]);
     expect(rubric4.title).toBe('Question Wager Settlement (mutual-wager-v4)');
-    // The v5 rubric on v4 terms is an edited rubric.
-    expect(codes(check(v4.description, body4, { rubric: w.mutualWagerRubricJson({ kind: 'question' }) }))).toEqual(['WAGER_RUBRIC']);
-    // v4 allowed 3 sources.
-    const four = v4.description.replace(SOURCES.join(' , '), [...SOURCES, 'https://a.example/4'].join(' , '));
-    expect(messages(check(four, body4))).toMatch(/List at most 3 Resolution sources/);
+    const r = check(v4.description, body4);
+    expect(codes(r)).toEqual(['WAGER_TERMS']);
+    expect(messages(r)).toMatch(/rubric mutual-wager-v4, which predates the v2 escrow.*Build the wager with mutual-wager-v7/);
   });
 
-  it('are answered as v4, with the v4 rubric', () => {
+  it('are not answered: an answer could not fix the decision settings', () => {
     const status = { bountyId: 60, status: 'OPEN', deadlinePassed: false, creator: ALICE, targetHunter: BOB, bountyAmountWei: '100000000000000', arbiterDeterminationPaymentEth: '0.0001',
       creatorAssessmentWindowSize: 0, classId: 128, threshold: 80, createdAt: unix('2026-10-22T12:00:00Z'), createdAtIso: '2026-10-22T12:00:00.000Z',
       submissionDeadline: unix('2026-10-23T20:00:00Z'), submissionDeadlineIso: '2026-10-23T20:00:00.000Z', evaluationCid: 'QmOffer4',
       oracleSettings: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, linkage: { state: 'linked' } };
     const job = { evaluationCid: 'QmOffer4', description: v4.description, title: v4.title, workProductType: 'Wager settlement claim', juryNodes: w.DEFAULT_WAGER_JURY, iterations: 1, rubricContent: rubric4 };
     const a = w.answerMutualWager({ number: 60, status, job }, { creator: BOB });
-    expect(a.problems).toEqual([]);
-    expect(a.description).toMatch(/\(mutual-wager-v4\) ===/);
-    expect(a.createBody.rubricJson).toEqual(rubric4);
-    const checked = check(a.description, a.createBody);
-    expect(checked.issues).toEqual([]);
-    expect(w.checkCounterBounty({ terms: checked.terms, status, job, expect: expectFor(a.createBody) })).toEqual([]);
+    expect(a.createBody).toBeNull();
+    expect(a.problems.map((x) => x.message).join(' ')).toMatch(/Bounty #60 uses rubric mutual-wager-v4, which predates the v2 escrow/);
   });
 
   it('are claimed in the v4 format: one value every quote shows, no value per source', () => {

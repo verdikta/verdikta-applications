@@ -16,9 +16,11 @@
  * criterion is must-pass. v1 settled mainnet bounty #303 in October 2026. v2 added the
  * stale-page rule to integrity. v3 (security review of PR #106) fails closed without web
  * access and checks the counter's every terms line, word-for-word criteria, jury, oracle
- * settings and package link.
+ * settings and package link. v6 (the v2 escrow) also fixes each bounty's decision settings (jury,
+ * pass quota, forfeit line, no bond), fee floor and beacon flag in the terms, and the jury checks
+ * the counter's.
  *
- * questionWager (mutual-wager-v5) is the same two-bounty design for any question a published
+ * questionWager (mutual-wager-v7) is the same two-bounty design for any question a published
  * value or fact settles (an official close, a reference rate, an official result): YES or NO
  * against a line, with https Resolution sources the jurors open. Its counter criteria are v3's.
  */

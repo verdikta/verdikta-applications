@@ -24,7 +24,7 @@ The settings start from a size-class preset, the site's and API's own (`scripts/
 
 `create_bounty.js` sends every setting to `/jobs/create` explicitly, so the server never picks a class or converts a price for the bounty. It checks the jury's live fee ceiling and N, and shows the class, Q, R, bond, floor and beacons in every review. See [commission configuration](commission.md). The 1.x config shape still works and means Bondless Small: no bond, no floor, Q 3 of 4, R 1.
 
-Wager bounties are always Bondless Small; `wager.js check` refuses a counter bounty with other decision settings.
+Wagers use new templates for v2, `mutual-wager-v6` (games, replacing v3) and `mutual-wager-v7` (questions, replacing v5). Their terms add a Decision settings line (`jury 0, quota 3, forfeitLine 1, bondWei 0.` by default: Bondless Small) and the fee floor and beacon flag on the Oracle settings line (`..., minOracleFeeEth 0.0, withBeacons false.`), and the jury checks the counter's `decisionSettings` against them. `wager.js propose` takes other settings from `decision` and `oracle.minOracleFeeEth`/`oracle.withBeacons` in `wager-defaults.json` and refuses a bond; `answer` copies the offer's; `check` refuses a counter bounty whose site record or escrow read differs from the terms. v3, v4 and v5 bounties already posted are still checked and claimed, but never answered or funded (a v3/v5 pair on the v2 escrow is held to Bondless Small).
 
 ## Starting: startValue, then the draw
 

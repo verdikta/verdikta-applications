@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Mutual wagers: two directed bounties used as a bet, on a game (the website's Mutual Wager template, mutual-wager-v3)
-// or on a YES/NO question (its Question Wager template, mutual-wager-v5; v4 bounties already posted still work). The same six verbs in every agent runtime;
+// Mutual wagers: two directed bounties used as a bet, on a game (the website's Mutual Wager template, mutual-wager-v6)
+// or on a YES/NO question (its Question Wager template, mutual-wager-v7; v3, v4 and v5 bounties already posted are still
+// checked and claimed, never answered). The same six verbs in every agent runtime;
 // bodies, checks and claims are the website's shared code (_mutual-wager.cjs). The terms pick the kind.
 //
 //   node wager.js propose --input proposal.json                      preview the first bounty and its approval line
@@ -59,7 +60,7 @@ function parseArgs(argv) {
   }
   return { positional, opt: (n) => values[n]?.[0] ?? null, all: (n) => values[n] || [], flag: (n) => Boolean(values[n]) };
 }
-// A record's kind is the rubric its own terms name: 'game' (mutual-wager-v3) or 'question' (mutual-wager-v5, or v4).
+// A record's kind is the rubric its own terms name: 'game' (mutual-wager-v6, or v3) or 'question' (mutual-wager-v7, or v5, v4).
 const termsOf = (record) => W.shared.parseMutualWagerTerms(record.description);
 const kindOfRecord = (record) => W.kindOf(termsOf(record));
 const QUESTION_CLAIM_FLAGS = ['answer', 'value', 'as-of'];
@@ -133,8 +134,13 @@ export async function runWager(lib, {
     const oracle = { ...W.WAGER_DEFAULTS.oracle, ...(custom.oracle || {}) };
     if (!jury.length || jury.some((n) => !String(n.provider ?? '').trim() || !String(n.model ?? '').trim() || !Number.isFinite(n.weight) || n.weight <= 0 || !Number.isInteger(n.runs) || n.runs < 1 || n.runs > 10)
       || Math.abs(jury.reduce((sum, n) => sum + n.weight, 0) - 1) > 0.001) throw new Error(`${file}: jury needs provider, model, a weight (weights sum to 1) and runs 1-10 for every node`);
-    if (!W.shared.parseOracleLine(`${W.shared.formatOracle(oracle)}.`)) throw new Error(`${file}: oracle needs maxOracleFeeEth, estimatedBaseCostEth (decimal ETH), maxFeeBasedScaling and alpha`);
-    return { ...W.WAGER_DEFAULTS, classId: Number(custom.classId ?? W.WAGER_DEFAULTS.classId), jury, oracle };
+    if (!W.shared.parseOracleLine(`${W.shared.formatOracle(oracle, { full: true })}.`) || typeof oracle.withBeacons !== 'boolean') throw new Error(`${file}: oracle needs maxOracleFeeEth, estimatedBaseCostEth, minOracleFeeEth (decimal ETH), maxFeeBasedScaling and alpha, and withBeacons true or false`);
+    // The v2 decision settings the terms will name (jury index, pass quota Q, forfeit line R); a wager has no bond.
+    const d = custom.decision, given = d !== null && typeof d === 'object';
+    const decision = d === undefined ? W.WAGER_DEFAULTS.decision : given ? { jury: d.jury, quota: d.quota, forfeitLine: d.forfeitLine } : d;
+    const why = W.shared.wagerDecisionProblem(given ? { ...decision, bond: d.bond ?? d.bondWei } : decision);
+    if (why) throw new Error(`${file}: ${why}`);
+    return { ...W.WAGER_DEFAULTS, classId: Number(custom.classId ?? W.WAGER_DEFAULTS.classId), jury, oracle, decision };
   }
 
   // ---- local state: ~/.config/verdikta-bounties/wagers/<first 16 hex of the terms hash>/ ----

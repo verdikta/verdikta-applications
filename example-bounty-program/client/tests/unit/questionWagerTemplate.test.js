@@ -1,4 +1,4 @@
-// The create page's "❓ Question Wager" template (mutual-wager-v5): offered, accepted by the server's
+// The create page's "❓ Question Wager" template (mutual-wager-v7): offered, accepted by the server's
 // rubric check, the very template the shared wager module embeds, and its "Add a terms block"
 // skeleton refused until every placeholder is filled.
 import test from 'node:test';
@@ -14,7 +14,7 @@ const { maxEvaluationQueryChars } = require('../../../server/utils/bountyValidat
 const template = getTemplate('questionWager');
 const uploaded = { ...template, criteria: template.criteria.map(({ instructions, ...c }) => ({ ...c, description: instructions })) };
 const jury = [{ provider: 'OpenAI', model: 'gpt-5.6-terra', weight: 0.5, runs: 1 }, { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.5, runs: 1 }];
-const oracle = { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500' };
+const oracle = { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: false };
 const form = { posterWallet: '0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D', claimantWallet: '0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9', stake: '0.0001',
   threshold: 80, classId: 128, jury, iterations: 1, oracle, site: 'https://bounties-testnet.verdikta.org', escrow: '0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f', chain: 'Base Sepolia Testnet (chain ID 84532)' };
 
@@ -28,9 +28,9 @@ test('the Question Wager template is offered and passes the server rubric check'
   }
 });
 
-test('"Add a terms block" writes the v5 lines with placeholders, which the pre-funding check refuses', () => {
+test('"Add a terms block" writes the v7 lines with placeholders, which the pre-funding check refuses', () => {
   const skeleton = questionWagerTermsSkeleton(form);
-  assert.match(skeleton, /=== MUTUAL WAGER TERMS \(mutual-wager-v5\) ===\nWager ID: <[^>]+>\nQuestion: <[^>]+>\nBets close: <[^>]+>\nResolves at: <[^>]+>\nClaims open: <[^>]+>\nYES wins if: <[^>]+>\.\nNO wins if: <[^>]+>\.\n/);
+  assert.match(skeleton, /=== MUTUAL WAGER TERMS \(mutual-wager-v7\) ===\nWager ID: <[^>]+>\nQuestion: <[^>]+>\nBets close: <[^>]+>\nResolves at: <[^>]+>\nClaims open: <[^>]+>\nYES wins if: <[^>]+>\.\nNO wins if: <[^>]+>\.\n/);
   assert.match(skeleton, /\nResolution sources \(start here, then search the web\): <https URL[^>]*> , <second https URL[^>]*> , <third https URL: list 3 to 5[^>]*>\n/);
   assert.match(skeleton, /\nClaims open: <Resolves at plus a source delay \(3 hours unless the sources need longer\), ISO UTC>\n/);
   assert.match(skeleton, /\nPoster \(creator\): 0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D; side: <YES wins or NO wins: your side>\.\n/);

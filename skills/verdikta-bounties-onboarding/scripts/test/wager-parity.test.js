@@ -39,9 +39,12 @@ test('the create page serves the same template and terms functions', { skip }, a
 test('skill constants match the create page (chain names, provider names, oracle defaults, jury)', { skip }, () => {
   const config = read('client/src/config.js');
   for (const [network, chainId] of [['base-sepolia', 84532], ['base', 8453]]) assert.match(config, new RegExp(`'${network}': \\{\\s*name: '${W.shared.WAGER_CHAIN_NAMES[chainId]}',`));
-  const defaults = /submissionDefaults: \{\s*maxOracleFeeWei: '(\d+)',[^\n]*\n\s*estimatedBaseCostWei: '(\d+)',[^\n]*\n\s*maxFeeBasedScaling: '(\d+)',[^\n]*\n\s*alpha: (\d+),/.exec(config);
+  const defaults = /submissionDefaults: \{\s*maxOracleFeeWei: '(\d+)',[^\n]*\n\s*estimatedBaseCostWei: '(\d+)',[^\n]*\n\s*maxFeeBasedScaling: '(\d+)',[^\n]*\n\s*alpha: (\d+),[^\n]*\n\s*minOracleFeeWei: '(\d+)',/.exec(config);
   assert.ok(defaults, 'submissionDefaults block not found in client/src/config.js');
-  assert.deepEqual(W.WAGER_DEFAULTS.oracle, { maxOracleFeeEth: formatEther(defaults[1]), estimatedBaseCostEth: formatEther(defaults[2]), maxFeeBasedScaling: Number(defaults[3]), alpha: Number(defaults[4]) });
+  // v2: the fee floor is the page's default (none); the page has no beacon default, and a wager posts without beacons.
+  const { minOracleFeeEth, withBeacons, ...v1 } = W.WAGER_DEFAULTS.oracle;
+  assert.deepEqual(v1, { maxOracleFeeEth: formatEther(defaults[1]), estimatedBaseCostEth: formatEther(defaults[2]), maxFeeBasedScaling: Number(defaults[3]), alpha: Number(defaults[4]) });
+  assert.equal(W.shared.parseEthWei(minOracleFeeEth), BigInt(defaults[5])); assert.equal(withBeacons, false);
   const providers = /providerDisplayNames = \{([^}]*)\}/.exec(read('client/src/services/modelProviderService.js'))[1];
   assert.deepEqual(W.PROVIDER_NAMES, Object.fromEntries([...providers.matchAll(/'([^']+)': '([^']+)'/g)].map((m) => [m[1], m[2]])));
   assert.deepEqual(W.WAGER_DEFAULTS.jury, W.shared.DEFAULT_WAGER_JURY);
@@ -54,9 +57,14 @@ test('the uploaded rubric is the template the server accepts, in the shape the c
   assert.deepEqual(mine.criteria.map(({ id, label, must, weight }) => ({ id, label, must, weight })), live.criteria.map(({ id, label, must, weight }) => ({ id, label, must, weight })));
   assert.deepEqual(mine.criteria.map((c) => c.description), W.template.criteria.map((c) => c.instructions));
   assert.deepEqual(mine.forbiddenContent, live.forbiddenContent);
+  // The live #18 is a v3 bounty; v6 is v3 with the decision settings checked: only counter_bounty_onchain differs.
+  assert.equal(mine.title, 'Mutual Wager Settlement (mutual-wager-v6)');
+  const v3 = W.wagerRubricJson('game', W.shared.MUTUAL_WAGER_V3_RUBRIC);
+  assert.deepEqual(mine.criteria.filter((c, i) => c.description !== v3.criteria[i].description).map((c) => c.id), ['counter_bounty_onchain']);
+  assert.match(mine.criteria.find((c) => c.id === 'counter_bounty_onchain').description, /every decisionSettings value equals the decision settings in the terms/);
 });
 
-// Question wagers (mutual-wager-v4): the create page's Question Wager template and the rubric the skill uploads.
+// Question wagers (mutual-wager-v7; the fixtures are a v4 pair): the create page's Question Wager template and the rubric the skill uploads.
 const qfx = (kind, n) => JSON.parse(readFileSync(new URL(`./fixtures/wager-question/${kind}-${n}.json`, import.meta.url), 'utf8'));
 
 test('the create page serves the same question template and reads question terms the same way', { skip }, async (t) => {
@@ -74,12 +82,17 @@ test('the create page serves the same question template and reads question terms
   assert.equal(page.QUESTION_WAGER_RUBRIC, W.shared.QUESTION_WAGER_RUBRIC);
 });
 
-test('the uploaded question rubric is the v5 template; a v4 bounty keeps the v4 rubric the question fixtures store', () => {
+test('the uploaded question rubric is the v7 template; a v4 bounty keeps the v4 rubric the question fixtures store', () => {
   const mine = W.wagerRubricJson('question'), stored = qfx('job', 40).rubricContent;
-  assert.equal(mine.title, 'Question Wager Settlement (mutual-wager-v5)');
+  assert.equal(mine.title, 'Question Wager Settlement (mutual-wager-v7)');
   assert.equal(W.shared.mutualWagerRubricProblem(mine, W.questionTemplate), null);
   assert.ok(W.shared.mutualWagerRubricProblem(mine, W.template)); // never accepted as the game template
   assert.ok(W.shared.mutualWagerRubricProblem(mine, W.shared.QUESTION_WAGER_V4_TEMPLATE)); // nor as v4
+  assert.ok(W.shared.mutualWagerRubricProblem(mine, W.shared.QUESTION_WAGER_V5_TEMPLATE)); // nor as v5
+  // v7 is v5 with the decision settings checked: only counter_bounty_onchain differs, and it names decisionSettings.
+  const v5 = W.wagerRubricJson('question', W.shared.QUESTION_WAGER_V5_RUBRIC);
+  assert.deepEqual(mine.criteria.filter((c, i) => c.description !== v5.criteria[i].description).map((c) => c.id), ['counter_bounty_onchain']);
+  assert.match(mine.criteria.find((c) => c.id === 'counter_bounty_onchain').description, /every decisionSettings value equals the decision settings in the terms/);
   assert.deepEqual(mine.criteria.map((c) => c.description), W.questionTemplate.criteria.map((c) => c.instructions));
   assert.equal(W.questionTemplate.classId, W.WAGER_DEFAULTS.classId); assert.equal(W.questionTemplate.threshold, W.WAGER_DEFAULTS.threshold);
   const v4 = W.wagerRubricJson('question', W.shared.QUESTION_WAGER_V4_RUBRIC);

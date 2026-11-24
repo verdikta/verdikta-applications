@@ -21,7 +21,7 @@ const { normalizeBountyPayments, parseFeeToWei } = require('../../../server/util
 const ALICE = '0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D';
 const BOB = '0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9';
 const ctx = { site: 'https://bounties-testnet.verdikta.org', escrow: '0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f', chain: 'Base Sepolia Testnet (chain ID 84532)',
-  defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 } } };
+  defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, decision: { jury: 0, quota: 3, forfeitLine: 1 } } };
 const NOW = Date.parse('2026-10-20T12:00:00Z') / 1000;
 const input = {
   creator: ALICE, opponent: BOB, wagerId: 'VW-TEST-BOS-DET-1', start: '2026-10-20T19:00:00Z', settle: '2026-10-21T19:00:00Z', stake: '0.0001',
@@ -58,13 +58,16 @@ function scenario(m) {
   const expect = {
     posterWallet: body.creator, targetHunter: body.targetHunter, stake: body.bountyAmount, threshold: body.threshold, classId: body.classId,
     jury: body.juryNodes, iterations: body.iterations, approvalWindow: false, deadline: Date.parse(body.submissionDeadline) / 1000, now: NOW,
-    oracle: { maxOracleFeeEth: body.oracleMaxOracleFee, estimatedBaseCostEth: body.oracleEstimatedBaseCost, maxFeeBasedScaling: body.oracleMaxFeeBasedScaling, alpha: body.oracleAlpha },
+    oracle: { maxOracleFeeEth: body.oracleMaxOracleFee, estimatedBaseCostEth: body.oracleEstimatedBaseCost, maxFeeBasedScaling: body.oracleMaxFeeBasedScaling, alpha: body.oracleAlpha,
+      minOracleFeeEth: body.oracleMinOracleFee, withBeacons: body.oracleWithBeacons },
+    decision: { jury: body.jury, quota: body.quota, forfeitLine: body.forfeitLine, bondWei: body.bond },
     ...ctx, rubric: body.rubricJson,
   };
   const status = { bountyId: 18, status: 'OPEN', deadlinePassed: false, creator: ALICE, targetHunter: BOB, bountyAmountWei: '100000000000000',
     arbiterDeterminationPaymentEth: '0.0001', creatorAssessmentWindowSize: 0, classId: 128, threshold: 80, createdAt: NOW - 60, createdAtIso: new Date((NOW - 60) * 1000).toISOString(),
     submissionDeadline: Date.parse(body.submissionDeadline) / 1000, submissionDeadlineIso: new Date(body.submissionDeadline).toISOString(), evaluationCid: 'QmA',
-    oracleSettings: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, linkage: { state: 'linked' } };
+    oracleSettings: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500, minOracleFeeEth: '0.0', withBeacons: false },
+    decisionSettings: { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' }, linkage: { state: 'linked' } };
   const job = { description: body.description, evaluationCid: 'QmA', juryNodes: body.juryNodes, iterations: 1, rubricContent: body.rubricJson };
   const answer = m.answerMutualWager({ number: 18, status, job }, { creator: BOB });
   const answerTerms = m.parseMutualWagerTerms(answer.description);
@@ -114,7 +117,9 @@ function pageSubmission(over = {}) {
   const form = {
     description: createBody.description, creator: ALICE, targetHunter: BOB, stake: '0.0001', threshold: 80, classId: 128,
     jury: createBody.juryNodes, iterations: 1, submissionWindowHours: 32, approval: false,
-    oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500' },
+    oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: false },
+    // The size class's jury and the form's Q and R; a wager's bond is 0 (CreateBounty.jsx wagerDecision).
+    decision: { jury: 0, quota: '3', forfeitLine: '1', bondWei: '0' },
     rubric: shared.mutualWagerRubricJson(), ...over,
   };
   const body = {
@@ -123,10 +128,12 @@ function pageSubmission(over = {}) {
     submissionWindowHours: form.submissionWindowHours, targetHunter: form.targetHunter, procurementMode: 'TARGETED',
     ...(form.approval ? { creatorDeterminationPayment: form.stake, arbiterDeterminationPayment: form.stake, creatorAssessmentWindowHours: 1 } : {}),
     oracleMaxOracleFee: form.oracle.maxOracleFeeEth, oracleAlpha: form.oracle.alpha, oracleEstimatedBaseCost: form.oracle.estimatedBaseCostEth, oracleMaxFeeBasedScaling: form.oracle.maxFeeBasedScaling,
+    oracleMinOracleFee: form.oracle.minOracleFeeEth, oracleWithBeacons: form.oracle.withBeacons,
+    jury: form.decision.jury, quota: Number(form.decision.quota), forfeitLine: Number(form.decision.forfeitLine), bond: form.decision.bondWei,
   };
   const expect = {
     posterWallet: form.creator, targetHunter: form.targetHunter, stake: form.stake, threshold: form.threshold, classId: form.classId, jury: form.jury,
-    iterations: form.iterations, oracle: form.oracle, approvalWindow: form.approval, now: NOW, deadline: NOW + Math.round(form.submissionWindowHours * 3600),
+    iterations: form.iterations, oracle: form.oracle, decision: form.decision, approvalWindow: form.approval, now: NOW, deadline: NOW + Math.round(form.submissionWindowHours * 3600),
     ...ctx, rubric: form.rubric, title: body.title, workProductType: body.workProductType,
   };
   return { body, expect };
@@ -140,8 +147,10 @@ async function serverIssues(body) {
     const oracleSettings = {
       maxOracleFee: parseFeeToWei(body.oracleMaxOracleFee).toString(), estimatedBaseCost: parseFeeToWei(body.oracleEstimatedBaseCost).toString(),
       alpha: Number(body.oracleAlpha), maxFeeBasedScaling: Number(body.oracleMaxFeeBasedScaling),
+      minOracleFee: parseFeeToWei(body.oracleMinOracleFee).toString(), withBeacons: Boolean(body.oracleWithBeacons),
     };
-    const r = await checkWagerCreate({ body, payments, oracleSettings, rubric: body.rubricJson, now: NOW, readCounter: async () => null, listCreatorJobs: async () => [], ctx });
+    const decisionSettings = { jury: body.jury, quota: body.quota, forfeitLine: body.forfeitLine, bond: parseFeeToWei(body.bond).toString() };
+    const r = await checkWagerCreate({ body, payments, oracleSettings, decisionSettings, rubric: body.rubricJson, now: NOW, readCounter: async () => null, listCreatorJobs: async () => [], ctx });
     return r.issues;
   } finally { Date.now = realNow; }
 }
@@ -157,7 +166,12 @@ test('the create page and the server refuse the same wagers, for the same reason
     { jury: [{ provider: 'OpenAI', model: 'gpt-5.6-terra', weight: 1, runs: 1 }] },
     { iterations: 2 },
     { jury: shared.DEFAULT_WAGER_JURY.map((n) => ({ ...n, weight: n.weight === 0.5 ? 0.6 : n.weight })) },
-    { oracle: { maxOracleFeeEth: '0.00003', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500' } },
+    { oracle: { maxOracleFeeEth: '0.00003', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: false } },
+    { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0.0001', withBeacons: false } },
+    { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: true } },
+    { decision: { jury: 0, quota: '4', forfeitLine: '1', bondWei: '0' } },
+    { decision: { jury: 1, quota: '3', forfeitLine: '1', bondWei: '0' } },
+    { decision: { jury: 0, quota: '3', forfeitLine: '1', bondWei: '1000' } },
     { submissionWindowHours: 24 },
     { approval: true },
     { rubric: edited },
@@ -169,6 +183,7 @@ test('the create page and the server refuse the same wagers, for the same reason
     { description: `Only a 10-point win counts.\n\n${shared.proposeMutualWager(input, ctx).createBody.description}` },
     { description: shared.proposeMutualWager(input, ctx).createBody.description.replace('Scheduled start: 2026-10-20T19:00:00Z', 'Scheduled start: 2026-10-20T12:05:00Z') },
     { description: shared.mutualWagerTermsSkeleton({ posterWallet: ALICE, claimantWallet: BOB, stake: '0.0001', threshold: 80, classId: 128, jury: shared.DEFAULT_WAGER_JURY, oracle: ctx.defaults.oracle, ...ctx }) },
+    { description: shared.proposeMutualWager(input, ctx).createBody.description.replace('bondWei 0.', 'bondWei 1000.') },
   ];
   for (const over of cases) {
     const { body, expect } = pageSubmission(over);

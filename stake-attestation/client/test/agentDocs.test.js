@@ -1000,7 +1000,10 @@ test('bounty 400: tamper flags and integrity checks are common\'s, each kind sai
   // the feed: what `listings` holds, and the labels the server computes
   const feed = read('server', 'src', 'site', 'feed.js');
   assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\| BigInt\(onchain\.escrowWei\) < BigInt\(onchain\.awards\[3\]\)\) continue;/);
-  assert.match(section(2), /every listing that takes claims now: open, its paid period not ended, its escrow at least its CRITICAL award/);
+  // node P43: the entries are the listings that take commits. A held listing takes late claims only and is no entry
+  // (feed.js leaves it out by the projection's heldAt, node P40), so the line says so and names where late claims are
+  assert.match(feed, /filter\(\(l\) => l\.opened && !l\.rolled && !l\.closed && l\.heldAt === null\)/, 'a held listing is no candidate for the feed');
+  assert.match(section(2), /every listing that takes commits now: open, not held by its maker, its paid period not ended, its escrow at least its CRITICAL award\. A listing that takes late claims only is not here \(section 3, "Late claims"\)/);
   const labels = read('server', 'src', 'record', 'labels.js');
   for (const key of ['stake', 'invited', 'lapsed', 'live']) {
     assert.match(labels, new RegExp(`\\n {4}${key}[:,]`), `listingLabels returns ${key}`);
@@ -1039,4 +1042,174 @@ test('bounty 400: what a commit carries, who pays a confirmation, a dry run\'s n
   // the observable: with no quote the whole recorded message must be there (the tool's own words for it)
   assert.match(toolSrc('observable.js'), /Without a quote, the whole recorded message must appear in the observable as written\./);
   assert.match(section(6), /a quoted fragment that is not in the recorded failure on every run fails `claimedObservable`, and so does an observable with no quote at all unless the whole recorded message appears in it as written\. The claim then settles INVALID\./);
+});
+
+// ------------------------------------------------------------------------------------------------ node P43
+
+// A late claim (design §13.2, decision D6; issue #230): a finding on a listing that takes no commit any more, filed
+// with `verdikta-attest commit --late`. Wrong here costs a bond for nothing, so each statement of agents.txt on it is
+// held to the contract's source and to the tool's: when a listing takes one, what it costs, what it pays, the command.
+test('node P43: a late claim is what the contract and the tool make of it: when a listing takes one, what it costs, what it pays, and the command', () => {
+  const text = agents();
+  const raw = /\nLate claims\. [\s\S]*?(?=\n\n## 4\. )/.exec(text)?.[0];
+  assert.ok(raw, 'agents.txt section 3 says what a late claim is, after step 8');
+  const block = raw.replace(/\s+/g, ' ');
+  const logic = read('onchain', 'contracts', 'libraries', 'ClaimLogic.sol');
+  const host = read('onchain', 'contracts', 'StakeAttestation.sol');
+  const lens = read('onchain', 'contracts', 'StakeAttestationLens.sol');
+  const commit = toolSrc('commit.js');
+  const cli = toolSrc('cli.js');
+  const notices = toolSrc('notices.js');
+
+  // the call: lateClaim, with a commit's arguments (the ABI test holds the names), sent by the tool in commit's place
+  assert.ok(block.includes('`lateClaim(listingId, archiveHash, ciphertextSha256)` in place of `commit`'));
+  assert.match(commit, /const data = ctx\.encode\(late \? 'lateClaim' : 'commit', \[listingId, state\.archiveSha256, state\.ciphertextSha256\]\);/, 'the tool sends lateClaim or commit, with the same two hashes');
+  assert.match(commit, /estimate = await ctx\.estimate\(\{ data, value: price \}\);/, 'and the price it read, either way');
+
+  // when a listing takes one: the lens's acceptsLateClaims, which is ClaimLogic.commit's own rule (the bounty 400 test
+  // above holds that one), and the tool asks the lens, never the hold
+  const accepts = /function acceptsLateClaims\([\s\S]*?\n {4}\}/.exec(lens)?.[0];
+  assert.ok(accepts, 'StakeAttestationLens.sol: acceptsLateClaims');
+  assert.match(accepts, /return l\.state == StakeAttestation\.ListingState\.Rolled\s*\|\| \(l\.state == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\)\s*\|\| host\.heldAt\(listingId\) != 0;/);
+  assert.ok(block.includes('When a listing takes one: while `acceptsLateClaims(listingId)` is true: the listing rolled forward (state Rolled), or closed after it opened (state Closed), or its maker holds it (`hold(listingId)`: the state stays Open or Depleted, and no commit is taken from then on).'));
+  assert.ok(block.includes('A listing that never opened takes neither a commit nor a late claim.'));
+  for (const state of ['Open', 'Depleted', 'Rolled', 'Closed']) assert.ok(solidityEnum('ListingState').includes(state), `${state} is a listing state`);
+  assert.match(commit, /ctx\.read\('acceptsLateClaims', \[listingId\]\)/, 'the tool asks the lens whether the listing takes a late claim');
+  assert.doesNotMatch(toolSources(), /\('heldAt'|\('hold'/, 'and reads no hold: a contract without one answers acceptsLateClaims all the same');
+  assert.ok(raw.includes('\n      cast call "$VERDIKTA_CONTRACT" "acceptsLateClaims(uint256)(bool)" <listingId> --rpc-url https://sepolia.base.org\n'), 'the line that reads it');
+  const view = ABI.find((f) => f.name === 'acceptsLateClaims');
+  assert.deepEqual([view.inputs.map((i) => `${i.type} ${i.name}`), view.outputs.map((o) => o.type)], [['uint256 listingId'], ['bool']]);
+  // such a listing is not in the feed, and no entry's queue holds a late claim (the bounty 400 test holds feed.js to it)
+  assert.ok(block.includes('Such a listing is not in the feed (section 2)'));
+  assert.match(section(2), /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\./);
+
+  // open to every wallet: commit asks isAllowed, lateClaim does not, and the tool's check follows
+  const lateFn = /function lateClaim\([\s\S]*?\n {4}\}/.exec(host)?.[0];
+  const commitFn = /function commit\([\s\S]*?\n {4}\}/.exec(host)?.[0];
+  assert.ok(lateFn && commitFn, 'StakeAttestation.sol: lateClaim and commit');
+  assert.match(commitFn, /require\(isAllowed\(listingId, msg\.sender\), "not allowed"\);/);
+  assert.doesNotMatch(lateFn, /isAllowed|not allowed/);
+  assert.ok(block.includes('It is open to every wallet, invited listing or not.'));
+  assert.match(section(2), /invited true: only the wallets the maker listed may commit \(a late claim, section 3, is open to every wallet\)/);
+
+  // what it costs: commitPrice, as a commit (lateClaim's own note, and the lens's)
+  assert.match(host, /@dev msg\.value as commit's: at least bondWei plus the live maxTotalFee \(commitPrice\)\./);
+  assert.match(lens, /commitPrice quotes what it takes, as for a commit\./);
+  assert.ok(block.includes('What it costs: what a commit costs, `commitPrice(listingId)`: the listing\'s `bondWei` plus the live prepay (section 4).'));
+  assert.match(commit, /const price = await ctx\.read\('commitPrice', \[listingId\]\);/);
+  assert.match(section(4), /A late claim sends `commitPrice\(listingId\)` too, for no award \(section 3, "Late claims"\)\./);
+
+  // what it pays: settle gives a late claim no award at any class, counts it under `later`, and sends an INVALID's
+  // bond to the maker unless it is narrow, late or not. The tool's three warnings say so, and agents.txt says them
+  // word for word
+  const settle = /function settle\([\s\S]*?\n {4}\}/.exec(logic)?.[0];
+  assert.ok(settle, 'ClaimLogic.sol: settle');
+  assert.match(settle, /uint256 award = late \? 0 : ClaimRules\.awardFor\(l\.awards, uint8\(l\.lowestClassCounted\), outcome\);/);
+  assert.match(settle, /if \(late\) l\.lateOutcomeCounts\[outcome\] \+= 1;\s*else l\.outcomeCounts\[outcome\] \+= 1;/);
+  assert.match(settle, /payee = hunter;\s*if \(outcome == ClaimRules\.INVALID\) \{[\s\S]*?if \(ClaimRules\.isNarrowInvalid\(outcome, mass, l\.narrowInvalidFloor\)\) \{[\s\S]*?\} else \{\s*payee = l\.maker;\s*\}\s*\}\s*amount = c\.bondWei;/);
+  const warnings = quoted(/export const LATE_CLAIM_WARNINGS = Object\.freeze\(\[([\s\S]*?)\]\);/.exec(notices)?.[1] ?? '');
+  assert.equal(warnings.length, 3, 'tool/src/notices.js holds the late claim\'s three warnings');
+  assert.match(warnings[0], /^A late claim pays no award\b/);
+  assert.match(warnings[1], /^The bond is forfeited on INVALID\b/);
+  assert.match(warnings[2], /^The prepay is spent on the evaluation\b/);
+  for (const line of warnings) assert.ok(block.includes(line), `agents.txt says it word for word: ${line}`);
+  assert.match(notices, /LATE_CLAIM_WARNINGS\.map\(/, 'and the notice commit --late prints before it pays carries them');
+  // the third warning's second half: finalize makes the refund in a call that is caught, and a refund deferred that
+  // way is the hunter's still: anyone may call recoverLeftoverEth, which pays the round's funder
+  assert.match(logic, /try EvaluationWallet\(payable\(wallet\)\)\.refundLeftoverEth\{gas: ClaimRules\.INLINE_REFUND_GAS_LIMIT\}\(\)[\s\S]*?\} catch \{\s*emit StakeAttestation\.RefundDeferred\(claimId, wallet\);\s*\}/);
+  assert.match(host, /Retry the recovery of a wallet's unspent prepay and pay it to the wallet's funder\s+\/\/\/\s+\(walletInfo: the hunter for a claim round or an appeal, the maker for a dispute\)\. Anyone may\s+\/\/\/\s+call\./);
+  assert.deepEqual(ABI.find((f) => f.name === 'recoverLeftoverEth').inputs.map((i) => `${i.type} ${i.name}`), ['address wallet']);
+  assert.match(warnings[2], /comes back when the round is finalized or, if the refund fails then, when anyone calls recoverLeftoverEth\(wallet\) on the contract, with the wallet of that round\.$/);
+  assert.match(section(1), /A late claim, on a listing that takes no commit any more \(section 3, "Late claims"\), pays no award in any outcome/);
+
+  // the command: the flag is the parser's and commit's, a first run is a dry run as a commit's is, and the later verbs
+  // are a claim's; status says which kind it is
+  assert.ok(setLiteral(cli, 'FLAGS').includes('--late'));
+  assert.ok(usageFlags().per.get('commit').has('--late'), 'the help documents --late for commit');
+  assert.match(/case 'commit': \{[\s\S]*?\n {4}\}/.exec(cli)[0], /late: options\['--late'\] === true/);
+  assert.match(/function readyToCommit[\s\S]*?\n\}/.exec(commit)[0], /commitPreflight\(ctx, listingId, hunter, late\)[\s\S]*NEEDS_ACKNOWLEDGEMENT/, 'the listing is asked, then the terms are said, then --yes');
+  assert.ok(block.includes('The command: `verdikta-attest commit ./claim --listing <listingId> --late` prints the terms, the price and those three warnings, and sends nothing (exit 3); with --yes it sends `lateClaim`, then pins and discloses as a commit does.'));
+  assert.match(toolSrc('status.js'), /\n {4}late: claim\.late,\n/, 'status reads the claim\'s kind from the chain');
+  assert.match(/function printStatus[\s\S]*?\n\}/.exec(cli)[0], /if \(s\.late\) out\(LATE_CLAIM_NOTE\);/);
+  assert.match(notices, /export const LATE_CLAIM_NOTE = 'A late claim: [^\n]*pays no award\./);
+  assert.ok(block.includes('`status`, `reveal`, `claim` and `appeal` then work as on any claim, and `status` says it is a late claim with no award (with --json, `late` is true).'));
+  const s5 = text.slice(text.indexOf('\n## 5. '), text.indexOf('\n## 6. '));
+  for (const line of [
+    '    verdikta-attest commit ./claim --listing <listingId> --late         # first run: its terms and the price; sends nothing\n',
+    '    verdikta-attest commit ./claim --listing <listingId> --late --yes   # late claim, pin, disclose\n',
+  ]) assert.ok(s5.includes(line), `section 5: ${line.trim()}`);
+
+  // commit order: a late claim joins the listing's one queue, and pendingClaims never counts it (the bounty 400
+  // test above holds both to ClaimLogic.commit and resolve); the tool's count adds the late claims still open
+  assert.ok(block.includes('It reveals in commit order with the listing\'s other claims: behind every claim still open there, the stake\'s own and earlier late claims, and `pendingClaims` counts only the stake\'s own.'));
+  assert.match(toolSrc('listing.js'), /l\.lateClaims - l\.lateExpired - /, 'the late claims still open: made, less expired, less settled');
+  assert.match(logic, /if \(c\.late\) l\.lateExpired \+= 1;/);
+
+  // the refusals: each code is the tool's, ends with exit 1, and the ordinary commit's names the flag
+  const preflight = /async function commitPreflight[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(preflight, 'tool/src/commit.js: commitPreflight');
+  for (const code of ['LATE_CLAIMS_ONLY', 'LISTING_TAKES_COMMITS', 'NO_LATE_CLAIMS']) {
+    assert.ok(Object.hasOwn(ERROR_TEXTS, code), `${code} is an error of the tool`);
+    assert.equal(new ToolError(code).exitCode, 1, code);
+    assert.ok(preflight.includes(`'${code}'`), `${code} is decided before anything is drawn, pinned or signed`);
+    assert.ok(block.includes(`(${code})`), `agents.txt names ${code}`);
+  }
+  assert.match(ERROR_TEXTS.LATE_CLAIMS_ONLY, /commit --late/);
+  assert.ok(block.includes('The wrong kind is refused before anything is pinned or sent: `commit` without --late on a listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).'));
+  assert.match(section(3), /A listing that takes none may take a late claim instead \("Late claims", after step 8\)\./);
+
+  // the price it signs is the price its terms named: read again as it signs, and a price that changed stops the run
+  // before the signature. Only a late claim asks this; a commit signs the live price as it did
+  assert.match(commit, /if \(late && price !== quoted\) throw fail\('LATE_PRICE_CHANGED', [^\n]*\);\s*const data = ctx\.encode\(/);
+  assert.equal(new ToolError('LATE_PRICE_CHANGED').exitCode, 1);
+  assert.ok(block.includes('The price it signs is the price its terms named: if the live price changed in between, it signs nothing and says the new amount (LATE_PRICE_CHANGED), and the next run prints the terms again.'));
+  assert.match(section(4), /The tool reads it again just before it signs, and signs only the amount its terms named\./);
+
+  // --restart never starts a late claim over: refused before the one place that removes a prepared folder's files
+  const runCommit = /export async function runCommit[\s\S]*$/.exec(commit)[0];
+  const refusal = runCommit.indexOf('if (late && restart) throw fail(\'LATE_NEEDS_NEW_FOLDER\');');
+  assert.ok(refusal >= 0 && refusal < runCommit.indexOf('ws.removePrepared()'), 'refused before anything is removed');
+  assert.equal(commit.split('removePrepared()').length - 1, 1, 'and nothing else removes them');
+  assert.equal(new ToolError('LATE_NEEDS_NEW_FOLDER').exitCode, 1);
+  assert.ok(block.includes('--restart does not start a late claim over (LATE_NEEDS_NEW_FOLDER): if its files changed, prepare the changed claim in a new folder (copy finding.json, report.md and the patches there) and keep the old folder as it is.'));
+  assert.match(section(9), /Before that, a change stops `commit` with INPUTS_CHANGED \(--restart starts over with new keys; a late claim is not started over: section 3, "Late claims"\)\./);
+
+  // a resume: a signed one is settled before anything else is asked, and the folder's kind is the run's kind
+  assert.match(commit, /if \(state\?\.stage === 'commit-signed'\) state = await settleCommit\(ctx, ws, state\);/, 'a signed one is settled as it was saved');
+  assert.match(commit, /const late = lateFlag === true \|\| state\?\.late === true;/, 'a folder that holds a late claim says so, whatever the flag');
+  assert.ok(block.includes('A stopped run goes on with what the folder holds, with --late or without it: a signed commit or late claim is sent again as it was saved, and a folder prepared for a late claim stays a late claim\'s.'));
+  assert.ok(block.includes('A prepared late claim whose two hashes already have a claim on the chain, sent some other way, is found first and disclosed, --yes or not.'));
+  assert.match(section(4), /`commit --late` is a dry run in the same way, and once a late claim is signed a later run resumes it, with --late or without it\./);
+
+  // the index names it too
+  assert.match(read('client', 'public', 'llms.txt'), /late claims/);
+});
+
+// The lines a hunter types, as they were before node P43: a published film shows them, so --late is added in lines of
+// its own and nothing here is reworded.
+test('node P43: the command lines agents.txt had are as they were, character for character', () => {
+  const text = agents();
+  for (const line of [
+    '    verdikta-attest check ./claim --listing <listingId>          # before you commit; needs a runner: section 8',
+    '    verdikta-attest commit ./claim --listing <listingId>         # first run: the terms and the price; sends nothing',
+    '    verdikta-attest commit ./claim --listing <listingId> --yes   # commit, pin, disclose',
+    '    verdikta-attest status ./claim                               # where the claim stands, and what is next',
+    '    verdikta-attest reveal ./claim                               # after the fix window: what it sends; sends nothing',
+    '    verdikta-attest reveal ./claim --yes                         # pin the plaintext and reveal',
+    '    verdikta-attest status ./claim --wait --max-wait-ms <ms>     # polls the evaluation',
+    '    verdikta-attest claim ./claim                                # finalize, settle, withdraw: whatever is due',
+    '    ln -sf verdikta-attest.js bin/verdikta-attest && export PATH="$PWD/bin:$PATH"',
+    '    export VERDIKTA_CONTRACT="$(curl -fsS https://verifiers.verdikta.org/api/status | jq -r .contract)"',
+    '    git clone --branch main https://github.com/verdikta/verdikta-applications.git',
+    '    cd verdikta-applications/stake-attestation/shared && npm ci --ignore-scripts',
+    '    cd ../tool && npm ci --ignore-scripts',
+    '    node bin/verdikta-attest.js --help',
+    '5. `verdikta-attest commit ./claim --listing <listingId> --yes`, then back the folder up (9).',
+    '6. After the fix window, `verdikta-attest reveal ./claim --yes`, then `status` and `claim`',
+  ]) assert.ok(text.includes(`\n${line}\n`), line.trim());
+  const block = text.slice(text.indexOf('The commands, in order'), text.indexOf('\nIf it is judged INVALID'));
+  assert.equal(block.split('\n').filter((l) => l.startsWith('    verdikta-attest ')).length, 8, 'the commands block holds the eight lines it held');
+  assert.doesNotMatch(block, /--late/, 'and the late claim\'s lines stand apart from it');
+  // and the guide describes nothing this change does not build (the guards against a second bond are other work)
+  for (const name of ['COMMIT_REPLACED', 'START_UNPROVEN', 'anchor', 'set aside', 'set-aside']) assert.ok(!text.includes(name), `agents.txt does not name ${name}`);
 });

@@ -123,3 +123,28 @@ test('the production provider caches nothing: a block read twice is asked for tw
     await rpc.close();
   }
 });
+
+// Owner decision, 2026-11-24: a listing's jury is its class preset's (Small by default); SA_ORACLE_JURY gives every
+// listing one jury, checked as list() checks it (ClaimLogic.setOracle, "bad jury").
+test('the oracle jury: Small by default, SA_ORACLE_JURY for every listing, refused as list() refuses it', () => {
+  const base = { SA_ATTESTATION_TRUST: 'dev', SA_CHAIN_ID: '31337', SA_PINNING: 'mock' };
+  const plain = loadConfig(base);
+  assert.deepEqual(plain.oracle.jury, { K: 6, M: 5, N: 4, P: 3, timeout: 300 });
+  assert.equal(plain.oracleJuryFixed, false);
+  const fixed = loadConfig({ ...base, SA_ORACLE_JURY: '12, 9, 7, 5, 900' });
+  assert.deepEqual(fixed.oracle.jury, { K: 12, M: 9, N: 7, P: 5, timeout: 900 });
+  assert.equal(fixed.oracleJuryFixed, true);
+  assert.deepEqual(loadConfig({ ...base, SA_ORACLE_JURY: '1,1,1,1,60' }).oracle.jury, { K: 1, M: 1, N: 1, P: 1, timeout: 60 }, 'N = 1 with P = 1');
+  for (const [raw, why] of [
+    ['6,5,4,3', /five whole numbers/],
+    ['6,5,4,3,-1', /five whole numbers/],
+    ['6,5,4,3,0', /timeout/],
+    ['6,5,4,5,300', /K >= M >= N >= P >= 1/],
+    ['6,7,4,3,300', /K >= M >= N >= P >= 1/],
+    ['50,45,41,3,300', /N is at most 40/],
+    ['6,5,4,1,300', /P is at least 2 unless N is 1/],
+    ['256,5,4,3,300', /K is a whole number/],
+  ]) {
+    assert.throws(() => loadConfig({ ...base, SA_ORACLE_JURY: raw }), (err) => err instanceof ConfigError && why.test(err.message), raw);
+  }
+});

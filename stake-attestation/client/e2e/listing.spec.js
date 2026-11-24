@@ -153,6 +153,8 @@ test('a maker lists and funds a repository version: server validation, report, l
   }
   await expect(report).toContainText(STRINGS.report.devTrust);
   await expect(page.getByRole('region', { name: STRINGS.chain.readyTitle })).toContainText(fill(STRINGS.chain.allowlist, { count: 1 }));
+  // no class picked: Small's jury (shared/src/classPresets.js), no beacons
+  await expect(page.getByTestId('ready-jury')).toHaveText(fill(STRINGS.chain.jury, { K: '6', M: '5', N: '4', P: '3', timeout: '300', beacons: '' }));
   await shot(page, 'listing-validated');
 
   const listingId = await listAndFund(page);
@@ -172,6 +174,8 @@ test('a maker lists and funds a repository version: server validation, report, l
   expect(l.lowestClassCounted).toBe(3n); // MEDIUM
   expect([l.fixWindow, l.disputeWindow, l.disclosureGrace, l.revealWindow]).toEqual([14n * DAY, 72n * HOUR, 48n * HOUR, 7n * DAY]);
   expect([...l.allowlist]).toEqual([stack.accounts.hunter]);
+  expect([l.oracle.jury.K, l.oracle.jury.M, l.oracle.jury.N, l.oracle.jury.P, l.oracle.jury.timeout]).toEqual([6n, 5n, 4n, 3n, 300n]);
+  expect(l.oracle.withBeacons).toBe(false);
   expect(l.valueAtRiskUsd).toBe(1250000n);
   expect([...l.knownIssueIds]).toEqual([`0x${knownIssueId.slice('sha256:'.length)}`]);
   expect(l.escrowWei).toBe(2n * ETH);

@@ -11,8 +11,8 @@
 //
 // The v2 aggregator draws a round's jury in a second step (the lens's openRound gives the round's phase). Until it is
 // drawn the round waits, however long, and nothing times out: the site's keeper draws it, anyone may, and `claim`
-// does when drawJury's dry run passes (status itself sends nothing). Its response timeout runs from the draw; a
-// round left undrawn for a day can only be cancelled, its whole prepay to the aggregator's treasury. Nothing here
+// does when drawJury's dry run passes (status itself sends nothing). Its timeout (the listing's jury, sent with the
+// request; getJury reads a round's own) runs from the draw; a round left undrawn for a day can only be cancelled, its whole prepay to the aggregator's treasury. Nothing here
 // reads a clock.
 //
 // The reveal deadline is the lens's. A release (or a roll-forward) ends the fix window early, and the deadline moves
@@ -361,7 +361,7 @@ function nextFor(s) {
         const how = s.ready === 'draw' ? 'its draw is due now: run claim to draw it (anyone may, and the site\'s keeper does; the draw reward goes to the round\'s wallet and comes back with its leftover)' : 'it can be drawn from two blocks after the request; the site\'s keeper draws it, and claim does once it may be';
         return `${round} is still open, and its jury is not drawn yet${stage}: ${how}. An undrawn round never times out, but undrawn a day after the request it can only be cancelled, its whole prepay to the aggregator's treasury, and the round fails.${s.timedOut ? ' The time given is over: run status --wait again.' : ''}`;
       }
-      const until = s.round && s.round.deadline !== 0n ? ` Its deadline is ${s.round.deadline} on the chain's clock, the response timeout counted from the draw; after it the round is failed if it has not finished.` : '';
+      const until = s.round && s.round.deadline !== 0n ? ` Its deadline is ${s.round.deadline} on the chain's clock, the listing's jury timeout counted from the draw; after it the round is failed if it has not finished.` : '';
       if (s.timedOut) return `${round} is still open after the time given. It may be running slowly; run status --wait again, and claim once it is over.${until}`;
       return `${round} is drawn and open: the arbiters commit and reveal, usually for 3 to 6 minutes from the draw. status --wait polls it.${until}`;
     }
@@ -389,7 +389,7 @@ function failedRoundArgs(s) {
     window: f.retriggerWindow ?? null,
     retriggerWei: f.retriggerWei ?? null,
     cost: f.prepayWei === undefined ? null : { prepayWei: f.prepayWei, spentWei: f.spentWei, refundWei: f.refundWei, refundTo: f.refundTo ?? null },
-    timeoutSeconds: f.responseTimeoutSeconds ?? null,
+    timeoutSeconds: f.jury?.timeout ?? null,
   };
 }
 
@@ -406,7 +406,7 @@ function baseFailedRound(s) {
     spentWei: null,
     refundWei: null,
     refundTo: null,
-    responseTimeoutSeconds: null,
+    jury: null, // the round's own { K, M, N, P, timeout } (getJury): the listing's jury, sent with the request
   };
 }
 
@@ -436,16 +436,18 @@ async function failedRoundOf(ctx, s, live) {
   if (out.refused) return out;
   const aggregator = await step(() => ctx.aggregator());
   try {
-    out.responseTimeoutSeconds = await step(() => ctx.rpc(() => aggregator.responseTimeoutSeconds()));
+    const j = await step(() => ctx.rpc(() => aggregator.getJury(s.requestId)));
+    // zeros for a round the aggregator does not know: no jury said rather than one made up
+    out.jury = BigInt(j.K) === 0n ? null : { K: Number(j.K), M: Number(j.M), N: Number(j.N), P: Number(j.P), timeout: BigInt(j.timeout) };
   } catch {
-    out.responseTimeoutSeconds = null;
+    out.jury = null;
   }
   try {
     const r = await step(() => ctx.rpc(() => aggregator.getRoundInfo(s.requestId)));
     if (r.received > 0n) {
       const spent = r.baseFees + r.bonuses + r.rewards;
       Object.assign(out, { prepayWei: r.received, spentWei: spent, refundWei: r.received - spent });
-      out.refundTo = await step(() => refundDestination(ctx, aggregator, s, r));
+      out.refundTo = await step(() => refundDestination(ctx, aggregator, s, r, out.jury));
     }
   } catch {
     // an aggregator that does not answer: the prepay the claim sent, and no figure made up for the split
@@ -457,9 +459,10 @@ async function failedRoundOf(ctx, s, live) {
  * Where a failed round's unspent prepay went, or goes (the v2 aggregator's routing): 'treasury', 'hunter' or null when
  * unknown. Cancelled: all to the treasury. Failed: its RequesterRefunded event names the payee (the claim's wallet
  * is the hunter's). Not failed yet (finalize settles it): the treasury for a round closed and not promoted (phase 4),
- * or still in commit with at least M commits, which the aggregator's settle sends there too; the hunter otherwise.
+ * or still in commit with at least the round's own M commits (its jury, getJury), which the aggregator's settle sends
+ * there too; the hunter otherwise.
  */
-async function refundDestination(ctx, aggregator, s, r) {
+async function refundDestination(ctx, aggregator, s, r, jury) {
   const phase = BigInt(r.phase);
   if (phase === PHASE.CANCELLED) return 'treasury';
   if (phase === PHASE.FAILED) {
@@ -474,7 +477,10 @@ async function refundDestination(ctx, aggregator, s, r) {
   }
   if (phase === PHASE.CLOSING) return 'treasury';
   if (phase === PHASE.DRAW || phase === PHASE.BEACONS) return 'treasury'; // finalize cancels it
-  if (phase === PHASE.COMMIT) return r.commits >= BigInt(await ctx.rpc(() => aggregator.M())) ? 'treasury' : 'hunter';
+  if (phase === PHASE.COMMIT) {
+    if (!jury) return null; // the round's M unread: unsaid
+    return r.commits >= BigInt(jury.M) ? 'treasury' : 'hunter';
+  }
   return 'hunter';
 }
 

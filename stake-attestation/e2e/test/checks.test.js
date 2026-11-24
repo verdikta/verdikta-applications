@@ -78,8 +78,9 @@ test('abstainRunChecks: the arbiter ran it and abstained: an EA that is down lea
 test('requestChecks: the composition the contract owes', () => {
   const disclosure = { parsed: { archiveSha256: '0xa', ciphertextSha256: '0xb', ciphertextCid: 'QmC' }, archiveSha256: '0xa', ciphertextSha256: '0xb', ciphertextCid: 'QmC' };
   const oracle = { alpha: 500n, maxFee: 7n, minFee: 2n, estimatedBaseCost: 1n, maxFeeBasedScaling: 3n, withBeacons: false };
-  const round = { cids: ['QmL', 'QmB', 'QmP'], requestedClass: 133n, addendum: 'verdikta-disclosure: x', oracle };
-  const o = { listingCid: 'QmL', bcid: 'QmB', priorBcids: ['QmP'], requestedClass: 133, disclosure, oracle: { alpha: '500', maxOracleFee: '7', minOracleFee: '2', estimatedBaseCost: '1', maxFeeBasedScaling: '3', withBeacons: false } };
+  const jury = { K: 6, M: 5, N: 4, P: 3, timeout: 900 };
+  const round = { cids: ['QmL', 'QmB', 'QmP'], requestedClass: 133n, addendum: 'verdikta-disclosure: x', oracle, jury };
+  const o = { listingCid: 'QmL', bcid: 'QmB', priorBcids: ['QmP'], requestedClass: 133, disclosure, oracle: { alpha: '500', maxOracleFee: '7', minOracleFee: '2', estimatedBaseCost: '1', maxFeeBasedScaling: '3', withBeacons: false, jury: { ...jury } } };
   allPass(requestChecks('x', round, o));
   fails(requestChecks('x', { ...round, cids: ['QmL', 'QmB'] }, o), 'x.request.cids');
   fails(requestChecks('x', { ...round, requestedClass: 128n }, o), 'x.request.class');
@@ -88,6 +89,9 @@ test('requestChecks: the composition the contract owes', () => {
   fails(requestChecks('x', { ...round, oracle: { ...oracle, maxFee: 8n } }, o), 'x.request.oracle');
   fails(requestChecks('x', { ...round, oracle: { ...oracle, minFee: 0n } }, o), 'x.request.oracle');
   fails(requestChecks('x', { ...round, oracle: { ...oracle, withBeacons: true } }, o), 'x.request.oracle');
+  fails(requestChecks('x', { ...round, jury: { ...jury, timeout: 300 } }, o), 'x.request.jury');
+  fails(requestChecks('x', { ...round, jury: { ...jury, K: 8 } }, o), 'x.request.jury');
+  fails(requestChecks('x', { ...round, jury: null }, o), 'x.request.jury');
 });
 
 const AVERAGE = [0n, 700000n, 300000n];

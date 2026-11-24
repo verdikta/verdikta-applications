@@ -7,7 +7,7 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { codeReview } from '../src/common.js';
-import { contractDraft, draftSpec, fakeBuilder, knownIssues, listingRequest, disclosureKeyPair } from './helpers/fixtures.js';
+import { contractDraft, draftSpec, fakeBuilder, knownIssues, listingRequest, disclosureKeyPair, testConfig } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
 
 const servers = [];
@@ -55,10 +55,42 @@ describe('POST /api/listings, then GET /api/listings/:id', () => {
     const recipientBytes = Buffer.from(codeReview.parseDisclosureKey(body.spec.stake.disclosureKey)).toString('hex');
     assert.equal(view.list.params.disclosureKey, `0x${recipientBytes}`);
     assert.deepEqual(view.disclosureKey, { recipient: body.spec.stake.disclosureKey, bytes32: `0x${recipientBytes}` });
-    assert.deepEqual(Object.keys(view.list.params.oracle).sort(), ['alpha', 'disputeMaxOracleFee', 'estimatedBaseCost', 'maxFeeBasedScaling', 'maxOracleFee', 'minOracleFee', 'requestedClass', 'withBeacons']);
+    assert.deepEqual(Object.keys(view.list.params.oracle).sort(), ['alpha', 'disputeMaxOracleFee', 'estimatedBaseCost', 'jury', 'maxFeeBasedScaling', 'maxOracleFee', 'minOracleFee', 'requestedClass', 'withBeacons']);
+    // no class named: Small's jury, no beacons
+    assert.equal(view.juryClass, 'small');
+    assert.deepEqual(view.list.params.oracle.jury, { K: 6, M: 5, N: 4, P: 3, timeout: 300 });
+    assert.equal(view.list.params.oracle.withBeacons, false);
     assert.equal(view.list.params.oracle.requestedClass, String(codeReview.CODE_CLASSES['code-standard'].classId));
     assert.match(view.artifactHash, /^0x[0-9a-f]{64}$/);
     assert.equal(view.trust, 'dev');
+  });
+
+  // Owner decision, 2026-11-24: the maker picks the listing's class; its jury and beacon flag go into list()'s
+  // oracle terms (Jumbo's beacons on), and an operator's SA_ORACLE_JURY sets every listing's jury instead.
+  test('the request\'s jury class sets the listing\'s jury and beacon flag', async () => {
+    for (const [juryClass, jury, withBeacons] of [
+      ['medium', { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, false],
+      ['large', { K: 21, M: 16, N: 13, P: 10, timeout: 300 }, false],
+      ['jumbo', { K: 50, M: 38, N: 27, P: 17, timeout: 600 }, true],
+    ]) {
+      const s = await api({ builder: fakeBuilder() });
+      const { res, json } = await submit(s, { ...listingRequest(), juryClass });
+      assert.equal(res.status, 202, JSON.stringify(json));
+      const view = await s.settle(json.id);
+      assert.equal(view.status, 'ready', JSON.stringify(view.error));
+      assert.equal(view.juryClass, juryClass);
+      assert.deepEqual(view.list.params.oracle.jury, jury, juryClass);
+      assert.equal(view.list.params.oracle.withBeacons, withBeacons, juryClass);
+    }
+  });
+
+  test('SA_ORACLE_JURY gives every listing its jury; the class still sets the beacon flag', async () => {
+    const s = await api({ builder: fakeBuilder(), config: testConfig({ SA_ORACLE_JURY: '6,5,4,3,900' }) });
+    const { json } = await submit(s, { ...listingRequest(), juryClass: 'jumbo' });
+    const view = await s.settle(json.id);
+    assert.equal(view.status, 'ready', JSON.stringify(view.error));
+    assert.deepEqual(view.list.params.oracle.jury, { K: 6, M: 5, N: 4, P: 3, timeout: 900 });
+    assert.equal(view.list.params.oracle.withBeacons, true);
   });
 
   // Node P20: a draft naming stake.documents is taken: built with the field as the maker wrote it, its report has the
@@ -230,6 +262,10 @@ describe('requests refused before any build (400)', () => {
     ['a disclosure grace longer than the fix window', (b) => { b.spec.stake.fixWindowDays = 1; b.spec.stake.disclosureGraceHours = 48; }, 'LIST_BOUNDS'],
     ['a value at risk that is not whole dollars', (b) => { b.spec.stake.valueAtRiskUsd = 10.5; }, 'LIST_BOUNDS'],
     ['an unknown request field', (b) => { b.owner = '0x5f2a00000000000000000000000000000000c0de'; }, 'REQUEST_INVALID'],
+    // owner decision, 2026-11-24: a listing's class is one of the bounty program's presets, Small to Jumbo
+    ['a jury class that is not a listing class', (b) => { b.juryClass = 'huge'; }, 'JURY_CLASS_INVALID'],
+    ['Bondless Small, a bounty class only', (b) => { b.juryClass = 'bondless-small'; }, 'JURY_CLASS_INVALID'],
+    ['a jury class that is not a string', (b) => { b.juryClass = { K: 6 }; }, 'JURY_CLASS_INVALID'],
     // R1-F2: amounts list() could not encode
     ['an award beyond uint256', (b) => { b.spec.stake.awards.CRITICAL = (1n << 256n).toString(); }, 'LIST_BOUNDS'],
     ['a bond beyond uint256', (b) => { b.spec.stake.bondWei = (1n << 256n).toString(); }, 'LIST_BOUNDS'],

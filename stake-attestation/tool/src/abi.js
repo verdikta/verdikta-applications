@@ -10,13 +10,13 @@ export const STAKE_ATTESTATION_ABI = Object.freeze(JSON.parse(fs.readFileSync(ne
  * The aggregator's reads the tool makes (contracts/interfaces/IVerdiktaAggregator.sol, the v2 ReputationAggregator): a
  * round's result and where its justification was uploaded (getEvaluation, valid from phase 6); the round's phase,
  * timing and money (getRoundInfo: received less baseFees, bonuses and rewards is what it refunds, to the requester or
- * the treasury); the time a drawn round has; and where a round's refund went (RequesterRefunded, indexed by round).
+ * the treasury); the round's own jury and timeout (getJury: the listing's, sent with the request; the aggregator has no
+ * jury of its own); and where a round's refund went (RequesterRefunded, indexed by round).
  */
 export const AGGREGATOR_ABI = Object.freeze([
   'function getEvaluation(bytes32) view returns (uint256[] aggregated, string justifications, bool valid)',
   'function getRoundInfo(bytes32) view returns (uint8 phase, uint256 requestBlock, bytes32 sealedHash, uint256 closeBlock, uint256 received, uint256 baseFees, uint256 bonuses, uint256 rewards, uint256 deadline, uint256 windowEnd, uint256 commits, uint256 requestTime)',
-  'function responseTimeoutSeconds() view returns (uint40)',
-  'function M() view returns (uint8)',
+  'function getJury(bytes32) view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout)',
   'event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount)',
 ]);
 

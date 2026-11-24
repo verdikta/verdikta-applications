@@ -10,6 +10,8 @@ on:
       - '.github/workflows/stake-attestation-builder.yml'
       - '.github/workflows/stake-attestation-builder-sign.yml'
       - '.verdikta/**'
+      # shared/test/classPresets.test.js holds the listing classes equal to the bounty program's
+      - 'example-bounty-program/shared/classPresets.js'
   workflow_dispatch:
 permissions:
   contents: read

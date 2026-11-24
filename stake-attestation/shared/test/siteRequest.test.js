@@ -90,3 +90,10 @@ test('specChanges: what the builder fills may change, and nothing else', () => {
 test('known issues are written as the builder and the server write them', () => {
   assert.equal(serializeKnownIssues([{ id: 'a' }]).toString(), '[\n  {\n    "id": "a"\n  }\n]\n');
 });
+
+test('a request may name the listing\'s jury class: the signing workflow takes it with the rest', () => {
+  const withClass = JSON.stringify({ ...JSON.parse(signed), juryClass: 'jumbo' });
+  const r = verifySiteRequest({ request: encodeSiteRequest(withClass), auth: encodeSiteAuth(auth), maker: MAKER }, { verifyMessage: () => MAKER, getAddress });
+  assert.equal(r.body.juryClass, 'jumbo');
+  assert.equal(r.signedJson, withClass);
+});

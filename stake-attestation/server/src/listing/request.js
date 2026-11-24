@@ -3,6 +3,9 @@
 //   { "spec": <draft code_review.json, with its stake block and disclosure key>,
 //     "knownIssues": <known_issues.json entries, when spec.stake.knownIssues names the file>,
 //     "allowlist": [<hunter addresses>],      (optional; empty or absent: open to every hunter)
+//     "juryClass": "small" | "medium" | "large" | "jumbo",  (optional; absent: small. The class preset
+//                                              whose jury and beacon flag the listing's rounds use,
+//                                              shared/src/classPresets.js; listParams.js listingOracle)
 //     "maker": "<the maker's address>",       (required, node P9: the wallet that will send list(). The
 //                                              repository's file must name it, and it signs the request;
 //                                              the baseline scan's findings go to it, design §8.3)
@@ -25,13 +28,14 @@ import crypto from 'node:crypto';
 import { getAddress, isAddress } from 'ethers';
 import { DEFAULT_GIT_HOSTS, PROOF_REFUSALS, proofFieldProblem, repoUrlCheck } from '@verdikta/stake-attestation-shared/control-proof';
 import { serializeKnownIssues } from '@verdikta/stake-attestation-shared/site-request';
+import { DEFAULT_LISTING_CLASS, LISTING_CLASSES } from '@verdikta/stake-attestation-shared/class-presets';
 
 import { codeReview } from '../common.js';
 import { canonicalAddress } from '../control/facts.js';
 import { RESERVED_NAMES } from './archives.js';
 import { LIST_LIMITS, disclosureKeyBytes32, listIssues } from './listParams.js';
 
-const TOP_KEYS = ['spec', 'knownIssues', 'allowlist', 'maker', 'deploymentProof', 'auth'];
+const TOP_KEYS = ['spec', 'knownIssues', 'allowlist', 'juryClass', 'maker', 'deploymentProof', 'auth'];
 // Names the builder writes beside the listing's files in its output folder, and the scan's own
 // file, which is the maker's alone and never a listing file (builder/src/spec.js).
 const BUILDER_NAMES = Object.freeze(['validation-report.json', 'dev-trust.json', 'scan-findings.json']);
@@ -64,6 +68,16 @@ export function withStandIns(draft) {
 }
 
 export { serializeKnownIssues };
+
+/** The listing's class (its jury and beacon flag): one of LISTING_CLASSES, Small when the request names none. */
+function juryClassOf(raw, issues) {
+  if (raw === undefined || raw === null) return DEFAULT_LISTING_CLASS;
+  if (typeof raw !== 'string' || !LISTING_CLASSES.includes(raw)) {
+    issues.push({ code: 'JURY_CLASS_INVALID', path: '/juryClass', detail: `the listing's class is one of ${LISTING_CLASSES.join(', ')}` });
+    return DEFAULT_LISTING_CLASS;
+  }
+  return raw;
+}
 
 /** The maker's address, checksummed: every listing names one. */
 function makerOf(raw, issues) {
@@ -102,12 +116,12 @@ function allowlistOf(raw, issues) {
 /**
  * @param {unknown} body - the parsed JSON body
  * @param {{ gitHosts?: string[] }} [o] - the hosts the site reads a repository from
- * @returns {{ draft: object, knownIssues: { list: object[], bytes: Buffer }|null, allowlist: string[], maker: string, deploymentProof: object|null, disclosureKey: { recipient: string, bytes32: string }, signedBody: string, digest: string }}
+ * @returns {{ draft: object, knownIssues: { list: object[], bytes: Buffer }|null, allowlist: string[], juryClass: string, maker: string, deploymentProof: object|null, disclosureKey: { recipient: string, bytes32: string }, signedBody: string, digest: string }}
  * @throws {RequestError} with every issue found
  */
 export function parseListingRequest(body, { gitHosts = DEFAULT_GIT_HOSTS } = {}) {
   const issues = [];
-  if (!isObject(body)) throw new RequestError([{ code: 'REQUEST_INVALID', path: '/', detail: 'the body is a JSON object { spec, knownIssues?, allowlist?, maker, deploymentProof?, auth }' }]);
+  if (!isObject(body)) throw new RequestError([{ code: 'REQUEST_INVALID', path: '/', detail: 'the body is a JSON object { spec, knownIssues?, allowlist?, juryClass?, maker, deploymentProof?, auth }' }]);
   for (const k of Object.keys(body)) {
     if (!TOP_KEYS.includes(k)) issues.push({ code: 'REQUEST_INVALID', path: `/${k}`, detail: `unknown field; a listing request has ${TOP_KEYS.join(', ')}` });
   }
@@ -159,6 +173,7 @@ export function parseListingRequest(body, { gitHosts = DEFAULT_GIT_HOSTS } = {})
   }
 
   const allowlist = allowlistOf(body.allowlist, issues);
+  const juryClass = juryClassOf(body.juryClass, issues);
   const maker = makerOf(body.maker, issues);
 
   // the repository's proof is read from a URL the site reads, and a contract's signature comes with the request
@@ -189,5 +204,5 @@ export function parseListingRequest(body, { gitHosts = DEFAULT_GIT_HOSTS } = {})
   // What the maker's wallet signs for: the whole request but its signature, as it was sent. The signing
   // workflow gets these bytes and checks the signature again (node P15).
   const signedBody = JSON.stringify(signed);
-  return { draft, knownIssues, allowlist, maker, deploymentProof, disclosureKey, signedBody, digest: crypto.createHash('sha256').update(signedBody).digest('hex') };
+  return { draft, knownIssues, allowlist, juryClass, maker, deploymentProof, disclosureKey, signedBody, digest: crypto.createHash('sha256').update(signedBody).digest('hex') };
 }

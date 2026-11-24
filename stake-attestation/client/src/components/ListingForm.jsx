@@ -1,3 +1,5 @@
+import { CLASS_PRESETS, LISTING_CLASSES } from '@verdikta/stake-attestation-shared/class-presets';
+
 import { MAX_DOCUMENTS } from '../lib/documents.js';
 import { SEVERITY_CLASSES, notCounted, setKind, setWindow } from '../lib/draft.js';
 import { knownIssueEntry } from '../lib/knownIssues.js';
@@ -7,6 +9,11 @@ import { SelectField, TextField } from './Field.jsx';
 const L = STRINGS.listing;
 const F = L.fields;
 const classOptions = SEVERITY_CLASSES.map((c) => ({ value: c, label: c }));
+// the listing classes (Small to Jumbo), each with the jury it sets
+const juryOptions = LISTING_CLASSES.map((key) => {
+  const c = CLASS_PRESETS.find((x) => x.key === key);
+  return { value: key, label: fill(L.hints.juryOption, { name: c.name, ...c.jury, beacons: c.withBeacons ? L.hints.juryBeacons : '' }) };
+});
 const WINDOW_FIELDS = Object.freeze(['fixWindowDays', 'disputeWindowHours', 'disclosureGraceHours', 'revealWindowDays']);
 let rowKeys = 0;
 
@@ -141,6 +148,12 @@ export function ListingForm({ form, setForm, issues, keyPanel, proofPanel = null
       <fieldset>
         <legend>{L.sections.allowlist}</legend>
         <TextField label={F.allowlist} value={form.allowlist} onChange={set('allowlist')} multiline rows={3} mono hint={L.hints.allowlist} />
+      </fieldset>
+
+      <fieldset>
+        <legend>{L.sections.jury}</legend>
+        <p className="hint">{L.hints.jury}</p>
+        <SelectField label={F.juryClass} value={form.juryClass} onChange={set('juryClass')} options={juryOptions} />
       </fieldset>
 
       <fieldset>

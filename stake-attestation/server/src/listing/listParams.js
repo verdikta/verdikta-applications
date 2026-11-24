@@ -10,6 +10,8 @@
 // compare them with the deployed constants.
 import { AbiCoder, getAddress, keccak256 } from 'ethers';
 
+import { listingOracleOf } from '@verdikta/stake-attestation-shared/class-presets';
+
 import { codeReview } from '../common.js';
 
 export const LIST_LIMITS = Object.freeze({
@@ -102,11 +104,28 @@ export function listIssues(spec) {
 }
 
 /**
+ * The oracle settings list() stores for a listing of class `juryClass` (owner decision, 2026-11-24: listings use
+ * the bounty program's class presets, shared/src/classPresets.js): the site's fees and fee floor, the class's
+ * jury, and its beacon flag (Jumbo's is on) or the site's when that is on. With SA_ORACLE_JURY set
+ * (config.oracleJuryFixed) every listing has that jury, and the class sets only the beacon flag.
+ * @param {{ oracle: object, oracleJuryFixed?: boolean }} config
+ * @param {string} juryClass - a listing class (LISTING_CLASSES)
+ */
+export function listingOracle(config, juryClass) {
+  const preset = listingOracleOf(juryClass);
+  return {
+    ...config.oracle,
+    withBeacons: Boolean(config.oracle.withBeacons || preset.withBeacons),
+    jury: { ...(config.oracleJuryFixed ? config.oracle.jury : preset.jury) },
+  };
+}
+
+/**
  * @param {object} o
  * @param {object} o.spec - the listing archive's code_review.json
  * @param {object[]|null} o.knownIssues - its known_issues.json, parsed
  * @param {string[]} o.allowlist - checksummed hunter addresses (empty: open)
- * @param {object} o.oracle - config.oracle
+ * @param {object} o.oracle - the listing's oracle settings (listingOracle), the jury with them
  * @param {string} o.listingCid
  * @param {string} o.disputeCid
  */
@@ -123,7 +142,7 @@ export function listArguments({ spec, knownIssues, allowlist, oracle, listingCid
       ...listWindows(spec),
       allowlist: [...allowlist],
       valueAtRiskUsd: String(spec.stake.valueAtRiskUsd ?? 0),
-      oracle: { ...oracle },
+      oracle: { ...oracle, ...(oracle.jury ? { jury: { ...oracle.jury } } : {}) },
     },
     listingCid,
     disputeCid,

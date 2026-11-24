@@ -23,7 +23,7 @@ const NONCE = /^[0-9a-f]{32}$/;
 const TIME = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
 const SIGNATURE = /^0x(?:[0-9a-fA-F]{128}|[0-9a-fA-F]{130})$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const SIGNED_KEYS = Object.freeze(['spec', 'knownIssues', 'allowlist', 'maker', 'deploymentProof']);
+const SIGNED_KEYS = Object.freeze(['spec', 'knownIssues', 'allowlist', 'juryClass', 'maker', 'deploymentProof']);
 const AUTH_KEYS = Object.freeze(['nonce', 'issuedAt', 'expiresAt', 'signature', 'stakeChainId', 'stakeContract']);
 /** What the builder writes into the draft: everything else is the maker's, and signed. */
 const BUILDER_FILLS = new Set(['env', 'limits', 'attestation', 'baseline']);

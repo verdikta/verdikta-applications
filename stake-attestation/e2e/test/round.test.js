@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { REAL_CONFIG } from '../src/aggregatorRound.js';
+import { LISTING_JURY } from '../src/services.js';
 
 const E2E = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-e2e-round-'));
@@ -110,11 +110,11 @@ test('an abstention is never a settled claim: rounds fail, a fresh prepay, then 
 });
 
 test('review focus: the bridge ran the real K, M, N and P, and what the real contract would do with the answers', () => {
-  has('valid.round.polled', 'valid.round.commits', 'valid.round.revealJobs', 'valid.round.reveals', 'valid.round.clustered', 'valid.round.noRevert', 'valid.round.noBadReveal', 'valid.round.noAbstain', 'valid.round.vector', 'valid.round.everyRevealSame', 'valid.request.cids', 'valid.request.disclosureLine', 'valid.request.oracle', 'gate.request.cids', 'gate.round.vector', 'gate.round.everyRevealSame');
-  assert.match(detail('valid.round.polled'), new RegExp(`K = ${REAL_CONFIG.k}`));
-  assert.match(detail('valid.round.commits'), new RegExp(`M = ${REAL_CONFIG.m}`));
-  assert.match(detail('valid.round.reveals'), new RegExp(`N = ${REAL_CONFIG.n}`));
-  assert.match(detail('valid.round.clustered'), new RegExp(`P = ${REAL_CONFIG.p}`));
+  has('valid.round.polled', 'valid.round.commits', 'valid.round.revealJobs', 'valid.round.reveals', 'valid.round.clustered', 'valid.round.noRevert', 'valid.round.noBadReveal', 'valid.round.noAbstain', 'valid.round.vector', 'valid.round.everyRevealSame', 'valid.request.cids', 'valid.request.disclosureLine', 'valid.request.oracle', 'valid.request.jury', 'gate.request.cids', 'gate.round.vector', 'gate.round.everyRevealSame');
+  assert.match(detail('valid.round.polled'), new RegExp(`K = ${LISTING_JURY.K}`));
+  assert.match(detail('valid.round.commits'), new RegExp(`M = ${LISTING_JURY.M}`));
+  assert.match(detail('valid.round.reveals'), new RegExp(`N = ${LISTING_JURY.N}`));
+  assert.match(detail('valid.round.clustered'), new RegExp(`P = ${LISTING_JURY.P}`));
 });
 
 test('nothing is a stand-in for a verdict: the runner, the jury and the evidence each say they ran', () => {

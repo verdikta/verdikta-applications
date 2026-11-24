@@ -62,7 +62,14 @@
 //                                  the oracle parameters list() takes (design §10.8; the class is
 //                                  common's code-standard, build plan A8). The last two are the v2
 //                                  aggregator's: the fee floor every juror is paid at least (0, none)
-//                                  and the beacon flag (off)
+//                                  and the beacon flag (off: only a class that asks for beacons, Jumbo,
+//                                  has them; on: every listing does)
+//   SA_ORACLE_JURY                 "K,M,N,P,timeout": one jury for every listing, whatever class its
+//                                  maker picks (the class then sets only the beacon flag). Unset (the
+//                                  default): each listing's jury is its class preset's (Small unless
+//                                  the request names another; shared/src/classPresets.js). For a chain
+//                                  whose arbiters cannot seat the presets, or a longer round timeout.
+//                                  Checked as list() checks it (ClaimLogic.setOracle, "bad jury")
 //
 // The chain side (node P4b1: indexer, keeper, feed, record mirror, badge) is on when a deployment
 // is named; without SA_CONTRACT_ADDRESS the listing flow runs alone.
@@ -138,6 +145,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAddress } from 'ethers';
 import { DEFAULT_GIT_HOSTS } from '@verdikta/stake-attestation-shared/control-proof';
+import { DEFAULT_LISTING_CLASS, juryProblem, listingOracleOf } from '@verdikta/stake-attestation-shared/class-presets';
 
 import { codeReview } from './common.js';
 import { BUILD_BUDGET_FILE } from './listing/buildBudget.js';
@@ -194,6 +202,24 @@ function serviceUrl(env, name, fallback) {
   const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
   if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) fail(`${name} must be https (plain http only to a loopback address)`);
   return raw.replace(/\/+$/, '');
+}
+
+/**
+ * SA_ORACLE_JURY, "K,M,N,P,timeout", as list() stores it ({ K, M, N, P, timeout }), or null when unset. The
+ * contract's check (ClaimLogic.setOracle: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, a timeout above
+ * 0); the aggregator's live limits (maxJury, the keeper's shortlist, T+ < timeout <= maxTimeout) are each
+ * request's.
+ */
+function oracleJury(env) {
+  const raw = env.SA_ORACLE_JURY;
+  if (raw === undefined || raw === '') return null;
+  const parts = raw.split(',').map((x) => x.trim());
+  if (parts.length !== 5 || !parts.every((x) => /^[0-9]+$/.test(x))) fail('SA_ORACLE_JURY must be "K,M,N,P,timeout", five whole numbers');
+  const [K, M, N, P, timeout] = parts.map(Number);
+  const jury = { K, M, N, P, timeout };
+  const problem = juryProblem(jury);
+  if (problem) fail(`SA_ORACLE_JURY: ${problem} (list() refuses it as "bad jury")`);
+  return jury;
 }
 
 function onOff(env, name, fallback) {
@@ -431,6 +457,8 @@ export function loadConfig(env = process.env) {
     maxFeeBasedScaling: String(integer(env, 'SA_ORACLE_MAX_FEE_SCALING', Number(DEFAULT_ORACLE.maxFeeBasedScaling), { min: 1, max: 1000 })),
     minOracleFee: wei(env, 'SA_ORACLE_MIN_FEE_WEI', DEFAULT_ORACLE.minOracleFee),
     withBeacons: onOff(env, 'SA_ORACLE_BEACONS', false),
+    // the default class's jury, or SA_ORACLE_JURY's for every listing (listing/listParams.js, listingOracle)
+    jury: oracleJury(env) ?? listingOracleOf(DEFAULT_LISTING_CLASS).jury,
   };
   // the contract's check of the floor: it fits a uint96 (the quote's uint88 bound needs the chain)
   if (BigInt(oracle.minOracleFee) >= 2n ** 96n) fail('SA_ORACLE_MIN_FEE_WEI must fit a uint96');
@@ -449,7 +477,9 @@ export function loadConfig(env = process.env) {
     production,
     chainId,
     trust: Object.freeze({ mode: trustMode }),
-    oracle: Object.freeze(oracle),
+    oracle: Object.freeze({ ...oracle, jury: Object.freeze(oracle.jury) }),
+    // SA_ORACLE_JURY was set: every listing has that jury, whatever its class
+    oracleJuryFixed: oracleJury(env) !== null,
     pinning: Object.freeze(pinningConfig(env, production)),
     builder: Object.freeze({
       bin: path.resolve(env.SA_BUILDER_BIN || path.join(here, '..', '..', 'builder', 'bin', 'verdikta-build-env.js')),

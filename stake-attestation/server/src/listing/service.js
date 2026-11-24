@@ -57,7 +57,7 @@ import { codeReview } from '../common.js';
 import { CONTROL_REASONS, canonicalAddress, controlMessage, readAnswerFile } from '../control/facts.js';
 import { buildListingArchives } from './archives.js';
 import { BuildLimitError } from './buildBudget.js';
-import { artifactHashOf, artifactOf, listArguments } from './listParams.js';
+import { artifactHashOf, artifactOf, listArguments, listingOracle } from './listParams.js';
 import { RefusalCounter } from './refusals.js';
 import { RequestError, parseListingRequest } from './request.js';
 import { validateListingArchive } from './validateArchive.js';
@@ -180,6 +180,7 @@ export function createListingService({ config, builder, scanner, pinner, logger,
       updatedAt: job.updatedAt,
       listing: { repo: job.request.draft.repo, baseCommit: job.request.draft.baseCommit, artifact: job.request.draft.artifact ?? { kind: 'repo' } },
       maker: job.request.maker,
+      juryClass: job.request.juryClass,
       refusal: job.refusal ?? null,
       scan: publicScan(job.scan),
       artifactHash: job.artifactHash,
@@ -305,7 +306,7 @@ export function createListingService({ config, builder, scanner, pinner, logger,
       spec: archives.spec,
       knownIssues: files.knownIssues ? JSON.parse(Buffer.from(files.knownIssues).toString('utf8')) : null,
       allowlist: job.request.allowlist,
-      oracle: config.oracle,
+      oracle: listingOracle(config, job.request.juryClass),
       listingCid: cids.listing,
       disputeCid: cids.dispute,
     });

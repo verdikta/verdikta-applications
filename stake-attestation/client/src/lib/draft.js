@@ -1,5 +1,5 @@
 // The listing form's model: what the maker types, the checks the form holds itself, and the
-// request it sends to POST /api/listings ({ spec, knownIssues?, allowlist }, server
+// request it sends to POST /api/listings ({ spec, knownIssues?, allowlist, juryClass }, server
 // src/listing/request.js). Every other rule (the schema, the award table, the allowlist's
 // addresses, the known issues) is the server's, which checks with @verdikta/common and answers
 // with the issues it found; the form does not second-guess it.
@@ -9,6 +9,7 @@
 // 72 hours), the disclosure grace no longer than the fix window. Defaults are design §7.1's. Its
 // documents field is checked with @verdikta/common's documentGlobProblem (lib/documents.js; node P20).
 import { parseEther } from 'ethers';
+import { DEFAULT_LISTING_CLASS } from '@verdikta/stake-attestation-shared/class-presets';
 
 import { documentIssues, documentLines, numberedLines } from './documents.js';
 import { knownIssueEntry } from './knownIssues.js';
@@ -60,6 +61,7 @@ export function initialForm() {
     disclosureGraceHours: String(WINDOW_DEFAULTS.disclosureGraceHours),
     revealWindowDays: String(WINDOW_DEFAULTS.revealWindowDays),
     allowlist: '',
+    juryClass: DEFAULT_LISTING_CLASS, // the class preset whose jury the listing's rounds use
     knownIssues: [],
     valueAtRiskUsd: '',
     commands: {
@@ -177,7 +179,7 @@ export function toListingRequest(form) {
       ...(value ? { valueAtRiskUsd: Number(value) } : {}),
     },
   };
-  return { spec, ...(knownIssues.length ? { knownIssues } : {}), allowlist: lines(form.allowlist) };
+  return { spec, ...(knownIssues.length ? { knownIssues } : {}), allowlist: lines(form.allowlist), juryClass: form.juryClass };
 }
 
 const OUTCOME_OF_CLASS = Object.freeze({ LOW: 2, MEDIUM: 3, HIGH: 4, CRITICAL: 5 }); // StakeAttestation.Outcome
@@ -187,7 +189,8 @@ const lower = (v) => String(v).toLowerCase();
  * Where the server's list() arguments differ from the request the maker sent: the client sends
  * list() only when this is empty, so the listing goes on-chain with the maker's own disclosure
  * key and terms whatever the server answered. The oracle settings are the site's, not the
- * maker's, and are not compared.
+ * maker's, and are not compared: the jury is the class's preset unless the site sets one jury for
+ * every listing (SA_ORACLE_JURY), and the page shows the one list() will store before it is sent.
  * @param {{ spec: object, knownIssues?: object[], allowlist: string[] }} sent - toListingRequest's body
  * @param {{ params: object, knownIssueIds: string[] }} list - the ready view's `list`
  * @param {(recipient: string) => string} keyBytes32 - the disclosure key as list() stores it

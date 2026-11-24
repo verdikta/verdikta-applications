@@ -31,16 +31,17 @@ export const INTEGRITY_COSTS = 'A tamper flag costs the bond, even beside anothe
  * Design §12: nothing of this reaches the chain or IPFS, so the words are all a hunter gets. No amount is fixed here
  * (node P32): the fee follows the aggregator's, so status reads a failed round's own numbers from the chain.
  */
-export const ABSTAIN_COSTS = 'Each failed round costs you its base fees (K × the per-juror fee, paid when the jury is drawn), a part of its prepay; the rest of the prepay comes back at finalize, except where the aggregator sends it to its treasury (a round never drawn, a missed beacon quorum, commits nobody promoted), and status shows the round\'s own numbers, in ETH. If no round settles a verdict, the bond comes back at expiry, unless a round\'s jury answered with a result that is no verdict: then it goes to the maker. Nothing on-chain or on IPFS says why.';
+export const ABSTAIN_COSTS = 'Each failed round costs you its base fees (K × the per-juror fee, K the listing\'s jury size, paid when the jury is drawn), a part of its prepay; the rest of the prepay comes back at finalize, except where the aggregator sends it to its treasury (a round never drawn, a missed beacon quorum, commits nobody promoted), and status shows the round\'s own numbers, in ETH. If no round settles a verdict, the bond comes back at expiry, unless a round\'s jury answered with a result that is no verdict: then it goes to the maker. Nothing on-chain or on IPFS says why.';
 
 /**
- * What a round that ends with no verdict means (node P32): too few arbiters' answers in the aggregator's time, which is
- * its responseTimeoutSeconds from the draw (the v2 aggregator), read from the chain when `timeoutSeconds` is given.
- * @param {bigint|null} [timeoutSeconds]
+ * What a round that ends with no verdict means (node P32): too few arbiters' answers in the round's time, which is its
+ * jury's timeout from the draw (the listing's jury, sent with every request; the v2 aggregator's getJury reads a
+ * round's own), stated when `timeoutSeconds` is given.
+ * @param {bigint|number|null} [timeoutSeconds]
  */
 export function noVerdictMeans(timeoutSeconds = null) {
-  const time = timeoutSeconds ? `its response timeout, ${timeoutSeconds} s now` : 'its response timeout';
-  return `A round ends with no verdict when too few arbiters commit and reveal a result within the aggregator's time for it (${time}, counted from the jury's draw): most often every arbiter abstained on this claim, from a proof that loops or runs out of time, memory or processes, or a build the runner could not finish; or the arbiters were down. It also ends with none when its jury was never drawn within a day of the request, or its beacon quorum was missed.`;
+  const time = timeoutSeconds ? `the listing's jury timeout, ${timeoutSeconds} s` : 'the listing\'s jury timeout';
+  return `A round ends with no verdict when too few arbiters commit and reveal a result within the round's time (${time}, counted from the jury's draw): most often every arbiter abstained on this claim, from a proof that loops or runs out of time, memory or processes, or a build the runner could not finish; or the arbiters were down. It also ends with none when its jury was never drawn within a day of the request, or its beacon quorum was missed.`;
 }
 
 /** Why a re-trigger of the same claim is likely to fail as the last round did (node P32). */
@@ -93,10 +94,19 @@ export function commitNotice(t) {
     `Awards: ${awards}; lowest class counted: ${t.lowestClass}`,
     `This commit sends ${eth(t.priceWei)}: the bond ${eth(t.bondWei)} and the prepay ${eth(t.feeWei)}, the live maximum fee.`,
     `The fix window is ${t.fixWindow} s from your disclosure, the reveal window ${t.revealWindow} s, the dispute window ${t.disputeWindow} s.`,
+    ...(t.jury ? [juryLine(t.jury)] : []),
     ...(queueNotice(t) ? [queueNotice(t)] : []),
     // node P35: the key in both its forms, the archive's and the chain's, and that they are one key
     ...(t.disclosureRecipient ? [`Disclosure key: ${t.disclosureRecipient}, on-chain the bytes32 ${t.disclosureKey}. ${DISCLOSURE_KEY_NOTE}`] : []),
   ].join('\n');
+}
+
+/**
+ * The listing's jury, as every round of it (claim round and dispute panel) asks the aggregator for it.
+ * @param {{ K: number, M: number, N: number, P: number, timeout: bigint|number, withBeacons?: boolean }} j
+ */
+export function juryLine(j) {
+  return `Jury: ${j.K} arbiters drawn, ${j.M} promoted to reveal, the first ${j.N} reveals counted and the closest ${j.P} averaged; a round has ${j.timeout} s from the draw${j.withBeacons ? ', with the beacon stage before the draw' : ''}. Every round of this listing, the dispute panel's too, asks for this jury.`;
 }
 
 /** What every forecast ends with (owner decision Q35). */

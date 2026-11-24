@@ -133,6 +133,13 @@ export function archiveDisclosureKeyHex(spec) {
   return `0x${Buffer.from(codeReview.parseDisclosureKey(spec.stake.disclosureKey)).toString('hex')}`;
 }
 
+/** A listing's jury and beacon flag from its oracle settings (getListing), or null for a listing that has none. */
+export function juryOf(oracle) {
+  const j = oracle?.jury;
+  if (!j || BigInt(j.K ?? 0) === 0n) return null;
+  return { K: Number(j.K), M: Number(j.M), N: Number(j.N), P: Number(j.P), timeout: BigInt(j.timeout), withBeacons: Boolean(oracle.withBeacons) };
+}
+
 /**
  * The terms a hunter reads before paying, from the chain. The disclosure key in both its forms (node P35): the bytes32
  * the chain stores and the age recipient of the same bytes, which inspectListing held to the archive's.
@@ -153,6 +160,8 @@ export function termsForNotice(listing, priceWei) {
     fixWindow: l.fixWindow,
     revealWindow: l.revealWindow,
     disputeWindow: l.disputeWindow,
+    // the listing's jury (OracleParams.jury), sent with every round of it, claim round and dispute panel alike
+    jury: juryOf(l.oracle),
     invited: l.allowlist.length > 0,
     // the commit-order queue: the claims on this listing neither settled nor expired, and the earliest of them
     pendingClaims: l.pendingClaims,

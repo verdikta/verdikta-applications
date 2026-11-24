@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import { AbiCoder, keccak256 } from 'ethers';
 
 import {
-  AggregatorRound, REAL_CONFIG, aggregate, bestCluster, classifyOne, commitHashOf, commitmentOf, mPlusOf, normalize, parseCidSalt,
+  AggregatorRound, REAL_CONFIG, SMALL_JURY, aggregate, bestCluster, classifyOne, commitHashOf, commitmentOf, mPlusOf, normalize, parseCidSalt,
   pickPromoted, promoteSeedOf, tieOrder,
 } from '../src/aggregatorRound.js';
 
@@ -71,12 +71,43 @@ test('normalization ties go to the LONGER length (v1 took the shorter)', () => {
   assert.deepEqual(normalize(big([[1, 2], [3], [4, 5], [6]])), big([[1, 2], [3, 0], [4, 5], [6, 0]]));
 });
 
-test('the configuration is the real contract\'s default, and maxTotalFee is max(eff, floor) x (K + B x P) + eff x (draw + promote)', () => {
-  assert.deepEqual([REAL_CONFIG.k, REAL_CONFIG.m, REAL_CONFIG.n, REAL_CONFIG.p, REAL_CONFIG.bonus], [6, 5, 4, 3, 3]);
+test('the configuration is the real contract\'s default, the jury Small\'s, and maxTotalFee is max(eff, floor) x (K + B x P) + eff x (draw + promote)', () => {
+  assert.deepEqual([SMALL_JURY.K, SMALL_JURY.M, SMALL_JURY.N, SMALL_JURY.P, SMALL_JURY.timeout, REAL_CONFIG.bonus], [6, 5, 4, 3, 300, 3]);
+  assert.deepEqual([REAL_CONFIG.maxJury, REAL_CONFIG.maxTimeout, REAL_CONFIG.tPlus, REAL_CONFIG.revealWindow], [50, 3600, 155, 120]);
+  for (const k of ['k', 'm', 'n', 'p', 'responseTimeoutSeconds']) assert.equal(REAL_CONFIG[k], undefined, `${k} is the request's on v2, not the aggregator's`);
   assert.equal(mPlusOf(), 6);
   assert.equal(AggregatorRound.required(FEE), FEE * 18n);
   assert.equal(AggregatorRound.required(FEE, { minFee: FEE * 2n }), FEE * 2n * 15n + FEE * 3n);
   assert.equal(AggregatorRound.required(FEE, { beacons: 2 }), FEE * 20n);
+  // maxTotalFee(maxFee, minFee, withBeacons, K, P): the jury's K and P, e.g. Jumbo's 50 and 17 with its beacons
+  assert.equal(AggregatorRound.required(FEE, { K: 50, P: 17, beacons: 2 }), FEE * BigInt(50 + 3 * 17 + 2) + FEE * 3n);
+  assert.equal(AggregatorRound.required(FEE, { K: 12, P: 5 }), FEE * 27n + FEE * 3n);
+});
+
+test('a round runs by its own jury: K slots, M+ and M from K and M, M promoted, N counted, P clustered, base fees x K', () => {
+  const jury = { K: 12, M: 9, N: 7, P: 5, timeout: 600 };
+  assert.equal(mPlusOf(jury), 11, 'M + ceil((K - M) / 2)');
+  assert.equal(mPlusOf({ K: 50, M: 38, N: 27, P: 17, timeout: 600 }), 44);
+  const r = new AggregatorRound({ aggId: AGG, operatorOf: () => OPERATOR, fee: FEE, jury });
+  assert.equal(r.baseCredited, FEE * 12n);
+  const v = [0n, 1000000n];
+  for (let s = 0; s < 10; s += 1) assert.equal(r.fulfill(s, [commitOf(v, SALT.replace(/.$/, String(s % 10)))], '').kind, 'commit', `commit ${s + 1} of M+ = 11`);
+  assert.equal(r.fulfill(10, [commitOf(v, SALT.replace(/.$/, 'a'))], '').kind, 'closed');
+  const seed = promoteSeedOf(AGG, keccak256('0x02'));
+  const reveals = r.promote(seed);
+  assert.equal(reveals.length, 9, 'M promoted');
+  assert.deepEqual(reveals.map((x) => x.slot), pickPromoted([...Array(11).fill(true), false], 9, seed));
+  let last;
+  for (const [i, { slot }] of reveals.slice(0, 7).entries()) {
+    last = r.fulfill(slot, v, `${CID(slot)}:${SALT.replace(/.$/, slot === 10 ? 'a' : String(slot))}`);
+    assert.equal(last.kind, i < 6 ? 'reveal' : 'finalized', `reveal ${i + 1} of N = 7`);
+  }
+  assert.equal(last.clustered, 5, 'P clustered');
+  assert.equal(r.bonusCredited, FEE * 3n * 5n);
+  // after T+, the window closes at M commits of this jury, not Small's 5
+  const late = new AggregatorRound({ aggId: AGG, operatorOf: () => OPERATOR, fee: FEE, jury });
+  for (let s = 0; s < 8; s += 1) assert.equal(late.fulfill(s, [commitOf(v)], '', { pastWindow: true }).kind, 'commit');
+  assert.equal(late.fulfill(8, [commitOf(v)], '', { pastWindow: true }).kind, 'closed');
 });
 
 test('the commitment: keccak256(abi.encode(aggId, operator, scores, salt)), all 32 bytes, bound to the round', () => {
@@ -123,7 +154,7 @@ test('promote draws M of the commits with the promote seed, and asks each for "2
   for (let s = 0; s < 6; s += 1) r.fulfill(s, [commitOf(v, SALT.replace(/.$/, String(s)))], '');
   const seed = promoteSeedOf(AGG, keccak256('0x02'));
   const reveals = r.promote(seed);
-  assert.equal(reveals.length, REAL_CONFIG.m);
+  assert.equal(reveals.length, SMALL_JURY.M);
   assert.deepEqual(reveals.map((x) => x.slot), pickPromoted(Array(6).fill(true), 5, seed));
   for (const x of reveals) {
     assert.match(x.cid, /^2:[0-9a-f]{64}$/);

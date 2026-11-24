@@ -27,7 +27,7 @@ import {
 } from './fixtures.js';
 import { RoundStopped, groupAlive, liveGroups, requestStop, sleep, stopProcessGroups, stopProcessesNaming, throwIfStopping, unlessStopped, waitUntil, within } from './proc.js';
 import {
-  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startLateContainer, startRegistryPair, startServer, startSurvivor, warmSemgrep,
+  arbiterHarness, cleanDockerConfig, leftovers, newRunnerToken, removeRunContainers, removeRunImages, startClient, startIpfs, startLateContainer, startRegistryPair, startServer, startSurvivor, warmSemgrep, LISTING_JURY,
 } from './services.js';
 import { APP_DIR, arbiterCheckout, browserReady, compileContracts, E2E_DIR, installSiblings } from './setup.js';
 import { createTool } from './tool.js';
@@ -35,11 +35,10 @@ import { createTool } from './tool.js';
 const CLASS_PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
 const OPERATOR = '0x0000000000000000000000000000000000000001';
 /**
- * What G2 sets on the real aggregators (design §7.2: a 900 s round; on v2, setConfig's timeout, which runs from the
- * draw). The bridge sets it on the mock with the rest of the real configuration (REAL_CONFIG keeps T+ and the reveal window).
+ * The round's timeout, from the draw: G2's 900 s (design §7.2). On v2 it is the listing's jury's (the request carries
+ * it), set here through the server's SA_ORACLE_JURY (services.js, LISTING_JURY); REAL_CONFIG keeps T+ and the reveal window.
  */
-const RESPONSE_TIMEOUT_SECONDS = 900;
-const ROUND_CONFIG = Object.freeze({ ...REAL_CONFIG, responseTimeoutSeconds: RESPONSE_TIMEOUT_SECONDS });
+const RESPONSE_TIMEOUT_SECONDS = LISTING_JURY.timeout;
 /** Stands in for the keeper's selection and K dispatches inside the request: L4 ran out at 3M with 30 identities. */
 const REQUEST_GAS_STAND_IN = 3_000_000;
 /** The EA's deadline (design §11): the job's 840 s less the commit reserve. */
@@ -299,7 +298,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const script = {
       [panel[0].model]: juror(panel[0].model, JUROR_SCORES[0]),
       // the valid claim's K jobs, one call each, then the narrow claim's (the last entry repeats): fixtures.js
-      [panel[1].model]: [...Array.from({ length: REAL_CONFIG.k }, () => juror(panel[1].model, JUROR_SCORES[1])), juror(panel[1].model, NARROW_SCORES)],
+      [panel[1].model]: [...Array.from({ length: LISTING_JURY.K }, () => juror(panel[1].model, JUROR_SCORES[1])), juror(panel[1].model, NARROW_SCORES)],
       [JUSTIFIER.model]: { reply: 'Mock justification: the panel finds the over-credit a HIGH.' },
     };
     // the dispute panel's other jurors answer as the claim panel's second: the confirmation's average is the claim's
@@ -422,13 +421,13 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       evaluate: evaluateOver(adapter.url, { token: eaToken }),
       operator: OPERATOR,
       requestedClass: codeReview.CODE_CLASSES['code-standard'].classId,
-      config: ROUND_CONFIG,
+      config: REAL_CONFIG,
       log,
     });
     closers.push(async () => { report.cancelledJobs = await bridge.stop(); });
     await bridge.start(chain.fromBlock);
     const probeFee = 10n ** 14n;
-    one('mock.realFee', (await chain.aggregator.maxTotalFee(probeFee, 0n, false)) === AggregatorRound.required(probeFee), 'maxTotalFee = fee x (K + B x P) + fee x (draw + promote rewards)');
+    one('mock.realFee', (await chain.aggregator.maxTotalFee(probeFee, 0n, false, LISTING_JURY.K, LISTING_JURY.P)) === AggregatorRound.required(probeFee, { K: LISTING_JURY.K, P: LISTING_JURY.P }), 'maxTotalFee = fee x (K + B x P) + fee x (draw + promote rewards), for the listing\'s K and P');
 
     // The builder pushed from this daemon: off it, or no run ever pulls. From here on the only copy
     // is in the registry, as on an arbiter's host. (The builder removes its own tag; the listing check's
@@ -556,6 +555,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       average: JURY_AVERAGE,
       maxTokens: codeReview.CODE_CLASSES['code-standard'].envelope.jurorOutputTokens,
       report: { classPlatform: report.classPlatform, classPlatformName: CLASS_PLATFORM },
+      jury: LISTING_JURY,
     }));
     // Node P20: this listing names no documents, so its pack has no documents tier and every rank is what it was.
     expect(noDocumentsTierChecks('valid', validAnswer?.contextPack));
@@ -577,7 +577,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       settlement: 'jury',
       source: 'code-review-jury',
       reportSha256: validAnswer.reportSha256,
-      expectedCount: REAL_CONFIG.p,
+      expectedCount: LISTING_JURY.P,
     }));
     one('valid.status.evidence', judgedStatus.json?.evidence?.settlement === 'jury', JSON.stringify(judgedStatus.json?.evidence));
     one('valid.refund.atFinalize', (await eventOf('LeftoverRefunded', validId))[0]?.args.amountWei === validRound.required - validRound.spent, `${(await eventOf('LeftoverRefunded', validId))[0]?.args.amountWei}`);
@@ -667,7 +667,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       disclosure: { parsed: parsedLine(gateRound.addendum), archiveSha256: gateClaim.archiveHash, ciphertextSha256: gateClaim.ciphertextSha256, ciphertextCid: gateClaim.ciphertextCid },
     }));
     expect(servedRoundChecks('gate', gateRound, { vector: INVALID_VECTOR }));
-    expect(gateSettledChecks('gate', { ...since(before2), gate: 'testPathsOnly' }));
+    expect(gateSettledChecks('gate', { ...since(before2), gate: 'testPathsOnly', jury: LISTING_JURY }));
     // A claim round's INVALID waits out its appeal window, the dispute window, before anyone but its hunter
     // may settle it (erratum E7, node P16): the keeper leaves it alone until then. The hunter does not appeal
     // here (the tool's appeal is node P18's).
@@ -681,7 +681,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const gateSettled = (await eventOf('Settled', gateId))[0];
     const gateFinal = await sa.getClaim(gateId);
     const gateUploads = uploadsOf(gateJudged.args.justificationCid);
-    expect(evidenceChecks('gate', { uploads: gateUploads, evidences: gateUploads.map((u) => readExecutionEvidence(u?.justification)), settlement: 'INVALID (testPathsOnly)', source: 'code-review-runner', expectedCount: REAL_CONFIG.p }));
+    expect(evidenceChecks('gate', { uploads: gateUploads, evidences: gateUploads.map((u) => readExecutionEvidence(u?.justification)), settlement: 'INVALID (testPathsOnly)', source: 'code-review-runner', expectedCount: LISTING_JURY.P }));
     expect(settlementChecks('gate', {
       state: await claimStateOf(gateId),
       outcome: OUTCOMES[Number(gateFinal.outcome)],
@@ -727,7 +727,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     }));
     expect(servedRoundChecks('integrity', integrityRound, { vector: DUPLICATE_VECTOR }));
     const integrityPath = since(beforeIntegrity);
-    expect(integrityRunChecks('integrity', { ...integrityPath, failedCheck: INTEGRITY_CHECK }));
+    expect(integrityRunChecks('integrity', { ...integrityPath, failedCheck: INTEGRITY_CHECK, jury: LISTING_JURY }));
     await stateIs(integrityId, 'Settled');
     const integrityJudged = (await eventOf('Judged', integrityId))[0];
     const integritySettled = (await eventOf('Settled', integrityId))[0];
@@ -735,7 +735,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     // The real writer's bytes, read by the reader the record and the tool use: the first time they meet.
     const integrityUploads = uploadsOf(integrityJudged.args.justificationCid);
     const integrityEvidences = integrityUploads.map((u) => readExecutionEvidence(u?.justification));
-    expect(evidenceChecks('integrity', { uploads: integrityUploads, evidences: integrityEvidences, settlement: 'DUPLICATE (integrity)', source: 'code-review-integrity', reportSha256: integrityPath.runnerCalls[0]?.response?.reportSha256 ?? null, expectedCount: REAL_CONFIG.p }));
+    expect(evidenceChecks('integrity', { uploads: integrityUploads, evidences: integrityEvidences, settlement: 'DUPLICATE (integrity)', source: 'code-review-integrity', reportSha256: integrityPath.runnerCalls[0]?.response?.reportSha256 ?? null, expectedCount: LISTING_JURY.P }));
     one('integrity.evidence.failedChecks', integrityEvidences.every((e) => JSON.stringify(e?.integrityFailedChecks) === JSON.stringify([INTEGRITY_CHECK]) && e?.tamperFlags === 'none'), JSON.stringify(integrityEvidences.map((e) => [e?.integrityFailedChecks, e?.tamperFlags])));
     const integrityStatus = await tool('status', integrityDir);
     one('integrity.status.readsTheBlock', integrityStatus.json?.evidence?.settlement === 'DUPLICATE (integrity)' && integrityStatus.json.evidence.integrityFailedChecks?.includes(INTEGRITY_CHECK), JSON.stringify(integrityStatus.json?.evidence));

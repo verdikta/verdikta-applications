@@ -4,7 +4,7 @@ import { LISTING_STATES } from '../chain/abi.js';
 import { eventOf, stakeAttestation } from '../chain/wallet.js';
 import { listMismatches } from '../lib/draft.js';
 import { disclosureKeyBytes32 } from '../lib/disclosure.js';
-import { formatEth } from '../lib/format.js';
+import { formatEth, juryLine } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
 import { FundListing } from './FundListing.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
@@ -80,6 +80,7 @@ export function ListAndFund({ view, sent }) {
         <li>{fill(C.windows, { fix: hours(params.fixWindow) / 24, dispute: hours(params.disputeWindow), grace: hours(params.disclosureGrace), reveal: hours(params.revealWindow) / 24 })}</li>
         <li>{params.allowlist.length ? fill(C.allowlist, { count: params.allowlist.length }) : C.open}</li>
         <li>{fill(C.knownIssues, { count: knownIssueIds.length })}</li>
+        {params.oracle?.jury && <li data-testid="ready-jury">{juryLine(params.oracle)}</li>}
         {params.valueAtRiskUsd !== '0' && <li>{fill(C.valueAtRisk, { usd: params.valueAtRiskUsd })}</li>}
       </ul>
 

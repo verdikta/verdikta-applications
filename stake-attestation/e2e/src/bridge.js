@@ -1,7 +1,8 @@
 // The bridge between the poll-only v2 mock aggregator and the real External Adapter. It stands where
 // the real network stands: the block producer, the keeper's selection, K ArbiterOperators, each one's
 // Chainlink job. It watches the mock for requests and does for each what those do, with the real EA
-// behind it:
+// behind it. K, M, N and P are each round's own: the request carries its jury, and the bridge reads it with
+// getJury(aggId):
 //
 //   - blocks keep coming: it mines to block B+2 after a request, so drawJury can run, and to C+2 after the
 //     commit window closes, so promote can (on the real chain these come by themselves);
@@ -99,7 +100,8 @@ const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
  * @param {string} o.operator - the EA's OPERATOR_ADDR: every slot here is one operator's job
  * @param {bigint} o.requestedClass - the class these jobs are registered on (code-standard)
  * @param {(line: string) => void} [o.log]
- * @param {object} [o.config] - REAL_CONFIG by default (its timeouts too: a run may lengthen them)
+ * @param {object} [o.config] - REAL_CONFIG by default (its T+ and reveal window too). Each round's jury, and so its
+ *        timeout, is the request's own, read with getJury
  * @param {number} [o.pollMs]
  * @param {number} [o.drawAfterMs] - how long the bridge leaves the draw to the requester or the keeper
  * @param {number} [o.actAfterMs] - the same for closeCommits after T+ and promote
@@ -153,13 +155,22 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     return run;
   };
 
-  /** The mock's settings, the real contract's: K, M, N, P, the bonus multiplier, the rewards and the timeouts. */
+  /**
+   * The mock's settings, the real contract's: the bonus multiplier, the rewards, the limits on a request's jury, T+ and
+   * the reveal window. The jury itself (K, M, N, P, timeout) is each request's.
+   */
   async function configure() {
-    await mined(() => mock.setConfig(config.k, config.m, config.n, config.p));
     await mined(() => mock.setBonusMultiplier(config.bonus));
     await mined(() => mock.setRewards(config.drawFees, config.promoteFees));
-    await mined(() => mock.setTimeouts(config.responseTimeoutSeconds, config.tPlus, config.revealWindow));
+    await mined(() => mock.setLimits(config.maxJury, config.maxTimeout));
+    await mined(() => mock.setTimeouts(config.tPlus, config.revealWindow));
   }
+
+  /** The round's own jury, as getJury answers it. */
+  const juryOf = async (aggId) => {
+    const j = await mock.getJury(aggId);
+    return { K: Number(j.K ?? j[0]), M: Number(j.M ?? j[1]), N: Number(j.N ?? j[2]), P: Number(j.P ?? j[3]), timeout: Number(j.timeout ?? j[4]) };
+  };
 
   const info = async (aggId) => {
     const r = await mock.getRoundInfo(aggId);
@@ -194,7 +205,8 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
       cids: [],
       addendum: null,
       requestedClass: null,
-      polled: config.k,
+      jury: null,
+      polled: null,
       jobs: [],
       commits: 0,
       reveals: 0,
@@ -221,6 +233,9 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     const cids = [...await mock.getRequestCids(aggId)];
     const params = await mock.requestParams(aggId);
     record.cids = cids;
+    record.jury = await juryOf(aggId);
+    record.polled = record.jury.K;
+    const { jury } = record;
     record.addendum = params.addendum;
     record.requestedClass = BigInt(params.requestedClass);
     record.oracle = { alpha: params.alpha, maxFee: params.maxFee, minFee: params.minFee, estimatedBaseCost: params.estimatedBaseCost, maxFeeBasedScaling: params.maxFeeBasedScaling, withBeacons: params.withBeacons };
@@ -262,7 +277,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
       wake(quietWaiters, aggId, record);
       return;
     }
-    const round = new AggregatorRound({ aggId, operatorOf: () => operator, fee: record.juror, sealedHash: r.sealedHash, config });
+    const round = new AggregatorRound({ aggId, operatorOf: () => operator, fee: record.juror, sealedHash: r.sealedHash, jury, config });
     const deadline = r.deadline;
     const windowEnd = r.windowEnd;
 
@@ -340,13 +355,13 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
 
     if (stopped) return;
     const composed = params.addendum.length > 0 ? `${cids.join(',')}:${params.addendum}` : cids.join(',');
-    for (let slot = 0; slot < config.k; slot += 1) jobs.push(job(slot, `1:${composed}`, 'commit'));
-    for (let i = 0; i < config.k; i += 1) await jobs[i];
+    for (let slot = 0; slot < jury.K; slot += 1) jobs.push(job(slot, `1:${composed}`, 'commit'));
+    for (let i = 0; i < jury.K; i += 1) await jobs[i];
     if (fatal) return;
 
     // T+: every commit job has answered and the window is still open with at least M: closeCommits, the
     // keeper's or the bridge's once the chain's clock is past T+ (blocks keep coming meanwhile).
-    if (round.phase === 'commit' && round.commitHash.size >= config.m) {
+    if (round.phase === 'commit' && round.commitHash.size >= jury.M) {
       for (;;) {
         if (stopped) return;
         if ((await info(aggId)).phase !== PHASE.commit) break;

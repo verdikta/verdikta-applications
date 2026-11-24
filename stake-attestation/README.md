@@ -162,14 +162,23 @@ the one-line disclosure addendum of erratum E1.
 - **Requests** go out through a fresh `EvaluationWallet` clone each, as in
   `BountyEscrow`, so the aggregator's refund of unspent prepay belongs to one
   request. The aggregator is the v2 `ReputationAggregator` (verdikta-dispatcher,
-  `beacon` branch; its `MIGRATION.md`). A listing's oracle terms add its fee floor
-  (`minOracleFee`: every juror of every round is paid at least it) and its beacon
-  flag (`withBeacons`); every quote is the aggregator's
-  `maxTotalFee(fee clamped to the ceiling, floor, flag)`, and `list` refuses a floor
-  above `uint96` or a quote that reverts (beacons with no beacon contract) or exceeds
-  `uint88`. A request only escrows the prepay: the jury is drawn later by
+  `beacon` branch; its `MIGRATION.md`), one deployment for every jury size. A listing's
+  oracle terms add its fee floor (`minOracleFee`: every juror of every round is paid at
+  least it), its beacon flag (`withBeacons`) and its own jury (`jury`: K drawn, M
+  promoted, N counted, P clustered, and the round timeout from the draw), which every
+  round of the listing, claim or dispute panel, sends with its request. The site sets
+  the jury from the class the maker picks, the bounty program's presets (Small 6/5/4/3,
+  300 s; Medium 8/5/4/3, 300 s; Large 21/16/13/10, 300 s; Jumbo 50/38/27/17, 600 s, with
+  beacons; `shared/src/classPresets.js`). Every quote is the aggregator's
+  `maxTotalFee(fee clamped to the ceiling, floor, flag, K, P)`, and `list` refuses a
+  jury out of order (K >= M >= N >= P >= 1), N above 40, P = 1 unless N = 1, a timeout
+  of 0 ("bad jury"), a floor above `uint96`, or a quote that reverts (beacons with no
+  beacon contract) or exceeds `uint88`. The aggregator's live limits (K at most its
+  `maxJury` and the keeper's shortlist, T+ < timeout <= `maxTimeout`) are checked by
+  each request. A request only escrows the prepay: the jury is drawn later by
   `drawJury(claimId)`, which anyone may call (the site's keeper does) from block B+2
-  and within a day. It goes through the round's wallet, so the wallet is the
+  and within a day; the round's deadline is its jury's timeout from the draw
+  (`getJury(aggId)` reads a round's jury back). It goes through the round's wallet, so the wallet is the
   requester and its draw reward (2 x the clamped fee; the requester's alone for 30 s)
   comes back to the round's funder with the leftover. With beacons it takes two
   calls. Then the commits, `closeCommits`, `promote` and the reveals happen at the
@@ -569,10 +578,11 @@ Nothing on-chain changes, and the kit does not work around it.
 ## The listing API
 
 `server/` (node P4a) turns a maker's draft into the two archives arbiters read and the
-arguments of `list()`. `POST /api/listings` takes `{ spec, knownIssues?, allowlist?, maker,
-deploymentProof?, auth }`: the draft `code_review.json` with its stake block and the maker's age
-disclosure key, the known issues when `stake.knownIssues` names them, up to 64 invited hunters,
-the address of the maker's wallet (required: the project names it in its repository, and the
+arguments of `list()`. `POST /api/listings` takes `{ spec, knownIssues?, allowlist?, juryClass?,
+maker, deploymentProof?, auth }`: the draft `code_review.json` with its stake block and the maker's
+age disclosure key, the known issues when `stake.knownIssues` names them, up to 64 invited hunters,
+the listing's class (`small`, `medium`, `large` or `jumbo`; `small` when absent), whose jury and
+beacon flag go into the listing's oracle terms (signed with the rest of the request), the address of the maker's wallet (required: the project names it in its repository, and the
 baseline scan's findings are served to it, below), a contract listing's signature from its
 deployer or owner, and the maker's wallet's signature of the challenge
 `POST /api/listings/challenge` answers for this request: without it anyone could get an archive
@@ -647,7 +657,10 @@ is refused in production and on Base), the builder's command line and config
 (`SA_BUILDER_BIN`, `SA_BUILDER_CONFIG`), the variables each builder step gets besides `PATH`
 and `HOME` (`SA_BUILDER_BUILD_ENV`, `SA_BUILDER_SIGN_ENV`, never one of the server's own `SA_`
 variables), the build queue, and the oracle parameters (`SA_ORACLE_*`; the class is common's
-`code-standard`). A credential is named by its variable and read when it is used, so the
+`code-standard`). A listing's jury is its class preset's unless `SA_ORACLE_JURY="K,M,N,P,timeout"`
+gives every listing one jury (for a chain whose arbiters cannot seat the presets, or a longer
+round; the end-to-end run sets 6,5,4,3,900); it is checked as `list()` checks it. `SA_ORACLE_BEACONS=on`
+asks for beacons on every listing; off, only a class that asks for them (Jumbo) has them. A credential is named by its variable and read when it is used, so the
 parsed config holds none.
 
 **Stopping a build.** Each builder step runs in a process group of its own, with `TMPDIR` inside
@@ -1278,7 +1291,8 @@ not do anything the real contract does not. It is example-bounty-program's mock 
 when either copy drifts). It never calls the requester: results are read by polling
 `getEvaluation` (valid from phase 6) and `getRoundInfo`, and refunds and rewards come back as
 `ethOwed` credit, pulled with `withdrawEth`. It has the real input limits, the real escrow formula
-(`maxTotalFee(fee, floor, withBeacons)`), sequential ids from 1, the draw from block B+2 (the
+(`maxTotalFee(fee, floor, withBeacons, K, P)`), the jury and timeout per request (`getJury`, and the
+owner's `maxJury` and `maxTimeout` bounds), sequential ids from 1, the draw from block B+2 (the
 requester's reward for 30 s, a day's limit), the beacon stage, the M+ / T+ commit close, promote,
 settle after the deadline (which runs from the draw), `cancelUnsealed`, and the treasury routing of
 the real contract. Its hooks (`scriptCommits`, `scriptReveals`, `scriptResult`, `scriptBeacons`,
@@ -1790,9 +1804,10 @@ to the round's `prepare` stage and is not a second one. The `builder-docker` job
 (verdikta-dispatcher's `beacon` branch at the commit in `e2e/test/fixtures/scoring-lib.vectors.json`, whose answers came from the real
 libraries; `e2e/test/fixtures/gen-scoring-vectors.cjs` regenerates them). For each request on the mock it mines to block B+2 and waits for
 the draw (the site's keeper calls `StakeAttestation.drawJury`, so the wallet earns the reward; the bridge draws itself only if nobody has
-after 30 s, as any third party may). It then runs K = 6 jobs with the body of `chainlink-node/basicJobSpec`, reads only what the job reads,
+after 30 s, as any third party may). It reads the round's own jury with `getJury(aggId)` (the listing's: the run sets
+`SA_ORACLE_JURY=6,5,4,3,900`, Small's jury with a 900 s round) and runs K = 6 jobs with the body of `chainlink-node/basicJobSpec`, reads only what the job reads,
 and gives each commit to the mock (`scriptCommits`). A commit is one number, keccak256(abi.encode(aggId, operator, scores, salt)) with a
-128-bit salt, and no CID. The M+-th commit (6 of 6 at the defaults) closes the window, or the M-th (M = 5) once T+ has passed, or
+128-bit salt, and no CID. The M+-th commit (6 of 6 for this jury) closes the window, or the M-th (M = 5) once T+ has passed, or
 `closeCommits` after T+ with at least M (the keeper's, or the bridge's after 10 s). From the close block + 2, `promote` (the keeper's, or the
 bridge's) draws M of the commits with the real seed, and the bridge asks exactly those for their reveal as `2:<64 lowercase hex>`. A
 reveal always has a CID (`<cid>:<32 hex salt>`), so a one-number reveal is never taken for a commit. The bridge verifies each reveal
@@ -1812,7 +1827,7 @@ the draw), and then `settle` fails it, which `StakeAttestation.finalize` tries.
 | The promotion draw, and the reveal requests to the M slots it names | The same draw (the port's `pickPromoted` on the real seed); the mock's `promote` only moves the phase | `aggregatorRound.test.js` on the real library's answers |
 | OracleRequest, Chainlink job, EA, `fulfillOracleRequestV`, `fulfill`: `gasLimit 6,000,000`, 2 confirmations | The bridge calls the EA with the job's body, up to the job's 840 s | **G2**: the real job and `ArbiterOperator` |
 | **The N-th reveal's gas.** `fulfill` runs `_finalize` (1.3M to 6.9M by answer length); a reveal out of gas is lost | `scriptResult` always fits | **G2**: the N-th `fulfill` under the job's gas limit |
-| **Timing.** The deadline runs from the draw (900 s, G2's `setConfig`), T+ 155 s, 120 s to reveal after `promote`; 3 to 6 minutes a round | The same rules on Hardhat's clock (the bridge sets them with `setTimeouts`); a round takes seconds | **G2**: a cold cache, real jurors, §11's budget |
+| **Timing.** The deadline is the request's jury timeout from the draw (the listing's, 900 s in this run), T+ 155 s, 120 s to reveal after `promote`; 3 to 6 minutes a round | The same rules on Hardhat's clock (the bridge sets T+ and the reveal window with `setTimeouts`, and the owner's bounds with `setLimits`); a round takes seconds | **G2**: a cold cache, real jurors, §11's budget |
 | **The failed round (E6).** `settle` after the deadline: failed in commit (refund), never promoted (treasury), reveal (refund); a missed beacon quorum and a cancelled round (treasury) | The same phases and routing; this round fails in commit, no commit at all | This round, commit phase; contract tests the rest |
 | While a round is open, `getEvaluation` reports `valid` false | The same | `_poll` reads the vector only when `valid` is true |
 | **`settle`** reports K outcomes to the keeper inside `StakeAttestation.finalize`'s try/catch. Out of gas there is caught, and `finalize` then reverts "evaluation not ready" | Costs almost nothing | **G2**: the keeper's and the tool's gas estimate for a real failed round |
@@ -1827,7 +1842,7 @@ What this round cannot, because the real thing is not in it:
 - A real selection on class 5555 at `code-standard`'s fee, inside `SUBMISSION_GAS`.
 - The real Chainlink job and `ArbiterOperator`: the job's timeout, confirmations, the N-th `fulfill` under 6M gas.
 - `finalize` of a really failed round: the keeper's and the tool's gas estimates, with `settle`'s K outcomes under the try/catch.
-- A 900 s round deadline (`setConfig`) on the real aggregator, and a real round inside it: draw, commits, promote, reveals.
+- A 900 s round deadline (the listing's jury timeout) on the real aggregator, and a real round inside it: draw, commits, promote, reveals.
 - An identical report hash across hosts: several operators, and real clustering of real disagreement. One EA and scripted jurors say nothing about it.
 - gVisor in the same round; the AI Node's production build; real jurors with real latency.
 - Real pinning and gateways.

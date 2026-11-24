@@ -84,8 +84,9 @@ test('ETH amounts become the spec\'s "<decimal> ETH" and wei strings', () => {
 test('the request: the draft code_review.json, its known issues with common\'s ids, the allowlist', () => {
   const f = filled();
   const body = toListingRequest(f);
-  assert.deepEqual(Object.keys(body).sort(), ['allowlist', 'knownIssues', 'spec']);
+  assert.deepEqual(Object.keys(body).sort(), ['allowlist', 'juryClass', 'knownIssues', 'spec']);
   assert.deepEqual(body.allowlist, ['0x70997970C51812dc3A010C7d01b50e0d17dc79C8']);
+  assert.equal(body.juryClass, 'small', 'the listing\'s class: Small unless the maker picks another');
   const { spec } = body;
   assert.equal(spec.version, 1);
   assert.equal(spec.kind, 'bug');
@@ -213,4 +214,19 @@ test('a document line common refuses is the form\'s issue, by common\'s code, an
   const spaced = formIssues(filled({ documents: 'README.md\n\n  \n/invalid' }));
   assert.deepEqual(spaced.documents.map((i) => [i.index, i.line, i.code]), [[1, 4, 'STAKE_DOCUMENT_OUTSIDE_REPOSITORY']]);
   assert.throws(() => toListingRequest(filled({ documents: '/etc/passwd' })), /documents/);
+});
+
+test('the jury class: Small by default, the maker\'s pick otherwise, sent as the request\'s juryClass', async () => {
+  const { LISTING_CLASSES } = await import('@verdikta/stake-attestation-shared/class-presets');
+  assert.equal(initialForm().juryClass, 'small');
+  assert.deepEqual(LISTING_CLASSES, ['small', 'medium', 'large', 'jumbo']);
+  const { juryLine } = await import('../src/lib/format.js');
+  assert.equal(
+    juryLine({ jury: { K: 50n, M: 38n, N: 27n, P: 17n, timeout: 600n }, withBeacons: true }),
+    'Jury: 50 drawn, 38 promoted, 27 counted, 17 clustered; 600 s a round from the draw, with beacons',
+  );
+  assert.equal(
+    juryLine({ jury: { K: '6', M: '5', N: '4', P: '3', timeout: '300' }, withBeacons: false }),
+    'Jury: 6 drawn, 5 promoted, 4 counted, 3 clustered; 300 s a round from the draw',
+  );
 });

@@ -14,6 +14,13 @@ import { freePort, launch, must, noteGroup, noteLeaderExit, onStop, waitUntil } 
 
 const require = createRequire(import.meta.url);
 
+/**
+ * The jury of every listing the round makes (the server's SA_ORACLE_JURY, which overrides the class presets): the
+ * Small preset's K, M, N, P with G2's 900 s timeout (design §7.2), so a run's slower steps fit in one round. On v2
+ * the timeout is the request's own and runs from the draw; the mock takes it from each request.
+ */
+export const LISTING_JURY = Object.freeze({ K: 6, M: 5, N: 4, P: 3, timeout: 900 });
+
 /** registry:2 (2.8.3), the multi-platform index pinned by digest: the same pin as A6a's and the builder's. */
 const REGISTRY_IMAGE = 'registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373';
 const PIN_KEY = 'e2e-local-pin-key';
@@ -243,6 +250,8 @@ export async function startServer({ workDir, logDir, chain, ipfs, registry, runn
     HOST: '127.0.0.1',
     SA_CHAIN_ID: '31337',
     SA_ATTESTATION_TRUST: 'dev', // explicit: the server refuses it in production and on Base
+    // every listing's jury (K,M,N,P,timeout): the Small preset's with G2's 900 s round, which runs from the draw
+    SA_ORACLE_JURY: [LISTING_JURY.K, LISTING_JURY.M, LISTING_JURY.N, LISTING_JURY.P, LISTING_JURY.timeout].join(','),
     SA_PINNING: 'pinata',
     SA_PINATA_API_URL: ipfs.url,
     SA_PINATA_JWT: ipfs.pinKey,

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { LISTING_STATES } from '../chain/abi.js';
 import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { safeguardTerms } from '../lib/claimActions.js';
-import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
+import { errorReason, formatEth, formatTime, formatWhole, juryLine } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
 import { AwardLine, StatePill } from './Awards.jsx';
 import { Code } from './Copy.jsx';
@@ -112,6 +112,7 @@ export function FundPage({ listingId }) {
           <li>{fill(STRINGS.chain.windows, { fix: Number(l.fixWindow) / 86400, dispute: Number(l.disputeWindow) / 3600, grace: Number(l.disclosureGrace) / 3600, reveal: Number(l.revealWindow) / 86400 })}</li>
           <li>{l.allowlist.length ? fill(STRINGS.chain.allowlist, { count: l.allowlist.length }) : STRINGS.chain.open}</li>
           <li>{fill(STRINGS.chain.knownIssues, { count: l.knownIssueIds.length })}</li>
+          <li data-testid="listing-jury">{juryLine(l.oracle)}</li>
           <li data-testid="listing-band">{terms.band.empty ? STRINGS.chain.bandEmpty : fill(STRINGS.chain.band, { floor: formatWhole(terms.band.floor), points: terms.band.points })}</li>
           <li data-testid="listing-size">{terms.size.all ? STRINGS.chain.sizeAll : fill(STRINGS.chain.size, { size: formatEth(terms.size.wei) })}</li>
         </ul>

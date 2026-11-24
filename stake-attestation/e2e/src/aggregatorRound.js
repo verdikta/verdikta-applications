@@ -6,7 +6,8 @@
 // result; this decides what that result is, by the real rules, from what the real External Adapter
 // answered. It holds no chain state and makes no call, so a test can feed it anything.
 //
-// A round on v2, as a requester sees it: the request escrows; drawJury (from block B+2) draws K
+// A round on v2, as a requester sees it: the request escrows and names its own jury (K, M, N, P and the timeout,
+// since aa3897a; getJury(aggId)), so K, M, N and P below are the round's; drawJury (from block B+2) draws K
 // jurors and sends each the commit request ("1:<cids>[:<addendum>]"); a commit is one number, the
 // keccak256 commitment, with no CID; the window closes at the M+-th commit (M+ = M + ceil((K - M) / 2)),
 // or by closeCommits once T+ has passed with at least M; promote (from the close block + 2) draws M of
@@ -16,27 +17,35 @@
 // real fulfill returns early on anything it does not take (v2 has no reveal diagnostics).
 import { AbiCoder, keccak256, solidityPacked } from 'ethers';
 
-/** The real contract's defaults (its declarations: K, M, N, P = 6, 5, 4, 3; B = 3) and limits. */
+/**
+ * The real contract's aggregator-wide settings (its declarations: B = 3, the rewards, T+, the reveal window) and
+ * setLimits's defaults (maxJury 50, maxTimeout 3600). The jury is not among them: since aa3897a every request carries
+ * its own (K, M, N, P, timeout), which getJury(aggId) returns, so a round is built with its own jury (below).
+ */
 export const REAL_CONFIG = Object.freeze({
-  k: 6, // K: jurors drawn, each sent the commit request
-  m: 5, // M: commits promoted to reveal (and the least that may be closed after T+)
-  n: 4, // N: counted reveals; the N-th finalizes
-  p: 3, // P: the cluster that is averaged and earns the bonus
   bonus: 3, // bonusMultiplier
   drawFees: 2, // drawRewardFees: the drawer's reward, in fees of the clamped ceiling
   promoteFees: 1, // promoteRewardFees: promote()'s caller's reward
-  responseTimeoutSeconds: 300, // the round's deadline, from the draw
   tPlus: 155, // the commit window's T+, from the draw
   revealWindow: 120, // reveal time guaranteed after promote()
   requesterDrawPriority: 30, // seconds in which only the requester earns the draw reward
+  maxJury: 50, // setLimits: the largest K a request may ask for
+  maxTimeout: 3600, // setLimits: the longest round timeout a request may ask for
   spreadFloor: 30000n,
   maxLikelihoodLength: 20,
   maxRevealCidLength: 133, // MAX_CID_LENGTH + 33: ":" and the 32-hex salt
   maxScore: 10n ** 34n, // MAX_SCORE
 });
 
+/**
+ * The Small class preset's jury (stake-attestation/shared/src/classPresets.js, a copy of the bounty program's; this
+ * package does not depend on shared): K drawn, M promoted, N counted, P clustered, and the round's timeout in seconds
+ * from the draw. A listing's own jury is what its requests carry; this is the default.
+ */
+export const SMALL_JURY = Object.freeze({ K: 6, M: 5, N: 4, P: 3, timeout: 300 });
+
 /** M+ = M + ceil((K - M) / 2): the commit that closes the window early. */
-export const mPlusOf = (config = REAL_CONFIG) => config.m + Math.floor((config.k - config.m + 1) / 2);
+export const mPlusOf = (jury = SMALL_JURY) => jury.M + Math.floor((jury.K - jury.M + 1) / 2);
 
 const coder = AbiCoder.defaultAbiCoder();
 const hex64 = (h) => BigInt(h).toString(16).padStart(64, '0');
@@ -221,10 +230,12 @@ export class AggregatorRound {
    * @param {(slot: number) => string} o.operatorOf - the operator address of a slot
    * @param {bigint} o.fee - what each juror is paid: max(its posted fee, the floor); the bonus scales off it
    * @param {string} [o.sealedHash] - the round's sealed seed (getRoundInfo), which breaks cluster ties
-   * @param {object} [o.config] - REAL_CONFIG by default
+   * @param {{ K: number, M: number, N: number, P: number, timeout: number }} [o.jury] - the round's own jury (getJury), SMALL_JURY by default
+   * @param {object} [o.config] - REAL_CONFIG by default: the aggregator-wide settings
    */
-  constructor({ aggId, operatorOf, fee, sealedHash = `0x${'00'.repeat(32)}`, config = REAL_CONFIG }) {
+  constructor({ aggId, operatorOf, fee, sealedHash = `0x${'00'.repeat(32)}`, jury = SMALL_JURY, config = REAL_CONFIG }) {
     this.aggId = aggId;
+    this.jury = jury;
     this.config = config;
     this.operatorOf = operatorOf;
     this.fee = BigInt(fee);
@@ -242,16 +253,19 @@ export class AggregatorRound {
     return this.phase === 'final';
   }
 
-  /** maxTotalFee(maxFee, minFee, withBeacons) of the real contract: max(eff, minFee) x (K + B x P [+ quorum]) + eff x (draw + promote). */
-  static required(effMaxFee, { minFee = 0n, beacons = 0, config = REAL_CONFIG } = {}) {
+  /**
+   * maxTotalFee(maxFee, minFee, withBeacons, K, P) of the real contract, for a jury of K drawn and P clustered (the
+   * Small preset's by default): max(eff, minFee) x (K + B x P [+ quorum]) + eff x (draw + promote).
+   */
+  static required(effMaxFee, { minFee = 0n, beacons = 0, K = SMALL_JURY.K, P = SMALL_JURY.P, config = REAL_CONFIG } = {}) {
     const eff = BigInt(effMaxFee);
     const juror = BigInt(minFee) > eff ? BigInt(minFee) : eff;
-    return juror * BigInt(config.k + config.bonus * config.p + beacons) + eff * BigInt(config.drawFees + config.promoteFees);
+    return juror * BigInt(K + config.bonus * P + beacons) + eff * BigInt(config.drawFees + config.promoteFees);
   }
 
   /** The base fees, credited at the draw to all K jurors. */
   get baseCredited() {
-    return this.fee * BigInt(this.config.k);
+    return this.fee * BigInt(this.jury.K);
   }
 
   /** The real refund's one expression: received - base - bonus - rewards (draw, promote, beacons), on every exit path. */
@@ -275,7 +289,7 @@ export class AggregatorRound {
     if (hash === null) return { kind: 'ignored', reason: 'zero commit' };
     if (this.commitHash.has(slot)) return { kind: 'ignored', reason: 'duplicate commit' };
     this.commitHash.set(slot, hash);
-    if (this.commitHash.size >= mPlusOf(this.config) || (pastWindow && this.commitHash.size >= this.config.m)) {
+    if (this.commitHash.size >= mPlusOf(this.jury) || (pastWindow && this.commitHash.size >= this.jury.M)) {
       this.phase = 'closing';
       return { kind: 'closed' };
     }
@@ -284,7 +298,7 @@ export class AggregatorRound {
 
   /** closeCommits, after T+: the window closes with at least M commits; null if it may not. */
   close() {
-    if (this.phase !== 'commit' || this.commitHash.size < this.config.m) return null;
+    if (this.phase !== 'commit' || this.commitHash.size < this.jury.M) return null;
     this.phase = 'closing';
     return { kind: 'closed' };
   }
@@ -292,8 +306,8 @@ export class AggregatorRound {
   /** promote(): M of the commits, drawn with `seed` (promoteSeedOf). The reveal requests, in draw order. */
   promote(seed) {
     if (this.phase !== 'closing') throw new Error('WrongPhase');
-    const committed = Array.from({ length: this.config.k }, (_, s) => this.commitHash.has(s));
-    const chosen = pickPromoted(committed, this.config.m, seed);
+    const committed = Array.from({ length: this.jury.K }, (_, s) => this.commitHash.has(s));
+    const chosen = pickPromoted(committed, this.jury.M, seed);
     this.phase = 'reveal';
     for (const s of chosen) this.promoted.add(s);
     return chosen.map((s) => ({ slot: s, cid: `2:${this.commitHash.get(s)}` }));
@@ -311,13 +325,13 @@ export class AggregatorRound {
     this.revealed.add(slot);
     if (this.phase === 'final') return { kind: 'late', qcode: classifyOne(likelihoods, this.result.median, this.result.spread) };
     this.responses.push({ slot, likelihoods, cid: parsed.cid });
-    if (this.responses.length < this.config.n) return { kind: 'reveal' };
+    if (this.responses.length < this.jury.N) return { kind: 'reveal' };
     return this.#finalize();
   }
 
   #finalize() {
     const { inCl, agg, med, spread } = aggregate(
-      this.responses.map((r) => r.likelihoods), this.config.p, this.config.spreadFloor, this.sealedHash, this.responses.map((r) => r.slot),
+      this.responses.map((r) => r.likelihoods), this.jury.P, this.config.spreadFloor, this.sealedHash, this.responses.map((r) => r.slot),
     );
     const justifications = [];
     let clustered = 0;

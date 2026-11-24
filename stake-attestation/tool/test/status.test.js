@@ -4,7 +4,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { closeRpc, readJson, runCli, statePath } from './helpers/cli.js';
-import { JUSTIFICATION_CID, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
+import { JUSTIFICATION_CID, ORACLE, SMALL_JURY, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
 
 let w;
 before(async () => { w = await makeWorld(); });
@@ -447,25 +447,40 @@ test('P32: a vector that is no verdict reads as failed before finalize too; a ve
 });
 
 test('P32: a slow round still open is never read as failed, however long the watch has run', async () => {
-  const { dir } = await revealed();
-  await (await w.aggregator.setTimeouts(3600n, 155n, 120n)).wait();
-  try {
-    await w.draw((await w.sa.getClaim((await w.hunter({ signer: undefined }).status({ claimDir: dir })).claimId)).requestId);
-    await w.increase(20 * 60); // past the watch's 15 minutes, inside the aggregator's timeout from the draw
-    const s = await w.hunter({ signer: undefined }).status({ claimDir: dir });
-    assert.equal(s.state, 'Revealed');
-    assert.equal(s.pending, true);
-    assert.equal(s.ready, null);
-    assert.equal(s.roundResult, null);
-    assert.equal(s.roundFailed, false);
-    assert.equal(s.failedRound, null);
-    assert.match(s.next, /drawn and open/);
-    const cli = await runCli(w, ['status', dir, '--wait', '--max-wait-ms', '400'], { keyVia: 'none' });
-    assert.equal(cli.code, 4, `out of time, not failed: ${cli.stderr}`);
-    assert.doesNotMatch(cli.stdout, /no verdict/);
-  } finally {
-    await (await w.aggregator.setTimeouts(300n, 155n, 120n)).wait();
-  }
+  // the listing's own jury sets the round's timeout (one aggregator serves every jury): an hour from the draw
+  const { dir } = await revealed({ oracle: { ...ORACLE, jury: { ...SMALL_JURY, timeout: 3600 } } });
+  await w.draw((await w.sa.getClaim((await w.hunter({ signer: undefined }).status({ claimDir: dir })).claimId)).requestId);
+  await w.increase(20 * 60); // past the watch's 15 minutes, inside the listing's jury timeout from the draw
+  const s = await w.hunter({ signer: undefined }).status({ claimDir: dir });
+  assert.equal(s.state, 'Revealed');
+  assert.equal(s.pending, true);
+  assert.equal(s.ready, null);
+  assert.equal(s.roundResult, null);
+  assert.equal(s.roundFailed, false);
+  assert.equal(s.failedRound, null);
+  assert.match(s.next, /drawn and open/);
+  const cli = await runCli(w, ['status', dir, '--wait', '--max-wait-ms', '400'], { keyVia: 'none' });
+  assert.equal(cli.code, 4, `out of time, not failed: ${cli.stderr}`);
+  assert.doesNotMatch(cli.stdout, /no verdict/);
+});
+
+test('P32: a failed round of a larger jury reports that round\'s own jury (getJury): its timeout, and its M for where the rest goes', async () => {
+  const LARGE = { K: 21, M: 16, N: 13, P: 10, timeout: 900 };
+  const t = await revealed({ oracle: { ...ORACLE, jury: LARGE } });
+  const j = await w.aggregator.getJury(t.requestId);
+  assert.deepEqual([j.K, j.M, j.N, j.P, j.timeout].map(Number), [21, 16, 13, 10, 900], 'the request carried the listing\'s jury');
+  await w.draw(t.requestId);
+  // 15 commits: at least Small's M (5), below this round's M (16), so the rest comes back to the hunter
+  await (await w.aggregator.scriptCommits(t.requestId, 15)).wait();
+  await timeOut(t.claimId);
+  const s = await w.hunter({ signer: undefined }).status({ claimDir: t.dir });
+  assert.equal(s.roundFailed, true);
+  assert.deepEqual(s.failedRound.jury, { K: 21, M: 16, N: 13, P: 10, timeout: 900n });
+  assert.equal(s.failedRound.refundTo, 'hunter', 'fewer commits than the round\'s M');
+  assert.match(s.next, /the listing's jury timeout, 900 s/);
+  // the commit notice names the listing's jury before anything is paid
+  const dry = await runCli(w, ['commit', makeClaimDir(), '--listing', String(t.l.listingId)]);
+  assert.match(dry.stdout + dry.stderr, /Jury: 21 arbiters drawn, 16 promoted to reveal, the first 13 reveals counted and the closest 10 averaged; a round has 900 s from the draw\./);
 });
 
 test('P32: a committed, disclosed claim says it is disclosed and in its fix window, in the text and in --json', async () => {

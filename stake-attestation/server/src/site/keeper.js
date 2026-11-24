@@ -15,10 +15,11 @@
 //   - drawJury(claimId) on StakeAttestation, from block B+2 (phase 1, or 2 once the beacon quorum
 //     is in): through the round's wallet, which is the requester, so the draw reward goes back to
 //     the round's funder, never to the keeper;
-//   - closeCommits(aggId) on the aggregator, after T+ with at least M commits (phase 3);
+//   - closeCommits(aggId) on the aggregator, after T+ with at least M commits, M the round's own
+//     (the listing's jury, sent with the request; the keeper reads no jury: the simulation decides) (phase 3);
 //   - promote(aggId) on the aggregator, from the close block + 2 (phase 4). The aggregator pays
 //     its caller 1 x the clamped fee: this is the keeper's own reward;
-//   - settle(aggId) on the aggregator, after the round's deadline (phases 3-5). finalize settles a
+//   - settle(aggId) on the aggregator, after the round's deadline, its jury's timeout from the draw (phases 3-5). finalize settles a
 //     dead round itself and comes first, so this is sent only when finalize is not due.
 // The claim's own actions come first. Rewards credited to the keeper (promote's) are withdrawn at
 // the end of a cycle with nothing else to send, once they reach SA_KEEPER_WITHDRAW_MIN_WEI. The

@@ -19,7 +19,9 @@ export const { codeReview } = require('@verdikta/common');
 export const IMAGE = `ghcr.io/verdikta/stake-env@sha256:${'4e1b2c3d'.repeat(8)}`;
 export const REPORT_MARKER = 'PLAINTEXT-REPORT-MARKER-7f3a';
 export const POC_MARKER = 'PLAINTEXT-POC-MARKER-91c2';
-export const ORACLE = { requestedClass: 133n, maxOracleFee: 120000000000000n, disputeMaxOracleFee: 200000000000000n, estimatedBaseCost: 1000000000000n, alpha: 500n, maxFeeBasedScaling: 1n, minOracleFee: 0n, withBeacons: false };
+/** The Small class's jury (shared/src/classPresets.js), the listing's own: one aggregator serves every jury size. */
+export const SMALL_JURY = Object.freeze({ K: 6, M: 5, N: 4, P: 3, timeout: 300 });
+export const ORACLE = { requestedClass: 133n, maxOracleFee: 120000000000000n, disputeMaxOracleFee: 200000000000000n, estimatedBaseCost: 1000000000000n, alpha: 500n, maxFeeBasedScaling: 1n, minOracleFee: 0n, withBeacons: false, jury: SMALL_JURY };
 export const HUNTER_INDEX = 5;
 export const sha256 = (b) => `0x${crypto.createHash('sha256').update(b).digest('hex')}`;
 

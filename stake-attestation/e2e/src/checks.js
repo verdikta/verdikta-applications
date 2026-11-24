@@ -1,7 +1,7 @@
 // What the round asserts, as pure functions over what it observed, so a test can hand them a
 // tampered observation and see them fail. Each check is { name, ok, detail }. The round fails on
 // the first one that is not ok, and a stage that makes no check is a failure of its own.
-import { REAL_CONFIG } from './aggregatorRound.js';
+import { SMALL_JURY } from './aggregatorRound.js';
 
 const check = (name, ok, detail = '') => ({ name, ok: Boolean(ok), detail: String(detail) });
 const eq = (a, b) => JSON.stringify(a, big) === JSON.stringify(b, big);
@@ -11,25 +11,25 @@ const sameVector = (a, b) => a != null && b != null && eq(a.map(String), b.map(S
 const distinctSlots = (jobs) => new Set(jobs.map((j) => j.slot)).size;
 
 /**
- * A round the real v2 rules finished: K polled, the window closed with M to K commits (M+ = K at the defaults, or
+ * A round the real v2 rules finished, by its own jury (the bridge's record of getJury; Small by default): K polled, the window closed with M to K commits (M+ = K at the defaults, or
  * M after T+), the M promote() drew asked to reveal, the first N counted, P clustered. Counted job by job: M
  * commits and N reveals can still come with a job in six gone wrong, and that must show.
  */
-export function servedRoundChecks(prefix, round, { vector, config = REAL_CONFIG }) {
+export function servedRoundChecks(prefix, round, { vector, jury = round?.jury ?? SMALL_JURY }) {
   const cids = String(round?.justifications ?? '').split(',').filter(Boolean);
   const commitJobs = (round?.jobs ?? []).filter((j) => j.phase === 'commit');
   const revealJobs = (round?.jobs ?? []).filter((j) => j.phase === 'reveal');
   return [
     check(`${prefix}.round.fulfilled`, round?.status === 'fulfilled', `status ${round?.status}, ${round?.abstained} job(s) with no transaction`),
-    check(`${prefix}.round.polled`, commitJobs.length === config.k && distinctSlots(commitJobs) === config.k, `${commitJobs.length} commit jobs on ${distinctSlots(commitJobs)} slots, K = ${config.k}`),
+    check(`${prefix}.round.polled`, commitJobs.length === jury.K && distinctSlots(commitJobs) === jury.K, `${commitJobs.length} commit jobs on ${distinctSlots(commitJobs)} slots, K = ${jury.K}`),
     check(`${prefix}.round.noAbstain`, round?.abstained === 0, `${round?.abstained} job(s) with no transaction`),
-    check(`${prefix}.round.commits`, round?.commits >= config.m && round?.commits <= config.k, `${round?.commits} commits recorded, M = ${config.m}, K = ${config.k}`),
-    check(`${prefix}.round.revealJobs`, revealJobs.length === config.m && distinctSlots(revealJobs) === config.m, `${revealJobs.length} reveal jobs on ${distinctSlots(revealJobs)} slots: only the M commits promote() drew are asked`),
-    check(`${prefix}.round.reveals`, round?.reveals === config.n, `${round?.reveals} reveals before it finalized, N = ${config.n}`),
-    check(`${prefix}.round.clustered`, round?.clustered === config.p && cids.length === config.p, `${round?.clustered} clustered, ${cids.length} justification CIDs, P = ${config.p}`),
+    check(`${prefix}.round.commits`, round?.commits >= jury.M && round?.commits <= jury.K, `${round?.commits} commits recorded, M = ${jury.M}, K = ${jury.K}`),
+    check(`${prefix}.round.revealJobs`, revealJobs.length === jury.M && distinctSlots(revealJobs) === jury.M, `${revealJobs.length} reveal jobs on ${distinctSlots(revealJobs)} slots: only the M commits promote() drew are asked`),
+    check(`${prefix}.round.reveals`, round?.reveals === jury.N, `${round?.reveals} reveals before it finalized, N = ${jury.N}`),
+    check(`${prefix}.round.clustered`, round?.clustered === jury.P && cids.length === jury.P, `${round?.clustered} clustered, ${cids.length} justification CIDs, P = ${jury.P}`),
     // Nothing reverts on v2: the real fulfill returns early on what it does not take. The M - N reveals that land
     // after the N-th finalized it are taken as late (classified, not counted).
-    check(`${prefix}.round.noRevert`, (round?.reverted ?? []).length === 0 && (round?.late ?? 0) <= config.m - config.n, `${JSON.stringify(round?.reverted ?? [])}, ${round?.late ?? 0} late reveal(s)`),
+    check(`${prefix}.round.noRevert`, (round?.reverted ?? []).length === 0 && (round?.late ?? 0) <= jury.M - jury.N, `${JSON.stringify(round?.reverted ?? [])}, ${round?.late ?? 0} late reveal(s)`),
     // And what is ignored is only a commit that came after the window closed: never a bad reveal or a zero commit.
     check(`${prefix}.round.noBadReveal`, (round?.ignored ?? []).every((i) => i.reason === 'commit after the window closed'), JSON.stringify(round?.ignored ?? [])),
     check(`${prefix}.round.vector`, sameVector(round?.likelihoods, vector), `the mock was given ${JSON.stringify(round?.likelihoods ?? null, big)}`),
@@ -52,10 +52,10 @@ export function cleanupVerdict({ cleanupFailures = [], inventoryDue = false, lef
 }
 
 /** A round no arbiter committed to: nothing recorded, and the bridge sent nothing to the mock. */
-export function abstainedRoundChecks(prefix, round, config = REAL_CONFIG) {
+export function abstainedRoundChecks(prefix, round, jury = round?.jury ?? SMALL_JURY) {
   return [
     check(`${prefix}.round.noVerdict`, round?.status === 'no-verdict', `status ${round?.status}`),
-    check(`${prefix}.round.allAbstained`, round?.abstained === config.k && round?.commits === 0 && round?.reveals === 0, `${round?.abstained} of ${config.k} jobs with no transaction, ${round?.commits} commits, ${round?.reveals} reveals`),
+    check(`${prefix}.round.allAbstained`, round?.abstained === jury.K && round?.commits === 0 && round?.reveals === 0, `${round?.abstained} of ${jury.K} jobs with no transaction, ${round?.commits} commits, ${round?.reveals} reveals`),
     check(`${prefix}.round.noResult`, round?.likelihoods === null && round?.justifications === null, `likelihoods ${JSON.stringify(round?.likelihoods, big)}`),
   ];
 }
@@ -84,6 +84,8 @@ export function requestChecks(prefix, round, { listingCid, bcid, priorBcids = []
     check(`${prefix}.request.oracle`, Boolean(asked) && BigInt(asked.alpha) === BigInt(oracle.alpha) && BigInt(asked.maxFee) === BigInt(oracle.maxOracleFee) && BigInt(asked.estimatedBaseCost) === BigInt(oracle.estimatedBaseCost) && BigInt(asked.maxFeeBasedScaling) === BigInt(oracle.maxFeeBasedScaling)
       // the v2 terms: the listing's fee floor and beacon flag go out as they are
       && BigInt(asked.minFee ?? 0) === BigInt(oracle.minOracleFee ?? 0) && Boolean(asked.withBeacons) === Boolean(oracle.withBeacons), JSON.stringify(asked ?? null, big)),
+    // and the listing's jury (OracleParams.jury), as the aggregator's getJury answers it for the round
+    check(`${prefix}.request.jury`, Boolean(round?.jury) && Boolean(oracle?.jury) && ['K', 'M', 'N', 'P', 'timeout'].every((k) => Number(round.jury[k]) === Number(oracle.jury[k])), `${JSON.stringify(round?.jury ?? null)} asked, the listing's ${JSON.stringify(oracle?.jury ?? null)}`),
   ];
 }
 
@@ -100,7 +102,7 @@ const promptCounts = (calls) => {
  * is per juror and every look is per call or per job, never a total: the chain shows only the winning
  * cluster, so a job or a juror gone wrong outside it would show nowhere else.
  */
-export function juryPathChecks(prefix, { runnerCalls, aiCalls, providerCalls, panel, justifier, disclosureKeys, markers, average, maxTokens, report, config = REAL_CONFIG }) {
+export function juryPathChecks(prefix, { runnerCalls, aiCalls, providerCalls, panel, justifier, disclosureKeys, markers, average, maxTokens, report, jury = SMALL_JURY }) {
   const definitive = runnerCalls.length === 1 && runnerCalls[0].response?.outcome === 'definitive';
   const answer = runnerCalls[0]?.response;
   const reportHash = answer?.reportSha256;
@@ -130,29 +132,29 @@ export function juryPathChecks(prefix, { runnerCalls, aiCalls, providerCalls, pa
   const jurorSettings = (c) => c.options?.webAccess === false && c.options?.signal === true && c.options?.maxTokens === maxTokens && c.options?.effort === 'high';
   const justifierSettings = (c) => c.options?.webAccess === false && c.options?.signal === true;
   return [
-    check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${config.k} jobs`),
+    check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${jury.K} jobs`),
     check(`${prefix}.runner.definitive`, definitive && Boolean(answer?.report) && !answer.reportUnavailable, definitive ? `report ${reportHash}` : JSON.stringify(answer?.abstain ?? runnerCalls[0]?.status)),
     check(`${prefix}.runner.reportPlatform`, !report?.classPlatform || (answer?.runner?.platform === report.classPlatformName), `the runner answered on ${answer?.runner?.platform}`),
-    check(`${prefix}.jury.perJob`, aiCalls.length === config.k && aiCalls.every((c) => c.status === 200 && c.request?.codeReview), `${aiCalls.length} AI Node calls, ${aiCalls.filter((c) => c.status === 200).length} answered`),
+    check(`${prefix}.jury.perJob`, aiCalls.length === jury.K && aiCalls.every((c) => c.status === 200 && c.request?.codeReview), `${aiCalls.length} AI Node calls, ${aiCalls.filter((c) => c.status === 200).length} answered`),
     check(`${prefix}.jury.panelAskedEveryJob`, aiCalls.length > 0 && aiCalls.every((c) => eq(askedOf(c), panelKeys)), `each job asked for ${panelKeys.join(', ')}`),
-    check(`${prefix}.jury.everyJuror`, panel.length > 0 && everyJuror.every((j) => j.calls === config.k && j.answered === config.k), `K = ${config.k}: ${JSON.stringify(everyJuror)}`),
+    check(`${prefix}.jury.everyJuror`, panel.length > 0 && everyJuror.every((j) => j.calls === jury.K && j.answered === jury.K), `K = ${jury.K}: ${JSON.stringify(everyJuror)}`),
     check(`${prefix}.jury.onlyThePanel`, providerCalls.every((c) => known.has(jurorKey(c))), [...new Set(providerCalls.map(jurorKey))].join(', ')),
     check(`${prefix}.jury.everyJobAverage`, aiCalls.length > 0 && aiCalls.every((c) => sameVector(scoresOf(c), average)), `every job's answer is the jurors' weighted average ${(average ?? []).join(',')}: ${JSON.stringify(aiCalls.map(scoresOf))}`),
     check(`${prefix}.jury.everyJurorInEveryAnswer`, aiCalls.length > 0 && aiCalls.every(everyJurorAnswered), JSON.stringify(aiCalls.map((c) => resultsOf(c).map((r) => [r.model, r.status])))),
     check(`${prefix}.jury.everyCallSawEvidence`, jurorCalls.length > 0 && jurorCalls.every(seesEvidence), `each of ${jurorCalls.length} prompts holds the report's hash and ${(markers ?? []).length} marker(s) from the report and the pack`),
     check(`${prefix}.jury.codeModeSettings`, jurorCalls.length > 0 && jurorCalls.every(jurorSettings) && justifierCalls.every(justifierSettings), `web off, an abort signal, and for each juror ${maxTokens} tokens and effort high`),
     check(`${prefix}.jury.onePrompt`, panel.length > 0 && panel.every((p) => promptCounts(callsOf(p)) === promptCounts(callsOf(panel[0]))), 'each juror was sent the same prompts, as many times'),
-    check(`${prefix}.jury.justifier`, justifierCalls.length === config.k && justifierCalls.every((c) => c.outcome === 'answered'), `${justifierCalls.length} justifier calls`),
+    check(`${prefix}.jury.justifier`, justifierCalls.length === jury.K && justifierCalls.every((c) => c.outcome === 'answered'), `${justifierCalls.length} justifier calls`),
     check(`${prefix}.jury.keysKnown`, (disclosureKeys ?? []).length === 2, `${(disclosureKeys ?? []).length} keys read from the request's line`),
     check(`${prefix}.jury.keysNotSeen`, !providerCalls.some((c) => holdsAKey(c.prompt)) && !aiCalls.some((c) => holdsAKey(JSON.stringify(c.request))), 'no prompt and no AI Node request carries the disclosure line or either key'),
   ];
 }
 
 /** A claim the gates settled: nothing reached a model, and the runner said why. */
-export function gateSettledChecks(prefix, { runnerCalls, aiCalls, providerCalls, gate, config = REAL_CONFIG }) {
+export function gateSettledChecks(prefix, { runnerCalls, aiCalls, providerCalls, gate, jury = SMALL_JURY }) {
   const answer = runnerCalls[0]?.response;
   return [
-    check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${config.k} jobs`),
+    check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${jury.K} jobs`),
     check(`${prefix}.runner.gateFailed`, answer?.outcome === 'definitive' && answer?.gates?.[gate]?.status === 'fail', `${gate}: ${answer?.gates?.[gate]?.status}`),
     check(`${prefix}.noAi`, aiCalls.length === 0 && providerCalls.length === 0, `${aiCalls.length} AI Node call(s), ${providerCalls.length} provider call(s)`),
   ];
@@ -162,14 +164,14 @@ export function gateSettledChecks(prefix, { runnerCalls, aiCalls, providerCalls,
  * A claim a non-tamper integrity check settled: the proof ran on real forge and failed where a good one does, a
  * check measured from outside it failed, no tamper flag fired, and nothing reached a model.
  */
-export function integrityRunChecks(prefix, { runnerCalls, aiCalls, providerCalls, failedCheck, config = REAL_CONFIG }) {
+export function integrityRunChecks(prefix, { runnerCalls, aiCalls, providerCalls, failedCheck, jury = SMALL_JURY }) {
   const answer = runnerCalls[0]?.response;
   const poc = answer?.report?.poc;
   const integrity = poc?.integrity ?? {};
   const tests = poc?.tests ?? [];
   const failedChecks = Object.keys(integrity).filter((k) => integrity[k] === false);
   return [
-    check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${config.k} jobs`),
+    check(`${prefix}.runner.oneSandbox`, runnerCalls.length === 1, `${runnerCalls.length} run(s) for ${jury.K} jobs`),
     check(`${prefix}.runner.gateFailed`, answer?.outcome === 'definitive' && answer?.gates?.integrity?.status === 'fail' && answer?.gates?.reproduces?.status === 'fail', `integrity ${answer?.gates?.integrity?.status}, reproduces ${answer?.gates?.reproduces?.status}`),
     check(`${prefix}.runner.reproducesOnlyThroughIntegrity`, answer?.gates?.reproduces?.basis === 'integrity', `reproduces failed on ${answer?.gates?.reproduces?.basis}`),
     check(`${prefix}.runner.checkFailed`, failedChecks.includes(failedCheck), `failed: ${failedChecks.join(', ')}`),

@@ -129,6 +129,7 @@ export const STRINGS = {
       bond: 'Hunter bond',
       windows: 'Windows',
       allowlist: 'Invited hunters',
+      jury: 'Jury',
       knownIssues: 'Known issues',
       valueAtRisk: 'Value at risk',
       environment: 'Build and test commands (Foundry)',
@@ -153,6 +154,7 @@ export const STRINGS = {
       disclosureGraceHours: 'Disclosure grace (hours)',
       revealWindowDays: 'Reveal window (days)',
       allowlist: 'Hunter addresses (one per line; empty: open to every hunter)',
+      juryClass: 'Jury class',
       valueAtRiskUsd: 'Declared value at risk (USD, optional)',
       setup: 'Setup command',
       build: 'Build command',
@@ -200,6 +202,15 @@ export const STRINGS = {
           'end of the dispute window, how long an award that awaits a confirmation waits for one.',
       },
       allowlist: 'An invited listing is shown on the record as invited.',
+      // owner, 2026-11-24: listings use the bounty program's class presets (shared/src/classPresets.js)
+      jury:
+        'Every round of this listing, a claim\'s and a dispute panel\'s, asks the aggregator for this jury: K arbiters ' +
+        'drawn, M of their commits promoted, the first N reveals counted, and the closest P of those averaged, within ' +
+        'the round\'s time from the draw. A larger jury costs more per round, in the prepay a hunter sends and in the ' +
+        'dispute fee, and needs more of the arbiters to agree. Jumbo also asks for beacons, so the draw takes two steps. ' +
+        'The jury is fixed at listing.',
+      juryOption: '{name}: {K} drawn, {N} counted, {timeout} s a round{beacons}',
+      juryBeacons: ', with beacons',
       // owner, 2026-11-10 (Q73 #5): a listed root cause is DUPLICATE whatever the entry says; no bug at all is NatSpec
       knownIssues:
         'Known issues are public and fixed at listing. A claim whose root cause is one of them settles DUPLICATE (the ' +
@@ -367,6 +378,9 @@ export const STRINGS = {
     allowlist: 'Invited hunters: {count}',
     open: 'Open to every hunter',
     knownIssues: 'Known issues: {count}',
+    // the listing's own jury (OracleParams.jury), for its claim rounds and dispute panels alike
+    jury: 'Jury: {K} drawn, {M} promoted, {N} counted, {P} clustered; {timeout} s a round from the draw{beacons}',
+    juryBeacons: ', with beacons',
     valueAtRisk: 'Declared value at risk: {usd} USD',
     // errata E8 and E9: the two values list() copied from the program when the listing was made
     band: 'Narrow INVALID band: an INVALID with at least {floor} of 1,000,000 ({points} points) of valid mass gets its bond back, with no award',

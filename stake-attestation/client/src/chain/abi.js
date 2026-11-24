@@ -1,7 +1,7 @@
 // The StakeAttestation fragments the client calls, in ethers' human-readable form. They are
 // the contract's merged ABI (onchain/deploy/helpers.js) for these names: e2e/abi.spec.js
 // compares each, in full, with the ABI compiled from onchain/ for the run.
-const ORACLE = '(uint64 requestedClass, uint256 maxOracleFee, uint256 disputeMaxOracleFee, uint256 estimatedBaseCost, uint256 alpha, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons)';
+const ORACLE = '(uint64 requestedClass, uint256 maxOracleFee, uint256 disputeMaxOracleFee, uint256 estimatedBaseCost, uint256 alpha, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury)';
 const ARTIFACT = '(uint8 kind, string repo, string baseCommit, uint64 chainId, address addr)';
 
 const LIST_PARAMS = `(${ARTIFACT} artifact, bytes32 disclosureKey, uint256[4] awards, uint8 lowestClassCounted, uint256 bondWei, uint32 fixWindow, uint32 disputeWindow, uint32 disclosureGrace, uint32 revealWindow, address[] allowlist, uint256 valueAtRiskUsd, ${ORACLE} oracle)`;

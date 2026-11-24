@@ -200,7 +200,7 @@ Out of scope for this build:
 | client: listing with browser disclosure key, decrypt-and-check | P6a |
 | client: record page, badge, feed, claim actions, dispute | P6b |
 | local end-to-end round | P7 |
-| `setResponseTimeout(900)`; `code-standard` on class 5555 canaries | G2 |
+| a 900 s round timeout (on the v2 aggregator, the listing's jury timeout: `SA_ORACLE_JURY`, or a class preset; the aggregator's `maxTimeout` must allow it); `code-standard` on class 5555 canaries | G2 |
 | `StakeAttestation` on testnet behind the new site; seeding | G1 |
 
 Not in this build (Phase 2 and later, §17): `node22` / `python312` images and adapters; the `systemone` client and Jev; the paid pre-flight unless decision D2 adds it; `code-premium`; remote runner mode; the `skill` harness; `@verdikta/attest-check`; the yield vault; mainnet; the site's domain and hosting. Milestone PRs are an orchestrator step, not nodes.

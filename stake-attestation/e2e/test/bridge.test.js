@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { keccak256, toBeHex } from 'ethers';
 
-import { REAL_CONFIG, aggregate, commitmentOf, mPlusOf, pickPromoted, promoteSeedOf } from '../src/aggregatorRound.js';
+import { REAL_CONFIG, SMALL_JURY, aggregate, commitmentOf, mPlusOf, pickPromoted, promoteSeedOf } from '../src/aggregatorRound.js';
 import { createBridge, evaluateOver, readJobAnswer } from '../src/bridge.js';
 
 const OPERATOR = '0x0000000000000000000000000000000000000001';
@@ -28,11 +28,11 @@ const blockHashOf = (n) => keccak256(toBeHex(BigInt(n), 32));
  * clock. `drawer` decides who draws: 'bridge' (nobody else does), 'requester' (the wallet, through
  * StakeAttestation, at B+2), or 'fail' (a pool shortage at the draw).
  */
-function fakeMock({ cids = CIDS, addendum = ADDENDUM, requestedClass = CLASS, maxFee = FEE, minFee = 0n, drawer = 'bridge', keeperActs = false } = {}) {
+function fakeMock({ cids = CIDS, addendum = ADDENDUM, requestedClass = CLASS, maxFee = FEE, minFee = 0n, drawer = 'bridge', keeperActs = false, jury = SMALL_JURY } = {}) {
   const sent = [];
   const eff = maxFee < CEILING ? maxFee : CEILING;
   const juror = minFee > eff ? minFee : eff;
-  const cfg = { k: 6, m: 5, n: 4, p: 3, bonus: 3, draw: 2, promote: 1, timeout: 300, tPlus: 155, revealWindow: 120 };
+  const cfg = { k: jury.K, m: jury.M, n: jury.N, p: jury.P, bonus: 3, draw: 2, promote: 1, timeout: jury.timeout, tPlus: 155, revealWindow: 120 };
   const state = { block: 7, now: 1000, events: [] };
   const r = { phase: 1, requestBlock: 7, closeBlock: 0, received: 0n, baseFees: 0n, bonuses: 0n, rewards: 0n, deadline: 0, windowEnd: 0, commits: 0, sealedHash: `0x${'00'.repeat(32)}` };
   const tick = () => { state.block += 1; state.now += 2; };
@@ -87,7 +87,8 @@ function fakeMock({ cids = CIDS, addendum = ADDENDUM, requestedClass = CLASS, ma
       }
       return { ...r, received: r.received || (r.received = required()) };
     },
-    setConfig: (...a) => tx('setConfig', a),
+    getJury: async () => ({ K: jury.K, M: jury.M, N: jury.N, P: jury.P, timeout: BigInt(jury.timeout) }),
+    setLimits: (...a) => tx('setLimits', a),
     setBonusMultiplier: (...a) => tx('setBonusMultiplier', a),
     setRewards: (...a) => tx('setRewards', a),
     setTimeouts: (...a) => tx('setTimeouts', a),
@@ -95,7 +96,7 @@ function fakeMock({ cids = CIDS, addendum = ADDENDUM, requestedClass = CLASS, ma
     scriptCommits: (id, n) => tx('scriptCommits', [id, n], () => {
       if (r.phase !== 3) throw new Error('WrongPhase');
       r.commits += n;
-      if (r.commits >= mPlusOf() || (state.now > r.windowEnd && r.commits >= cfg.m)) close();
+      if (r.commits >= mPlusOf(jury) || (state.now > r.windowEnd && r.commits >= cfg.m)) close();
     }),
     closeCommits: (id) => tx('closeCommits', [id], () => {
       if (r.phase !== 3 || state.now <= r.windowEnd || r.commits < cfg.m) throw new Error('WrongPhase');
@@ -165,15 +166,15 @@ test('the job\'s requests: K commits with the real cid string and the aggregator
   const record = await serve(fake, ea.evaluate);
   const commits = ea.calls.filter((c) => c.data.cid.startsWith('1:'));
   const reveals = ea.calls.filter((c) => c.data.cid.startsWith('2:'));
-  assert.equal(commits.length, REAL_CONFIG.k);
-  assert.equal(reveals.length, REAL_CONFIG.m);
+  assert.equal(commits.length, SMALL_JURY.K);
+  assert.equal(reveals.length, SMALL_JURY.M);
   for (const c of commits) assert.equal(c.data.cid, `1:QmListing,QmClaim:${ADDENDUM}`);
   for (const c of [...commits, ...reveals]) {
     assert.equal(c.data.aggId, AGG);
     assert.match(c.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, 'a job\'s external id is a UUID');
   }
   for (const c of reveals) assert.match(c.data.cid, /^2:[0-9a-f]{64}$/, 'the aggregator asks in 64 lowercase hex, not the commit\'s decimal');
-  assert.equal(new Set(commits.map((c) => c.id)).size, REAL_CONFIG.k, 'one job per slot');
+  assert.equal(new Set(commits.map((c) => c.id)).size, SMALL_JURY.K, 'one job per slot');
   // a slot's reveal comes from the job that committed: the body's id is the job's externalJobID
   const idOfSlot = new Map(record.jobs.filter((j) => j.phase === 'commit').map((j, i) => [j.slot, commits[i].id]));
   for (const [i, j] of record.jobs.filter((x) => x.phase === 'reveal').entries()) assert.equal(reveals[i].id, idOfSlot.get(j.slot), `slot ${j.slot}: the reveal's id is its commit's`);
@@ -207,16 +208,16 @@ test('the mock gets each commit, and at the N-th reveal what the real contract w
   const fake = fakeMock();
   const vectors = [VECTOR, [0n, 0n, 0n, 0n, 700001n, 299999n], [0n, 0n, 0n, 0n, 1000000n, 0n], VECTOR, VECTOR, [0n, 0n, 0n, 0n, 700002n, 299998n]];
   const record = await serve(fake, honestEa((n) => vectors[n - 1]).evaluate);
-  assert.equal(named(fake, 'scriptCommits').length, REAL_CONFIG.k, 'one per commit; the M+-th closed it');
+  assert.equal(named(fake, 'scriptCommits').length, SMALL_JURY.K, 'one per commit; the M+-th closed it');
   const result = named(fake, 'scriptResult');
   assert.equal(result.length, 1);
   assert.equal(result[0].args[0], AGG);
   const counted = record.jobs.filter((j) => j.phase === 'reveal' && (j.outcome === 'reveal' || j.outcome === 'finalized'));
-  assert.equal(counted.length, REAL_CONFIG.n);
+  assert.equal(counted.length, SMALL_JURY.N);
   const expected = aggregate(counted.map((j) => j.scores), 3, REAL_CONFIG.spreadFloor, SEALED, counted.map((j) => j.slot));
   assert.deepEqual(result[0].args[1], expected.agg);
   assert.deepEqual(record.likelihoods, expected.agg);
-  assert.equal(result[0].args[2].split(',').length, REAL_CONFIG.p);
+  assert.equal(result[0].args[2].split(',').length, SMALL_JURY.P);
   assert.doesNotMatch(result[0].args[2], /:/, 'the salt is stripped');
   // what the requester did not get back: the base fees, the bonuses, the bridge's draw and promote rewards
   assert.equal(record.spent, fake.juror * 6n + fake.juror * 9n + fake.eff * 3n);
@@ -232,7 +233,7 @@ test('the result goes out at the N-th counted reveal: the jobs still out wait fo
   const evaluate = (body) => {
     if (body.data.cid.startsWith('1:')) return ea.evaluate(body);
     reveals += 1;
-    return reveals <= REAL_CONFIG.n ? ea.evaluate(body) : hold(body);
+    return reveals <= SMALL_JURY.N ? ea.evaluate(body) : hold(body);
   };
   const bridge = bridgeOf(fake, evaluate);
   await bridge.start(0);
@@ -240,7 +241,7 @@ test('the result goes out at the N-th counted reveal: the jobs still out wait fo
   assert.equal(record.status, 'fulfilled');
   assert.equal(named(fake, 'scriptResult').length, 1, 'published with a job still out');
   assert.equal(record.quiet, false);
-  assert.equal(held.length, REAL_CONFIG.m - REAL_CONFIG.n);
+  assert.equal(held.length, SMALL_JURY.M - SMALL_JURY.N);
   held.forEach((go) => go());
   const quiet = await bridge.quiet(AGG);
   await bridge.stop();
@@ -258,11 +259,11 @@ test('stopping does not wait for an EA that does not answer: every request still
   const evaluate = evaluateOver(`http://127.0.0.1:${server.address().port}`);
   const bridge = bridgeOf(fakeMock(), evaluate);
   await bridge.start(0);
-  while (![...bridge.rounds.values()].some((r) => r.jobs.length === REAL_CONFIG.k)) await new Promise((r) => { setTimeout(r, 5); });
+  while (![...bridge.rounds.values()].some((r) => r.jobs.length === SMALL_JURY.K)) await new Promise((r) => { setTimeout(r, 5); });
   await new Promise((r) => { setTimeout(r, 50); });
   const started = Date.now();
   const cut = await bridge.stop();
-  assert.equal(cut, REAL_CONFIG.k);
+  assert.equal(cut, SMALL_JURY.K);
   assert.ok(Date.now() - started < 3000, `${Date.now() - started} ms`);
   for (const s of sockets) s.destroy();
   server.close();
@@ -292,7 +293,7 @@ test('the bridge sends its transactions one at a time, so jobs that answer at on
     return { ...tx, wait: async () => { await new Promise((r) => { setTimeout(r, 5); }); inFlight -= 1; return tx.wait ? tx.wait() : undefined; } };
   };
   await serve(fake, honestEa().evaluate);
-  assert.equal(named(fake, 'scriptCommits').length, REAL_CONFIG.k);
+  assert.equal(named(fake, 'scriptCommits').length, SMALL_JURY.K);
   assert.equal(most, 1, 'one transaction out at a time');
 });
 
@@ -350,7 +351,7 @@ test('a transaction that fails at the N-th reveal fails the bridge at once, with
     const evaluate = (body) => {
       if (body.data.cid.startsWith('2:')) {
         reveals += 1;
-        if (reveals > REAL_CONFIG.n) return new Promise(() => {}); // the fifth reveal, out for good
+        if (reveals > SMALL_JURY.N) return new Promise(() => {}); // the fifth reveal, out for good
       }
       return ea.evaluate(body);
     };
@@ -377,23 +378,44 @@ test('the fee ceiling clamps as the real one does, and the floor raises what eac
   assert.equal(r2.spent, FEE * 2n * 15n + FEE * 3n);
 });
 
-test('the mock is set to the real contract\'s K, M, N, P, bonus, rewards and timeouts', async () => {
+test('the mock is set to the real contract\'s bonus, rewards, limits and timeouts; the jury is each request\'s', async () => {
   const fake = fakeMock();
-  await serve(fake, honestEa().evaluate);
-  assert.deepEqual(named(fake, 'setConfig')[0].args, [6, 5, 4, 3]);
+  const record = await serve(fake, honestEa().evaluate);
+  assert.equal(named(fake, 'setConfig').length, 0, 'v2 has no aggregator-wide jury');
   assert.deepEqual(named(fake, 'setBonusMultiplier')[0].args, [3]);
   assert.deepEqual(named(fake, 'setRewards')[0].args, [2, 1]);
-  assert.deepEqual(named(fake, 'setTimeouts')[0].args, [300, 155, 120]);
-  const longer = fakeMock();
-  await serve(longer, honestEa().evaluate, { config: { ...REAL_CONFIG, responseTimeoutSeconds: 900 } });
-  assert.deepEqual(named(longer, 'setTimeouts')[0].args, [900, 155, 120]);
+  assert.deepEqual(named(fake, 'setLimits')[0].args, [50, 3600]);
+  assert.deepEqual(named(fake, 'setTimeouts')[0].args, [155, 120]);
+  assert.deepEqual(record.jury, SMALL_JURY);
+  const longer = fakeMock({ jury: { ...SMALL_JURY, timeout: 900 } });
+  const r2 = await serve(longer, honestEa().evaluate);
+  assert.equal(r2.jury.timeout, 900, 'the timeout is the request\'s, read with getJury');
+  assert.deepEqual(named(longer, 'setTimeouts')[0].args, [155, 120]);
+});
+
+test('a larger jury (12 drawn, 9 promoted, 7 counted, 5 clustered): the bridge serves the round by the request\'s own jury', async () => {
+  const jury = { K: 12, M: 9, N: 7, P: 5, timeout: 600 };
+  const fake = fakeMock({ jury });
+  const ea = honestEa();
+  const record = await serve(fake, ea.evaluate);
+  assert.equal(record.status, 'fulfilled');
+  assert.deepEqual(record.jury, jury);
+  assert.equal(record.polled, 12);
+  const commits = ea.calls.filter((c) => c.data.cid.startsWith('1:'));
+  const reveals = ea.calls.filter((c) => c.data.cid.startsWith('2:'));
+  assert.equal(commits.length, 12, 'K commit jobs');
+  assert.equal(reveals.length, 9, 'M reveal requests');
+  assert.equal(record.reveals, 7, 'the N-th counted reveal finalizes');
+  assert.equal(record.clustered, 5, 'P clustered');
+  assert.equal(record.required, fake.required(), 'the escrow for K and P');
+  assert.equal(fake.required(), FEE * BigInt(12 + 3 * 5) + FEE * 3n);
 });
 
 test('an EA that abstains on every job: no commit, no result, and the round stays open at the mock until its deadline', async () => {
   const fake = fakeMock();
   const record = await serve(fake, async () => ({ status: 500, json: { status: 'errored', error: 'abstain', data: { aggregatedScore: [0] } } }));
   assert.equal(record.status, 'no-verdict');
-  assert.equal(record.abstained, REAL_CONFIG.k);
+  assert.equal(record.abstained, SMALL_JURY.K);
   assert.equal(record.commits, 0);
   assert.equal(named(fake, 'scriptCommits').length, 0);
   assert.equal(named(fake, 'scriptResult').length, 0, 'an abstention is never a result');
@@ -415,10 +437,10 @@ test('fewer than M commits: the window never closes, no reveal goes out', async 
   let n = 0;
   const record = await serve(fake, async (body) => {
     n += 1;
-    return n <= REAL_CONFIG.m - 1 ? ea.evaluate(body) : { status: 503, json: null };
+    return n <= SMALL_JURY.M - 1 ? ea.evaluate(body) : { status: 503, json: null };
   });
   assert.equal(record.status, 'no-verdict');
-  assert.equal(record.commits, REAL_CONFIG.m - 1);
+  assert.equal(record.commits, SMALL_JURY.M - 1);
   assert.equal(named(fake, 'closeCommits').length, 0);
   assert.equal(ea.calls.filter((c) => c.data.cid.startsWith('2:')).length, 0);
 });
@@ -432,9 +454,9 @@ test('M commits but not M+, all before T+: after T+ the keeper closes and promot
     const evaluate = async (body) => {
       if (body.data.cid.startsWith('1:')) {
         n += 1;
-        if (n === REAL_CONFIG.k) {
+        if (n === SMALL_JURY.K) {
           // the sixth job abstains once the other five are in, and the clock passes T+ (155 s)
-          while (answered < REAL_CONFIG.m) await new Promise((r) => { setTimeout(r, 2); });
+          while (answered < SMALL_JURY.M) await new Promise((r) => { setTimeout(r, 2); });
           await new Promise((r) => { setTimeout(r, 20); });
           fake.chain.advance(200);
           return { status: 503, json: null };
@@ -447,7 +469,7 @@ test('M commits but not M+, all before T+: after T+ the keeper closes and promot
     };
     const record = await serve(fake, evaluate);
     assert.equal(record.status, 'fulfilled', `keeper ${keeperActs}`);
-    assert.equal(record.commits, REAL_CONFIG.m);
+    assert.equal(record.commits, SMALL_JURY.M);
     assert.equal(named(fake, 'closeCommits').length, keeperActs ? 0 : 1);
     assert.equal(named(fake, 'promote').length, keeperActs ? 0 : 1);
     assert.equal(record.closedBy, keeperActs ? null : 'bridge');
@@ -462,13 +484,13 @@ test('after T+, the M-th commit closes the window at once (at the mock too), and
     if (body.data.cid.startsWith('1:')) {
       n += 1;
       if (n === 1) fake.chain.advance(200);
-      if (n === REAL_CONFIG.k) return { status: 503, json: null };
+      if (n === SMALL_JURY.K) return { status: 503, json: null };
     }
     return ea.evaluate(body);
   });
   assert.equal(record.status, 'fulfilled');
   assert.equal(named(fake, 'closeCommits').length, 0);
-  assert.equal(named(fake, 'scriptCommits').length, REAL_CONFIG.m);
+  assert.equal(named(fake, 'scriptCommits').length, SMALL_JURY.M);
 });
 
 test('a reveal after the deadline is not taken: no result', async () => {
@@ -491,7 +513,7 @@ test('reveals that do not open their commitments leave fewer than N: no result',
     return answer;
   });
   assert.equal(record.status, 'no-verdict');
-  assert.equal(record.ignored.filter((i) => i.reason === 'hash mismatch').length, REAL_CONFIG.m);
+  assert.equal(record.ignored.filter((i) => i.reason === 'hash mismatch').length, SMALL_JURY.M);
   assert.equal(named(fake, 'scriptResult').length, 0);
 });
 
@@ -514,7 +536,7 @@ test('a request on a class no job is registered for fails the bridge, loudly: th
 test('a reveal job keeps what it answered, and the round keeps what the request asked of the oracles', async () => {
   const record = await serve(fakeMock(), honestEa().evaluate);
   const reveals = record.jobs.filter((j) => j.phase === 'reveal');
-  assert.equal(reveals.length, REAL_CONFIG.m);
+  assert.equal(reveals.length, SMALL_JURY.M);
   for (const j of reveals) assert.deepEqual(j.scores, VECTOR);
   assert.ok(record.jobs.filter((j) => j.phase === 'commit').every((j) => j.scores === null));
   assert.deepEqual(record.oracle, { alpha: 500n, maxFee: FEE, minFee: 0n, estimatedBaseCost: 1n, maxFeeBasedScaling: 3n, withBeacons: false });

@@ -32,3 +32,4 @@ export {
 } from './executionEvidence.js';
 export { STAKE_DOCUMENTS_NOTE, STAKE_DOCUMENTS_PATH, documentGlobs, namesDocuments } from './stakeDocuments.js';
 export { DISCLOSURE_KEY_NOTE, disclosureBytes32Of, disclosureRecipientOf } from './disclosureKey.js';
+export { CLASS_PRESETS, DEFAULT_LISTING_CLASS, LISTING_CLASSES, MAX_COUNTED, juryProblem, listingOracleOf, presetByKey } from './classPresets.js';

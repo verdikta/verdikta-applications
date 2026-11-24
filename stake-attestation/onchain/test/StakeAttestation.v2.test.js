@@ -1,6 +1,7 @@
 // StakeAttestation on the v2 aggregator (verdikta-dispatcher `beacon` branch; MIGRATION.md):
 //   - the listing's two new oracle terms, the fee floor (minOracleFee) and the beacon flag
-//     (withBeacons): checked at list, quoted (maxTotalFee(fee, floor, flag)) and sent;
+//     (withBeacons): checked at list, quoted (maxTotalFee(fee, floor, flag, K, P), with the listing's
+//     jury) and sent;
 //   - drawJury(claimId): anyone draws a claim's open round through its wallet, so the draw
 //     reward comes back to the round's funder;
 //   - finalize on the v2 phases: a result from phase 6; a dead round (failed at settle, or
@@ -36,7 +37,7 @@ const withOracle = (o) => params({ artifact: H.atCommit(H.freshCommit()), oracle
 
 describe("StakeAttestation: the v2 aggregator", function () {
   describe("the quote", function () {
-    it("FEE is the live quote: maxTotalFee(fee, floor, flag) at the mock's defaults, 18 x the clamped fee", async function () {
+    it("FEE is the live quote: maxTotalFee(fee, floor, flag, K, P) for the Small jury at the mock's defaults, 18 x the clamped fee", async function () {
       const { sa, aggregator, listingId } = await loadFixture(fixture);
       expect(await sa.commitPrice(listingId)).to.equal(BOND + FEE);
       expect(FEE).to.equal(EFF * 18n);

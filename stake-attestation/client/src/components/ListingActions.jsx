@@ -9,7 +9,7 @@ import { formatEth, formatTime } from '../lib/format.js';
 import { NO_HOLD, holdTerms, readHold } from '../lib/hold.js';
 import { closeTerms, renewTerms, sameListing, topUpEffect, topUpTerms } from '../lib/listingActions.js';
 import { readFrom } from '../lib/poll.js';
-import { kept } from '../lib/seenMined.js';
+import { contradictedAt, kept } from '../lib/seenMined.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 import { useSeenMined } from './seenMined.js';
@@ -79,13 +79,13 @@ export function TopUpEscrow({ listingId, listing, held = false, read = null, onC
       // another listing under this id, or none: the wallet's chain is not the one this page read (FundPage refresh)
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       if (!topUpTerms(mine).can || !same(mine.maker, account)) {
         setError(fill(T.changed, { id: listingId, state: stateWords(mine) }));
         // the block the wallet saw the change at: the page reads the listing from there (FundPage refresh)
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       const sa = stakeAttestation(signer);
@@ -215,12 +215,12 @@ export function RenewListing({ listingId, listing, held = false, read = null, on
       });
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       if (!renewTerms(mine, 0).can || !same(mine.maker, account)) {
         setError(fill(R.changed, { id: listingId, state: stateWords(mine) }));
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       if (due !== fee) {
@@ -333,13 +333,13 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, read = null, o
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
         setAsking(false);
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       if (!holdTerms(mine, now).can || !same(mine.maker, sender)) {
         setError(fill(H.changed, { id: listingId }));
         setAsking(false);
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       const sa = stakeAttestation(signer);
@@ -460,14 +460,14 @@ export function CloseListing({ listingId, listing, read = null, onChanged = () =
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
         setAsking(false);
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       // what this page offered is what is sent: a claim that came in, or an escrow that moved, asks again
       if (!closeTerms(mine).can || !same(mine.maker, account) || BigInt(mine.escrowWei) !== terms.escrowWei) {
         setError(fill(C.changed, { id: listingId }));
         setAsking(false);
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       const sa = stakeAttestation(signer);

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useState } from 'react';
 
 import { afterRead, asKept, receiptVerdict } from '../lib/seenMined.js';
 
@@ -15,7 +15,8 @@ export const KeptBlocks = createContext(null);
  *
  * While the receipt is one the page could still speak from, its block is kept in the page's registry (KeptBlocks, or
  * `held` for the page's own), so the page's reads ask for the hash there; a receipt that is replaced, dropped, or
- * gone with its part lets go of it.
+ * gone with its part lets go of it. It keeps and lets go before the browser paints (a layout effect): what the page
+ * says of its receipts is drawn from who holds what, and a part that is gone holds nothing in what is painted.
  * @param {null | { block: number, blockHash: string, hashes?: Record<number, string> }} read
  * @param {(seen: object) => boolean} shows
  * @param {null | { keep(block: number): () => void }} [held] - the registry, where no context provides it
@@ -33,6 +34,6 @@ export function useSeenMined(read, shows, held = null) {
     // `verdict` is what `read` and `shown` come to for this receipt: the effect runs when either changes it
   }, [seen, verdict]);
   const block = seen !== null && !seen.dropped ? seen.block : null;
-  useEffect(() => (block === null || !blocks ? undefined : blocks.keep(block)), [block, blocks]);
+  useLayoutEffect(() => (block === null || !blocks ? undefined : blocks.keep(block)), [block, blocks]);
   return [seen, setSeen, verdict === 'stands'];
 }

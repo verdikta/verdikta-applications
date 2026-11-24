@@ -7,7 +7,7 @@ import { chainReader, listingAt, minedReceipt, stakeAttestation } from '../chain
 import { getFeed, getRecord } from '../lib/api.js';
 import { NO_HOLD, readHold } from '../lib/hold.js';
 import { listingQueue, sameListing } from '../lib/listingActions.js';
-import { kept } from '../lib/seenMined.js';
+import { contradictedAt, kept } from '../lib/seenMined.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { otherListingsOfRecord } from '../lib/sameRepository.js';
 import { confirmSuccessor, successorCandidates } from '../lib/successors.js';
@@ -108,8 +108,9 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
  * would take it, but it takes no commits and a hold has no resume. The picker leaves it out, and
  * the read just before sending refuses it. With a hold, the fixed version is listed and funded
  * after this page was opened, often in another tab, so the panel looks for successors again when
- * asked. `onChanged(block)`: the listing rolled in that block, so the page reads it again from
- * there (a hold ends in the roll).
+ * asked. `onChanged(seen)`: the listing rolled in that receipt's block, so the page reads it again
+ * from there (a hold ends in the roll). A roll the wallet's read refuses hands over that read's block
+ * as a contradiction of what the page shows (lib/seenMined.js contradictedAt).
  */
 export function RollForward({ listingId, listing, record, recordReading = false, hold = NO_HOLD, read = null, onRecordAgain = () => {}, onChanged = () => {} }) {
   const w = useWalletContext();
@@ -183,14 +184,14 @@ export function RollForward({ listingId, listing, record, recordReading = false,
       // another listing under this page's id, or none: the wallet's chain is not the one this page read
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       // This listing rolled forward or was closed elsewhere since the page read it (another tab): nothing is sent, and
       // the page reads it from the block the wallet saw that at, so its state, its hold and this panel follow.
       if (!ROLLABLE.has(LISTING_STATES[Number(mine.state)])) {
         setError(fill(RF.sourceChanged, { state: STRINGS.fund.states[LISTING_STATES[Number(mine.state)]] ?? String(mine.state) }));
-        onChanged(block);
+        onChanged(contradictedAt(block));
         return undefined;
       }
       // the successor too is the version the picker showed, under the id it showed it under

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { snapshot } from '../chain/snapshot.js';
@@ -6,7 +6,7 @@ import { WalletError, chainReader, listingAt, stakeAttestation } from '../chain/
 import { safeguardTerms } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { holdView, readHold } from '../lib/hold.js';
-import { asKept, isKept, keptBlocks, refreshHeights, refreshNotices } from '../lib/seenMined.js';
+import { SAYS_NOTHING, asKept, isContradiction, keptBlocks, pageSays, refreshHeights } from '../lib/seenMined.js';
 import { readFrom } from '../lib/poll.js';
 import { STRINGS, fill } from '../strings.js';
 import { AwardLine, StatePill } from './Awards.jsx';
@@ -84,8 +84,11 @@ export function FundPage({ listingId }) {
   // The blocks of the receipts this page still holds: its own two (the opening, the hold) and those of its parts,
   // each kept while its receipt is held and let go of when the receipt is replaced, dropped or gone with its listing
   // (lib/seenMined.js keptBlocks). Every read asks which hash its chain has at these blocks.
+  // A holder that keeps or lets go draws the page again: what the page says of its receipts is drawn from who holds
+  // what at that moment (pageSays, below).
+  const [, redraw] = useState(0);
   const kept = useRef(null);
-  if (kept.current === null) kept.current = keptBlocks();
+  if (kept.current === null) kept.current = keptBlocks(() => redraw((n) => n + 1));
   const [openedHere, setOpenedHere, openingStands] = useSeenMined(
     read,
     () => !current?.listing || BigInt(current.listing.openedAt) !== 0n,
@@ -95,12 +98,12 @@ export function FundPage({ listingId }) {
   // only while the page's read is of a block before its own (lib/hold.js holdView); a read of that block or later
   // decides alone, and replaces it.
   const [heldHere, setHeldHere] = useState(null);
-  useEffect(() => (heldHere ? kept.current.keep(heldHere.block) : undefined), [heldHere]);
-  // the block of a transaction sent from this page that no read has reached: the page says so, and offers to read again
-  const [behind, setBehind] = useState(null);
-  // the latest read is of that block or a later one, and could not check the block of a receipt the page keeps (the
-  // node did not give its header): the listing is shown as read, and the page says so, and offers to read again
-  const [unchecked, setUnchecked] = useState(false);
+  useLayoutEffect(() => (heldHere ? kept.current.keep(heldHere.block) : undefined), [heldHere]);
+  // a refresh is reading: from its start until its last read has answered
+  const [reading, setReading] = useState(false);
+  // a read through the wallet, just before an action, contradicted the listing on display, and no read has been taken
+  // since: set when the action hands that over, and gone with the first read taken
+  const contradicted = useRef(false);
   const mounted = useRef(false);
   const refreshRun = useRef(0);
   // the newest block this page knows the listing changed in: a transaction it sent, or a read through the wallet that
@@ -114,6 +117,16 @@ export function FundPage({ listingId }) {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+  // What the page says of what is on it: whether the listing is shown, the block it has not read, and that it could
+  // not check a transaction's block. One function decides the three (lib/seenMined.js pageSays), from what the page
+  // has as it is drawn: the read on display, the newest block it was told of, a contradiction by the wallet's read,
+  // the receipts held, and whether a refresh is reading. Nothing of it is fixed at the instant a refresh ends. While
+  // a refresh reads, only what the page said before it began is said (`said`), for as long as it is still so.
+  const said = useRef(SAYS_NOTHING);
+  const says = pageSays({ read: loaded, needed: needed.current, contradicted: contradicted.current, blocks: kept.current.blocks(), reading, said: said.current });
+  useEffect(() => {
+    if (!reading) said.current = says;
+  });
 
   useEffect(() => {
     if (listingId === null) return undefined;
@@ -138,11 +151,15 @@ export function FundPage({ listingId }) {
   // for less: the page keeps the newest block any of them named (`needed`), so an action that sends nothing (a
   // renewal the wallet's read refuses, say) cannot bring back a read from before a roll that is still being waited for.
   const refresh = useCallback((told = 0) => {
-    // `told` is a receipt this page keeps (its block is read from), or the number of a block: a read through the
-    // wallet that found the listing changed, or a block still to be read
-    const minBlock = isKept(told) ? told.block : told;
+    // `told` is a receipt this page keeps (its block is read from), a read through the wallet that contradicted the
+    // listing on display (lib/seenMined.js contradictedAt, with the block it read at), or the number of a block: a
+    // transaction whose receipt the page did not keep, or a block still to be read
+    const minBlock = typeof told === 'number' ? told : told.block;
     needed.current = Math.max(needed.current, minBlock);
     const from = needed.current;
+    // What the wallet's read contradicted is not shown once this reading is over, unless a read was taken (pageSays).
+    if (isContradiction(told)) contradicted.current = true;
+    setReading(true);
     refreshRun.current += 1;
     const run = refreshRun.current;
     const wanted = () => mounted.current && refreshRun.current === run;
@@ -156,6 +173,7 @@ export function FundPage({ listingId }) {
     // that such a read does not have is said as gone, not only as absent, also when the read before it failed.
     const show = (got) => {
       shownRead.current = got;
+      contradicted.current = false;
       setLoaded(got.missing && lastListing.current !== null ? { ...got, gone: true } : got);
       // the chain as read at or after a hold's block says whether it is there: the receipt no longer stands in
       setHeldHere((seen) => (seen && got.block >= seen.block ? null : seen));
@@ -163,14 +181,10 @@ export function FundPage({ listingId }) {
     // A read that could not check a receipt's block is not the last one: the page reads again, the same bounded
     // number of times, and then says what it could not check.
     // No read is taken from before the block the page was told of, nor from before the newest block it has shown.
-    // Once the reading is over the page says what is left (lib/seenMined.js refreshNotices): the block it was told
-    // of, if it has shown no read that late; and that it could not check a transaction's block, if a receipt it
-    // holds is at a block the read on display has no hash for, whether or not a read of this refresh was taken.
-    readFrom(() => readListing(listingId, heights()), Math.max(from, shownRead.current?.block ?? 0), { live: wanted, onRead: show, complete: checked }).then(({ seen }) => {
-      if (!wanted()) return;
-      const says = refreshNotices({ seen, from, shown: shownRead.current, blocks: kept.current.blocks() });
-      setBehind(says.behind);
-      setUnchecked(says.unchecked);
+    // What is left once the reading is over is not decided here: the page is drawn again, and says what is so then
+    // (pageSays, above).
+    readFrom(() => readListing(listingId, heights()), Math.max(from, shownRead.current?.block ?? 0), { live: wanted, onRead: show, complete: checked }).then(() => {
+      if (wanted()) setReading(false);
     });
   }, [listingId]);
   // The listing this page shows, by maker and artifact. On a chain whose blocks were replaced the id can come to name
@@ -178,7 +192,9 @@ export function FundPage({ listingId }) {
   // line, the record and the successors found for it) is that listing's, and goes with it.
   const identity = current?.listing ? `${current.listing.maker}:${current.listing.artifactHash}`.toLowerCase() : null;
   const shownIdentity = useRef(null);
-  useEffect(() => {
+  // before the browser paints, as the parts let go of their receipts: nothing the first listing held is painted
+  // against the listing now shown
+  useLayoutEffect(() => {
     if (shownIdentity.current !== null && identity !== null && identity !== shownIdentity.current) {
       setHeldHere(null);
       setOpenedHere(null);
@@ -234,7 +250,11 @@ export function FundPage({ listingId }) {
   // of a read it has shown, one that failed on load included: a read that contradicted itself at one block is not
   // followed by the listing as a trailing node has it at an earlier one. Only a read that failed with no block at
   // all (the node did not answer) is made afresh.
-  const failed = loaded.failed ?? null;
+  // A listing the wallet's read contradicted, with no read taken since, is off the page the same way (pageSays): a
+  // display the wallet's node has just contradicted is not one to act on, whether or not the page had read that
+  // height, and "on hold" least of all. It stays so until a read is taken, through Read again too.
+  const { behind, unchecked } = says;
+  const failed = says.hidden === 'contradicted' ? fill(F.contradicted, { id: listingId }) : says.hidden === 'failed' ? loaded.failed : null;
   const again = () => (needed.current > 0 || shownRead.current !== null ? refresh(needed.current) : setAttempt((a) => a + 1));
   const unread = failed !== null && (
     <>

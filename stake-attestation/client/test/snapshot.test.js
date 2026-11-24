@@ -343,7 +343,8 @@ test('the page\'s read of the listing is one snapshot, and one that says both "o
   assert.equal(page.split('readListing(').length - 1, 3, 'its definition, the load and the refresh');
   // a failed read is said as one, and nothing of the listing with it; reading again never takes a read from before
   // the newest block the page was told of
-  const failed = page.slice(page.indexOf('const failed = loaded.failed ?? null;'), page.indexOf('const l = current.listing;'));
+  const failed = page.slice(page.indexOf("const failed = says.hidden === 'contradicted'"), page.indexOf('const l = current.listing;'));
+  assert.ok(failed.length > 0 && page.includes("const failed = says.hidden === 'contradicted'"));
   assert.match(failed, /const again = \(\) => \(needed\.current > 0 \|\| shownRead\.current !== null \? refresh\(needed\.current\) : setAttempt\(\(a\) => a \+ 1\)\);/);
   assert.match(failed, /<p className="error" role="alert" data-testid="listing-unread">\{fill\(F\.readFailed, \{ reason: failed \}\)\}<\/p>/);
   assert.match(failed, /<button type="button" data-testid="listing-read-again" onClick=\{again\}>\{F\.retry\}<\/button>/);

@@ -418,6 +418,11 @@ export const STRINGS = {
       'the transaction did is not said here until the page can check it.',
     // one block answered both "on hold" and "takes commits", which the contract never says of one block
     contradictory: 'the chain answered that this listing is on hold and that it takes commits, of one block',
+    // a read through the wallet, just before an action, has the listing otherwise than the page shows it (another
+    // listing or none under the id, or a state in which the action cannot be taken), and no read has been taken since
+    contradicted:
+      'the chain as your wallet reads it has listing {id} otherwise than this page showed it, or has no such listing; ' +
+      'nothing was sent, and this page has taken no read of the chain since',
     // A payment or a withdrawal this page saw mined, whose block is not the chain's as the page now reads it. The
     // page does not know whether the transaction was mined again in another block, and does not say that it was not.
     txDropped:

@@ -1624,7 +1624,19 @@ goes in a URL.
   The page keeps the newest block it was told of, from a receipt or from a read through the wallet
   that found the listing changed (an action that then sends nothing hands over that read's block),
   and no later read of the page is taken from before it: a refused renewal cannot bring back the
-  listing as it was before a roll the page is still waiting to read. A hold that is not there
+  listing as it was before a roll the page is still waiting to read. Nor is a read taken from
+  before the newest block the page has shown, in the same refresh or through Read again: a node
+  that trails the one that answered before cannot put an earlier state of the listing back. A
+  listing that a read through the wallet has contradicted (the wallet's node has another listing
+  or none under the id, or the listing in a state in which the action cannot be taken), with no
+  read taken since, is not shown: it is off the page as after a read that failed, with the alert
+  and Read again, until a read is taken, whether or not the page had read that height. What the
+  page says of what is on it (whether the listing is shown, the block it has not read, that it
+  could not check a transaction's block) is decided in one place, `pageSays` in
+  `client/src/lib/seenMined.js`, from what the page has when it is drawn: the read on display,
+  the newest block it was told of, the receipts its parts hold at that moment, and whether a
+  refresh is still reading (nothing new is said until it is over). `client/test/hold.test.js`
+  holds it to a table of cases. A hold that is not there
   (its block was dropped) is said in an alert, never drawn as a hold, and offered again; a
   listing that is not there either is said as gone, with nothing of the hold left on the page;
   and a hold the chain dates otherwise than the receipt did is said by the chain's time

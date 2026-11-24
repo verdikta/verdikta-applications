@@ -13,7 +13,7 @@ import { wordingProblems } from '../e2e/support/wording.js';
 import { LISTING_STATES, STAKE_ATTESTATION_ABI } from '../src/chain/abi.js';
 import { NO_HOLD, holdTerms, holdView, readHold, refusedByContract } from '../src/lib/hold.js';
 import { sameListing } from '../src/lib/listingActions.js';
-import { afterRead, asKept, hasHashAt, isKept, kept, keptBlocks, receiptStands, receiptVerdict, refreshHeights, refreshNotices } from '../src/lib/seenMined.js';
+import { SAYS_NOTHING, afterRead, asKept, contradictedAt, hasHashAt, hashAt, isContradiction, isKept, kept, keptBlocks, pageSays, receiptStands, receiptVerdict, refreshHeights } from '../src/lib/seenMined.js';
 import { STRINGS, fill } from '../src/strings.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
@@ -336,12 +336,13 @@ test('after a transaction the page reads from the block it was mined in, and say
   // the newest block any action named is kept for the page's life: a later refresh that names none (or an earlier
   // one) still reads from it, so it can neither take a read from before a mined roll nor clear the warning of one
   assert.match(page, /const needed = useRef\(0\);/);
-  assert.match(page, /const minBlock = isKept\(told\) \? told\.block : told;[\s\S]*?needed\.current = Math\.max\(needed\.current, minBlock\);\s*const from = needed\.current;/);
-  assert.match(page, /readFrom\(\(\) => readListing\(listingId, heights\(\)\), Math\.max\(from, shownRead\.current\?\.block \?\? 0\), \{ live: wanted, onRead: show, complete: checked \}\)\.then\(\(\{ seen \}\) => \{/);
+  assert.match(page, /const minBlock = typeof told === 'number' \? told : told\.block;[\s\S]*?needed\.current = Math\.max\(needed\.current, minBlock\);\s*const from = needed\.current;/);
+  assert.match(page, /readFrom\(\(\) => readListing\(listingId, heights\(\)\), Math\.max\(from, shownRead\.current\?\.block \?\? 0\), \{ live: wanted, onRead: show, complete: checked \}\)\.then\(\(\) => \{\s*if \(wanted\(\)\) setReading\(false\);\s*\}\);/);
   assert.doesNotMatch(page, /readFrom\([^)]*minBlock/, 'never from the one refresh\'s own block alone');
   // a read of that block or a later one is shown at once, whatever it could not check of the receipts
   assert.match(page, /const show = \(got\) => \{[\s\S]*?setLoaded\(got\.missing && lastListing\.current !== null \? \{ \.\.\.got, gone: true \} : got\);/);
-  assert.match(page, /const says = refreshNotices\(\{ seen, from, shown: shownRead\.current, blocks: kept\.current\.blocks\(\) \}\);\s*setBehind\(says\.behind\);\s*setUnchecked\(says\.unchecked\);/);
+  // what the page then says (the block it has not read) is drawn from what is on it: lib/seenMined.js pageSays
+  assert.match(page, /const \{ behind, unchecked \} = says;/);
   // the page is keyed by its listing (App.jsx), so the kept block is one listing's
   assert.match(read('../src/App.jsx'), /<FundPage key=\{r\.listingId \?\? 'none'\} listingId=\{r\.listingId\} \/>/);
   assert.match(page, /\{failed === null && behind !== null && \(\s*<>\s*<p className="warning" role="status" data-testid="listing-behind">\{fill\(F\.behind, \{ block: behind \}\)\}<\/p>\s*<button type="button" className="secondary" data-testid="listing-read-again" onClick=\{\(\) => refresh\(behind\)\}>\{F\.retry\}<\/button>/);
@@ -351,7 +352,8 @@ test('after a transaction the page reads from the block it was mined in, and say
   assert.equal(actions.split('onChanged(seen);').length - 1, 4, 'top-up, renew, close, withdraw: the receipt the page keeps, which it reads from');
   assert.equal(actions.split('onChanged(receipt.blockNumber);').length - 1, 1, 'a mined hold() with no Held event: nothing is kept, and the page reads from its block');
   // and an action that sends nothing because the wallet's read found the listing changed hands over that read's block
-  assert.equal(actions.split('onChanged(block);').length - 1, 8, 'top-up, renew, hold, close: each for a listing that changed, and for one that is another or gone');
+  assert.equal(actions.split('onChanged(contradictedAt(block));').length - 1, 8, 'top-up, renew, hold, close: each for a listing that changed, and for one that is another or gone');
+  assert.equal(actions.split('onChanged(block);').length - 1, 0, 'a refusal is never handed over as a bare block');
   assert.doesNotMatch(actions, /onChanged\(\)/, 'no refresh without a block from an action that read one');
   assert.match(actions, /const seen = kept\(receipt, \{ heldAt: held\.args\.heldAt \}\);\s*setDone\(seen\);\s*onHeld\(seen\);/);
   const extras = component('ListingExtras.jsx');
@@ -449,13 +451,13 @@ test('every action is sent for the listing the page shows: another listing under
   const extras = component('ListingExtras.jsx');
   const panel = extras.slice(extras.indexOf('export function RollForward('), extras.indexOf('/**\n * Whether the site offers a commit'));
   assert.match(panel, /return Promise\.all\(\[listingAt\(view, listingId\), listingAt\(view, pick\), /);
-  assert.match(panel, /if \(!sameListing\(mine, listing\)\) \{\s*setError\(fill\(STRINGS\.fund\.replaced, \{ id: listingId \}\)\);\s*onChanged\(block\);\s*return undefined;\s*\}/);
+  assert.match(panel, /if \(!sameListing\(mine, listing\)\) \{\s*setError\(fill\(STRINGS\.fund\.replaced, \{ id: listingId \}\)\);\s*onChanged\(contradictedAt\(block\)\);\s*return undefined;\s*\}/);
   // and the successor is the version the picker showed under that id
   assert.match(panel, /found\.push\(\{ id: e\.listingId, commit: e\.artifact\.baseCommit, artifactHash: s\.artifactHash,/);
   assert.match(panel, /const chosen = options\.find\(\(o\) => o\.id === pick\);\s*if \(successor === null \|\| !chosen \|\| !same\(successor\.artifactHash, chosen\.artifactHash\)/);
   // this listing itself rolled or closed elsewhere (another tab): nothing is sent, and the page reads it from the
   // block the wallet saw that at, so its state, its hold and the panel follow; an invalid successor has the panel look again
-  assert.match(panel, /if \(!ROLLABLE\.has\(LISTING_STATES\[Number\(mine\.state\)\]\)\) \{\s*setError\(fill\(RF\.sourceChanged, [^\n]*\n\s*onChanged\(block\);\s*return undefined;\s*\}/);
+  assert.match(panel, /if \(!ROLLABLE\.has\(LISTING_STATES\[Number\(mine\.state\)\]\)\) \{\s*setError\(fill\(RF\.sourceChanged, [^\n]*\n\s*onChanged\(contradictedAt\(block\)\);\s*return undefined;\s*\}/);
   assert.match(panel, /setAgain\(\(n\) => n \+ 1\);\s*return setError\(fill\(RF\.changed, \{ id: pick \}\)\);/);
   assert.equal(fill(STRINGS.roll.sourceChanged, { state: 'closed' }), 'Nothing was sent: this listing can no longer roll forward (it is closed). It has been read again.');
   assert.equal(fill(STRINGS.fund.replaced, { id: 7 }), 'Nothing was sent: on the chain as your wallet reads it now, listing 7 is not the listing this page shows, or there is no such listing. This page reads it again.');
@@ -645,11 +647,11 @@ test('a receipt whose block a read could not check is asked for again, and the p
   const page = component('FundPage.jsx');
   // every receipt the page keeps has a hash at its block in the read, unless that block is above the read
   assert.match(read('../src/lib/seenMined.js'), /const all = hasHashAt\(got, heights\(\)\);/);
-  assert.match(read('../src/lib/seenMined.js'), /return blocks\.every\(\(height\) => height > read\.block \|\| typeof read\.hashes\?\.\[height\] === 'string'\);/);
+  assert.match(read('../src/lib/seenMined.js'), /return blocks\.every\(\(height\) => height > read\.block \|\| typeof hashAt\(read, height\) === 'string'\);/);
   // The listing as that read has it is shown at once (above); the read is not the last one while a receipt is
   // unchecked: readFrom goes on, its bounded number of times, and the page then says what it could not check.
   assert.match(page, /\{ live: wanted, onRead: show, complete: checked \}/);
-  assert.match(page, /setUnchecked\(says\.unchecked\);/);
+  assert.match(page, /const \{ behind, unchecked \} = says;/);
   assert.match(page, /\{failed === null && behind === null && unchecked && \(\s*<>\s*<p className="warning" role="status" data-testid="listing-unchecked">\{F\.unchecked\}<\/p>\s*<button type="button" className="secondary" data-testid="listing-read-again" onClick=\{again\}>\{F\.retry\}<\/button>/);
   assert.equal(STRINGS.fund.unchecked, 'This page could not check the block of a transaction sent from it: the node did not give that block. What the transaction did is not said here until the page can check it.');
   oneLine('fund.unchecked', STRINGS.fund.unchecked);
@@ -664,12 +666,12 @@ test('a read is shown only once it has answered within its time, and never after
   // the page shows a read through readFrom's onRead, which readFrom calls only for a read that won its time; the read
   // function itself shows nothing, so a read that timed out and answers later has nowhere to put its answer
   const refresh = page.slice(page.indexOf('const refresh = useCallback('), page.indexOf('// The listing this page shows, by maker and artifact.'));
-  assert.match(refresh, /readFrom\(\(\) => readListing\(listingId, heights\(\)\), Math\.max\(from, shownRead\.current\?\.block \?\? 0\), \{ live: wanted, onRead: show, complete: checked \}\)\.then\(\(\{ seen \}\) => \{/);
+  assert.match(refresh, /readFrom\(\(\) => readListing\(listingId, heights\(\)\), Math\.max\(from, shownRead\.current\?\.block \?\? 0\), \{ live: wanted, onRead: show, complete: checked \}\)\.then\(\(\) => \{\s*if \(wanted\(\)\) setReading\(false\);\s*\}\);/);
   const reader = /readFrom\(\(\) => readListing\(listingId, heights\(\)\)/.exec(refresh);
   assert.ok(reader, 'the read is the snapshot alone');
   assert.equal(refresh.split('setLoaded(').length - 1, 1, 'the listing is set in one place');
   assert.ok(refresh.indexOf('const show = (got) => {') < refresh.indexOf('setLoaded(') && refresh.indexOf('setLoaded(') < refresh.indexOf('readFrom('), 'inside show, which is handed to readFrom');
-  assert.match(refresh, /const says = refreshNotices\(\{ seen, from, shown: shownRead\.current, blocks: kept\.current\.blocks\(\) \}\);\s*setBehind\(says\.behind\);\s*setUnchecked\(says\.unchecked\);/);
+  assert.doesNotMatch(refresh, /setBehind|setUnchecked/, 'what the page says is not fixed at the instant a refresh ends');
   const poll = read('../src/lib/poll.js');
   assert.match(poll, /const got = await withTimeout\(Promise\.resolve\(\)\.then\(read\), readTimeoutMs\);[\s\S]*?if \(got\.block >= floor && live\(\)\) \{\s*seen = true;\s*floor = got\.block;\s*onRead\(got\);\s*if \(complete\(got\)\) return \{ read: got, reached: true, seen \};/);
   assert.match(poll, /let floor = minBlock;/);
@@ -693,7 +695,7 @@ test('the page asks for the hash at the blocks of the receipts it still holds: o
   // the hook keeps its receipt's block while the receipt is one it could still speak from, and lets go when the
   // receipt is replaced by another, dropped for good, or the part is gone with its listing
   const hook = read('../src/components/seenMined.js');
-  assert.match(hook, /const block = seen !== null && !seen\.dropped \? seen\.block : null;\s*useEffect\(\(\) => \(block === null \|\| !blocks \? undefined : blocks\.keep\(block\)\), \[block, blocks\]\);/);
+  assert.match(hook, /const block = seen !== null && !seen\.dropped \? seen\.block : null;\s*useLayoutEffect\(\(\) => \(block === null \|\| !blocks \? undefined : blocks\.keep\(block\)\), \[block, blocks\]\);/);
   assert.match(hook, /export function useSeenMined\(read, shows, held = null\) \{/);
   assert.match(hook, /const blocks = useContext\(KeptBlocks\) \?\? held;/);
   // the page: its parts find the registry in context, its own two receipts (the opening, the hold) hold it directly,
@@ -701,7 +703,7 @@ test('the page asks for the hash at the blocks of the receipts it still holds: o
   const page = component('FundPage.jsx');
   assert.match(page, /<KeptBlocks\.Provider value=\{kept\.current\}>/);
   assert.match(page, /useSeenMined\(\s*read,\s*\(\) => !current\?\.listing \|\| BigInt\(current\.listing\.openedAt\) !== 0n,\s*kept\.current,\s*\);/);
-  assert.match(page, /useEffect\(\(\) => \(heldHere \? kept\.current\.keep\(heldHere\.block\) : undefined\), \[heldHere\]\);/);
+  assert.match(page, /useLayoutEffect\(\(\) => \(heldHere \? kept\.current\.keep\(heldHere\.block\) : undefined\), \[heldHere\]\);/);
   assert.match(page, /const \{ heights, checked \} = refreshHeights\(kept\.current, told\);/);
   assert.doesNotMatch(page, /keptAt/, 'no list that only grows');
 });
@@ -752,7 +754,7 @@ test('the page never takes a read of a block before the newest one it has shown 
   assert.match(page, /\.then\(\(got\) => \{\s*if \(!live\) return;\s*if \(Number\.isSafeInteger\(got\.block\)\) shownRead\.current = got;\s*setLoaded\(got\);\s*\}\)/);
   const refresh = page.slice(page.indexOf('const refresh = useCallback('), page.indexOf('// The listing this page shows, by maker and artifact.'));
   assert.match(refresh, /const show = \(got\) => \{\s*shownRead\.current = got;/);
-  assert.match(refresh, /readFrom\(\(\) => readListing\(listingId, heights\(\)\), Math\.max\(from, shownRead\.current\?\.block \?\? 0\), \{ live: wanted, onRead: show, complete: checked \}\)\.then\(\(\{ seen \}\) => \{/);
+  assert.match(refresh, /readFrom\(\(\) => readListing\(listingId, heights\(\)\), Math\.max\(from, shownRead\.current\?\.block \?\? 0\), \{ live: wanted, onRead: show, complete: checked \}\)\.then\(\(\) => \{\s*if \(wanted\(\)\) setReading\(false\);\s*\}\);/);
   // R10-F2: reading again goes through that refresh whenever the page has shown a read of a block, also one that
   // failed on load before any transaction: a read that contradicted itself at block 102 is not followed by the
   // listing as a trailing node has it at 101. Only a read that failed with no block at all is made afresh.
@@ -760,42 +762,157 @@ test('the page never takes a read of a block before the newest one it has shown 
   assert.equal(page.split('setAttempt(').length - 1, 1, 'the load is made afresh from one place');
 });
 
-test('what the page says once a refresh is over: the block it has not read, and what it could not check of the receipts it holds (R10-F1, R8-F3)', () => {
+test('what the page says is one function of what is on it when it is drawn: a row for each case of rounds 8 to 11', () => {
   const H = `0x${'b'.repeat(64)}`;
-  // a read has the hash at each block asked of it that is not above its own
-  assert.equal(hasHashAt({ block: 103, hashes: { 103: H, 100: H } }, [103, 100]), true);
-  assert.equal(hasHashAt({ block: 103, hashes: { 103: H } }, [103, 100]), false);
-  assert.equal(hasHashAt({ block: 103, hashes: { 103: H, 100: null } }, [100]), false, 'a header the node did not give');
-  assert.equal(hasHashAt({ block: 99, hashes: {} }, [100]), true, 'a block above the read is not its to check');
-  assert.equal(hasHashAt({ block: 103 }, []), true);
+  const listingAt = (block, hashes = {}) => ({ listing: {}, block, blockHash: H, hashes });
+  const failedAt = (block) => ({ failed: 'the chain answered two things of one block', block, blockHash: H, hashes: {} });
+  const receipt = (block) => kept({ hash: '0xabc', blockNumber: block, blockHash: H }, {});
+  const says = (hidden, behind, unchecked) => ({ hidden, behind, unchecked });
+  assert.deepEqual(SAYS_NOTHING, says(null, null, false));
+  // [finding, the case, what is on the page (or what makes it), what the page says]
+  const rows = [
+    ['base', 'nothing read yet', {}, SAYS_NOTHING],
+    ['base', 'a read of a transaction\'s own block, its receipt checked by that block\'s hash', { read: listingAt(100), needed: 100, blocks: [100] }, SAYS_NOTHING],
+    ['base', 'a later read that has the hash at the receipt\'s block', { read: listingAt(104, { 100: H }), needed: 100, blocks: [100] }, SAYS_NOTHING],
+    ['base', 'the reader trails the wallet: no read of the block the page was told of', { read: listingAt(99), needed: 100, blocks: [100] }, says(null, 100, false)],
+    ['base', 'while the refresh for that block still reads, nothing is said yet', { read: listingAt(99), needed: 100, blocks: [100], reading: true }, SAYS_NOTHING],
+    ['base', 'what was said before Read again stays said while it reads', { read: listingAt(99), needed: 100, blocks: [100], reading: true, said: says(null, 100, false) }, says(null, 100, false)],
+    ['base', 'and goes the moment a read of that block is on the page, still reading or not', { read: listingAt(100), needed: 100, blocks: [100], reading: true, said: says(null, 100, false) }, SAYS_NOTHING],
+    ['base', 'a header the node did not give for a receipt the page holds', { read: listingAt(102, { 100: null }), needed: 100, blocks: [100] }, says(null, null, true)],
+    ['base', 'the block not read is said alone: what could not be checked waits for a read of it', { read: listingAt(99), needed: 100, blocks: [90, 100] }, says(null, 100, false)],
+    ['base', 'a read that failed is off the page at once, also while a refresh reads', { read: failedAt(102), needed: 100, blocks: [100], reading: true }, says('failed', null, false)],
+    ['base', 'a read that failed with no block at all (the node did not answer on load)', { read: { failed: 'no answer' } }, says('failed', null, false)],
+    ['base', 'no such listing as of a block: nothing more is said of it here', { read: { missing: true, block: 102, blockHash: H, hashes: {} }, needed: 100 }, SAYS_NOTHING],
+    // R8-F3, in each form it took
+    ['R8-F3 (round 8)', 'a receipt a later one replaced is held no more, so its block is not checked', () => {
+      const held = keptBlocks();
+      const first = held.keep(100);
+      held.keep(105);
+      first();
+      return { read: listingAt(110, { 105: H }), needed: 105, blocks: held.blocks() };
+    }, SAYS_NOTHING],
+    ['R8-F3 (round 9)', 'a receipt handed over that the page did not keep, another listing being under the id', { read: listingAt(95), needed: 90, blocks: [] }, SAYS_NOTHING],
+    ['R8-F3 (round 10)', 'the last read allowed was the first of its block, and was held to a receipt nothing holds', () => {
+      const held = keptBlocks();
+      const r = refreshHeights(held, receipt(90));
+      const last = listingAt(95);
+      assert.equal(r.checked(last), false, 'the retry loop held the read to the receipt handed over, and found it incomplete');
+      return { read: last, needed: 90, blocks: held.blocks() };
+    }, SAYS_NOTHING],
+    ['R8-F3 (round 11)', 'the last read replaces the listing: once the outgoing parts let go, nothing is unchecked', () => {
+      const held = keptBlocks();
+      const letGo = held.keep(90);
+      assert.deepEqual(pageSays({ read: listingAt(95), needed: 90, blocks: held.blocks() }), says(null, null, true), 'while a part holds it');
+      letGo();
+      return { read: listingAt(95), needed: 90, blocks: held.blocks() };
+    }, SAYS_NOTHING],
+    // R9-F1
+    ['R9-F1', 'block 102 is on display with a receipt of 100 unchecked, and the reader trails at 101: never "has not read block 100"', { read: listingAt(102), needed: 100, blocks: [100] }, says(null, null, true)],
+    ['R9-F1', 'through Read again of a reader that still trails, the same', { read: listingAt(102), needed: 100, blocks: [100], reading: true, said: says(null, null, true) }, says(null, null, true)],
+    // R10-F1
+    ['R10-F1', 'a receipt of block 100 arrives after block 103 was read, and no read can be taken', { read: listingAt(103), needed: 103, blocks: [103, 100] }, says(null, null, true)],
+    ['R10-F1', 'not while the refresh that receipt asked for still reads', { read: listingAt(103), needed: 103, blocks: [103, 100], reading: true }, SAYS_NOTHING],
+    // R10-F2
+    ['R10-F2', 'a read that contradicted itself on load at 102; Read again of a reader that trails at 101 takes no read', { read: failedAt(102) }, says('failed', null, false)],
+    ['R10-F2', 'and while that Read again reads', { read: failedAt(102), reading: true, said: says('failed', null, false) }, says('failed', null, false)],
+    // R11-F1
+    ['R11-F1', 'the wallet\'s read contradicts the listing on display, at the height the page has read, and no read is taken', { read: listingAt(100), needed: 100, contradicted: true }, says('contradicted', null, false)],
+    ['R11-F1', 'not while the refresh it asked for still reads', { read: listingAt(100), needed: 100, contradicted: true, reading: true }, SAYS_NOTHING],
+    ['R11-F1', 'it stays through Read again, until a read is taken', { read: listingAt(100), needed: 100, contradicted: true, reading: true, said: says('contradicted', null, false) }, says('contradicted', null, false)],
+    ['R11-F1', 'at a height the page has not read: hidden, and the block said with it', { read: listingAt(100), needed: 101, contradicted: true }, says('contradicted', 101, false)],
+    ['R11-F1', 'whatever receipts the page holds, nothing else is said of a listing that is hidden', { read: listingAt(100), needed: 100, contradicted: true, blocks: [90] }, says('contradicted', null, false)],
+    ['R11-F1', 'once a read is taken, the listing is shown as that read has it', { read: listingAt(100), needed: 100, contradicted: false }, SAYS_NOTHING],
+    ['R11-F1', 'a read that failed, taken while the contradiction\'s refresh reads, is off the page at once', { read: failedAt(100), needed: 100, contradicted: true, reading: true }, says('failed', null, false)],
+    // R11-F2
+    ['R11-F2', 'a receipt that arrives after its own block was read: the map is empty, the block\'s hash is the read\'s', { read: listingAt(103, {}), needed: 103, blocks: [103] }, SAYS_NOTHING],
+  ];
+  for (const [finding, what, on, expected] of rows) {
+    const input = typeof on === 'function' ? on() : on;
+    assert.deepEqual(pageSays(input), expected, `${finding}: ${what}`);
+  }
+  for (const finding of ['R8-F3 (round 8)', 'R8-F3 (round 9)', 'R8-F3 (round 10)', 'R8-F3 (round 11)', 'R9-F1', 'R10-F1', 'R10-F2', 'R11-F1', 'R11-F2']) {
+    assert.ok(rows.some((r) => r[0] === finding), `a row for ${finding}`);
+  }
+  // "has not read block N" is never said of a block the read on display is of, or of an earlier one
+  for (const [, what, on] of rows) {
+    const input = typeof on === 'function' ? on() : on;
+    const out = pageSays(input);
+    if (out.behind !== null) assert.ok(out.behind > (input.read?.block ?? 0), what);
+    if (out.unchecked) assert.ok(out.hidden === null && out.behind === null, `${what}: said only of a listing that is shown and read`);
+  }
+});
+
+test('the hash a read has at a height is one lookup, for a receipt\'s verdict and for what the page could not check (R11-F2)', () => {
+  const H = `0x${'b'.repeat(64)}`;
+  const OTHER = `0x${'c'.repeat(64)}`;
+  // its own block's hash at its block, whatever the map of older hashes holds; the map below it
+  assert.equal(hashAt({ block: 103, blockHash: H, hashes: {} }, 103), H);
+  assert.equal(hashAt({ block: 103, blockHash: H, hashes: { 103: OTHER } }, 103), H, 'the read\'s own hash, not a second answer for the same block');
+  assert.equal(hashAt({ block: 103, blockHash: H, hashes: { 100: OTHER } }, 100), OTHER);
+  assert.equal(hashAt({ block: 103, blockHash: H, hashes: {} }, 100), undefined);
+  // a late receipt at the displayed height, with an empty map: it stands, and nothing is left unchecked
+  const late = kept({ hash: '0xabc', blockNumber: 103, blockHash: H }, {});
+  const onDisplay = { block: 103, blockHash: H, hashes: {} };
+  assert.equal(receiptVerdict(late, onDisplay, true), 'stands');
+  assert.equal(hasHashAt(onDisplay, [103]), true);
+  assert.equal(pageSays({ read: onDisplay, needed: 103, blocks: [103] }).unchecked, false);
+  // and the two agree where the block was replaced: dropped, and checked (it is a hash, of another block)
+  assert.equal(receiptVerdict(kept({ hash: '0xabc', blockNumber: 103, blockHash: OTHER }, {}), onDisplay, true), 'dropped');
+  const source = read('../src/lib/seenMined.js');
+  assert.match(source, /const hash = hashAt\(read, seen\.block\);/);
+  assert.match(source, /return blocks\.every\(\(height\) => height > read\.block \|\| typeof hashAt\(read, height\) === 'string'\);/);
+  assert.equal(source.split('read.hashes?.[').length - 1, 1, 'the map is read in one place');
+  // the older checks of hasHashAt stand
+  assert.equal(hasHashAt({ block: 103, blockHash: H, hashes: { 100: H } }, [103, 100]), true);
+  assert.equal(hasHashAt({ block: 103, blockHash: H, hashes: {} }, [103, 100]), false);
+  assert.equal(hasHashAt({ block: 103, blockHash: H, hashes: { 100: null } }, [100]), false, 'a header the node did not give');
+  assert.equal(hasHashAt({ block: 99, blockHash: H, hashes: {} }, [100]), true, 'a block above the read is not its to check');
   assert.equal(hasHashAt(null, []), true);
   assert.equal(hasHashAt(null, [100]), false, 'no read checked anything');
-  // the ordinary end: a read of the block, with every receipt checked
-  assert.deepEqual(refreshNotices({ seen: true, from: 100, shown: { block: 100, hashes: { 100: H } }, blocks: [100] }), { behind: null, unchecked: false });
-  // the reader trails the wallet: no read reached the block the page was told of
-  assert.deepEqual(refreshNotices({ seen: false, from: 100, shown: { block: 99, hashes: {} }, blocks: [100] }), { behind: 100, unchecked: false });
-  // a read was taken and could not check a receipt the page holds
-  assert.deepEqual(refreshNotices({ seen: true, from: 100, shown: { block: 102, hashes: {} }, blocks: [100] }), { behind: null, unchecked: true });
-  // R10-F1: a top-up's refresh has shown block 103; then the wallet hands over a renewal's receipt of block 100, and
-  // every read of that refresh fails or trails. No read was taken, and the page has read past the block it was told
-  // of: it still holds a receipt the read on display has no hash for, says so, and offers to read again.
-  assert.deepEqual(refreshNotices({ seen: false, from: 103, shown: { block: 103, hashes: { 103: H } }, blocks: [103, 100] }), { behind: null, unchecked: true });
-  // R8-F3: the last read allowed is the first that reaches the block, and has no hash for a receipt that was handed
-  // over and that nothing on the page holds: nothing is left unchecked, whatever that read was held to
-  const held = keptBlocks();
-  const handedOver = kept({ hash: '0xabc', blockNumber: 90, blockHash: H }, {});
-  const r = refreshHeights(held, handedOver);
-  const last = { block: 95, hashes: {} };
-  assert.equal(r.checked(last), false, 'the read is not complete: it was held to the receipt handed over');
-  assert.deepEqual(refreshNotices({ seen: true, from: 90, shown: last, blocks: held.blocks() }), { behind: null, unchecked: false });
-  // and where a part does hold it, the same read leaves it unchecked
+  assert.equal(hasHashAt({ failed: 'no answer' }, [100]), false, 'nor did a read that is of no block');
+});
+
+test('the page draws what it says from that function alone, again whenever a read, a receipt holder or a refresh changes (R8-F3, R11-F1)', () => {
+  const page = component('FundPage.jsx');
+  assert.match(page, /const says = pageSays\(\{ read: loaded, needed: needed\.current, contradicted: contradicted\.current, blocks: kept\.current\.blocks\(\), reading, said: said\.current \}\);/);
+  assert.match(page, /useEffect\(\(\) => \{\s*if \(!reading\) said\.current = says;\s*\}\);/);
+  assert.match(page, /const \{ behind, unchecked \} = says;/);
+  assert.match(page, /const failed = says\.hidden === 'contradicted' \? fill\(F\.contradicted, \{ id: listingId \}\) : says\.hidden === 'failed' \? loaded\.failed : null;/);
+  assert.doesNotMatch(page, /setBehind|setUnchecked|refreshNotices/, 'no notice is set at the instant a refresh ends');
+  assert.doesNotMatch(read('../src/lib/seenMined.js'), /refreshNotices/, 'and no second place decides');
+  // a holder that keeps or lets go draws the page again: the registry tells the page
+  assert.match(page, /if \(kept\.current === null\) kept\.current = keptBlocks\(\(\) => redraw\(\(n\) => n \+ 1\)\);/);
+  const changes = [];
+  const held = keptBlocks(() => changes.push(held.blocks().join(',')));
   const letGo = held.keep(90);
-  assert.deepEqual(refreshNotices({ seen: true, from: 90, shown: last, blocks: held.blocks() }), { behind: null, unchecked: true });
   letGo();
-  // nothing shown at any block, nothing held
-  assert.deepEqual(refreshNotices({ seen: false, from: 0, shown: null, blocks: [] }), { behind: null, unchecked: false });
-  // a failed read on display (it has a block) that Read again could not get past: nothing new is said
-  assert.deepEqual(refreshNotices({ seen: false, from: 0, shown: { block: 102, hashes: {}, failed: 'x' }, blocks: [] }), { behind: null, unchecked: false });
+  letGo();
+  assert.deepEqual(changes, ['90', ''], 'told of each change, once');
+  // holders keep and let go, and the page clears its own for another listing, before the browser paints: what an
+  // outgoing listing's parts held is never painted against the listing that replaced it
+  assert.match(read('../src/components/seenMined.js'), /useLayoutEffect\(\(\) => \(block === null \|\| !blocks \? undefined : blocks\.keep\(block\)\), \[block, blocks\]\);/);
+  assert.match(page, /useLayoutEffect\(\(\) => \(heldHere \? kept\.current\.keep\(heldHere\.block\) : undefined\), \[heldHere\]\);/);
+  assert.match(page, /useLayoutEffect\(\(\) => \{\s*if \(shownIdentity\.current !== null && identity !== null && identity !== shownIdentity\.current\) \{\s*setHeldHere\(null\);\s*setOpenedHere\(null\);\s*\}/);
+  // The refresh: reading from its start to its end. A refusal by a read through the wallet is noted at its start,
+  // and is gone with the first read taken; the page says it only once the reading is over (the function, above).
+  const refresh = page.slice(page.indexOf('const refresh = useCallback('), page.indexOf('// The listing this page shows, by maker and artifact.'));
+  assert.match(refresh, /if \(isContradiction\(told\)\) contradicted\.current = true;\s*setReading\(true\);/);
+  assert.match(refresh, /const show = \(got\) => \{\s*shownRead\.current = got;\s*contradicted\.current = false;/);
+  assert.match(refresh, /\.then\(\(\) => \{\s*if \(wanted\(\)\) setReading\(false\);\s*\}\);/);
+  // every refusal by a read through the wallet is handed over as one: the two of each action, and the roll's two
+  assert.deepEqual(contradictedAt(7), { contradicted: true, block: 7 });
+  assert.equal(isContradiction(contradictedAt(7)), true);
+  for (const not of [7, null, undefined, kept({ hash: '0xabc', blockNumber: 7, blockHash: `0x${'b'.repeat(64)}` }, {})]) assert.equal(isContradiction(not), false);
+  assert.equal(component('ListingActions.jsx').split('onChanged(contradictedAt(block));').length - 1, 8);
+  assert.equal(component('ListingExtras.jsx').split('onChanged(contradictedAt(block));').length - 1, 2);
+  for (const file of ['ListingActions.jsx', 'ListingExtras.jsx']) assert.doesNotMatch(component(file), /onChanged\(block\);/, file);
+  // a hold() mined with no Held event is a transaction, not a refusal: the page reads from its block
+  assert.equal(component('ListingActions.jsx').split('onChanged(receipt.blockNumber);').length - 1, 1);
+  // the words: one line, nothing judged, and that nothing was sent
+  const text = fill(STRINGS.fund.readFailed, { reason: fill(STRINGS.fund.contradicted, { id: 7 }) });
+  assert.equal(text, 'The listing could not be read: the chain as your wallet reads it has listing 7 otherwise than this page showed it, or has no such listing; nothing was sent, and this page has taken no read of the chain since');
+  oneLine('fund.contradicted', STRINGS.fund.contradicted);
+  assert.deepEqual(wordingProblems(text), []);
 });
 
 test('a listing that is gone after a failed read is still said as gone: the page showed it (R8-F4)', () => {
@@ -943,7 +1060,7 @@ test('the action asks for confirmation before anything is sent, reads the listin
   assert.match(body, /const \{ value: \[mine, now\], block \} = await snapshot\(provider, \(at\) => \{\s*const view = stakeAttestation\(at\);\s*return Promise\.all\(\[listingAt\(view, listingId\), readHold\(view, listingId\)\]\);\s*\}\);/);
   // a hold has no way back: it is sent only for the listing the page showed, the same artifact and the same maker's.
   // Another listing under the id, or none, sends nothing, takes the confirmation back and reads the page again.
-  assert.match(body, /if \(!sameListing\(mine, listing\)\) \{\s*setError\(fill\(STRINGS\.fund\.replaced, \{ id: listingId \}\)\);\s*setAsking\(false\);\s*onChanged\(block\);\s*return undefined;\s*\}\s*if \(!holdTerms\(mine, now\)\.can/);
+  assert.match(body, /if \(!sameListing\(mine, listing\)\) \{\s*setError\(fill\(STRINGS\.fund\.replaced, \{ id: listingId \}\)\);\s*setAsking\(false\);\s*onChanged\(contradictedAt\(block\)\);\s*return undefined;\s*\}\s*if \(!holdTerms\(mine, now\)\.can/);
   assert.ok(body.indexOf('if (!sameListing(mine, listing))') < body.indexOf('.hold(BigInt(listingId))'), 'before hold() is sent');
   assert.match(body, /if \(!holdTerms\(mine, now\)\.can \|\| !same\(mine\.maker, sender\)\) \{\s*setError\(fill\(H\.changed, \{ id: listingId \}\)\);/);
   // the receipt, also of the same call sent again at a higher fee; this contract's Held event for this listing is the

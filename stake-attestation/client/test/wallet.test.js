@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { WalletError, minedReceipt, verifyChain } from '../src/chain/wallet.js';
+import { WalletError, listingAt, minedReceipt, verifyChain } from '../src/chain/wallet.js';
 
 test('reads are checked to come from the site\'s chain', async () => {
   const provider = (id) => ({ send: async (m) => { assert.equal(m, 'eth_chainId'); return id; } });
@@ -30,4 +30,23 @@ test('minedReceipt: the receipt, also of the same call sent again at a higher fe
   // anything else a wait rejects with is passed on as it is
   const reverted = Object.assign(new Error('execution reverted'), { code: 'CALL_EXCEPTION' });
   await assert.rejects(minedReceipt({ wait: async () => { throw reverted; } }), (err) => err === reverted);
+});
+
+test('listingAt: the listing at a block, or null when the contract has none of that id there, and never a getListing the contract would revert', async () => {
+  const asked = [];
+  const contract = (count) => ({
+    listingCount: async (o) => { asked.push(['listingCount', o.blockTag]); return count; },
+    getListing: async (id, o) => { asked.push(['getListing', id, o.blockTag]); return { id }; },
+  });
+  assert.deepEqual(await listingAt(contract(5n), '5', 90), { id: 5n });
+  assert.deepEqual(asked, [['listingCount', 90], ['getListing', 5n, 90]], 'the count and the listing at the same block');
+  asked.length = 0;
+  // one past the count (its block was dropped), and 0: no listing, and getListing is not called
+  assert.equal(await listingAt(contract(4n), 5, 91), null);
+  assert.equal(await listingAt(contract(4n), 0, 91), null);
+  assert.deepEqual(asked, [['listingCount', 91]]);
+  // a count that is a number (another client of the same ABI) compares the same
+  assert.deepEqual(await listingAt(contract(5), 5n, 1), { id: 5n });
+  // a read that fails rejects: it is never "no listing"
+  await assert.rejects(listingAt({ listingCount: async () => { throw new Error('rate limit'); } }, 5, 1), /rate limit/);
 });

@@ -388,6 +388,10 @@ export const STRINGS = {
     // on the listing's own page, once the page has read the listing with the opening in it: what the listing is now
     // (open until when, on hold, rolled forward, closed) is said from that read, and this line keeps the transaction
     openedHere: 'This page opened listing {id} (transaction {tx}).',
+    // an opening this page saw mined, which a read of its block or later does not show (its block was dropped)
+    openingDropped:
+      'The opening sent from this page (transaction {tx}) is not on the chain as this page now reads it: listing {id} ' +
+      'is listed and not funded. Look the transaction up, and fund the listing again if it is gone.',
     fundLater: 'If you leave this page before funding, fund the listing from its own page:',
     fundPage: 'Listing {id}',
     // tester bounty 400, the maker review (C4): once it is open, where the listing is managed
@@ -403,6 +407,10 @@ export const STRINGS = {
     load: 'Load the listing',
     loading: 'Reading the listing…',
     notFound: 'There is no listing {id}.',
+    // just before an action is sent, the wallet's node has another listing under this id, or none (its blocks were replaced)
+    replaced:
+      'Nothing was sent: on the chain as your wallet reads it now, listing {id} is not the listing this page shows, or ' +
+      'there is no such listing. This page reads it again.',
     // the page showed the listing, and a read of a later block has none (the block it was created in was dropped)
     gone:
       'Listing {id} was on this page a moment ago and is not on the chain as this page now reads it. Nothing sent ' +
@@ -1075,6 +1083,10 @@ export const STRINGS = {
     button: 'Roll forward to listing {id}',
     sending: 'Sending rollForward()…',
     done: 'Rolled forward to listing {id} (transaction {tx}).',
+    // a roll this page saw mined, which a read of its block or later does not show (its block was dropped)
+    dropped:
+      'The roll forward sent from this page (transaction {tx}) is not on the chain as this page now reads it: this ' +
+      'listing has not rolled forward. Look the transaction up, and roll forward again if it is gone.',
     changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
     // node P42: a listing on hold is Open, and the contract would take it as a successor; it takes no commits, for good
     successorOnHold: 'Nothing was sent: listing {id} is on hold and takes no commits, so this listing is not rolled forward to it. Choose another listing.',
@@ -1113,8 +1125,7 @@ export const STRINGS = {
     // a hold this page saw mined, which a later read of the chain does not show (its block was dropped)
     dropped:
       'The hold sent from this page (transaction {tx}) is not on the chain as this page now reads it: this listing is ' +
-      'not on hold, and takes claims as before. Do not publish a fix on the strength of it: look the transaction up, ' +
-      'and hold again if it is gone.',
+      'not on hold. Do not publish a fix on the strength of it: look the transaction up, and hold again if it is gone.',
     next:
       'What is left is on this page: roll forward to the fixed version once it is listed and funded, or close, when no ' +
       'claim is pending and no award is owed.',
@@ -1188,6 +1199,10 @@ export const STRINGS = {
     keep: 'Keep it open',
     sending: 'Sending close()…',
     done: 'Listing {id} is closed (transaction {tx}). {eth} ETH of escrow went back to {account}.',
+    // a close this page saw mined, which a read of its block or later does not show (its block was dropped)
+    dropped:
+      'The close sent from this page (transaction {tx}) is not on the chain as this page now reads it: listing {id} is ' +
+      'not closed. Look the transaction up, and close again if it is gone.',
     doneDeferred:
       'Listing {id} is closed (transaction {tx}). The contract could not send the {eth} ETH of escrow to {account}, ' +
       'so it holds the amount for that wallet: withdraw it below.',

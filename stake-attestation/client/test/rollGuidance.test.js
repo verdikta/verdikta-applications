@@ -115,7 +115,7 @@ test('the panel renders the three lines once each, after its intro and before th
 test('the panel shows from the listing\'s state on-chain: a record that is still read, or cannot be, only leaves the picker out', () => {
   const panel = read('../src/components/ListingExtras.jsx');
   // the listing's page renders the panel whatever the record's read came to
-  assert.match(panel, /\n      <RollForward listingId=\{listingId\} listing=\{listing\} record=\{data\} recordReading=\{reading\} hold=\{hold\} onRecordAgain=\{recordAgain\} onChanged=\{onChanged\} \/>\n/);
+  assert.match(panel, /\n      <RollForward listingId=\{listingId\} listing=\{listing\} record=\{data\} recordReading=\{reading\} hold=\{hold\} readBlock=\{readBlock\} onRecordAgain=\{recordAgain\} onChanged=\{onChanged\} \/>\n/);
   assert.doesNotMatch(panel, /&& <RollForward /);
   assert.equal(panel.split('<RollForward ').length, 2, 'rendered in one place');
   // inside, only the state decides whether there is a panel, and the record only what the picker's place holds

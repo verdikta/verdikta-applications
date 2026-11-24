@@ -1569,6 +1569,17 @@ goes in a URL.
   nothing of the hold left on the page; and a hold the chain dates otherwise than the receipt did
   is said by the chain's time everywhere, without the transaction. A `hold()` that was mined with
   no `Held` event of this listing in its receipt is named by its transaction and claims no hold.
+  The opening, a roll forward and a close stand by their receipts the same way: a read of their
+  block or later that does not show them (a listing still Listed, still Open or Depleted, not
+  Closed) is the state the page shows, an alert names the transaction, and the action is offered
+  again. **Every action is sent for the listing the page shows.** Listing ids are given in the
+  order `list()` is mined, so on a chain whose blocks were replaced an id can name another
+  listing of the maker's, or none. Just before sending, each action (top-up, renew, hold, close,
+  roll forward) reads the listing through the wallet at one block, the count first
+  (`listingAt` in `client/src/chain/wallet.js`): another artifact or another maker under the id,
+  or no such listing, sends nothing and reads the page again from that block
+  (`sameListing` in `client/src/lib/listingActions.js`); a roll's successor is held to the
+  artifact the picker showed.
   The commit offer follows the contract's `acceptsCommits`, read with the listing: a listing that
   rolled forward or closed is never said to be offered. A listing opened from its own page is
   followed the same way, so its claims, the hold and the rest are there without a reload; the

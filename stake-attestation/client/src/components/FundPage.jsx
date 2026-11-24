@@ -54,7 +54,9 @@ export function FundPage({ listingId }) {
   const [lookup, setLookup] = useState('');
   const [loaded, setLoaded] = useState(null); // { listing, hold, takesCommits, block } | { missing, block } | { failed }
   const [attempt, setAttempt] = useState(0);
-  const [openedHere, setOpenedHere] = useState(false);
+  // the opening fund() this page sent and saw mined: { block }. Like a hold's receipt, it stands only while the page's
+  // read is from before that block; a read of that block or later decides.
+  const [openedHere, setOpenedHere] = useState(null);
   // a hold this page sent and saw mined: { at, block }. It stands only while the page's read is from before that
   // block (lib/hold.js holdView); a read of that block or later decides, and replaces it.
   const [heldHere, setHeldHere] = useState(null);
@@ -115,7 +117,7 @@ export function FundPage({ listingId }) {
   }, [refresh]);
   /** The opening fund() was mined in `block`: its own line stays, and the rest of the page follows the listing. */
   const onOpened = useCallback((block = 0) => {
-    setOpenedHere(true);
+    setOpenedHere({ block });
     refresh(block);
   }, [refresh]);
 
@@ -159,8 +161,12 @@ export function FundPage({ listingId }) {
   const state = LISTING_STATES[Number(l.state)];
   // the hold as the chain has it, or as this page saw it mined (lib/hold.js holdView)
   const hold = holdView(l, loaded.hold, heldHere, loaded.block);
-  // a listing this page just opened reads Listed until a read reaches the opening's block
-  const shown = state === 'Listed' && openedHere ? 'Open' : state;
+  // A listing this page just opened reads Listed until a read reaches the opening's block: until then it is shown as
+  // open, by the receipt. A read of that block or later that still says Listed means the opening is not on the chain
+  // as read: the state is the read's, the page says so, and the funding form is back.
+  const openingAhead = openedHere !== null && loaded.block < openedHere.block;
+  const openingDropped = openedHere !== null && !openingAhead && state === 'Listed';
+  const shown = state === 'Listed' && openingAhead ? 'Open' : state;
   // errata E8 and E9: the floor and the size list() copied onto this listing, for its whole life
   const terms = safeguardTerms(l);
   return (
@@ -196,14 +202,14 @@ export function FundPage({ listingId }) {
       {/* Once opened from this page the opening's own line stays, with its transaction. What the listing is now is
           never that line's to say: from the first read that has the opening (`followed`) it says only that this page
           opened it, and "is open until" is the line below, of the listing and its hold as last read. */}
-      {(state === 'Listed' || openedHere) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} followed={state !== 'Listed'} onOpened={onOpened} />}
+      {(state === 'Listed' || openedHere !== null) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} followed={state !== 'Listed'} dropped={openingDropped} onOpened={onOpened} />}
       {state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
       {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
-      <ListingMore listingId={listingId} listing={l} hold={hold} takesCommits={loaded.takesCommits} onHeld={onHeld} onChanged={refresh} />
+      <ListingMore listingId={listingId} listing={l} hold={hold} takesCommits={loaded.takesCommits} readBlock={loaded.block} onHeld={onHeld} onChanged={refresh} />
       <TopUpEscrow listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
       <RenewListing listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
-      <CloseListing listingId={listingId} listing={l} onChanged={refresh} />
+      <CloseListing listingId={listingId} listing={l} readBlock={loaded.block} onChanged={refresh} />
       <Withdraw version={version} />
     </>
   );

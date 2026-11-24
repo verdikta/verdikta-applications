@@ -122,6 +122,18 @@ export async function minedReceipt(tx) {
   }
 }
 
+/**
+ * The listing as `contract`'s node has it at `blockTag`, or null when the contract has no listing of that id there:
+ * one whose block was dropped, read through a node that has dropped it too. getListing reverts for such an id, so the
+ * count is asked first, at the same block.
+ * @returns {Promise<object|null>}
+ */
+export async function listingAt(contract, listingId, blockTag) {
+  const id = BigInt(listingId);
+  if (id === 0n || id > BigInt(await contract.listingCount({ blockTag }))) return null;
+  return contract.getListing(id, { blockTag });
+}
+
 /** The event `name` in a receipt, parsed with the client's ABI, or null. */
 export function eventOf(contract, receipt, name) {
   for (const log of receipt.logs) {

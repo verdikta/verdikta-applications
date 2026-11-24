@@ -25,11 +25,14 @@ const C = STRINGS.chain;
  * own page the listing goes on changing under that line (a hold, a renewal, a roll forward, a close), so there
  * `followed` is true from the page's first read that has the opening: the line then keeps the transaction and says
  * only that this page opened the listing, and what the listing is now is the page's to say, from its latest read.
+ * `dropped`: that page has read the block the opening was mined in, or a later one, and the listing is still Listed
+ * there (the opening's block was replaced). The line of the opening then goes, an alert names its transaction, and
+ * the form is back: the read just before sending decides, as for a first opening.
  *
- * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string, followed?: boolean }} props - `top`
- *        is the awards[CRITICAL] this page shows
+ * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string, followed?: boolean, dropped?: boolean }} props -
+ *        `top` is the awards[CRITICAL] this page shows
  */
-export function FundListing({ listingId, top, maker, artifactHash, followed = false, onOpened = () => {} }) {
+export function FundListing({ listingId, top, maker, artifactHash, followed = false, dropped = false, onOpened = () => {} }) {
   const w = useWalletContext();
   const [escrow, setEscrow] = useState(formatEth(top));
   const [fee, setFee] = useState(null);
@@ -92,7 +95,7 @@ export function FundListing({ listingId, top, maker, artifactHash, followed = fa
     }
   };
 
-  if (opened) {
+  if (opened && !dropped) {
     let text = fill(C.openedNoTime, { id: String(listingId), tx: opened.tx });
     if (followed) text = fill(C.openedHere, { id: String(listingId), tx: opened.tx });
     else if (opened.until) text = fill(C.opened, { id: String(listingId), until: formatTime(opened.until), tx: opened.tx });
@@ -100,6 +103,7 @@ export function FundListing({ listingId, top, maker, artifactHash, followed = fa
   }
   return (
     <>
+      {opened && dropped && <p className="error" role="alert" data-testid="opening-dropped">{fill(C.openingDropped, { id: String(listingId), tx: opened.tx })}</p>}
       {fee !== null && <p>{fill(C.fee, { fee: formatEth(fee) })}</p>}
       <TextField label={C.escrow} value={escrow} onChange={setEscrow} inputMode="decimal" error={escrowError} />
       {!stale && <button type="button" onClick={fund} disabled={busy || escrowError !== null}>{busy ? C.funding : C.fund}</button>}

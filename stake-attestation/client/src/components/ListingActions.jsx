@@ -2,11 +2,11 @@ import { useEffect, useId, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 
 import { LISTING_STATES } from '../chain/abi.js';
-import { chainReader, minedReceipt, stakeAttestation } from '../chain/wallet.js';
+import { chainReader, listingAt, minedReceipt, stakeAttestation } from '../chain/wallet.js';
 import { ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { NO_HOLD, holdTerms, readHold } from '../lib/hold.js';
-import { closeTerms, renewTerms, topUpEffect, topUpTerms } from '../lib/listingActions.js';
+import { closeTerms, renewTerms, sameListing, topUpEffect, topUpTerms } from '../lib/listingActions.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
@@ -78,7 +78,13 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
       const blockTag = await blockNow(provider);
-      const mine = await reader.getListing(BigInt(listingId), { blockTag });
+      const mine = await listingAt(reader, listingId, blockTag);
+      // another listing under this id, or none: the wallet's chain is not the one this page read (FundPage refresh)
+      if (!sameListing(mine, listing)) {
+        setError(fill(STRINGS.fund.replaced, { id: listingId }));
+        onChanged(blockTag);
+        return undefined;
+      }
       if (!topUpTerms(mine).can || !same(mine.maker, account)) {
         setError(fill(T.changed, { id: listingId, state: stateWords(mine) }));
         // the block the wallet saw the change at: the page reads the listing from there (FundPage refresh)
@@ -199,7 +205,12 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
       const blockTag = await blockNow(provider);
-      const [mine, due] = await Promise.all([reader.getListing(BigInt(listingId), { blockTag }), reader.listingFeeWei({ blockTag })]);
+      const [mine, due] = await Promise.all([listingAt(reader, listingId, blockTag), reader.listingFeeWei({ blockTag })]);
+      if (!sameListing(mine, listing)) {
+        setError(fill(STRINGS.fund.replaced, { id: listingId }));
+        onChanged(blockTag);
+        return undefined;
+      }
       if (!renewTerms(mine, 0).can || !same(mine.maker, account)) {
         setError(fill(R.changed, { id: listingId, state: stateWords(mine) }));
         onChanged(blockTag);
@@ -292,7 +303,16 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
       }
       const reader = stakeAttestation(provider);
       const blockTag = await blockNow(provider);
-      const [mine, now] = await Promise.all([reader.getListing(BigInt(listingId), { blockTag }), readHold(reader, listingId, { blockTag })]);
+      const [mine, now] = await Promise.all([listingAt(reader, listingId, blockTag), readHold(reader, listingId, { blockTag })]);
+      // A hold has no way back, so it is sent only for the listing this page showed the maker: the same artifact, and
+      // the same maker's. On a chain whose blocks were replaced the id can name another of the maker's open listings,
+      // and a hold there would leave the version meant to be protected taking commits.
+      if (!sameListing(mine, listing)) {
+        setError(fill(STRINGS.fund.replaced, { id: listingId }));
+        setAsking(false);
+        onChanged(blockTag);
+        return undefined;
+      }
       if (!holdTerms(mine, now).can || !same(mine.maker, sender)) {
         setError(fill(H.changed, { id: listingId }));
         setAsking(false);
@@ -388,15 +408,19 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
  * through the wallet. The receipt says what came back and whether the contract could send it: a wallet
  * it could not pay is credited instead (PaymentDeferred), and withdraws.
  */
-export function CloseListing({ listingId, listing, onChanged = () => {} }) {
+export function CloseListing({ listingId, listing, readBlock = null, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const C = STRINGS.close;
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null); // { tx, amount, account, deferred }
+  const [done, setDone] = useState(null); // { tx, amount, account, deferred, block }
   const [error, setError] = useState(null);
   const terms = closeTerms(listing);
+  // A close this page saw mined stands by its receipt while the page's read is from before its block (`readBlock`: the
+  // block the listing was read at). From that block on the read decides: a listing that does not read closed is not,
+  // the page says so, and the close is offered again by its terms.
+  const closedHere = done !== null && (terms.why === 'closed' || readBlock === null || readBlock < done.block);
 
   if (terms.why === 'closed' && !done) return null;
 
@@ -408,7 +432,13 @@ export function CloseListing({ listingId, listing, onChanged = () => {} }) {
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
       const blockTag = await blockNow(provider);
-      const mine = await reader.getListing(BigInt(listingId), { blockTag });
+      const mine = await listingAt(reader, listingId, blockTag);
+      if (!sameListing(mine, listing)) {
+        setError(fill(STRINGS.fund.replaced, { id: listingId }));
+        setAsking(false);
+        onChanged(blockTag);
+        return undefined;
+      }
       // what this page offered is what is sent: a claim that came in, or an escrow that moved, asks again
       if (!closeTerms(mine).can || !same(mine.maker, account) || BigInt(mine.escrowWei) !== terms.escrowWei) {
         setError(fill(C.changed, { id: listingId }));
@@ -430,7 +460,9 @@ export function CloseListing({ listingId, listing, onChanged = () => {} }) {
         if (event?.name === 'Closed') amount = event.args.amountReturned;
         if (event?.name === 'PaymentDeferred' && same(event.args.to, account)) deferred = true;
       }
-      setDone({ tx: tx.hash, amount, account, deferred });
+      setDone({ tx: tx.hash, amount, account, deferred, block: receipt.blockNumber });
+      // sent: a close that turns out not to be on the chain is offered again from its first step
+      setAsking(false);
       onChanged(receipt.blockNumber);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
@@ -441,7 +473,7 @@ export function CloseListing({ listingId, listing, onChanged = () => {} }) {
   };
 
   let body;
-  if (done) {
+  if (closedHere) {
     body = (
       <p className="ok" data-testid="closed">
         {fill(done.deferred ? C.doneDeferred : C.done, { id: listingId, tx: done.tx, eth: formatEth(done.amount), account: done.account })}
@@ -474,6 +506,7 @@ export function CloseListing({ listingId, listing, onChanged = () => {} }) {
     <section className="claim" aria-labelledby={id} data-testid="close">
       <h3 id={id}>{C.title}</h3>
       <p>{C.intro}</p>
+      {done && !closedHere && <p className="error" role="alert" data-testid="close-dropped">{fill(C.dropped, { id: listingId, tx: done.tx })}</p>}
       {body}
       {error && <p className="error" role="alert">{error}</p>}
     </section>

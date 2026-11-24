@@ -202,7 +202,11 @@ export function makeContext(options = {}) {
           movedAt = null;
         }
       }
-      if (ctx.now() >= until) throw fail('TX_PENDING', `Transaction ${rec.hash}.`);
+      if (ctx.now() >= until) {
+        // what the wait saw goes with the error: a caller may have more to say when the nonce was already used
+        // (commit.js: a folder where --restart set files aside)
+        throw Object.assign(fail('TX_PENDING', `Transaction ${rec.hash}.`), { nonceUsed: movedAt !== null });
+      }
       await ctx.sleep(ctx.pollMs ?? TX_POLL_MS);
     }
   };

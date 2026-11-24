@@ -1969,8 +1969,9 @@ test('the saved commit is mined below the old height by a reorganization, the pr
   const c = await restartedAndSigned({ l, options: { provider: finalizedAt(() => finalizedBlock) } });
   await c.sendOld();
   const top = await w.provider.getBlockNumber();
-  // a provider as a library caller may hand in: it answers a repeated request from memory for a while
-  const remembering = new ethers.BrowserProvider({ request: (call) => w.hre.network.provider.request(call) }, 31337, { cacheTimeout: 60_000, staticNetwork: true });
+  // a provider as a library caller may hand in: it answers a repeated request from memory for a while (five seconds
+  // here: longer than the run takes from its wait for the receipt to its reads after finality)
+  const remembering = new ethers.BrowserProvider({ request: (call) => w.hre.network.provider.request(call) }, 31337, { cacheTimeout: 5_000, staticNetwork: true });
   let reorganized = false;
   const provider = injecting('send', async () => {
     // the chain is rolled back under the block the folder was prepared at; the saved commit, sent by an earlier run,
@@ -2001,12 +2002,18 @@ test('no receipt for the saved commit, and logs that cannot show that no other t
   while (await w.provider.getBlockNumber() <= c.signed.startBlock) await w.mine();
   const err = await signsNothing(c, () => w.hunter({ provider: noLogsBelow(() => c.signed.startBlock) }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', 'logs unread');
   assert.equal(err.exitCode, 4);
-  assert.match(err.message, /could not be shown from the logs this node gave: run the same command again through an RPC that serves the logs from the finalized block saved in this folder's anchor\.json/);
+  assert.match(err.message, /As for this folder's own two hashes: The chain was reorganized below the block it was prepared at, and the node did not give all the logs since the finalized block saved with it\. Run the same command again through an RPC that serves the logs from block \d+/);
   assert.doesNotMatch(err.message, SIGNS_NOTHING_MORE);
   assert.ok(err.message.includes(`*.set-aside-${c.stamp}`), 'and it names the files set aside all the same');
   // through a node that serves them, the scan is complete, and the folder signs nothing more
   const final = await signsNothing(c, () => w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', 'logs read');
   assert.match(final.message, SIGNS_NOTHING_MORE);
+  // a folder whose anchor proves no bound at all (it is gone) says that, and gives no late claim's advice for it
+  fs.rmSync(statePath(c.dir, 'anchor.json'));
+  const none = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(none.code, 'TX_PENDING', `${none.code}: ${none.message}`);
+  assert.match(none.message, /As for this folder's own two hashes: It has no anchor: an earlier version of this tool prepared it, or the file is gone\. So this folder cannot show whether another transaction made a claim of its own two hashes: look for one as said above\.$/);
+  assert.doesNotMatch(none.message, /commit --late/);
 });
 
 test('a receipt the node gives for the saved commit after finality is the one used, once: no second wait, whatever a later read says (R19-F1)', async () => {
@@ -2756,6 +2763,9 @@ test('the README says the six things this change does to a commit, and what a fo
   assert.match(flat, /and only after a look for a claim of every set of files the folder set aside and of its own two hashes, mined or pending, among the transactions of the wallet each `state\.json` names, whatever their nonce: the transaction that took the nonce, those before it and those after it\./);
   assert.match(flat, /That text names the files set aside and the way back for a claim of them at once, since such a claim's disclosure window does not wait for finality; it holds back only the advice to pay from a new folder\./);
   assert.match(flat, /the saved commit's own receipt is asked for \(a reorganization can have mined it\), a claim of the folder's hashes is looked for once more, and only with neither is the commit replaced\./);
+  assert.match(flat, /The receipt is asked of the node itself, never of a provider's memory of an earlier answer, and the one that comes back is the one used, once it is where it says and as deep as a commit must be: it is not waited for a second time\./);
+  assert.match(flat, /Logs that cannot be read through are no proof that no other transaction made the claim, so then the run is to be made again through an RPC that serves them\./);
+  assert.match(flat, /a run whose wait ended after it saw the nonce used says the same of the files set aside as one that knows the nonce is not final\./);
   assert.match(flat, /and `commit` on that folder, without `--yes`\./);
   assert.match(flat, /It looks for the claim in the logs from the block the set was prepared at, or, where the chain was reorganized below that block and the set's anchor holds a finalized block that still stands, from that block, which needs an RPC that serves the logs from there\. A run that prints a commit's terms and asks for `--yes` did not find the claim, and `--yes` there would pay for a second one\./);
   assert.match(flat, /It does not find a claim below that: for a set with no `anchor\.json` \(one an earlier version prepared\), a claim that a reorganization put below the block the set was prepared at\. The tool has no command for that case\./);

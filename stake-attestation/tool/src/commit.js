@@ -189,6 +189,20 @@ async function countAt(ctx, address, at) {
 const isBlockId = (b) => Number.isSafeInteger(b?.number) && b.number >= 0 && typeof b.hash === 'string' && /^0x[0-9a-f]{64}$/.test(b.hash);
 
 /**
+ * A transaction's receipt, asked of the node: its status, its logs and its block, or null when the node has none (or
+ * answers with something that is no receipt).
+ */
+async function receiptNow(ctx, hash) {
+  const raw = await ctx.rpc(() => ctx.provider.send('eth_getTransactionReceipt', [hash]));
+  try {
+    const receipt = { status: Number(BigInt(raw.status)), logs: raw.logs, blockNumber: Number(BigInt(raw.blockNumber)), blockHash: String(raw.blockHash).toLowerCase() };
+    return Array.isArray(receipt.logs) && isBlockId({ number: receipt.blockNumber, hash: receipt.blockHash }) ? receipt : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * A block's number and hash, asked of the node: the latest, the one at a number, or the one a tag names. Null when
  * there is none, and when the answer is not a block with a number and a hash: every caller takes null as no proof.
  */
@@ -439,6 +453,55 @@ async function adoptClaim(ctx, ws, state, claimId, txHash = state.commitTx?.hash
   return next;
 }
 
+/**
+ * A saved commit whose nonce another transaction has, with no claim of the folder's hashes found, in a folder where
+ * --restart set files aside. Whether the commit is replaced is decided by three reads, in an order no change of fork
+ * gets between, and each of them is the node's own answer:
+ *
+ *   1. The nonce is used for good: the wallet's count at the node's finalized block is past it (nonceTakenForGood).
+ *      Until then a reorganization can free the nonce again, and the saved commit can still go out.
+ *   2. What used it: the saved commit itself, if the node has its receipt now (a reorganization since the wait can
+ *      have mined it, anywhere). That receipt is the one used, once it is where it says and as deep as a commit must
+ *      be: it is never waited for a second time.
+ *   3. Or another transaction with these hashes, which the logs show, read once more from the bound the anchor
+ *      proves. Logs that cannot show it are no proof that there is none.
+ *
+ * Only with all three settled is the commit replaced, and the folder signs nothing more. Everything short of that is
+ * to be run again (TX_PENDING), with the files set aside named at once. Nothing is saved on any of these ways.
+ */
+async function replacedOrNot(ctx, ws, state) {
+  const taken = await nonceTakenForGood(ctx, state);
+  if (taken !== 'final') {
+    throw fail('TX_PENDING', pendingAfterRestart(ws, state, taken === 'not-final' ? NONCE.notFinal : NONCE.noFinalizedBlock));
+  }
+  const receipt = await receiptNow(ctx, state.commitTx.hash);
+  if (receipt) {
+    const head = await headNow(ctx);
+    const settled = head - receipt.blockNumber + 1 >= ctx.confirmations && (await blockIdAt(ctx, receipt.blockNumber))?.hash === receipt.blockHash;
+    if (!settled) throw fail('TX_PENDING', pendingAfterRestart(ws, state, NONCE.ownReceiptUnsettled));
+    return finishCommitWait(ctx, ws, state, { receipt });
+  }
+  const now = await anchoredClaim(ctx, ws, state);
+  if (now.existing) return adoptLogged(ctx, ws, state, now.existing, now.from);
+  if (now.unproven) {
+    // why the logs prove nothing, as the anchor's own text has it. Where a node did not give them, that text says
+    // which RPC to use; where the folder cannot show its bound at all, its advice is a late claim's, and is left out.
+    const cut = now.unproven.indexOf(NEW_FOLDER);
+    const why = cut < 0 ? now.unproven : `${now.unproven.slice(0, cut).trim()} So this folder cannot show whether another transaction made a claim of its own two hashes: look for one as said above.`;
+    throw fail('TX_PENDING', `${pendingAfterRestart(ws, state, NONCE.logsUnread)} As for this folder's own two hashes: ${why}`);
+  }
+  throw fail('COMMIT_REPLACED', replacedAfterRestart(ws));
+}
+
+/**
+ * A wait that ran out after it saw the saved commit's nonce used (ctx.waitMined), in a folder where --restart set
+ * files aside: the run cannot say yet what used it, and already says what a claim of the files set aside needs.
+ */
+function withSetAsideGuidance(ws, state, err) {
+  if (err?.code !== 'TX_PENDING' || err.nonceUsed !== true || ws.setAsideClaims().length === 0) return err;
+  return fail('TX_PENDING', pendingAfterRestart(ws, state, NONCE.waitEnded));
+}
+
 /** A saved commit's fate: the claim it made, or that it made none and its nonce is gone. */
 async function settleCommit(ctx, ws, state) {
   // It may not have gone out yet: it pays the bond, and a claim without its keys loses it. So the same proof as
@@ -458,7 +521,9 @@ async function settleCommit(ctx, ws, state) {
     if (at.nonce < state.commitTx.nonce) throw fail('WALLET_BUSY', `${kept}: a transaction of this wallet before it is not mined, and that one may be this same claim, sent some other way.`);
     return undefined;
   };
-  const outcome = await ctx.settleSaved(state.commitTx, { confirmations: ctx.confirmations, beforeResend });
+  const outcome = await ctx.settleSaved(state.commitTx, { confirmations: ctx.confirmations, beforeResend }).catch((err) => {
+    throw withSetAsideGuidance(ws, state, err);
+  });
   return finishCommitWait(ctx, ws, state, outcome);
 }
 
@@ -477,28 +542,7 @@ async function finishCommitWait(ctx, ws, state, { receipt, gone, superseded }) {
     // signs nothing more. Nothing is saved for it, before the message or after: the signed bytes stay, and every
     // later run reads from the chain that their nonce is gone and from the disk that files are set aside, and ends
     // here again. So no process that stops anywhere on the way leaves a folder that signs.
-    const stop = replacedAfterRestart(ws);
-    if (stop) {
-      // And it is said only once it cannot be undone: the transaction that took the nonce is in a finalized block.
-      // Before that a reorganization can free the nonce again, and the next run would send the saved commit from a
-      // folder that had said it signs nothing more. So until then the run says what is true, that the commit is not
-      // mined, and is to be made again (TX_PENDING, exit 4).
-      const taken = await nonceTakenForGood(ctx, state);
-      if (taken !== 'final') {
-        const why = taken === 'not-final' ? 'in a block that is not final yet' : 'and this node names no finalized block, so it cannot show that the block is final: use an RPC that does';
-        throw fail('TX_PENDING', pendingAfterRestart(ws, state, why));
-      }
-      // The nonce is used for good now, by one transaction that no fork can change. Which one is asked only here,
-      // after that: a reorganization since the look above can have mined the saved commit itself, or another
-      // transaction with these hashes. The saved commit's own receipt is waited on as any is; a claim of these
-      // hashes by another transaction is adopted; and only with neither is this commit replaced.
-      if (await ctx.rpc(() => ctx.provider.getTransactionReceipt(state.commitTx.hash))) {
-        return finishCommitWait(ctx, ws, state, await ctx.waitMined(state.commitTx, { confirmations: ctx.confirmations }));
-      }
-      const now = await anchoredClaim(ctx, ws, state);
-      if (now.existing) return adoptLogged(ctx, ws, state, now.existing, now.from);
-      throw fail('COMMIT_REPLACED', stop);
-    }
+    if (ws.setAsideClaims().length > 0) return replacedOrNot(ctx, ws, state);
     // nothing is signed any more, so the folder names no kind: the next run's flag says which is sent
     const next = { ...withKind(state, false), stage: 'prepared', commitTx: null };
     ws.saveState(next);
@@ -620,10 +664,19 @@ function replacedAfterRestart(ws) {
  * needs is said at once all the same: its disclosure window started when it was mined, and does not wait for
  * finality. A restored folder finds and discloses it at the depth any claim needs.
  */
-function pendingAfterRestart(ws, state, why) {
+function pendingAfterRestart(ws, state, what) {
   const stamps = ws.setAsideClaims();
-  return `Transaction ${state.commitTx.hash}: it stays saved, and no other was signed. Another transaction of this wallet has its nonce, ${why}. If that stands, this folder signs nothing more, and this command says so then. Do not pay from a new folder before this command has said that this folder signs nothing more. Meanwhile, ${setAsideMayBePaid(stamps)} Look for a claim of each of them now, mined or pending: ${WHERE_TO_LOOK} ${RESTORE}`;
+  return `Transaction ${state.commitTx.hash}: it stays saved, and no other was signed. ${what} If another transaction has the nonce for good, this folder signs nothing more, and this command says so then. Do not pay from a new folder before this command has said that this folder signs nothing more. Meanwhile, ${setAsideMayBePaid(stamps)} Look for a claim of each of them now, mined or pending: ${WHERE_TO_LOOK} ${RESTORE}`;
 }
+
+/** What is known of the saved commit's nonce when the run cannot say yet that the commit is replaced. */
+const NONCE = Object.freeze({
+  notFinal: 'Another transaction of this wallet has its nonce, in a block that is not final yet.',
+  noFinalizedBlock: 'Another transaction of this wallet has its nonce, and this node names no finalized block, so it cannot show that the block is final: use an RPC that does.',
+  ownReceiptUnsettled: 'Its nonce is used for good, and the node has a receipt of this transaction itself, which is not where it says or not deep enough yet.',
+  logsUnread: 'Another transaction of this wallet has its nonce, in a block that is final.',
+  waitEnded: 'Its nonce is used: by another transaction of this wallet, or by this one with its receipt not shown yet. This run\'s wait ended before it could tell which.',
+});
 
 const setAsideMayBePaid = (stamps) => `--restart set files aside here (${asideNames(stamps)}), and a claim of the two hashes in one of those state.json files may have been sent some other way: by the transaction that took the nonce, or by another.`;
 // No nonce bounds the search: a claim of the files set aside can be mined before the new commit is signed, at a
@@ -682,7 +735,10 @@ async function sendCommit(ctx, ws, state, listingId, late, quoted) {
   for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) ws.measure(name);
   await ctx.broadcast(rec);
   await ctx.step('commit:sent');
-  return finishCommitWait(ctx, ws, next, await ctx.waitMined(rec, { confirmations: ctx.confirmations }));
+  const outcome = await ctx.waitMined(rec, { confirmations: ctx.confirmations }).catch((err) => {
+    throw withSetAsideGuidance(ws, next, err);
+  });
+  return finishCommitWait(ctx, ws, next, outcome);
 }
 
 async function disclose(ctx, ws, state, { acceptUnreadPin }) {

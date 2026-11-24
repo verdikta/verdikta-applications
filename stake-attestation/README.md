@@ -1458,7 +1458,12 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   claim of them at once, since such a claim's disclosure window does not wait for finality; it holds back only the
   advice to pay from a new folder. Once the nonce is used for good, the reads that decide come in an order no fork
   change gets between: the saved commit's own receipt is asked for (a reorganization can have mined it), a claim of
-  the folder's hashes is looked for once more, and only with neither is the commit replaced. The commit goes in a new
+  the folder's hashes is looked for once more, and only with neither is the commit replaced. The receipt is asked of
+  the node itself, never of a provider's memory of an earlier answer, and the one that comes back is the one used,
+  once it is where it says and as deep as a commit must be: it is not waited for a second time. Logs that cannot be
+  read through are no proof that no other transaction made the claim, so then the run is to be made again through an
+  RPC that serves them. And a run whose wait ended after it saw the nonce used says the same of the files set aside
+  as one that knows the nonce is not final. The commit goes in a new
   folder, with one copy of the claim's files, and only after a look for a claim of every set of files the folder set
   aside and of its own two hashes, mined or pending, among the transactions of the wallet each `state.json` names,
   whatever their nonce: the transaction that took the nonce, those before it and those after it. The text says so,

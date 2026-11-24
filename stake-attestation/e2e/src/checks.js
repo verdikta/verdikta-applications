@@ -353,13 +353,14 @@ const UNTOUCHED = ['pendingClaims', 'headClaim', 'tailClaim', 'claimsCommitted',
  * acceptsCommits, the lens's acceptsLateClaims, and the fields of UNTOUCHED.
  */
 export function holdChecks(prefix, { event, maker, before, after }) {
+  const moved = UNTOUCHED.filter((k) => before?.[k] !== after?.[k]).map((k) => [k, before?.[k], after?.[k]]);
   return [
     check(`${prefix}.hold.byTheMaker`, Boolean(event) && event.from === maker, `Held sent by ${event?.from}`),
     check(`${prefix}.hold.time`, Boolean(event) && before?.heldAt === 0n && event.heldAt > 0n && event.heldAt === BigInt(event.blockTimestamp) && after?.heldAt === event.heldAt, `the event says ${event?.heldAt}, its block ${event?.blockTimestamp}, the view ${before?.heldAt} then ${after?.heldAt}`),
     check(`${prefix}.hold.stateAsItWas`, HOLDABLE.includes(after?.state) && after.state === before?.state, `${before?.state} then ${after?.state}: a hold is not a state`),
     check(`${prefix}.hold.noCommitFromNow`, after?.acceptsCommits === false, `acceptsCommits ${before?.acceptsCommits} then ${after?.acceptsCommits}`),
     check(`${prefix}.hold.lateClaimsFromNow`, before?.acceptsLateClaims === false && after?.acceptsLateClaims === true, `acceptsLateClaims ${before?.acceptsLateClaims} then ${after?.acceptsLateClaims}`),
-    check(`${prefix}.hold.pendingUntouched`, Boolean(before) && Boolean(after) && UNTOUCHED.every((k) => before[k] === after[k]), JSON.stringify(UNTOUCHED.filter((k) => before?.[k] !== after?.[k]).map((k) => [k, before?.[k], after?.[k]]), big) || 'nothing moved'),
+    check(`${prefix}.hold.pendingUntouched`, Boolean(before) && Boolean(after) && moved.length === 0, moved.length ? `moved: ${JSON.stringify(moved, big)}` : `as they were: ${UNTOUCHED.join(', ')}`),
   ];
 }
 

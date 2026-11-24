@@ -162,6 +162,19 @@ const CLAIMS = Object.freeze({
     finding: { ...FINDING, title: 'Vault.deposit over-credits, a second report of the same proof' },
     poc: null, // the valid claim's (claimFolder)
   },
+  // Node P42: the valid claim's proof once more, committed just before the maker holds the listing. A hold leaves a
+  // pending claim every path, so this one is revealed, judged by the jury and paid from the held listing's escrow as
+  // the first was: the second juror answers for it as for the first (JUROR_SCORES, below).
+  held: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, committed before the hold' },
+    poc: null, // the valid claim's (claimFolder)
+  },
+  // Node P42: a proof a hunter brings to the listing once it is on hold. The tool takes the folder as far as its
+  // acknowledgement before the hold, and refuses to commit it on the listing on hold.
+  onHold: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that edits the source, brought to the listing on hold' },
+    poc: 'diff --git a/src/Vault.sol b/src/Vault.sol\n--- a/src/Vault.sol\n+++ b/src/Vault.sol\n@@ -11,5 +11,5 @@\n \n     function deposit(uint256 amount) external {\n-        balanceOf[msg.sender] += amount + 1;\n+        balanceOf[msg.sender] += amount + 4;\n     }\n }\n',
+  },
   // Node P20: the valid claim's proof, checked by the hunter on the listing that names its documents.
   documents: {
     finding: { ...FINDING, title: 'Vault.deposit over-credits, on the listing that names its documents' },
@@ -190,10 +203,13 @@ export const JUROR_SCORES = Object.freeze([[0, 0, 0, 0, 800000, 200000], [0, 0, 
 export const JURY_AVERAGE = Object.freeze([0n, 0n, 0n, 0n, 700000n, 300000n]);
 /**
  * Node P18, erratum E8. The claim panel's second juror answers JUROR_SCORES[1] for the valid claim's K jobs, and
- * then NARROW_SCORES: with the first juror's [0, 0, 0, 0, 800000, 200000] the narrow claim's average is
- * NARROW_AVERAGE, an INVALID (no class reaches THRESHOLD, and INVALID outweighs DUPLICATE) with 500,000 of valid
- * mass, inside the band of the round's floor (NARROW_FLOOR, 25 points) up to THRESHOLD - 1: its bond comes back.
- * No other claim of the round reaches the claim panel's jury: the gates settle the others, or they abstain.
+ * then NARROW_SCORES for the narrow claim's K: with the first juror's [0, 0, 0, 0, 800000, 200000] the narrow claim's
+ * average is NARROW_AVERAGE, an INVALID (no class reaches THRESHOLD, and INVALID outweighs DUPLICATE) with 500,000 of
+ * valid mass, inside the band of the round's floor (NARROW_FLOOR, 25 points) up to THRESHOLD - 1: its bond comes back.
+ * Node P42: after those it answers JUROR_SCORES[1] again, for the claim committed before the maker's hold, whose
+ * average is JURY_AVERAGE as the first claim's was. The script is a sequence by call, so the round checks, before
+ * that claim is revealed, that the second juror has answered exactly the two claims before it. No other claim of the
+ * round reaches the claim panel's jury: the gates settle the others, or they abstain.
  */
 export const NARROW_SCORES = Object.freeze([1000000, 0, 0, 0, 0, 0]);
 export const NARROW_AVERAGE = Object.freeze([500000n, 0n, 0n, 0n, 400000n, 100000n]);

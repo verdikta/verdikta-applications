@@ -1762,7 +1762,7 @@ pin unless `SA_E2E_ARBITER_UNPINNED=1`. `e2e/test/failure.test.js` breaks it on 
 cannot be reached, a crash, a service whose leader dies, a live process group after every check passed; SIGTERM while running, mid-build, mid-scan, with EA requests out, twice during the startup, with a step that creates
 something after the signal, and with one that outlasts the bound) and reads the exit code.
 
-One listing of the builder's fixture takes four claims, in commit order: **a valid one** (every gate passes, the jury decides, HIGH,
+One listing of the builder's fixture takes its claims in commit order, four to begin with: **a valid one** (every gate passes, the jury decides, HIGH,
 the award and bond after the dispute window), **a gate-failing one** (a PoC that edits source: the runner's `testPathsOnly`, INVALID at
 once, the bond to the maker, no model asked, the first claim among its prior findings), **one that fails an integrity check** (a PoC that fails as the valid
 one does and writes `.gitignore`, a path the listing protects, on real forge: `protectedPathsUnchanged`, no tamper flag, DUPLICATE at once, the bond back, no model asked; its check
@@ -1783,6 +1783,26 @@ runner at the pin builds, with the documents tier right after the source holding
 documents, and its packs have no documents tier. The round fails on the first check that fails, and
 every check is a pure function with a test that hands it a tampered observation (`e2e/test/checks.test.js`).
 
+**The maker's hold** (node P42; "The contract: listings"), in the maker's own order. Before the documents listing:
+**a claim is committed** on the first listing (the valid claim's proof again), and the tool takes a second folder as far
+as its acknowledgement; **the maker holds the listing** (`hold`, from the plain wallet): the `Held` event is the
+maker's and its time the block's and the view's, the state is what it was, `acceptsCommits` is false and the lens's
+`acceptsLateClaims` true, and the pending claim, the queue, the counts, the escrow and the paid period are field for
+field what they were. The site then says it (`labels.heldAt`, `live` false, the state still the chain's, the claim still
+pending, the badge "stake on hold since", and no entry in the feed), and so do the pages in Chromium: the listing's own,
+which reads the chain, the record and the feed. **A commit is refused**: the tool, given `--yes` for the folder it priced
+before the hold, exits as it does for a refusal, and what that leaves is checked and not its code or its words: nothing
+pinned, the hunter's nonce and the contract's claim count unmoved, the listing's counts and queue as they were. **The
+claim from before the hold is judged and paid as before**: the maker releases it, the hunter reveals it, the jury gives
+the first claim's HIGH (the second juror's script answers it so, and the round first checks that juror has answered
+exactly the two claims before), the keeper starts the confirmation after the dispute window and the held listing's
+escrow pays it, the panel holds it, and the award and the bond reach the hunter, to the wei, with the listing on hold
+throughout (Open or Depleted by what the escrow then holds). After the documents listing is validated, **the listing
+rolls forward from the hold**: that listing, at the later commit, goes on the chain and is funded, `rollForward` names
+it, the old listing is Rolled with the lineage both ways, `heldAt` answers 0, the successor takes commits, and the
+site's two records and its feed say the same. A late claim on the listing on hold (`commit --late`, node P43) is not in
+the round yet: `e2e/src/checks.js` holds its checks, each with its test.
+
 | Piece | Here |
 |---|---|
 | EVM, `StakeAttestation` and its libraries | Real: `hardhat node`, onchain's artifacts, blocks every second so confirmations are waited for |
@@ -1793,8 +1813,8 @@ every check is a pure function with a test that hands it a tampered observation 
 | Registry | Real `registry:2`, local: A6a's, plus a sidecar over its storage for this machine's reads |
 | IPFS | **A stand-in**: A6a's local IPFS, real CIDv0s |
 | Builder, baseline scan, server, indexer, keeper, tool | Real, as a deployment starts them, with a per-run dev builder key |
-| Client | The production build; Chromium reads the record and the feed. Its wallet flows are its own Playwright tests |
-| Maker | A plain wallet: signs the request, `list`, `fund`, `release` |
+| Client | The production build; Chromium reads the record and the feed, and, while the listing is on hold, its own page. Its wallet flows are its own Playwright tests |
+| Maker | A plain wallet: signs the request, `list`, `fund`, `release`, `hold`, `rollForward` |
 | Clock | **Forced** with `evm_increaseTime`: windows are moved past, never slept through |
 
 **What each platform covers.** A report exists only on `linux/amd64`, so on arm64 the runner answers `reportUnavailable` and the EA

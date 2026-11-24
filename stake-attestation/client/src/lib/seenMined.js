@@ -71,3 +71,26 @@ export function afterRead(seen, read, shows) {
   if (seen === null || seen.dropped || receiptVerdict(seen, read, shows) !== 'dropped') return seen;
   return Object.freeze({ ...seen, dropped: true });
 }
+
+/**
+ * The blocks of the receipts a page still holds. Each holder keeps its receipt's block while it holds the receipt
+ * (`keep` returns what lets go of it, once), and every read of the page asks which hash its chain has at these
+ * blocks and at no others: a receipt that was replaced by a later one, dropped for good, or gone with its listing
+ * is asked for no more.
+ */
+export function keptBlocks() {
+  const held = new Map();
+  return Object.freeze({
+    keep(block) {
+      held.set(block, (held.get(block) ?? 0) + 1);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (held.get(block) > 1) held.set(block, held.get(block) - 1);
+        else held.delete(block);
+      };
+    },
+    blocks: () => [...held.keys()],
+  });
+}

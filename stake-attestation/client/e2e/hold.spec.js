@@ -1034,6 +1034,79 @@ test.describe('the maker\'s hold', () => {
     for (const block of calls.reader) expect(block, 'a call of the read address').toEqual({ blockHash: expect.stringMatching(/^0x[0-9a-f]{64}$/), requireCanonical: true });
   });
 
+  test('after a failed read, a chain that does not have the listing: the page says the listing it showed is gone (R8-F4)', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    const section = page.getByTestId('hold');
+    const ask = section.getByRole('button', { name: fill(H.ask, { id: listingId }) });
+    await expect(ask).toBeVisible();
+    // the read of the hold's block fails: the reader says of every block that the listing takes commits
+    const takes = chain.sa.interface.encodeFunctionData('acceptsCommits', [listingId]);
+    let chainHasIt = true;
+    await interceptRpc(page, stack, (p) => {
+      if (!chainHasIt && isCallOf('listingCount()')(p)) return { result: word(BigInt(listingId) - 1n) };
+      if (chainHasIt && isCallWith(takes)(p)) return { result: word(1) };
+      return undefined;
+    }, { from: 'reader' });
+    await ask.click();
+    await section.getByRole('button', { name: fill(H.confirm, { id: listingId }) }).click();
+    await expect(page.getByTestId('listing-unread')).toHaveText(fill(F.readFailed, { reason: F.contradictory }), { timeout: 30_000 });
+    // the chain as the reader then has it ends before this listing: the read that follows the failed one finds none
+    chainHasIt = false;
+    await page.getByTestId('listing-read-again').click();
+    // said as a listing that was here and is gone, not only as one that is not there
+    await expect(page.getByTestId('listing-gone')).toHaveText(fill(F.gone, { id: listingId }), { timeout: 20_000 });
+    await expect(page.getByText(fill(F.notFound, { id: listingId }))).toBeVisible();
+    for (const id of ['listing-unread', 'listing-read', 'listing-summary', 'listing-held', 'hold', 'roll-forward']) await expect(page.getByTestId(id)).toHaveCount(0);
+    expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
+  });
+
+  test('a receipt that a later one replaced is asked for no more: its block is not among those the page checks (R8-F3)', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    const panel = page.getByTestId('top-up');
+    const topUp = async () => {
+      await panel.getByTestId('top-up-amount').fill('0.01');
+      await panel.getByRole('button', { name: fill(STRINGS.topUp.button, { eth: '0.01' }) }).click();
+    };
+    const funded = () => chain.sa.queryFilter(chain.sa.filters.Funded(listingId));
+    const before = (await funded()).length;
+    // two top-ups: the panel holds one receipt, the second's, in place of the first's
+    await topUp();
+    await expect.poll(async () => (await funded()).length, { timeout: 30_000 }).toBe(before + 1);
+    const [first] = (await funded()).slice(-1);
+    await expect(panel.getByTestId('topped-up')).toContainText(first.transactionHash, { timeout: 30_000 });
+    await topUp();
+    await expect.poll(async () => (await funded()).length, { timeout: 30_000 }).toBe(before + 2);
+    const [second] = (await funded()).slice(-1);
+    await expect(panel.getByTestId('topped-up')).toContainText(second.transactionHash, { timeout: 30_000 });
+    expect(second.blockNumber).toBeGreaterThan(first.blockNumber);
+    // From here the node gives no header for the first top-up's block. Blocks go by, so neither top-up's block is the
+    // latest block or its parent, and a read that checks one asks for its header by number.
+    await chain.provider.send('hardhat_mine', ['0x3']);
+    const headers = [];
+    const height = (n) => `0x${n.toString(16)}`;
+    await interceptRpc(page, stack, (p) => {
+      if (p.method !== 'eth_getBlockByNumber') return undefined;
+      headers.push(p.params?.[0]);
+      return p.params?.[0] === height(first.blockNumber) ? { result: null } : undefined;
+    }, { from: 'reader' });
+    // the page reads again after its next transaction, a renewal
+    await renewButton(page, stack).click();
+    await expect(page.getByTestId('renewed')).toBeVisible({ timeout: 30_000 });
+    // the second top-up's block is checked, and the first's is not asked for: nothing on the page stands on it, so
+    // the page has nothing it "could not check"
+    await expect.poll(() => headers.includes(height(second.blockNumber)), { timeout: 30_000 }).toBe(true);
+    await expect(panel.getByTestId('topped-up')).toContainText(second.transactionHash);
+    await expect(page.getByTestId('listing-unchecked')).toHaveCount(0);
+    expect(headers, 'the replaced receipt\'s block').not.toContain(height(first.blockNumber));
+  });
+
   test('a hold the chain dates otherwise than the receipt did: one time on the page, the chain\'s, and no transaction named for it', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     await installWallet(page, stack);

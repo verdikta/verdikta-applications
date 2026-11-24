@@ -1576,7 +1576,8 @@ goes in a URL.
   opening, a top-up, a renewal, the hold, a roll forward, a close and a withdrawal each say their
   line only while their receipt stands. It stands while the page's read is of a block before its
   own; from a read of that block or a later one, only if the chain that read is of has that hash
-  at that height (each read carries the hash at the block of every receipt the page keeps) and
+  at that height (each read carries the hash at the block of every receipt the page still holds;
+  one that a later receipt replaced, or that was dropped, is asked for no more) and
   the read shows what the transaction did (a hold of that very time, a listing that opened, the
   successor it named, a closed listing); and once a read said otherwise it is dropped for good:
   what the listing becomes later, by another transaction or by the same one mined again in

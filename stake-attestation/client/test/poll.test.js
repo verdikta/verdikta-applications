@@ -177,28 +177,70 @@ test('readFrom: reads until a read is of the transaction\'s block or later, and 
     };
   };
   // the first read is already of that block
-  assert.deepEqual(await readFrom(reads([90]), 90, { sleep }), { read: { block: 90 }, reached: true });
+  assert.deepEqual(await readFrom(reads([90]), 90, { sleep }), { read: { block: 90 }, reached: true, seen: true });
   assert.deepEqual(sleeps, [], 'no wait before the first read');
   // a reader one block behind catches up on the third read
-  assert.deepEqual(await readFrom(reads([89, 89, 91]), 90, { sleep }), { read: { block: 91 }, reached: true });
+  assert.deepEqual(await readFrom(reads([89, 89, 91]), 90, { sleep }), { read: { block: 91 }, reached: true, seen: true });
   assert.deepEqual(sleeps, [AFTER_TX_WAIT_MS, AFTER_TX_WAIT_MS]);
   // it never does: the caller gets the newest read from before the block, marked as not reaching it
-  assert.deepEqual(await readFrom(reads([88, 89, 89, 89, 95]), 90, { sleep }), { read: { block: 89 }, reached: false }, `${AFTER_TX_READS} reads, and no more`);
+  assert.deepEqual(await readFrom(reads([88, 89, 89, 89, 95]), 90, { sleep }), { read: { block: 89 }, reached: false, seen: false }, `${AFTER_TX_READS} reads, and no more`);
   // a read that fails is tried again, and so is one that takes too long
-  assert.deepEqual(await readFrom(reads([new Error('rate limit'), 90]), 90, { sleep }), { read: { block: 90 }, reached: true });
+  assert.deepEqual(await readFrom(reads([new Error('rate limit'), 90]), 90, { sleep }), { read: { block: 90 }, reached: true, seen: true });
   const slow = [() => new Promise(() => {}), async () => ({ block: 90 })];
-  assert.deepEqual(await readFrom(() => slow.shift()(), 90, { sleep, readTimeoutMs: 5 }), { read: { block: 90 }, reached: true });
-  assert.deepEqual(await readFrom(reads([new Error('a'), new Error('b'), new Error('c'), new Error('d')]), 90, { sleep }), { read: null, reached: false });
+  assert.deepEqual(await readFrom(() => slow.shift()(), 90, { sleep, readTimeoutMs: 5 }), { read: { block: 90 }, reached: true, seen: true });
+  assert.deepEqual(await readFrom(reads([new Error('a'), new Error('b'), new Error('c'), new Error('d')]), 90, { sleep }), { read: null, reached: false, seen: false });
   // with no block to reach (a read after an action that sent nothing), the first read that answers is the one
-  assert.deepEqual(await readFrom(reads([7]), 0, { sleep }), { read: { block: 7 }, reached: true });
+  assert.deepEqual(await readFrom(reads([7]), 0, { sleep }), { read: { block: 7 }, reached: true, seen: true });
   // "nothing there" is an answer of a block as any other: one from before the block is not taken, one of it is
   const none = (block) => ({ missing: true, block });
   const answers = [none(89), none(90)];
-  assert.deepEqual(await readFrom(async () => answers.shift(), 90, { sleep }), { read: none(90), reached: true });
+  assert.deepEqual(await readFrom(async () => answers.shift(), 90, { sleep }), { read: none(90), reached: true, seen: true });
   // once the answer is no longer wanted, no further read starts
   let asked = 0;
   const r = await readFrom(async () => { asked += 1; return { block: 1 }; }, 90, { sleep, live: () => asked < 2 });
   assert.equal(asked, 2);
   assert.equal(r.reached, false);
   assert.ok(AFTER_TX_READS >= 3 && AFTER_TX_WAIT_MS >= 1000);
+});
+
+test('readFrom: a read is taken only when it answered within its time; one that answers after it timed out is never taken, whatever it says', async () => {
+  const sleep = async () => {};
+  const taken = [];
+  // the first read is slow: it times out, and answers only after the second read was taken. What it would have said
+  // (the listing on hold, as it was) must never reach the page after what the second said (closed).
+  let release;
+  const slow = new Promise((resolve) => { release = () => resolve({ block: 90, state: 'on hold' }); });
+  const reads = [() => slow, async () => ({ block: 91, state: 'closed' })];
+  const got = await readFrom(() => reads.shift()(), 90, { sleep, readTimeoutMs: 5, onRead: (r) => taken.push(r.state) });
+  assert.deepEqual(got, { read: { block: 91, state: 'closed' }, reached: true, seen: true });
+  assert.deepEqual(taken, ['closed']);
+  release();
+  await slow;
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  assert.deepEqual(taken, ['closed'], 'the slow read answered after the reading was over: nothing takes it');
+  // a read from before the block is not taken either, and neither is one made once the answer is no longer wanted
+  taken.length = 0;
+  const behind = [{ block: 89, state: 'on hold' }, { block: 90, state: 'closed' }];
+  await readFrom(async () => behind.shift(), 90, { sleep, onRead: (r) => taken.push(r.state) });
+  assert.deepEqual(taken, ['closed']);
+  taken.length = 0;
+  let live = true;
+  await readFrom(async () => { live = false; return { block: 90, state: 'closed' }; }, 90, { sleep, live: () => live, onRead: (r) => taken.push(r.state) });
+  assert.deepEqual(taken, [], 'a read that came back to a page that no longer wants it');
+});
+
+test('readFrom: a read of the block that is not complete is taken at once, and the reading goes on, the same bounded number of times', async () => {
+  const sleep = async () => {};
+  const complete = (r) => r.checked;
+  // the block is read, with a receipt it could not check; the next read has it
+  let taken = [];
+  let left = [{ block: 90, checked: false }, { block: 91, checked: true }];
+  assert.deepEqual(await readFrom(async () => left.shift(), 90, { sleep, complete, onRead: (r) => taken.push(r.block) }), { read: { block: 91, checked: true }, reached: true, seen: true });
+  assert.deepEqual(taken, [90, 91], 'each read of the block is shown as it comes');
+  // it never is complete: every read was taken, the reading stopped after its bounded number, and the caller is told both
+  taken = [];
+  left = Array.from({ length: AFTER_TX_READS + 3 }, (_, i) => ({ block: 90 + i, checked: false }));
+  const got = await readFrom(async () => left.shift(), 90, { sleep, complete, onRead: (r) => taken.push(r.block) });
+  assert.deepEqual({ reached: got.reached, seen: got.seen }, { reached: false, seen: true });
+  assert.equal(taken.length, AFTER_TX_READS);
 });

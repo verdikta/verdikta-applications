@@ -64,7 +64,7 @@ export async function readHold(sa, listingId, overrides = {}) {
  * page reads it (a reorganization dropped its block), and the page must stop saying the listing is on hold.
  * @param {object} listing - getListing's answer
  * @param {{ supported: boolean, heldAt: bigint }} read - readHold's answer
- * @param {{ at: bigint, block: number }|null} [seen]
+ * @param {{ heldAt: bigint, block: number }|null} [seen] - the hold's kept receipt (lib/seenMined.js), with the Held event's time
  * @param {number|null} [readBlock] - the block both were read at; without one, `seen` never stands in
  * @returns {{ supported: boolean, heldAt: bigint, held: boolean }} heldAt 0 and held false when not on hold
  */
@@ -72,7 +72,7 @@ export function holdView(listing, read, seen = null, readBlock = null) {
   const ahead = seen !== null && readBlock !== null && readBlock < seen.block;
   let heldAt = 0n;
   // as the contract's view: a hold ends when the listing is Rolled or Closed
-  if (HOLDABLE.has(stateOf(listing))) heldAt = read.heldAt !== 0n ? read.heldAt : ahead ? BigInt(seen.at) : 0n;
+  if (HOLDABLE.has(stateOf(listing))) heldAt = read.heldAt !== 0n ? read.heldAt : ahead ? BigInt(seen.heldAt) : 0n;
   return { supported: read.supported || ahead, heldAt, held: heldAt !== 0n };
 }
 

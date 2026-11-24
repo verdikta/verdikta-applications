@@ -37,12 +37,14 @@ const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
  */
 async function readListing(listingId, heights = []) {
   const provider = await chainReader();
-  const sa = stakeAttestation(provider);
   const { value, block, blockHash, hashes } = await snapshot(provider, async (at) => {
-    const listing = await listingAt(sa, listingId, at);
+    const view = stakeAttestation(at);
+    const listing = await listingAt(view, listingId);
     if (listing === null) return { missing: true };
-    const [hold, takesCommits] = await Promise.all([readHold(sa, listingId, at), sa.acceptsCommits(BigInt(listingId), at)]);
-    if (hold.heldAt !== 0n && takesCommits) throw new Error(STRINGS.fund.contradictory);
+    const [hold, takesCommits] = await Promise.all([readHold(view, listingId), view.acceptsCommits(BigInt(listingId))]);
+    // One block that says both: the contract never does, so nothing of it is shown. It is an answer of its block all
+    // the same, so a page waiting for that block learns that it cannot be read, and stops saying what it said before.
+    if (hold.heldAt !== 0n && takesCommits) return { failed: STRINGS.fund.contradictory };
     return { listing, hold, takesCommits };
   }, { heights });
   return { ...value, block, blockHash, hashes };
@@ -95,8 +97,6 @@ export function FundPage({ listingId }) {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  // how many times an action on this page changed the chain: what reads it (the withdrawable amount) reads again
-  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     if (listingId === null) return undefined;
@@ -117,7 +117,6 @@ export function FundPage({ listingId }) {
   // for less: the page keeps the newest block any of them named (`needed`), so an action that sends nothing (a
   // renewal the wallet's read refuses, say) cannot bring back a read from before a roll that is still being waited for.
   const refresh = useCallback((told = 0) => {
-    setVersion((v) => v + 1);
     // `told` is a receipt this page keeps (its block is read from, and its hash asked of every read from now on), or
     // the number of a block: a read through the wallet that found the listing changed, or a block still to be read
     const minBlock = isKept(told) ? told.block : told;
@@ -192,11 +191,16 @@ export function FundPage({ listingId }) {
     );
   }
   if (loaded.failed) {
+    // A read that failed: on load, or after a transaction of this page (a block that answered what the contract never
+    // says of one block). Nothing of the listing is shown, nor of what a receipt said of it: no state, no hold, no
+    // order. Reading again never takes a read from before the newest block the page was told of.
+    const again = () => (needed.current > 0 ? refresh(needed.current) : setAttempt((a) => a + 1));
     return (
       <>
         {header}
-        <p className="error">{fill(F.readFailed, { reason: loaded.failed })}</p>
-        <button type="button" onClick={() => setAttempt((a) => a + 1)}>{F.retry}</button>
+        <p className="error" role="alert" data-testid="listing-unread">{fill(F.readFailed, { reason: loaded.failed })}</p>
+        {behind !== null && <p className="warning" role="status" data-testid="listing-behind">{fill(F.behind, { block: behind })}</p>}
+        <button type="button" data-testid="listing-read-again" onClick={again}>{F.retry}</button>
       </>
     );
   }
@@ -204,7 +208,7 @@ export function FundPage({ listingId }) {
   const l = loaded.listing;
   const state = LISTING_STATES[Number(l.state)];
   // the hold as the chain has it, or as this page saw it mined (lib/hold.js holdView)
-  const hold = holdView(l, loaded.hold, heldHere && { at: heldHere.heldAt, block: heldHere.block }, loaded.block);
+  const hold = holdView(l, loaded.hold, heldHere, loaded.block);
   // A listing this page just opened reads Listed until a read reaches the opening's block: until then it is shown as
   // open, by the receipt. A read of that block or later that still says Listed means the opening is not on the chain
   // as read: the state is the read's, the page says so, and the funding form is back.
@@ -259,7 +263,7 @@ export function FundPage({ listingId }) {
         <RenewListing listingId={listingId} listing={l} held={hold.held} read={read} onChanged={refresh} />
         <CloseListing listingId={listingId} listing={l} read={read} onChanged={refresh} />
       </Fragment>
-      <Withdraw version={version} read={read} onChanged={refresh} />
+      <Withdraw read={read} onChanged={refresh} />
     </>
   );
 }

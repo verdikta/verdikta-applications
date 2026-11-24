@@ -89,7 +89,11 @@ export async function chainReader() {
   return reader;
 }
 
-/** StakeAttestation at the configured address, on `runner`: a chainReader() or a wallet's signer or provider. */
+/**
+ * StakeAttestation at the configured address, on `runner`: a wallet's signer, to send; a snapshot's runner
+ * (chain/snapshot.js), to read at that snapshot's block; or, on the pages that are not a listing's own, a
+ * chainReader() or a wallet's provider.
+ */
 export function stakeAttestation(runner) {
   if (!CONFIG.contract) throw new WalletError('notConfigured');
   return new Contract(CONFIG.contract, STAKE_ATTESTATION_ABI, runner);
@@ -123,20 +127,20 @@ export async function minedReceipt(tx) {
 }
 
 /**
- * The listing as `contract`'s node has it at one block, or null when the contract has no listing of that id there:
- * one whose block was dropped, read through a node that has dropped it too. getListing reverts for such an id, so the
- * count is asked first, at the same block.
- * @param {{ blockTag: number }} at - the block of the read this is part of (chain/snapshot.js)
+ * The listing as one block has it, or null when the contract has no listing of that id there: one whose block was
+ * dropped, read through a node that has dropped it too. getListing reverts for such an id, so the count is asked
+ * first, of the same block.
+ * @param {object} contract - StakeAttestation made on a snapshot's runner (chain/snapshot.js): its calls are that block's
  * @returns {Promise<object|null>}
  */
-export async function listingAt(contract, listingId, at) {
+export async function listingAt(contract, listingId) {
   const id = BigInt(listingId);
-  if (id === 0n || id > BigInt(await contract.listingCount(at))) return null;
-  return contract.getListing(id, at);
+  if (id === 0n || id > BigInt(await contract.listingCount())) return null;
+  return contract.getListing(id);
 }
 
-/** The event `name` of `contract` for the listing in a receipt, or null: another contract's log, or another listing's, is none. */
-export function listingEvent(contract, receipt, name, listingId) {
+/** The event `name` of `contract` in a receipt that `is(event)` picks, or null: another contract's log is none. */
+export function contractEvent(contract, receipt, name, is = () => true) {
   for (const log of receipt.logs) {
     if (String(log.address).toLowerCase() !== String(contract.target).toLowerCase()) continue;
     let event = null;
@@ -145,10 +149,13 @@ export function listingEvent(contract, receipt, name, listingId) {
     } catch {
       // not an event of the client's ABI
     }
-    if (event?.name === name && event.args.listingId === BigInt(listingId)) return event;
+    if (event?.name === name && is(event)) return event;
   }
   return null;
 }
+
+/** The event `name` of `contract` for the listing in a receipt, or null: another contract's log, or another listing's, is none. */
+export const listingEvent = (contract, receipt, name, listingId) => contractEvent(contract, receipt, name, (event) => event.args.listingId === BigInt(listingId));
 
 /** The event `name` in a receipt, parsed with the client's ABI, or null. */
 export function eventOf(contract, receipt, name) {

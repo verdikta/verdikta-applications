@@ -773,10 +773,18 @@ test.describe('the maker\'s hold', () => {
     // there. The wallet's node reports the close in its own block; on the reader's chain the listing is closed too
     // (by that call mined again, or by another close), in a block that is not the receipt's.
     const head = Number(await chain.provider.send('eth_blockNumber', []));
+    const theirs = new Map(); // that chain's hash of a block -> the hash the test's node has for it
     await interceptRpc(page, stack, async (p) => {
-      if (p.method !== 'eth_getBlockByNumber') return undefined;
-      const block = await ofNode(stack, p);
-      return { result: block && Number(block.number) > head ? { ...block, hash: otherHash(block.hash) } : block };
+      if (p.method === 'eth_getBlockByNumber') {
+        const block = await ofNode(stack, p);
+        if (!block || Number(block.number) <= head) return { result: block };
+        theirs.set(otherHash(block.hash), block.hash);
+        return { result: { ...block, hash: otherHash(block.hash) } };
+      }
+      // a call at one of that chain's blocks is answered with what the test's node has at that height
+      const at = p.method === 'eth_call' ? p.params?.[1]?.blockHash : undefined;
+      if (at && theirs.has(at)) return { result: await ofNode(stack, { method: 'eth_call', params: [p.params[0], { blockHash: theirs.get(at) }] }) };
+      return undefined;
     }, { from: 'reader' });
     await ask.click();
     await close.getByRole('button', { name: fill(STRINGS.close.confirm, { id: listingId, eth: escrow }) }).click();
@@ -845,6 +853,82 @@ test.describe('the maker\'s hold', () => {
     await page.getByRole('button', { name: F.retry }).click();
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
     await expect(page.getByTestId('listing-held')).toHaveCount(0);
+  });
+
+  test('the same contradiction after a hold sent from the page: the hold\'s receipt is no reason to go on saying "push the fix"', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    const section = page.getByTestId('hold');
+    const ask = section.getByRole('button', { name: fill(H.ask, { id: listingId }) });
+    await expect(ask).toBeVisible();
+    // from here the site's reader says of every block that this listing takes commits, also of the ones in which it
+    // is on hold: at the block of the hold it answers both, which the contract never does
+    const takes = chain.sa.interface.encodeFunctionData('acceptsCommits', [listingId]);
+    const stop = await interceptRpc(page, stack, (p) => (isCallWith(takes)(p) ? { result: word(1) } : undefined), { from: 'reader' });
+    await ask.click();
+    await section.getByRole('button', { name: fill(H.confirm, { id: listingId }) }).click();
+    // The hold is mined (the wallet's node has it), and the page's read of its block cannot be taken. The page says
+    // that read failed, and shows nothing of the listing: not the hold by its receipt, not the order that is left.
+    await expect(page.getByTestId('listing-unread')).toHaveText(fill(F.readFailed, { reason: F.contradictory }), { timeout: 30_000 });
+    expect(await chain.sa.heldAt(listingId) > 0n).toBe(true);
+    for (const id of ['listing-summary', 'listing-held', 'listing-held-since', 'hold', 'roll-forward']) await expect(page.getByTestId(id)).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText('push the fix');
+    await expect(page.locator('main')).not.toContainText('on hold since');
+    // reading again, once the node answers of one block: the hold, from the chain, at or after its own block
+    await stop();
+    await page.getByTestId('listing-read-again').click();
+    const [event] = await chain.sa.queryFilter(chain.sa.filters.Held(listingId));
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(event.args.heldAt), { timeout: 20_000 });
+    await expect(page.getByTestId('hold').getByTestId('hold-since')).toHaveText(fill(H.since, { time: at(event.args.heldAt) }));
+  });
+
+  test('a node that does not have the block the page named refuses the page\'s calls: a failed read, and nothing read by number in its place', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await holdOnChain(chain, stack, listingId);
+    await installWallet(page, stack);
+    // The headers come from one node; the calls reach another, which is on another chain at that height. Asked for
+    // that block by its hash, it says it does not have it. (Asked by number it would have answered, of its own chain.)
+    const calls = [];
+    const stop = await interceptRpc(page, stack, (p) => {
+      if (p.method !== 'eth_call') return undefined;
+      calls.push(p.params[1]);
+      return { error: { code: -32000, message: 'header not found' } };
+    }, { from: 'reader' });
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-unread')).toBeVisible();
+    for (const id of ['listing-summary', 'listing-held', 'hold', 'roll-forward']) await expect(page.getByTestId(id)).toHaveCount(0);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const block of calls) expect(block, 'each call names the block by its hash, and none is asked by number').toEqual({ blockHash: expect.stringMatching(/^0x[0-9a-f]{64}$/), requireCanonical: true });
+    await stop();
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('listing-held')).toBeVisible();
+  });
+
+  test('a node that does not take a block hash on a call is asked by number, and the page reads as before', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await holdOnChain(chain, stack, listingId);
+    await installWallet(page, stack);
+    const asked = { byHash: 0, byNumber: 0 };
+    await interceptRpc(page, stack, (p) => {
+      if (p.method !== 'eth_call') return undefined;
+      if (typeof p.params[1] === 'string') {
+        asked.byNumber += 1;
+        return undefined;
+      }
+      asked.byHash += 1;
+      return { error: { code: -32602, message: 'invalid argument 1: cannot unmarshal object into Go value of type string' } };
+    }, { from: 'reader' });
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-held')).toBeVisible();
+    await expect(page.getByTestId('roll-forward')).toBeVisible();
+    // it was asked by hash until it had shown it does not take one, and by number from then on
+    expect(asked.byNumber).toBeGreaterThan(0);
+    const byHash = asked.byHash;
+    await page.reload();
+    await expect(page.getByTestId('listing-held')).toBeVisible();
+    expect(asked.byHash - byHash).toBeLessThanOrEqual(1);
   });
 
   test('a hold the chain dates otherwise than the receipt did: one time on the page, the chain\'s, and no transaction named for it', async ({ page, stack, chain }) => {
@@ -931,6 +1015,55 @@ test.describe('the maker\'s hold', () => {
     await button.click();
     await expect(page.getByTestId('rolled')).toBeVisible({ timeout: 30_000 });
     expect((await chain.sa.getListing(first.listingId)).successor).toBe(successor.listingId);
+  });
+
+  test('a withdrawal says what was paid, by its receipt, and not the balance read before it was sent', async ({ page, stack, chain }) => {
+    // every opening pays the listing fee into the fee recipient's balance in the contract
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    const recipient = stack.accounts.feeRecipient;
+    const held = await chain.sa.withdrawable(recipient);
+    expect(held > 1n).toBe(true);
+    await installWallet(page, stack, recipient);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, recipient);
+    const panel = page.getByTestId('withdraw');
+    const button = panel.getByRole('button', { name: fill(STRINGS.withdraw.button, { eth: formatEth(held) }) });
+    await expect(button).toBeVisible();
+    // the wallet's read just before sending sees half of it: the rest is credited before the call is mined
+    const balance = chain.sa.interface.encodeFunctionData('withdrawable', [recipient]);
+    await interceptRpc(page, stack, (p) => (isCallWith(balance)(p) ? { result: word(held / 2n) } : undefined), { from: 'wallet' });
+    await button.click();
+    const done = panel.getByTestId('withdrawn');
+    await expect(done).toBeVisible({ timeout: 30_000 });
+    const [event] = await chain.sa.queryFilter(chain.sa.filters.Withdrawn(recipient));
+    expect(event.args.amount).toBe(held);
+    await expect(done).toHaveText(fill(STRINGS.withdraw.done, { tx: event.transactionHash, eth: formatEth(held), account: recipient }));
+    await expect(panel).not.toContainText(`${formatEth(held / 2n)} ETH to`);
+  });
+
+  test('the balance to withdraw follows the page\'s read: once the reader has caught up with a withdrawal, nothing is offered again', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    const recipient = stack.accounts.feeRecipient;
+    const held = await chain.sa.withdrawable(recipient);
+    await installWallet(page, stack, recipient);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, recipient);
+    const panel = page.getByTestId('withdraw');
+    const button = panel.getByRole('button', { name: fill(STRINGS.withdraw.button, { eth: formatEth(held) }) });
+    await expect(button).toBeVisible();
+    // the site's reader trails the wallet's node while the withdrawal is mined, and catches up while the page is
+    // still reading for its block
+    const seen = { reads: 0, of: isCallWith((await listingCall(chain, listingId)).data) };
+    const letGo = await freezeReader(page, stack, chain, seen);
+    await button.click();
+    await expect(panel.getByTestId('withdrawn')).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => seen.reads, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+    await letGo();
+    // the page's read reaches the withdrawal's block, and the balance is read again from there: nothing is held
+    await expect(panel.getByTestId('withdraw-held')).toHaveCount(0, { timeout: 20_000 });
+    await expect(panel.getByRole('button')).toHaveCount(0);
+    await expect(panel.getByTestId('withdrawn')).toBeVisible();
+    expect(await chain.sa.withdrawable(recipient)).toBe(0n);
   });
 
   test('on hold in the lists: the record, and the other listings of its repository on a listing\'s page and in a feed entry; never a feed entry itself', async ({ page, stack, chain }) => {

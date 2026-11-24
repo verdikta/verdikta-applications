@@ -47,16 +47,19 @@ export function asKept(seen) {
  * @param {null | { block: number, blockHash: string, hashes?: Record<number, string|null> }} read - the snapshot the
  *        page's read of the listing is of (chain/snapshot.js); null: nothing read yet
  * @param {boolean} shows - whether that read shows what the transaction did
- * @returns {'stands'|'unread'|'dropped'|null} null: no receipt. 'unread': the read is of a later block and did not ask
- *          for the hash at the receipt's height (it was made before the page kept the receipt): nothing is said on the
- *          strength of the receipt, and nothing is dropped, until the read the receipt asks for is there.
+ * @returns {'stands'|'unread'|'dropped'|null} null: no receipt. 'unread': the read is of a later block and has no hash
+ *          at the receipt's height (it was made before the page kept the receipt, or the node did not give that
+ *          header): nothing is said on the strength of the receipt, and nothing is dropped, until a read has it. A
+ *          receipt is dropped only on a hash that is another, or on a read of its own chain that does not show it.
  */
 export function receiptVerdict(seen, read, shows) {
   if (seen === null) return null;
   if (seen.dropped) return 'dropped';
   if (!read || !Number.isSafeInteger(read.block) || read.block < seen.block) return 'stands';
   const hash = read.block === seen.block ? read.blockHash : read.hashes?.[seen.block];
-  if (hash === undefined) return 'unread';
+  // no hash at that height in this read: it did not ask (it was made before the page kept the receipt), or the node
+  // did not give that block's header. Neither says the block was replaced: nothing is dropped on it.
+  if (typeof hash !== 'string') return 'unread';
   return hash === seen.blockHash && Boolean(shows) ? 'stands' : 'dropped';
 }
 

@@ -1559,12 +1559,17 @@ goes in a URL.
   around them. *One read is of one block* (`snapshot` in `client/src/chain/snapshot.js`): every
   contract read of the page (the count, the listing, its hold and `acceptsCommits`; each read
   through the wallet just before something is sent; the roll panel's read of its successors; the
-  fees and what the contract holds for the wallet) takes the latest block, makes its calls at
-  that block's number, and is taken only when the block at that number still has the hash it had
-  before them; otherwise it is made again, three times at most, and then it is a failed read
-  ("The listing could not be read", with Read again). A read that says both "on hold" and "takes
-  commits" is a failed read too, never guidance. *A receipt the page keeps carries its block's
-  hash* (`kept` in `client/src/lib/seenMined.js`): the opening, a top-up, a renewal, the hold, a
+  fees and what the contract holds for the wallet) takes the latest block and makes its calls at
+  that block's hash (an EIP-1898 block parameter, with `requireCanonical`), on a contract made
+  for that snapshot and for nothing else: a node that does not have that block as the chain's
+  refuses the call, and the read fails. A node that does not take a block hash on a call is asked
+  by the block's number instead. Either way the answers are taken only when the block at that
+  number still has the hash it had before the calls; otherwise the read is made again, three
+  times at most, and then it is a failed read ("The listing could not be read", with Read
+  again). A read that says both "on hold" and "takes commits" is a failed read of its block,
+  never guidance: after a transaction of the page too, where it takes the listing off the page,
+  with what a receipt said of it, until a read can be taken. *A receipt the page keeps carries
+  its block's hash* (`kept` in `client/src/lib/seenMined.js`): the opening, a top-up, a renewal, the hold, a
   roll forward, a close and a withdrawal each say their line only while their receipt stands.
   It stands while the page's read is of a block before its own; from a read of that block or a
   later one, only if the chain that read is of has that hash at that height (each read carries
@@ -1573,15 +1578,20 @@ goes in a URL.
   closed listing); and
   once a read said otherwise it is dropped for good: what the listing becomes later, by another
   transaction or by the same one mined again in another block, is said as the chain's state,
-  never with that receipt's hash or figures. The page does not go after a transaction that was
-  included again. `test/snapshot.test.js` fails when a contract read of these components is
+  never with that receipt's hash or figures. A block whose header the node did not give drops
+  nothing: the receipt waits for a read that has it. The page does not go after a transaction
+  that was included again, and of a payment whose block was replaced it says that, and that the
+  transaction may have been mined again, never that it is gone. What a receipt's line says is
+  the receipt's own event: until when a listing opened or was renewed, what an escrow held, what
+  a withdrawal paid. `test/snapshot.test.js` fails when a contract read of these components is
   made outside a snapshot, and `test/hold.test.js` when a receipt is kept without its block's
   hash.
   **The page reads; it does not watch.** It reads on load, after each of its own transactions
   until it has read their block, and when asked. A block replaced after its latest read is seen
   at its next read, not before; what another tab or another sender did is caught by the read
   before sending and by the contract's own checks; and a node is taken to answer truly for a
-  block hash it names. The design's order for the maker is "once the hold is mined, push the
+  block hash it names (one that does not take a hash on a call, for the block it named at a
+  number). The design's order for the maker is "once the hold is mined, push the
   fix": a hold whose block is replaced after the maker acted on it is not something a page can
   undo, and the page says it at its next read. What the page does hold: it says "on hold" and
   "push the fix" only from one snapshot, of one block hash, that shows the hold on the maker and

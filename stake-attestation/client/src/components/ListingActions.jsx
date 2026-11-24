@@ -3,11 +3,12 @@ import { ArrowRight } from 'lucide-react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { snapshot } from '../chain/snapshot.js';
-import { chainReader, listingAt, listingEvent, minedReceipt, stakeAttestation } from '../chain/wallet.js';
+import { chainReader, contractEvent, listingAt, listingEvent, minedReceipt, stakeAttestation } from '../chain/wallet.js';
 import { ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { NO_HOLD, holdTerms, readHold } from '../lib/hold.js';
 import { closeTerms, renewTerms, sameListing, topUpEffect, topUpTerms } from '../lib/listingActions.js';
+import { readFrom } from '../lib/poll.js';
 import { kept } from '../lib/seenMined.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
@@ -74,8 +75,7 @@ export function TopUpEscrow({ listingId, listing, held = false, read = null, onC
     try {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
-      const reader = stakeAttestation(provider);
-      const { value: mine, block } = await snapshot(provider, (at) => listingAt(reader, listingId, at));
+      const { value: mine, block } = await snapshot(provider, (at) => listingAt(stakeAttestation(at), listingId));
       // another listing under this id, or none: the wallet's chain is not the one this page read (FundPage refresh)
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
@@ -88,7 +88,8 @@ export function TopUpEscrow({ listingId, listing, held = false, read = null, onC
         onChanged(block);
         return undefined;
       }
-      const tx = await stakeAttestation(signer).fund(BigInt(listingId), 0n, { value: wei });
+      const sa = stakeAttestation(signer);
+      const tx = await sa.fund(BigInt(listingId), 0n, { value: wei });
       // also when the wallet sent it again at a higher fee (chain/wallet.js minedReceipt): the payment is made once,
       // and a call reported as failed would invite a second
       const receipt = await minedReceipt(tx);
@@ -98,7 +99,7 @@ export function TopUpEscrow({ listingId, listing, held = false, read = null, onC
       for (const log of receipt.logs) {
         let event = null;
         try {
-          event = reader.interface.parseLog(log);
+          event = sa.interface.parseLog(log);
         } catch {
           // another contract's log
         }
@@ -189,9 +190,8 @@ export function RenewListing({ listingId, listing, held = false, read = null, on
     let live = true;
     (async () => {
       const provider = await chainReader();
-      const sa = stakeAttestation(provider);
       // the fee, and the time of the block it was read at
-      const { value: due, time } = await snapshot(provider, (at) => sa.listingFeeWei(at));
+      const { value: due, time } = await snapshot(provider, (at) => stakeAttestation(at).listingFeeWei());
       if (live) {
         setFee(due);
         // the chain's time, which is what decides whether the period has lapsed
@@ -209,8 +209,10 @@ export function RenewListing({ listingId, listing, held = false, read = null, on
     try {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
-      const reader = stakeAttestation(provider);
-      const { value: [mine, due], block } = await snapshot(provider, (at) => Promise.all([listingAt(reader, listingId, at), reader.listingFeeWei(at)]));
+      const { value: [mine, due], block } = await snapshot(provider, (at) => {
+        const view = stakeAttestation(at);
+        return Promise.all([listingAt(view, listingId), view.listingFeeWei()]);
+      });
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
         onChanged(block);
@@ -225,13 +227,14 @@ export function RenewListing({ listingId, listing, held = false, read = null, on
         setFee(due);
         return setError(fill(R.feeChanged, { fee: formatEth(due) }));
       }
-      const tx = await stakeAttestation(signer).renew(BigInt(listingId), { value: due });
+      const sa = stakeAttestation(signer);
+      const tx = await sa.renew(BigInt(listingId), { value: due });
       // also when the wallet sent it again at a higher fee (chain/wallet.js minedReceipt)
       const receipt = await minedReceipt(tx);
       // From here the renewal is mined and paid: nothing below reports it as failed, which would invite a second
       // payment. Until when is the receipt's own Renewed event, so no read stands between the receipt and the line;
       // without one the line says only that it was renewed, and the page's read says until when.
-      const renewed = listingEvent(reader, receipt, 'Renewed', listingId);
+      const renewed = listingEvent(sa, receipt, 'Renewed', listingId);
       const seen = kept(receipt, { until: renewed ? renewed.args.fundedUntil : null });
       setDone(seen);
       onChanged(seen);
@@ -320,8 +323,10 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, read = null, o
         setAsking(false);
         return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account: sender }));
       }
-      const reader = stakeAttestation(provider);
-      const { value: [mine, now], block } = await snapshot(provider, (at) => Promise.all([listingAt(reader, listingId, at), readHold(reader, listingId, at)]));
+      const { value: [mine, now], block } = await snapshot(provider, (at) => {
+        const view = stakeAttestation(at);
+        return Promise.all([listingAt(view, listingId), readHold(view, listingId)]);
+      });
       // A hold has no way back, so it is sent only for the listing this page showed the maker: the same artifact, and
       // the same maker's. On a chain whose blocks were replaced the id can name another of the maker's open listings,
       // and a hold there would leave the version meant to be protected taking commits.
@@ -337,11 +342,12 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, read = null, o
         onChanged(block);
         return undefined;
       }
-      const tx = await stakeAttestation(signer).hold(BigInt(listingId));
+      const sa = stakeAttestation(signer);
+      const tx = await sa.hold(BigInt(listingId));
       // also when the wallet sent it again at a higher fee: the receipt is then the replacement's, with its own hash
       const receipt = await minedReceipt(tx);
       // the hold is this contract's Held event for this listing, and its time the event's (its block's: ClaimLogic.hold)
-      const held = heldEvent(reader, receipt, listingId);
+      const held = heldEvent(sa, receipt, listingId);
       setAsking(false);
       if (!held) {
         // mined, and no hold of this listing in it: no hold is claimed, the maker is told which transaction it was,
@@ -450,8 +456,7 @@ export function CloseListing({ listingId, listing, read = null, onChanged = () =
     try {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
-      const reader = stakeAttestation(provider);
-      const { value: mine, block } = await snapshot(provider, (at) => listingAt(reader, listingId, at));
+      const { value: mine, block } = await snapshot(provider, (at) => listingAt(stakeAttestation(at), listingId));
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
         setAsking(false);
@@ -465,7 +470,8 @@ export function CloseListing({ listingId, listing, read = null, onChanged = () =
         onChanged(block);
         return undefined;
       }
-      const tx = await stakeAttestation(signer).close(BigInt(listingId));
+      const sa = stakeAttestation(signer);
+      const tx = await sa.close(BigInt(listingId));
       // also when the wallet sent it again at a higher fee (chain/wallet.js minedReceipt): the page must read the
       // listing from that block, where it is closed, whichever hash the close was mined under
       const receipt = await minedReceipt(tx);
@@ -474,7 +480,7 @@ export function CloseListing({ listingId, listing, read = null, onChanged = () =
       for (const log of receipt.logs) {
         let event = null;
         try {
-          event = reader.interface.parseLog(log);
+          event = sa.interface.parseLog(log);
         } catch {
           // another contract's log
         }
@@ -537,11 +543,13 @@ export function CloseListing({ listingId, listing, read = null, onChanged = () =
 
 /**
  * withdraw(): what the contract holds for the connected wallet (`withdrawable`), and the transaction
- * that collects it. Shown only to a connected wallet that is held something; `version` reads it again
- * (a close whose payment was deferred has just added to it). The amount is read again through the
- * wallet before sending, and the contract pays the caller and no one else.
+ * that collects it. Shown only to a connected wallet that is held something. The balance follows the page's read of
+ * the listing (`read`: the snapshot it was last read at): it is read again whenever the page takes a new one, from a
+ * block that is not before it, so a close whose payment was deferred, or a withdrawal, shows here once the page has
+ * read its block, and not a balance from before it. The amount is read again through the wallet before sending, the
+ * contract pays the caller and no one else, and what was paid is the receipt's own Withdrawn event.
  */
-export function Withdraw({ version = 0, read = null, onChanged = () => {} }) {
+export function Withdraw({ read = null, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const W = STRINGS.withdraw;
@@ -558,12 +566,18 @@ export function Withdraw({ version = 0, read = null, onChanged = () => {} }) {
       return undefined;
     }
     let live = true;
-    chainReader()
-      .then((provider) => snapshot(provider, (at) => stakeAttestation(provider).withdrawable(account, at)))
-      .then(({ value: wei }) => { if (live) setHeld({ account, wei }); })
+    // one snapshot of the balance, of a block that is not before the page's read of the listing
+    const balance = async () => {
+      const provider = await chainReader();
+      const { value: wei, block } = await snapshot(provider, (at) => stakeAttestation(at).withdrawable(account));
+      return { wei, block };
+    };
+    readFrom(balance, read?.block ?? 0, { live: () => live })
+      // a balance from before that block is not shown: it may be from before the transaction the page has just read
+      .then(({ read: got, reached }) => { if (live) setHeld(reached ? { account, wei: got.wei } : null); })
       .catch(() => { if (live) setHeld(null); });
     return () => { live = false; };
-  }, [account, version, done]);
+  }, [account, read?.block, read?.blockHash, done]);
 
   const mine = held && account && same(held.account, account) ? held.wei : 0n;
   if (!done && mine === 0n) return null;
@@ -573,14 +587,19 @@ export function Withdraw({ version = 0, read = null, onChanged = () => {} }) {
     setError(null);
     try {
       const { signer, provider, account: sender } = await w.ensure();
-      const { value: amount } = await snapshot(provider, (at) => stakeAttestation(provider).withdrawable(sender, at));
+      const { value: amount } = await snapshot(provider, (at) => stakeAttestation(at).withdrawable(sender));
       if (amount === 0n) {
         setHeld({ account: sender, wei: 0n });
         return setError(fill(W.changed, { account: sender }));
       }
-      const tx = await stakeAttestation(signer).withdraw();
+      const sa = stakeAttestation(signer);
+      const tx = await sa.withdraw();
       const receipt = await minedReceipt(tx);
-      const seen = kept(receipt, { amount, account: sender });
+      // What was paid is the receipt's own Withdrawn event for this wallet: the contract pays all it holds when the
+      // call is mined, which is more than the read before sending saw if a credit arrived in between. Without the
+      // event the line names the transaction, and no figure.
+      const paid = contractEvent(sa, receipt, 'Withdrawn', (event) => same(event.args.account, sender));
+      const seen = kept(receipt, { amount: paid ? paid.args.amount : null, account: sender });
       setDone(seen);
       // the page reads from the withdrawal's block: what it holds for the wallet now, and whether that block is the chain's
       onChanged(seen);
@@ -597,7 +616,13 @@ export function Withdraw({ version = 0, read = null, onChanged = () => {} }) {
       <h3 id={id}>{W.title}</h3>
       <p>{W.intro}</p>
       {droppedLine(done, 'withdraw-dropped')}
-      {withdrawn && <p className="ok" data-testid="withdrawn">{fill(W.done, { tx: done.tx, eth: formatEth(done.amount), account: done.account })}</p>}
+      {withdrawn && (
+        <p className="ok" data-testid="withdrawn">
+          {done.amount === null
+            ? fill(W.doneNoAmount, { tx: done.tx, account: done.account })
+            : fill(W.done, { tx: done.tx, eth: formatEth(done.amount), account: done.account })}
+        </p>
+      )}
       {mine > 0n && (
         <>
           <p data-testid="withdraw-held">{fill(W.held, { eth: formatEth(mine), account })}</p>

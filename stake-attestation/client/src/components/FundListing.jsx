@@ -48,7 +48,7 @@ export function FundListing({ listingId, top, maker, artifactHash, listed = true
   useEffect(() => {
     let live = true;
     chainReader()
-      .then((p) => snapshot(p, (at) => stakeAttestation(p).feeDue(listingId, at)))
+      .then((p) => snapshot(p, (at) => stakeAttestation(at).feeDue(listingId)))
       .then(({ value: f }) => { if (live) setFee(f); })
       .catch(() => {});
     return () => { live = false; };
@@ -75,21 +75,24 @@ export function FundListing({ listingId, top, maker, artifactHash, listed = true
       // the state and the fee at one block (chain/snapshot.js), so they cannot straddle another tab's opening
       // fund: Listed there means the fee is the listing fee, and passed as expectedFeeWei it makes this
       // transaction revert ("fee changed") if that opening is mined first
-      const reader = stakeAttestation(provider);
-      const { value: [now, due] } = await snapshot(provider, (at) => Promise.all([reader.getListing(listingId, at), reader.feeDue(listingId, at)]));
+      const { value: [now, due] } = await snapshot(provider, (at) => {
+        const view = stakeAttestation(at);
+        return Promise.all([view.getListing(listingId), view.feeDue(listingId)]);
+      });
       if (now.state !== 0n || now.artifactHash.toLowerCase() !== artifactHash.toLowerCase() || now.awards[3] !== top) {
         setError(fill(STRINGS.fund.changed, { id: String(listingId), state: STRINGS.fund.states[LISTING_STATES[Number(now.state)]] ?? String(now.state) }));
         setStale(true);
         return;
       }
-      const tx = await stakeAttestation(signer).fund(listingId, due, { value: due + escrowWei });
+      const sa = stakeAttestation(signer);
+      const tx = await sa.fund(listingId, due, { value: due + escrowWei });
       // also when the wallet sent it again at a higher fee (chain/wallet.js minedReceipt): opened once, under that hash
       const receipt = await minedReceipt(tx);
       // From here the listing is opened and paid for: nothing below reports it as failed. Until when is the receipt's
       // own Opened event, so no read stands between the receipt and the line. The receipt is kept with its block's
       // hash (lib/seenMined.js): a page that reads the listing again reads from that block, and says the opening
       // only while that block is the chain's.
-      const openedEvent = listingEvent(reader, receipt, 'Opened', listingId);
+      const openedEvent = listingEvent(sa, receipt, 'Opened', listingId);
       const seen = kept(receipt, { until: openedEvent ? openedEvent.args.fundedUntil : null });
       setOpened(seen);
       onOpened(seen);

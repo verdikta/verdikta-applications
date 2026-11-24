@@ -32,21 +32,22 @@ test('minedReceipt: the receipt, also of the same call sent again at a higher fe
   await assert.rejects(minedReceipt({ wait: async () => { throw reverted; } }), (err) => err === reverted);
 });
 
-test('listingAt: the listing at a block, or null when the contract has none of that id there, and never a getListing the contract would revert', async () => {
+test('listingAt: the listing of a snapshot\'s contract, or null when it has none of that id, and never a getListing the contract would revert', async () => {
   const asked = [];
+  // a contract made on a snapshot's runner: its calls are that block's, and take no block of their own
   const contract = (count) => ({
-    listingCount: async (o) => { asked.push(['listingCount', o.blockTag]); return count; },
-    getListing: async (id, o) => { asked.push(['getListing', id, o.blockTag]); return { id }; },
+    listingCount: async (...more) => { asked.push(['listingCount', ...more]); return count; },
+    getListing: async (id, ...more) => { asked.push(['getListing', id, ...more]); return { id }; },
   });
-  assert.deepEqual(await listingAt(contract(5n), '5', { blockTag: 90 }), { id: 5n });
-  assert.deepEqual(asked, [['listingCount', 90], ['getListing', 5n, 90]], 'the count and the listing at the same block');
+  assert.deepEqual(await listingAt(contract(5n), '5'), { id: 5n });
+  assert.deepEqual(asked, [['listingCount'], ['getListing', 5n]], 'the count first, then the listing, on the same contract');
   asked.length = 0;
   // one past the count (its block was dropped), and 0: no listing, and getListing is not called
-  assert.equal(await listingAt(contract(4n), 5, { blockTag: 91 }), null);
-  assert.equal(await listingAt(contract(4n), 0, { blockTag: 91 }), null);
-  assert.deepEqual(asked, [['listingCount', 91]]);
+  assert.equal(await listingAt(contract(4n), 5), null);
+  assert.equal(await listingAt(contract(4n), 0), null);
+  assert.deepEqual(asked, [['listingCount']]);
   // a count that is a number (another client of the same ABI) compares the same
-  assert.deepEqual(await listingAt(contract(5), 5n, { blockTag: 1 }), { id: 5n });
+  assert.deepEqual(await listingAt(contract(5), 5n), { id: 5n });
   // a read that fails rejects: it is never "no listing"
-  await assert.rejects(listingAt({ listingCount: async () => { throw new Error('rate limit'); } }, 5, { blockTag: 1 }), /rate limit/);
+  await assert.rejects(listingAt({ listingCount: async () => { throw new Error('rate limit'); } }, 5), /rate limit/);
 });

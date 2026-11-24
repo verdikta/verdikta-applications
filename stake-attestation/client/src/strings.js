@@ -413,10 +413,11 @@ export const STRINGS = {
       'there is no such listing. This page reads it again.',
     // one block answered both "on hold" and "takes commits", which the contract never says of one block
     contradictory: 'the chain answered that this listing is on hold and that it takes commits, of one block',
-    // a payment or a withdrawal this page saw mined, whose block is not the chain's as the page now reads it
+    // A payment or a withdrawal this page saw mined, whose block is not the chain's as the page now reads it. The
+    // page does not know whether the transaction was mined again in another block, and does not say that it was not.
     txDropped:
-      'Transaction {tx}, sent from this page, is not on the chain as this page now reads it. Look it up before ' +
-      'sending it again.',
+      'The block this page saw transaction {tx} mined in is not on the chain as this page now reads it. The ' +
+      'transaction may have been mined again in another block: look it up before sending it again.',
     // the page showed the listing, and a read of a later block has none (the block it was created in was dropped)
     gone:
       'Listing {id} was on this page a moment ago and is not on the chain as this page now reads it. Nothing sent ' +
@@ -1230,6 +1231,8 @@ export const STRINGS = {
     button: 'Withdraw {eth} ETH',
     sending: 'Sending withdraw()…',
     done: 'Withdrawn (transaction {tx}): {eth} ETH to {account}.',
+    // mined, and the receipt did not say how much: the transaction is named, without a figure
+    doneNoAmount: 'Withdrawn (transaction {tx}) to {account}.',
     changed: 'Nothing was sent: the contract holds nothing for {account} now.',
   },
   dispute: {

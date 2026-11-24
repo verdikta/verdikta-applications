@@ -75,6 +75,7 @@ export const STAKE_ATTESTATION_ABI = Object.freeze([
   // the hold's event (node P39), read from the receipt of a hold the page sent: the hold's time
   'event Held(uint256 indexed listingId, uint64 heldAt)',
   'event Renewed(uint256 indexed listingId, uint256 feeWei, uint64 fundedUntil)',
+  'event Withdrawn(address indexed account, uint256 amount)',
 ]);
 
 /** StakeAttestation's enums, in declaration order (test/enums.test.js reads them from the source). */

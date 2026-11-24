@@ -136,14 +136,14 @@ export function RollForward({ listingId, listing, record, recordReading = false,
       const feed = await getFeed();
       const candidates = successorCandidates(feed.listings, { listingId, maker: listing.maker, ...identity });
       const provider = await chainReader();
-      const sa = stakeAttestation(provider);
       // every candidate, and its hold, as one block has them (chain/snapshot.js)
       const { value: out } = await snapshot(provider, async (at) => {
+        const view = stakeAttestation(at);
         const found = [];
         for (const e of candidates) {
           const id = BigInt(e.listingId);
           // the feed may trail the chain by a block: a listing held since, or no longer there, is not offered
-          const [s, onHold] = await Promise.all([listingAt(sa, id, at), hold.supported ? readHold(sa, id, at) : NO_HOLD]);
+          const [s, onHold] = await Promise.all([listingAt(view, id), hold.supported ? readHold(view, id) : NO_HOLD]);
           // The option shows the feed's commit and is sent for the chain's listing: they must be the same version. A
           // feed that still describes another listing under this id (its blocks were replaced) offers nothing.
           if (s !== null && same(e.artifactHash, s.artifactHash) && onHold.heldAt === 0n
@@ -175,13 +175,11 @@ export function RollForward({ listingId, listing, record, recordReading = false,
     try {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
-      const reader = stakeAttestation(provider);
       // this listing, the successor and the successor's hold, as one block has them through the wallet
-      const { value: [mine, successor, successorHold], block } = await snapshot(provider, (at) => Promise.all([
-        listingAt(reader, listingId, at),
-        listingAt(reader, pick, at),
-        hold.supported ? readHold(reader, pick, at) : NO_HOLD,
-      ]));
+      const { value: [mine, successor, successorHold], block } = await snapshot(provider, (at) => {
+        const view = stakeAttestation(at);
+        return Promise.all([listingAt(view, listingId), listingAt(view, pick), hold.supported ? readHold(view, pick) : NO_HOLD]);
+      });
       // another listing under this page's id, or none: the wallet's chain is not the one this page read
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));

@@ -1127,6 +1127,14 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.ok(setLiteral(cli, 'FLAGS').includes('--late'));
   assert.ok(usageFlags().per.get('commit').has('--late'), 'the help documents --late for commit');
   assert.match(/case 'commit': \{[\s\S]*?\n {4}\}/.exec(cli)[0], /late: options\['--late'\] === true/);
+  // the flag is taken only as the bare token and only by commit: a value is no yes, and no other command takes it.
+  // Both are refused as the arguments are read, before the wallet and the chain (R1-F3). Every other flag is read as
+  // it was (verdikta-applications#241)
+  assert.match(/function parseArgs[\s\S]*?\n\}/.exec(cli)[0], /if \(name === '--late' && a !== name\) throw usageError\('--late takes no value'\);/);
+  const dispatch = /async function dispatch[\s\S]*?\n\}/.exec(cli)[0];
+  const lateOnly = dispatch.indexOf('if (options[\'--late\'] === true && verb !== \'commit\') throw usageError(');
+  assert.ok(lateOnly >= 0 && lateOnly < dispatch.indexOf('const chainOptions') && lateOnly < dispatch.indexOf('const walletOptions'), 'no other command takes --late, said before any setup');
+  assert.ok(block.includes('--late takes no value and is `commit`\'s alone: `--late=false`, any other value, or --late on another command is a usage error (exit 2), before anything is read or sent.'));
   assert.match(/function readyToCommit[\s\S]*?\n\}/.exec(commit)[0], /commitPreflight\(ctx, listingId, hunter, late\)[\s\S]*NEEDS_ACKNOWLEDGEMENT/, 'the listing is asked, then the terms are said, then --yes');
   assert.ok(block.includes('The command: `verdikta-attest commit ./claim --listing <listingId> --late` prints the terms, the price and those three warnings, and sends nothing (exit 3); with --yes it sends `lateClaim`, then pins and discloses as a commit does.'));
   assert.match(toolSrc('status.js'), /\n {4}late: claim\.late,\n/, 'status reads the claim\'s kind from the chain');

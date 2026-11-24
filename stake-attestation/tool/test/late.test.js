@@ -1313,6 +1313,7 @@ test('--help describes the late claim: the flag on commit\'s own line, when a li
   assert.match(flat, /A prepared late claim whose two hashes already have a claim on the chain is disclosed on any run, --yes or not, as a signed one is/);
   assert.match(flat, /a later run goes on with that one, with --late or without it/);
   assert.match(flat, /--restart does not start a late claim over: a changed one goes in a new folder/);
+  assert.match(flat, /--late is the bare flag, on commit only: with a value \(--late=false too\) or on another command it is a usage error, and nothing is read or sent/);
   // and what the help said of a commit, it says still
   assert.ok(USAGE.includes('                     on a folder with no commit signed yet, without --yes it prints the terms, the price and how\n                     many claims on the listing are open ahead of yours, and sends nothing\n'));
 });
@@ -1324,6 +1325,71 @@ test('--late is a flag the CLI\'s parser takes, on commit', async () => {
   assert.equal(code, 2);
   assert.doesNotMatch(stderr, /unknown option/);
   assert.match(stderr, /commit needs an IPFS gateway/);
+});
+
+// Round 1 of the review (R1-F3). Before --late existed, `commit ... --late=false --yes` and `claim ... --late` were
+// usage errors; adding the flag is what could let them reach a transaction. So --late is taken only as the bare token
+// and only by commit. How every other flag is read is not changed here (verdikta-applications#241).
+test('--late is taken only as the bare flag, and only by commit: a value, --late=false too, or another command is a usage error before anything is read or sent', async () => {
+  const l = await rolled();
+  const dir = makeClaimDir();
+  const m = await mark();
+  const asked = rpc.calls.length;
+  const refused = async (args, text, label) => {
+    const cli = await runCli(w, args);
+    assert.equal(cli.code, 2, `${label}: ${cli.stdout}${cli.stderr}`);
+    assert.equal(cli.stdout, '', label);
+    assert.equal(cli.stderr, `verdikta-attest: ${args[0]}: ${text}\n`, label);
+    assert.equal(rpc.calls.length, asked, `${label}: the chain was not asked anything`);
+    await assertNothingSent(m, dir, label);
+    assert.equal(fs.existsSync(statePath(dir, '.gitignore')), false, `${label}: the claim folder was not touched`);
+  };
+  // a value is no yes and no no: on a listing that takes late claims, with --yes, nothing is paid
+  for (const value of ['false', 'true', '0', 'no', '']) {
+    await refused(['commit', dir, '--listing', String(l.listingId), `--late=${value}`, '--yes'], '--late takes no value', `--late=${value}`);
+  }
+  await refused(['commit', dir, '--listing', String(l.listingId), '--yes', '--late=false', '--late'], '--late takes no value', 'a value beside the bare flag');
+  // the value is not echoed: someone may have typed anything there
+  const typed = await runCli(w, ['commit', dir, '--listing', String(l.listingId), '--late=TYPED-BY-MISTAKE-91c2', '--yes']);
+  assert.equal(typed.code, 2);
+  assert.doesNotMatch(typed.stdout + typed.stderr, /TYPED-BY-MISTAKE/);
+  // every other command refuses the flag, and does nothing of its own
+  for (const verb of ['claim', 'reveal', 'status', 'appeal', 'check']) {
+    await refused([verb, dir, '--late'], '--late is commit\'s flag: no other command takes it', `${verb} --late`);
+    await refused([verb, dir, '--late', '--yes'], '--late is commit\'s flag: no other command takes it', `${verb} --late --yes`);
+  }
+  // and before any setup at all: no wallet, no contract, no gateway in the environment
+  for (const argv of [['commit', 'no-such-folder', '--late=false', '--yes'], ['claim', 'no-such-folder', '--late'], ['status', '7', '--late']]) {
+    let stderr = '';
+    const env = { VERDIKTA_WALLET_KEY: w.hunterKey };
+    const code = await run(argv, { stdout: { write: () => {} }, stderr: { write: (s) => { stderr += s; } } }, env);
+    assert.equal(code, 2, argv.join(' '));
+    assert.match(stderr, /^verdikta-attest: \w+: --late (takes no value|is commit's flag: no other command takes it)\n$/, argv.join(' '));
+    assert.equal(env.VERDIKTA_WALLET_KEY, w.hunterKey, 'the wallet key was not read');
+  }
+  // the bare flag on commit is the late claim, as before
+  const dry = await runCli(w, ['commit', dir, '--listing', String(l.listingId), '--late']);
+  assert.equal(dry.code, 3, dry.stderr);
+  assert.match(dry.stdout, /^This late claim sends /m);
+});
+
+test('every other flag is read as it was: a value after = is dropped, and a flag is taken on every command (verdikta-applications#241, not changed here)', async () => {
+  const io = () => {
+    const out = { stderr: '' };
+    return { out, streams: { stdout: { write: () => {} }, stderr: { write: (s) => { out.stderr += s; } } } };
+  };
+  // each reaches the first thing its command needs, as on the base: none stops at the flag
+  for (const [argv, needs] of [
+    [['commit', 'x', '--yes=false'], /commit needs an IPFS gateway/],
+    [['commit', 'x', '--restart=0'], /commit needs an IPFS gateway/],
+    [['status', 'x', '--restart'], /this needs the StakeAttestation address/],
+    [['claim', 'x', '--yes'], /this needs the StakeAttestation address/],
+  ]) {
+    const { out, streams } = io();
+    assert.equal(await run(argv, streams, {}), 2, argv.join(' '));
+    assert.match(out.stderr, needs, argv.join(' '));
+    assert.doesNotMatch(out.stderr, /takes no value|no other command takes it/, argv.join(' '));
+  }
 });
 
 test('the late claim\'s notice and the new refusals pass the wording check, and an ordinary commit\'s notice is the one it was', () => {
@@ -1366,6 +1432,7 @@ test('the README\'s hunter section shows the command and says what a late claim 
   for (const verb of ['check ', 'status']) assert.match(section, new RegExp(`^verdikta-attest ${verb} \\./late-claim\\b`, 'm'), verb);
   const flat = section.replace(/\s+/g, ' ');
   assert.match(flat, /`commit --late`/);
+  assert.match(flat, /`--late` is taken only as the bare flag and only by `commit`: with a value \(`--late=false` too\) or on another command it is a usage error \(exit 2\) before anything is read or sent\./);
   assert.match(flat, /`lateClaim`/);
   assert.match(flat, /`acceptsLateClaims`/);
   assert.match(flat, /no award/);

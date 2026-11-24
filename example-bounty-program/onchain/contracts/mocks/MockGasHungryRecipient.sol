@@ -43,7 +43,7 @@ contract MockGasHungryRecipient {
                 maxOracleFee: 2e13, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1,
                 minOracleFee: 0, withBeacons: false
             }),
-            jury: 0,
+            jury: IVerdiktaAggregator.Jury(6, 5, 4, 3, 300),   // the Small preset
             quota: 1,
             forfeitLine: 0,
             bond: 0

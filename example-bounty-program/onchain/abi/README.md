@@ -11,7 +11,7 @@ STATICCALLing into `BountyEscrowLens` (see "Read-only extension (lens)" in
 `contracts/BountyEscrow.sol`). The lens views — `nextAction`,
 `getEffectiveBountyStatus`, `isAcceptingSubmissions`, `canBeClosed`,
 `prepareCutoff`, `getSubmissions`, `getSubmissionsPage`, `getBounties`,
-`getOracleResult`, `MAX_BATCH` — are therefore callable **at the escrow
+`getOracleResult`, `startValue`, `MAX_BATCH` — are therefore callable **at the escrow
 address**, but the escrow's own compiled/verified ABI does not list them. An
 agent that pulls the ABI from a block explorer gets an interface that appears
 to lack them. This file is the escrow ABI plus those lens entries.

@@ -6,10 +6,12 @@ const { time, mine } = require("@nomicfoundation/hardhat-network-helpers");
 const H = require("./helpers");
 
 class RoundDriver {
-  /** `beacons`: send every request with item 9's beacon flag */
-  constructor(core, arbs, requester, { beacons = false } = {}) {
+  /** `beacons`: send every request with item 9's beacon flag; `jury`: the requests' [K, M, N, P, timeout]
+   *  (default the Small class preset) */
+  constructor(core, arbs, requester, { beacons = false, jury = [6, 5, 4, 3, 300] } = {}) {
     this.core = core;
     this.beacons = beacons;
+    this.jury = jury;
     this.agg = core.agg;
     this.keeper = core.keeper;
     this.arbs = arbs;
@@ -40,10 +42,10 @@ class RoundDriver {
   }
 
   /** Phase 1: escrow only. `beacons` sets item 9's per-request beacon flag. */
-  async requestOnly({ kind = "request (escrow)", value, beacons = this.beacons, minFee = 0n } = {}) {
-    value = value ?? (await this.agg.maxTotalFee(H.MAX_FEE, minFee, beacons));
+  async requestOnly({ kind = "request (escrow)", value, beacons = this.beacons, minFee = 0n, jury = this.jury } = {}) {
+    value = value ?? (await this.agg.maxTotalFee(H.MAX_FEE, minFee, beacons, jury[0], jury[3]));
     const tx = await this.agg.connect(this.requester).requestAIEvaluationWithApproval(
-      ["QmRequestCid"], "", 500, H.MAX_FEE, minFee, H.BASE_COST, 5, 1, beacons, { value, gasLimit: 16_000_000 }
+      ["QmRequestCid"], "", 500, H.MAX_FEE, minFee, H.BASE_COST, 5, 1, beacons, jury, { value, gasLimit: 16_000_000 }
     );
     const reqRcpt = this.log(kind, await tx.wait());
     const aggId = ethers.zeroPadValue(ethers.toBeHex(await this.agg.roundCount()), 32);
@@ -169,13 +171,13 @@ class RoundDriver {
     }
     await this.promote(round);
     const prom = this.promotedSlots(round);
-    const N = Number(await this.agg.N());
+    const N = Number((await this.agg.getJury(round.aggId))[2]);
     for (let i = 0; i < prom.length; i++) {
       if (i < N) await this.reveal(round, prom[i], i === N - 1 ? "finalizing reveal (Nth)" : "reveal");
       else if (lateReveals) await this.reveal(round, prom[i], "late reveal");
     }
     if (settle) {
-      await time.increase(Number(await this.agg.responseTimeoutSeconds()) + 1);
+      await time.increaseTo((await this.agg.getRoundInfo(round.aggId))[8] + 1n);   // past the deadline
       await this.settle(round);
     }
     return round;

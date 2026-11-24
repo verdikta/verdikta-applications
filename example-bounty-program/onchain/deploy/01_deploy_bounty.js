@@ -1,28 +1,26 @@
 const hre = require("hardhat");
-require("dotenv").config({ quiet: true }); // onchain/.env: VERDIKTA_AGGREGATORS_* (hardhat.config already loaded the secrets file)
+require("dotenv").config({ quiet: true }); // onchain/.env: VERDIKTA_AGGREGATOR_* (hardhat.config already loaded the secrets file)
 const { saveDeployment, copyAbiToFrontend } = require("./helpers");
 
 async function main() {
   const network = hre.network.name;
   const chainId = (await hre.ethers.provider.getNetwork()).chainId;
   
-  // The approved v2 aggregators, one per jury size, in jury order (a bounty's `jury` is the index):
-  // small, medium, large, jumbo (verdikta-dispatcher deploy/03_config.js, AGG_CLASS). Fixed for the
-  // escrow's life. Bondless Small uses the small jury.
-  const list = network === "base" ? process.env.VERDIKTA_AGGREGATORS_BASE
-    : network === "base_sepolia" ? process.env.VERDIKTA_AGGREGATORS_BASE_SEPOLIA
-    : null;
-  if (list === null) throw new Error(`Unsupported network ${network}. Use base or base_sepolia.`);
-  const aggregators = parseAggregators(list);
+  // The v2 aggregator (verdikta-dispatcher beacon branch): one deployment serves every jury size,
+  // since each bounty carries its own jury (K, M, N, P, timeout) and sends it with every request.
+  // Fixed for the escrow's life.
+  const suffix = network === "base" ? "BASE" : network === "base_sepolia" ? "BASE_SEPOLIA" : null;
+  if (suffix === null) throw new Error(`Unsupported network ${network}. Use base or base_sepolia.`);
+  const aggregator = parseAggregator(suffix);
 
   const [deployer] = await hre.ethers.getSigners();
   console.log(`Deployer: ${deployer.address}`);
   console.log(`Network : ${network} (${chainId})`);
-  aggregators.forEach((a, i) => console.log(`Aggregator, jury ${i} (${JURIES[i] || "?"}): ${a}`));
+  console.log(`Aggregator: ${aggregator}`);
 
   // Deploy BountyEscrow
   const Escrow = await hre.ethers.getContractFactory("BountyEscrow");
-  const escrow = await Escrow.deploy(aggregators);
+  const escrow = await Escrow.deploy(aggregator);
   await escrow.waitForDeployment();
   const escrowAddr = await escrow.getAddress();
   const deployTx = escrow.deploymentTransaction();
@@ -60,7 +58,7 @@ async function main() {
       BountyEscrow: escrowAddr,
       BountyEscrowLens: lensAddr,
       EvaluationWalletImplementation: walletImplAddr,
-      VerdiktaAggregators: aggregators
+      VerdiktaAggregator: aggregator
     }
   });
 
@@ -78,7 +76,7 @@ if (process.env.BASESCAN_API_KEY) {
     try {
       await hre.run("verify:verify", {
         address: escrowAddr,
-        constructorArguments: [aggregators]
+        constructorArguments: [aggregator]
       });
       console.log("Verified successfully!");
       // The lens takes no constructor argument. Verifying it separately lets the
@@ -101,7 +99,7 @@ if (process.env.BASESCAN_API_KEY) {
         await hre.run("verify:verify", {
           address: walletImplAddr,
           contract: "contracts/EvaluationWallet.sol:EvaluationWallet",
-          constructorArguments: [escrowAddr]
+          constructorArguments: [escrowAddr, aggregator]
         });
         console.log("Wallet implementation verified successfully!");
       } catch (wErr) {
@@ -137,20 +135,18 @@ if (process.env.BASESCAN_API_KEY) {
 
 }
 
-const JURIES = ["small", "medium", "large", "jumbo"];
-
-/** "0xA,0xB,..." -> checksummed addresses, 1..8 of them, no duplicates */
-function parseAggregators(list) {
-  const out = String(list || "").split(",").map((s) => s.trim()).filter(Boolean);
-  if (out.length === 0) throw new Error("Set VERDIKTA_AGGREGATORS_<NETWORK> in .env: the v2 aggregators, comma-separated, in jury order (small,medium,large,jumbo)");
-  if (out.length > 8) throw new Error("At most 8 aggregators");
-  const seen = new Set();
-  return out.map((a) => {
-    const c = hre.ethers.getAddress(a);
-    if (seen.has(c)) throw new Error(`Aggregator ${c} listed twice`);
-    seen.add(c);
-    return c;
-  });
+/** VERDIKTA_AGGREGATOR_<NETWORK> -> one checksummed address. The old per-jury list
+ *  (VERDIKTA_AGGREGATORS_<NETWORK>) is still read when it holds exactly one address. */
+function parseAggregator(suffix) {
+  const one = String(process.env[`VERDIKTA_AGGREGATOR_${suffix}`] || "").trim();
+  const old = String(process.env[`VERDIKTA_AGGREGATORS_${suffix}`] || "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (one) return hre.ethers.getAddress(one);
+  if (old.length === 1) return hre.ethers.getAddress(old[0]);
+  if (old.length > 1) {
+    throw new Error(`VERDIKTA_AGGREGATORS_${suffix} lists ${old.length} aggregators: the escrow now takes ONE ` +
+      `(each bounty carries its jury). Set VERDIKTA_AGGREGATOR_${suffix} to the v2 aggregator.`);
+  }
+  throw new Error(`Set VERDIKTA_AGGREGATOR_${suffix} in .env: the v2 aggregator address`);
 }
 
 main().catch((e) => {

@@ -322,10 +322,10 @@ contract StakeAttestationLens {
     }
 
     function _disputeFee(StakeAttestation.Listing memory l) private view returns (uint256) {
-        return ClaimRules.roundFee(verdikta, l.oracle.disputeMaxOracleFee, l.oracle.minOracleFee, l.oracle.withBeacons);
+        return ClaimRules.roundFee(verdikta, l.oracle.disputeMaxOracleFee, l.oracle.minOracleFee, l.oracle.withBeacons, l.oracle.jury.K, l.oracle.jury.P);
     }
 
     function _liveFee(StakeAttestation.Listing memory l) private view returns (uint256) {
-        return ClaimRules.roundFee(verdikta, l.oracle.maxOracleFee, l.oracle.minOracleFee, l.oracle.withBeacons);
+        return ClaimRules.roundFee(verdikta, l.oracle.maxOracleFee, l.oracle.minOracleFee, l.oracle.withBeacons, l.oracle.jury.K, l.oracle.jury.P);
     }
 }

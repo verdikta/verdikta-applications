@@ -27,8 +27,8 @@ interface IJuryBeaconsView {
 ///   Every read goes through the escrow's own external getters (getBounty, getSubmission,
 ///   activeEvaluations, ...), never raw storage slots, so there is no storage layout to keep in
 ///   sync between the two contracts. `escrow` is an immutable — part of the code, not
-///   storage — so it is intact when this code runs under delegatecall. Each bounty's aggregator
-///   is read from the escrow (aggregatorOf).
+///   storage — so it is intact when this code runs under delegatecall. The aggregator is read
+///   from the escrow (aggregator()), and a round's jury from the aggregator (getJury).
 ///
 ///   Created exactly once, by the escrow's constructor (msg.sender at construction IS the
 ///   escrow). There is no setter anywhere: the pair is fixed for life, like every other rule
@@ -132,6 +132,11 @@ contract BountyEscrowLens {
         return d > w + 2 ? d - w - 2 : 0;
     }
 
+    /// @notice What startPreparedSubmission takes RIGHT NOW: requiredPrepay plus the hunter bond.
+    function startValue(uint256 bountyId) external view returns (uint256) {
+        return escrow.requiredPrepay(bountyId) + escrow.getBounty(bountyId).bond;
+    }
+
     // ------------- Agent-facing views -------------
     // These exist so an agent can drive the whole lifecycle with ONLY the escrow's merged ABI
     // and a plain RPC: batch reads instead of one call per item, the oracle result without
@@ -191,7 +196,7 @@ contract BountyEscrowLens {
         BountyEscrow.Submission memory s = escrow.getSubmission(bountyId, submissionId);
         r.rounds = s.rounds;
         if (s.verdiktaAggId == bytes32(0)) return r;
-        IVerdiktaAggregator agg = escrow.aggregatorOf(bountyId);
+        IVerdiktaAggregator agg = escrow.aggregator();
         r.started = true;
         BountyRules.Verdict memory v = BountyRules.judge(agg, s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine);
         r.hasResult = v.hasResult;
@@ -236,7 +241,7 @@ contract BountyEscrowLens {
         BountyEscrow.Submission memory s = escrow.getSubmission(bountyId, submissionId);
         BountyEscrow.SubmissionStatus st = s.status;
         bool open = b.status == BountyEscrow.BountyStatus.Open;
-        IVerdiktaAggregator agg = escrow.aggregatorOf(bountyId);
+        IVerdiktaAggregator agg = escrow.aggregator();
 
         if (st == BountyEscrow.SubmissionStatus.Prepared ||
             st == BountyEscrow.SubmissionStatus.PendingCreatorApproval) {
@@ -300,7 +305,8 @@ contract BountyEscrowLens {
         }
         if (block.timestamp > deadline) return "CLOSE_FAILED";            // settle is due
         if (phase == BountyRules.PH_COMMIT) {
-            return block.timestamp > windowEnd && commits >= agg.M() ? "CLOSE_COMMITS" : "AWAIT_ORACLE";
+            (, uint8 m, , , ) = agg.getJury(aggId);
+            return block.timestamp > windowEnd && commits >= m ? "CLOSE_COMMITS" : "AWAIT_ORACLE";
         }
         if (phase == BountyRules.PH_CLOSING) return block.number >= closeBlock + 2 ? "PROMOTE" : "AWAIT_ORACLE";
         return "AWAIT_ORACLE";                                            // reveal

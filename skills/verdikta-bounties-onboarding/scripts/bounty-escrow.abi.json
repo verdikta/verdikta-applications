@@ -5,8 +5,8 @@
     "payable": false,
     "inputs": [
       {
-        "type": "address[]",
-        "name": "aggregators_"
+        "type": "address",
+        "name": "aggregator_"
       }
     ]
   },
@@ -636,49 +636,11 @@
   },
   {
     "type": "function",
-    "name": "aggregatorCount",
+    "name": "aggregator",
     "constant": true,
     "stateMutability": "view",
     "payable": false,
     "inputs": [],
-    "outputs": [
-      {
-        "type": "uint256",
-        "name": ""
-      }
-    ]
-  },
-  {
-    "type": "function",
-    "name": "aggregatorOf",
-    "constant": true,
-    "stateMutability": "view",
-    "payable": false,
-    "inputs": [
-      {
-        "type": "uint256",
-        "name": "bountyId"
-      }
-    ],
-    "outputs": [
-      {
-        "type": "address",
-        "name": ""
-      }
-    ]
-  },
-  {
-    "type": "function",
-    "name": "aggregators",
-    "constant": true,
-    "stateMutability": "view",
-    "payable": false,
-    "inputs": [
-      {
-        "type": "uint256",
-        "name": "i"
-      }
-    ],
     "outputs": [
       {
         "type": "address",
@@ -787,7 +749,23 @@
       },
       {
         "type": "uint8",
-        "name": "jury"
+        "name": "juryK"
+      },
+      {
+        "type": "uint8",
+        "name": "juryM"
+      },
+      {
+        "type": "uint8",
+        "name": "juryN"
+      },
+      {
+        "type": "uint8",
+        "name": "juryP"
+      },
+      {
+        "type": "uint40",
+        "name": "juryTimeout"
       },
       {
         "type": "uint8",
@@ -921,8 +899,30 @@
             ]
           },
           {
-            "type": "uint8",
-            "name": "jury"
+            "type": "tuple",
+            "name": "jury",
+            "components": [
+              {
+                "type": "uint8",
+                "name": "K"
+              },
+              {
+                "type": "uint8",
+                "name": "M"
+              },
+              {
+                "type": "uint8",
+                "name": "N"
+              },
+              {
+                "type": "uint8",
+                "name": "P"
+              },
+              {
+                "type": "uint40",
+                "name": "timeout"
+              }
+            ]
           },
           {
             "type": "uint8",
@@ -1164,7 +1164,23 @@
           },
           {
             "type": "uint8",
-            "name": "jury"
+            "name": "juryK"
+          },
+          {
+            "type": "uint8",
+            "name": "juryM"
+          },
+          {
+            "type": "uint8",
+            "name": "juryN"
+          },
+          {
+            "type": "uint8",
+            "name": "juryP"
+          },
+          {
+            "type": "uint40",
+            "name": "juryTimeout"
           },
           {
             "type": "uint8",
@@ -1426,25 +1442,6 @@
       }
     ],
     "outputs": []
-  },
-  {
-    "type": "function",
-    "name": "startValue",
-    "constant": true,
-    "stateMutability": "view",
-    "payable": false,
-    "inputs": [
-      {
-        "type": "uint256",
-        "name": "bountyId"
-      }
-    ],
-    "outputs": [
-      {
-        "type": "uint256",
-        "name": ""
-      }
-    ]
   },
   {
     "type": "function",
@@ -1753,7 +1750,23 @@
           },
           {
             "type": "uint8",
-            "name": "jury"
+            "name": "juryK"
+          },
+          {
+            "type": "uint8",
+            "name": "juryM"
+          },
+          {
+            "type": "uint8",
+            "name": "juryN"
+          },
+          {
+            "type": "uint8",
+            "name": "juryP"
+          },
+          {
+            "type": "uint40",
+            "name": "juryTimeout"
           },
           {
             "type": "uint8",
@@ -2086,6 +2099,25 @@
   {
     "type": "function",
     "name": "prepareCutoff",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "uint256",
+        "name": ""
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "startValue",
     "constant": true,
     "stateMutability": "view",
     "payable": false,

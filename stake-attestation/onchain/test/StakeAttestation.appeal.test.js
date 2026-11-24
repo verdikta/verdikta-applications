@@ -102,11 +102,11 @@ async function runRound(aggregator, requestId, vector, justification = JUSTIFICA
   const now = BigInt(await ethers.provider.getBlockNumber());
   if (now < r.requestBlock + 2n) await mine(Number(r.requestBlock + 2n - now));
   await aggregator.drawJury(requestId);
-  await aggregator.scriptCommits(requestId, Number(await aggregator.K()));
+  const [K, , N] = (await aggregator.getJury(requestId)).map(Number);   // the listing's jury
+  await aggregator.scriptCommits(requestId, K);
   await mine(1);
   await aggregator.promote(requestId);
-  const n = Number(await aggregator.N());
-  await aggregator.scriptReveals(requestId, Array.from({ length: n }, () => [...vector].map(BigInt)), justification);
+  await aggregator.scriptReveals(requestId, Array.from({ length: N }, () => [...vector].map(BigInt)), justification);
   await aggregator.setArbiterFee(0n);
   expect(await H.leftover(aggregator, requestId)).to.equal(leftover);
 }

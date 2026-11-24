@@ -107,11 +107,11 @@ async function runRound(aggregator, requestId, vector, justification = JUSTIFICA
   const now = BigInt(await ethers.provider.getBlockNumber());
   if (now < r.requestBlock + 2n) await mine(Number(r.requestBlock + 2n - now));
   await aggregator.drawJury(requestId);
-  await aggregator.scriptCommits(requestId, Number(await aggregator.K()));
+  const [K, , N] = (await aggregator.getJury(requestId)).map(Number);   // the listing's jury
+  await aggregator.scriptCommits(requestId, K);
   await mine(1);
   await aggregator.promote(requestId);
-  const n = Number(await aggregator.N());
-  await aggregator.scriptReveals(requestId, Array.from({ length: n }, () => [...vector].map(BigInt)), justification);
+  await aggregator.scriptReveals(requestId, Array.from({ length: N }, () => [...vector].map(BigInt)), justification);
   await aggregator.setArbiterFee(0n);
   expect(await H.leftover(aggregator, requestId)).to.equal(leftover);
 }
@@ -121,7 +121,7 @@ async function runRound(aggregator, requestId, vector, justification = JUSTIFICA
 // aggregator's treasury (M commits never promoted), so its wallet gets nothing back.
 async function deadRound(aggregator, requestId) {
   await drawDirect(aggregator, requestId);
-  await aggregator.scriptCommits(requestId, Number(await aggregator.M()));
+  await aggregator.scriptCommits(requestId, Number((await aggregator.getJury(requestId))[1]));
   await time.increaseTo((await roundInfo(aggregator, requestId)).deadline + 1n);
 }
 
@@ -866,15 +866,16 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
 
     it("the fee is live: it follows the aggregator's settings and ceiling, as the lens's disputeFee quotes it; refused when the aggregator quotes no budget", async function () {
       const { sa, aggregator, maker, other, hunter } = await loadFixture(deployDefaults);
-      const id = await openListing(sa, maker, params(), { escrow: 2n * TOP });
+      // A larger jury (the listing's): K 8, P 4.
+      const jury = { K: 8, M: 6, N: 5, P: 4, timeout: 300 };
+      const id = await openListing(sa, maker, params({ oracle: { ...ORACLE, jury } }), { escrow: 2n * TOP });
       const { claimId } = await judged(sa, aggregator, hunter, id, V.HIGH);
       await atConfirmWindow(sa, claimId);
       const snap = await snapshot();
       await aggregator.setMaxOracleFee(0n); // a ceiling of 0: the quote is 0
       await expect(sa.connect(other).confirm(claimId)).to.be.revertedWith("bad budget");
       await restore(snap);
-      // A larger jury and bonus, and a ceiling below the listing's dispute fee.
-      await aggregator.setConfig(8, 6, 5, 4);
+      // A larger bonus, and a ceiling below the listing's dispute fee.
       await aggregator.setBonusMultiplier(5);
       const ceiling = PANEL_EFF / 2n;
       await aggregator.setMaxOracleFee(ceiling);

@@ -26,7 +26,7 @@ library ClaimRules {
     uint256 internal constant SUBMISSION_GAS_NEEDED = SUBMISSION_GAS + SUBMISSION_GAS / 63 + 100_000;
 
     /// @notice Bounds on maker-chosen oracle settings, as BountyEscrow's createBounty checks
-    ///         (ClaimLogic.checkOracle applies them at list).
+    ///         (ClaimLogic.setOracle applies them at list).
     uint256 internal constant MAX_ALPHA = 1000;
     uint256 internal constant MAX_FEE_SCALING_FACTOR = 1000;
 
@@ -112,14 +112,15 @@ library ClaimRules {
     }
 
     /// @notice A round's live escrow, the prepay its request needs: the aggregator's
-    ///         maxTotalFee(fee clamped to its live ceiling, the floor, the beacon flag), that is
-    ///         jurorFee x (K + B x P [+ beacon quorum]) + clamped fee x (draw + promote rewards).
+    ///         maxTotalFee(fee clamped to its live ceiling, the floor, the beacon flag, the listing
+    ///         jury's K and P), that is jurorFee x (K + B x P [+ beacon quorum]) + clamped fee x (draw +
+    ///         promote rewards).
     ///         StakeAttestation (commit, reveal, retrigger, the dispute-panel rounds) and the lens
     ///         (commitPrice, revealTopUp, disputeFee, retriggerTopUp) both quote it here.
-    function roundFee(IVerdiktaAggregator verdikta, uint256 fee, uint256 minFee, bool withBeacons)
+    function roundFee(IVerdiktaAggregator verdikta, uint256 fee, uint256 minFee, bool withBeacons, uint8 K, uint8 P)
         internal view returns (uint256)
     {
-        return verdikta.maxTotalFee(effectiveFee(fee, verdikta.maxOracleFee()), minFee, withBeacons);
+        return verdikta.maxTotalFee(effectiveFee(fee, verdikta.maxOracleFee()), minFee, withBeacons, K, P);
     }
 
     /// @notice The v2 aggregator's round phases a requester acts on (getRoundInfo): 1 draw,

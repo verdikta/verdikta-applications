@@ -31,7 +31,7 @@ import {ClaimRules} from "./ClaimRules.sol";
 ///      finalize serving both kinds of round, and topUp, through which fund and a confirmation's
 ///      leftover both reach a listing (owed awards first, then the escrow).
 ///
-///      list's oracle check (checkOracle) is here too, for the size limit (P16).
+///      list's oracle check and its copy into storage (setOracle) are here too, for the size limit (P16).
 ///
 ///      The hunter's appeal (P16, erratum E7) is appeal, retrigger's second branch (the appeal's
 ///      one re-trigger), the third kind of round in finalize's dispute-panel branch, and settle's
@@ -101,18 +101,22 @@ library ClaimLogic {
         }
     }
 
-    /// @notice StakeAttestation.list's check of the oracle settings (here for the size limit, P16):
-    ///         BountyEscrow.createBounty's checks, applied to both fees: reject anything the
-    ///         aggregator or keeper would reject when a request is sent, so a bad listing fails at
-    ///         listing instead of stranding hunters at reveal or the maker at dispute. A view: it
-    ///         reads the aggregator's live ceiling and budget, and changes nothing. The only
-    ///         function here without a storage argument, so it is in the library's ABI: the
-    ///         aggregator is an address there, a type every ABI reader accepts.
+    /// @notice StakeAttestation.list's check of the oracle settings, and their copy into the new
+    ///         listing (both here for the size limit, P16): BountyEscrow.createBounty's checks,
+    ///         applied to both fees: reject anything the aggregator or keeper would reject when a
+    ///         request is sent, so a bad listing fails at listing instead of stranding hunters at
+    ///         reveal or the maker at dispute. It reads the aggregator's live ceiling and budget,
+    ///         and writes only `l.oracle`.
     ///         The v2 terms: the fee floor fits a uint96 (the aggregator keeps a juror's fee in
-    ///         one), and each round's escrow, maxTotalFee(fee, floor, withBeacons), must quote (it
+    ///         one), the jury follows the aggregator's structural rules (K >= M >= N >= P >= 1,
+    ///         N <= 40, P >= 2 unless N = 1, a timeout above 0; maxJury, the keeper's shortlist and
+    ///         the timeout bounds are left to each request), and each round's escrow,
+    ///         maxTotalFee(fee, floor, withBeacons, K, P), must quote (it
     ///         reverts for a beacon request while the aggregator has no beacon contract), be above
     ///         0 and fit a uint88 (the aggregator's own cap on what a round receives).
-    function checkOracle(StakeAttestation.OracleParams calldata o, address aggregator) external view {
+    function setOracle(StakeAttestation.Listing storage l, StakeAttestation.OracleParams calldata o, address aggregator)
+        external
+    {
         IVerdiktaAggregator verdikta = IVerdiktaAggregator(aggregator);
         uint256 ceiling = verdikta.maxOracleFee();
         require(o.maxOracleFee > 0, "bad oracle fee");
@@ -124,14 +128,20 @@ library ClaimLogic {
         require(o.maxFeeBasedScaling >= 1 && o.maxFeeBasedScaling <= ClaimRules.MAX_FEE_SCALING_FACTOR, "bad fee scaling");
         require(o.alpha <= ClaimRules.MAX_ALPHA, "bad alpha");
         require(o.minOracleFee <= type(uint96).max, "bad fee floor");
-        _checkBudget(verdikta, o.maxOracleFee, o.minOracleFee, o.withBeacons);
-        _checkBudget(verdikta, o.disputeMaxOracleFee, o.minOracleFee, o.withBeacons);
+        IVerdiktaAggregator.Jury calldata j = o.jury;
+        require(
+            j.P != 0 && j.P <= j.N && j.N <= j.M && j.M <= j.K && j.N <= 40 && (j.P != 1 || j.N == 1) && j.timeout != 0,
+            "bad jury"
+        );
+        _checkBudget(verdikta, o.maxOracleFee, o);
+        _checkBudget(verdikta, o.disputeMaxOracleFee, o);
+        l.oracle = o;
     }
 
-    /// @dev checkOracle's budget check for one fee: the quote must not revert, and must be above
+    /// @dev setOracle's budget check for one fee: the quote must not revert, and must be above
     ///      0 and at most type(uint88).max.
-    function _checkBudget(IVerdiktaAggregator verdikta, uint256 fee, uint256 minFee, bool withBeacons) private view {
-        try verdikta.maxTotalFee(fee, minFee, withBeacons) returns (uint256 total) {
+    function _checkBudget(IVerdiktaAggregator verdikta, uint256 fee, StakeAttestation.OracleParams calldata o) private view {
+        try verdikta.maxTotalFee(fee, o.minOracleFee, o.withBeacons, o.jury.K, o.jury.P) returns (uint256 total) {
             require(total > 0 && total <= type(uint88).max, "bad budget");
         } catch {
             revert("bad budget");
@@ -955,7 +965,8 @@ library ClaimLogic {
     function _roundFee(StakeAttestation.Listing storage l, uint256 fee, IVerdiktaAggregator verdikta)
         private view returns (uint256 total)
     {
-        total = ClaimRules.roundFee(verdikta, fee, l.oracle.minOracleFee, l.oracle.withBeacons);
+        StakeAttestation.OracleParams storage o = l.oracle;
+        total = ClaimRules.roundFee(verdikta, fee, o.minOracleFee, o.withBeacons, o.jury.K, o.jury.P);
         require(total > 0, "bad budget");
     }
 
@@ -1038,7 +1049,8 @@ library ClaimLogic {
     ///      maxOracleFee, or its disputeMaxOracleFee for a dispute) clamped to the aggregator's
     ///      live ceiling, and the base cost kept below it (the aggregator requires base < fee;
     ///      without this a lowered ceiling would make every request revert); alpha, scaling,
-    ///      class, the fee floor and the beacon flag are the listing's.
+    ///      class, the fee floor, the beacon flag and the jury are the listing's (a dispute panel
+    ///      uses the same jury as the claim round).
     function _request(StakeAttestation.Listing storage l, uint256 fee, string memory addendum, IVerdiktaAggregator verdikta)
         private view returns (EvaluationWallet.Request memory q)
     {
@@ -1047,7 +1059,8 @@ library ClaimLogic {
         uint256 base = o.estimatedBaseCost;
         if (base >= fee) base = fee > 0 ? fee - 1 : 0;
         q = EvaluationWallet.Request(
-            addendum, o.alpha, fee, o.minOracleFee, base, o.maxFeeBasedScaling, o.requestedClass, o.withBeacons
+            addendum, o.alpha, fee, o.minOracleFee, base, o.maxFeeBasedScaling, o.requestedClass, o.withBeacons,
+            o.jury
         );
     }
 

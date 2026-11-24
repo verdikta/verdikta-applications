@@ -105,6 +105,12 @@ contract StakeAttestation is Ownable2Step {
                                      // round, claim or dispute panel, is paid at least this. It may
                                      // exceed the ceiling; the prepay is quoted with it (maxTotalFee)
         bool    withBeacons;         // request the beacon stage (the draw then takes two calls)
+        // The jury every round of the listing asks for, claim or dispute panel (item 15: one
+        // aggregator serves every jury size): K drawn, M promoted, N counted, P clustered, and the
+        // round timeout (s, from the draw). Checked at list (ClaimLogic.setOracle) by the
+        // aggregator's structural rules; its live limits (maxJury, the keeper's shortlist,
+        // T+ < timeout <= maxTimeout) are checked by each request.
+        IVerdiktaAggregator.Jury jury;
     }
 
     /// @notice Everything list() takes besides the archives and the known issues.
@@ -859,7 +865,6 @@ contract StakeAttestation is Ownable2Step {
         require(p.disclosureKey != bytes32(0), "no disclosure key");
         _checkAwards(p.awards, p.lowestClassCounted);
         _checkWindows(p.fixWindow, p.disputeWindow, p.disclosureGrace, p.revealWindow);
-        ClaimLogic.checkOracle(p.oracle, address(verdikta));
         _checkKnownIssues(knownIssueIds);
         require(p.allowlist.length <= MAX_ALLOWLIST, "allowlist too long");
         require(activeListingOf[artifactHash][msg.sender] == 0, "active listing exists");
@@ -884,7 +889,7 @@ contract StakeAttestation is Ownable2Step {
         l.bondWei = p.bondWei;
         l.valueAtRiskUsd = p.valueAtRiskUsd;
         l.knownIssueIds = knownIssueIds;
-        l.oracle = p.oracle;
+        ClaimLogic.setOracle(l, p.oracle, address(verdikta));   // checked, then stored (the copy is there, for size)
         // Errata E8, E9: the program values as of now, for this listing's whole life.
         l.narrowInvalidFloor = narrowInvalidFloor;
         l.confirmAboveWei = confirmAboveWei;

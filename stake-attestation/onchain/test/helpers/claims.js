@@ -63,6 +63,8 @@ const ORACLE = {
   maxFeeBasedScaling: 1n,
   minOracleFee: 0n, // the v2 fee floor: none
   withBeacons: false,
+  // the jury every round of the listing asks for: the Small class preset (K, M, N, P, timeout)
+  jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 },
 };
 // The v2 mock's maxTotalFee at its defaults, no floor, no beacons: eff x (K + B x P) + eff x (draw
 // + promote rewards) = eff x (6 + 3 x 3 + 2 + 1) = 18 eff, eff = min(fee, ceiling). quote() is

@@ -23,8 +23,21 @@ pragma solidity ^0.8.20;
  *      Refunds and rewards are credited to ethOwed and pulled with withdrawEth.
  */
 interface IVerdiktaAggregator {
+    /// @notice The jury a request asks for (ReputationAggregator.Jury; item 15's class presets): K drawn,
+    ///         M promoted, N counted, P clustered, and the round timeout (seconds, from the draw). One
+    ///         aggregator serves every class. The request reverts BadJury (AggregatorLib) unless
+    ///         K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, K <= maxJury() and the keeper's
+    ///         shortlistSize(), and tPlus() < timeout <= maxTimeout().
+    struct Jury {
+        uint8 K;
+        uint8 M;
+        uint8 N;
+        uint8 P;
+        uint40 timeout;
+    }
+
     /**
-     * @notice Request an evaluation, funded in ETH. Escrows maxTotalFee(maxFee, minFee, withBeacons):
+     * @notice Request an evaluation, funded in ETH. Escrows maxTotalFee(maxFee, minFee, withBeacons, K, P):
      *         msg.value first, then the caller's ethOwed credit for any shortfall; any excess value goes
      *         to credit. The jury is drawn later by drawJury.
      * @param cids             IPFS CIDs (1..10, each <= 100 bytes)
@@ -36,6 +49,7 @@ interface IVerdiktaAggregator {
      * @param maxFeeBasedScalingFactor  1..65535, caps the price boost
      * @param requestedClass   ClassID (the model pool)
      * @param withBeacons      item 9's beacon flag
+     * @param jury             the round's jury and timeout (see Jury)
      */
     function requestAIEvaluationWithApproval(
         string[] memory cids,
@@ -46,13 +60,15 @@ interface IVerdiktaAggregator {
         uint256 estimatedBaseCost,
         uint256 maxFeeBasedScalingFactor,
         uint64 requestedClass,
-        bool withBeacons
+        bool withBeacons,
+        Jury calldata jury
     ) external payable returns (bytes32 aggId);
 
-    /// @notice The escrow for one request: max(eff, minFee) x (K + B x P [+ beacon quorum]) +
-    ///         eff x (drawRewardFees + promoteRewardFees), eff = min(maxFee, maxOracleFee). Reverts with
-    ///         `withBeacons` when no beacon contract is set.
-    function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) external view returns (uint256);
+    /// @notice The escrow for one request with a jury of K drawn and P clustered:
+    ///         max(eff, minFee) x (K + B x P [+ beacon quorum]) + eff x (drawRewardFees + promoteRewardFees),
+    ///         eff = min(maxFee, maxOracleFee). Reverts with `withBeacons` when no beacon contract is set.
+    function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P)
+        external view returns (uint256);
 
     /// @notice Draw the jury (anyone, from block B+2). The drawer earns 2 x eff: only the requester
     ///         within 30 s of the request (or of the beacon quorum), anyone after. With beacons the first
@@ -108,6 +124,9 @@ interface IVerdiktaAggregator {
             uint256 requestTime
         );
 
+    /// @notice The jury a round was requested with (zeros for an unknown round).
+    function getJury(bytes32 aggId) external view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout);
+
     function isFailed(bytes32 aggId) external view returns (bool);
 
     /// @notice ETH (wei) credited to `account`: refunds, rewards and payments.
@@ -119,13 +138,11 @@ interface IVerdiktaAggregator {
     /// @notice The per-arbiter fee ceiling every request is clamped to.
     function maxOracleFee() external view returns (uint256);
 
-    /// @notice Seconds from the draw to the round deadline.
-    function responseTimeoutSeconds() external view returns (uint40);
+    /// @notice The largest K a request may ask for (owner-set; the keeper's shortlist also bounds it).
+    function maxJury() external view returns (uint8);
 
-    function K() external view returns (uint8);
-    function M() external view returns (uint8);
-    function N() external view returns (uint8);
-    function P() external view returns (uint8);
+    /// @notice The longest round timeout a request may ask for (owner-set).
+    function maxTimeout() external view returns (uint40);
 
     /// @notice The beacon contract (address(0): requests with withBeacons revert).
     function beacons() external view returns (address);

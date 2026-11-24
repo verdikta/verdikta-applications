@@ -811,7 +811,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         }
         if ((info.phase !== 3n && info.phase !== 4n) || info.deadline < BigInt(await time.latest()) + 60n) continue;
         if (info.phase === 3n) {
-          const K = Number(await aggregator.K()), M = Number(await aggregator.M());
+          const [K, M] = (await aggregator.getJury(requestId)).map(Number);
           const mPlus = M + Math.ceil((K - M) / 2);
           await attempt("commits", () => aggregator.scriptCommits(requestId, Math.max(1, mPlus - Number(info.commits))));
         }

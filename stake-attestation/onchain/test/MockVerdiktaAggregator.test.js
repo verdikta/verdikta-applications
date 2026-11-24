@@ -19,6 +19,9 @@ const CEILING = ethers.parseEther("0.0004");
 const RESULT = [0, 0, 0, 0, 1_000_000, 0];
 const TREASURY = "0x0000000000000000000000000000000000007EA5";
 const ARBITERS = "0x00000000000000000000000000000000A4B17E45";
+// Juries (the request's last argument): the Small and Jumbo class presets.
+const SMALL = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
+const JUMBO = { K: 50, M: 38, N: 27, P: 17, timeout: 600 };
 const PH = { DRAW: 1n, BEACON: 2n, COMMIT: 3n, CLOSING: 4n, REVEAL: 5n, FINAL: 6n, SETTLED: 7n, FAILED: 8n, CANCELLED: 9n };
 
 function args(overrides = {}) {
@@ -32,6 +35,7 @@ function args(overrides = {}) {
     scaling: 5n,
     requestedClass: 133n,
     withBeacons: false,
+    jury: SMALL,
     ...overrides,
   };
 }
@@ -45,13 +49,13 @@ async function deploy() {
 
 const send = (aggregator, signer, a, value, overrides = {}) =>
   aggregator.connect(signer).requestAIEvaluationWithApproval(
-    a.cids, a.addendum, a.alpha, a.maxFee, a.minFee, a.baseCost, a.scaling, a.requestedClass, a.withBeacons,
+    a.cids, a.addendum, a.alpha, a.maxFee, a.minFee, a.baseCost, a.scaling, a.requestedClass, a.withBeacons, a.jury,
     { value, ...overrides }
   );
 
 // Sends a request from an EOA and returns its id (from the event).
 async function request(aggregator, signer, a = args(), value) {
-  const required = await aggregator.maxTotalFee(a.maxFee, a.minFee, a.withBeacons);
+  const required = await aggregator.maxTotalFee(a.maxFee, a.minFee, a.withBeacons, a.jury.K, a.jury.P);
   const receipt = await (await send(aggregator, signer, a, value === undefined ? required : value)).wait();
   return receipt.logs
     .map((l) => { try { return aggregator.interface.parseLog(l); } catch { return null; } })
@@ -119,9 +123,9 @@ describe("MockVerdiktaAggregator (v2)", function () {
       });
       const fns = iface.fragments.filter((f) => f.type === "function");
       expect(fns.map((f) => f.name).sort()).to.deep.equal([
-        "K", "M", "N", "P", "beacons", "cancelUnsealed", "closeCommits", "drawJury", "ethOwed", "getEvaluation",
-        "getOutcomeScores", "getRoundInfo", "isFailed", "maxOracleFee", "maxTotalFee", "promote",
-        "requestAIEvaluationWithApproval", "responseTimeoutSeconds", "sealSeed", "settle", "withdrawEth",
+        "beacons", "cancelUnsealed", "closeCommits", "drawJury", "ethOwed", "getEvaluation", "getJury",
+        "getOutcomeScores", "getRoundInfo", "isFailed", "maxJury", "maxOracleFee", "maxTimeout", "maxTotalFee", "promote",
+        "requestAIEvaluationWithApproval", "sealSeed", "settle", "withdrawEth",
       ]);
       for (const f of fns) expect(shape(mock.getFunction(f.format("sighash"))), f.name).to.deep.equal(shape(f));
       expect(fns.filter((f) => f.payable).map((f) => f.name)).to.deep.equal(["requestAIEvaluationWithApproval"]);
@@ -140,8 +144,8 @@ describe("MockVerdiktaAggregator (v2)", function () {
     it("has no requester callback: a whole round never calls the requester, which learns everything by polling", async function () {
       const { aggregator, requester } = await deploy();
       const a = args();
-      const required = await aggregator.maxTotalFee(a.maxFee, 0, false);
-      await requester.request(a.cids, "", 500, a.maxFee, 0, a.baseCost, 5, 133, false, { value: required });
+      const required = await aggregator.maxTotalFee(a.maxFee, 0, false, 6, 3);
+      await requester.request(a.cids, "", 500, a.maxFee, 0, a.baseCost, 5, 133, false, SMALL, { value: required });
       const id = await requester.lastRequestId();
       await mine(2);
       await requester.draw();
@@ -214,26 +218,85 @@ describe("MockVerdiktaAggregator (v2)", function () {
     });
   });
 
+  describe("the jury: the request's, checked by the real rules (BadJury)", function () {
+    for (const [label, jury] of [
+      ["M above K", { ...SMALL, K: 4 }],
+      ["N above M", { ...SMALL, N: 6 }],
+      ["P above N", { ...SMALL, P: 5 }],
+      ["P = 0", { ...SMALL, P: 0 }],
+      ["P = 1 with N > 1", { ...SMALL, P: 1 }],
+      ["N above 40", { K: 50, M: 45, N: 41, P: 17, timeout: 600 }],
+      ["K above maxJury (50)", { K: 51, M: 38, N: 27, P: 17, timeout: 600 }],
+      ["a timeout at T+ (155)", { ...SMALL, timeout: 155 }],
+      ["a timeout above maxTimeout (3600)", { ...SMALL, timeout: 3601 }],
+    ]) {
+      it(`refuses ${label}`, async function () {
+        const { aggregator, hunter } = await deploy();
+        await expect(send(aggregator, hunter, args({ jury }), CEILING * 1000n)).to.be.revertedWithCustomError(aggregator, "BadJury");
+      });
+    }
+
+    it("accepts N = P = 1, and the limits are settable (setLimits; BadInput for 0 or a timeout bound at T+)", async function () {
+      const { aggregator, hunter } = await deploy();
+      expect([await aggregator.maxJury(), await aggregator.maxTimeout()]).to.deep.equal([50n, 3600n]);
+      const id = await request(aggregator, hunter, args({ jury: { K: 1, M: 1, N: 1, P: 1, timeout: 156 } }));
+      expect(await aggregator.getJury(id)).to.deep.equal([1n, 1n, 1n, 1n, 156n]);
+      await aggregator.setLimits(8, 1000);
+      await expect(send(aggregator, hunter, args({ jury: { K: 10, M: 8, N: 7, P: 4, timeout: 300 } }), CEILING * 1000n))
+        .to.be.revertedWithCustomError(aggregator, "BadJury");
+      await expect(send(aggregator, hunter, args({ jury: { ...SMALL, timeout: 1001 } }), CEILING * 1000n))
+        .to.be.revertedWithCustomError(aggregator, "BadJury");
+      await expect(aggregator.setLimits(0, 1000)).to.be.revertedWithCustomError(aggregator, "BadInput");
+      await expect(aggregator.setLimits(8, 155)).to.be.revertedWithCustomError(aggregator, "BadInput");
+    });
+
+    it("stores each round's jury: a Small and a Jumbo round side by side, each escrowed, drawn and finalized by its own", async function () {
+      const { aggregator, hunter } = await deploy();
+      const small = await request(aggregator, hunter);
+      const jumbo = await request(aggregator, hunter, args({ jury: JUMBO }));
+      expect(await aggregator.getJury(small)).to.deep.equal([6n, 5n, 4n, 3n, 300n]);
+      expect(await aggregator.getJury(jumbo)).to.deep.equal([50n, 38n, 27n, 17n, 600n]);
+      expect(await aggregator.getJury(ethers.toBeHex(9, 32))).to.deep.equal([0n, 0n, 0n, 0n, 0n]);
+      expect((await info(aggregator, jumbo)).received).to.equal(await aggregator.maxTotalFee(CEILING, 0, false, 50, 17));
+      await draw(aggregator, jumbo, hunter);
+      const at = BigInt(await time.latest());
+      const r = await info(aggregator, jumbo);
+      expect([r.baseFees, r.deadline]).to.deep.equal([50n * CEILING, at + 600n]);
+      await aggregator.scriptCommits(jumbo, 44);                         // M+ = 38 + ceil(12 / 2)
+      expect((await info(aggregator, jumbo)).phase).to.equal(PH.CLOSING);
+      await mine(2);
+      await aggregator.promote(jumbo);
+      await expect(aggregator.scriptReveals(jumbo, Array(4).fill(RESULT), "Qm")).to.be.revertedWithCustomError(aggregator, "Unreachable");
+      await aggregator.scriptReveals(jumbo, Array(27).fill(RESULT), "Qm");
+      const [scores, valid] = await aggregator.getOutcomeScores(jumbo, 4);
+      expect([scores.length, valid]).to.deep.equal([27, true]);
+      await draw(aggregator, small, hunter);
+      await aggregator.scriptResult(small, RESULT, "Qm");
+      expect((await aggregator.getOutcomeScores(small, 4))[0].length).to.equal(4);
+    });
+  });
+
   describe("the escrow and fund-from-credit", function () {
     it("prices maxTotalFee as max(eff, minFee) x (K + B x P [+ quorum]) + eff x (draw + promote)", async function () {
       const { aggregator } = await deploy();
       const fee = CEILING / 4n;
-      expect(await aggregator.maxTotalFee(fee, 0, false)).to.equal(fee * 15n + fee * 3n);
-      expect(await aggregator.maxTotalFee(CEILING * 2n, 0, false)).to.equal(CEILING * 18n); // clamped
-      expect(await aggregator.maxTotalFee(fee, fee * 2n, false)).to.equal(fee * 2n * 15n + fee * 3n); // the floor
-      expect(await aggregator.maxTotalFee(fee, CEILING * 2n, false)).to.equal(CEILING * 2n * 15n + fee * 3n); // above the ceiling
-      expect(await aggregator.maxTotalFee(fee, 0, true)).to.equal(fee * 17n + fee * 3n); // a quorum of 2
-      await aggregator.setConfig(10, 7, 5, 4);
+      expect(await aggregator.maxTotalFee(fee, 0, false, 6, 3)).to.equal(fee * 15n + fee * 3n);
+      expect(await aggregator.maxTotalFee(CEILING * 2n, 0, false, 6, 3)).to.equal(CEILING * 18n); // clamped
+      expect(await aggregator.maxTotalFee(fee, fee * 2n, false, 6, 3)).to.equal(fee * 2n * 15n + fee * 3n); // the floor
+      expect(await aggregator.maxTotalFee(fee, CEILING * 2n, false, 6, 3)).to.equal(CEILING * 2n * 15n + fee * 3n); // above the ceiling
+      expect(await aggregator.maxTotalFee(fee, 0, true, 6, 3)).to.equal(fee * 17n + fee * 3n); // a quorum of 2
+      // the jury is the request's: K = 10, P = 4
+      expect(await aggregator.maxTotalFee(fee, 0, false, 10, 4)).to.equal(fee * 22n + fee * 3n);
       await aggregator.setBonusMultiplier(2);
       await aggregator.setRewards(3, 2);
-      expect(await aggregator.maxTotalFee(fee, 0, false)).to.equal(fee * 18n + fee * 5n);
+      expect(await aggregator.maxTotalFee(fee, 0, false, 10, 4)).to.equal(fee * 18n + fee * 5n);
       await aggregator.setBeacons(false, 2);
-      await expect(aggregator.maxTotalFee(fee, 0, true)).to.be.reverted;
+      await expect(aggregator.maxTotalFee(fee, 0, true, 6, 3)).to.be.reverted;
     });
 
     it("takes msg.value first, then credit for a shortfall (InsufficientPayment without), and excess value to credit", async function () {
       const { aggregator, hunter } = await deploy();
-      const required = await aggregator.maxTotalFee(CEILING, 0, false);
+      const required = await aggregator.maxTotalFee(CEILING, 0, false, 6, 3);
       await expect(request(aggregator, hunter, args(), required - 1n)).to.be.revertedWithCustomError(aggregator, "InsufficientPayment");
       await expect(send(aggregator, hunter, args(), required + 5n))
         .to.emit(aggregator, "RequestFunded").withArgs(anyValue, hunter.address, 0n, required + 5n);
@@ -248,7 +311,7 @@ describe("MockVerdiktaAggregator (v2)", function () {
 
     it("withdrawEth pays the caller's credit and reverts NothingOwed on zero", async function () {
       const { aggregator, hunter } = await deploy();
-      await send(aggregator, hunter, args(), (await aggregator.maxTotalFee(CEILING, 0, false)) + 9n);
+      await send(aggregator, hunter, args(), (await aggregator.maxTotalFee(CEILING, 0, false, 6, 3)) + 9n);
       await expect(aggregator.connect(hunter).withdrawEth()).to.changeEtherBalance(hunter, 9n);
       await expect(aggregator.connect(hunter).withdrawEth()).to.be.revertedWithCustomError(aggregator, "NothingOwed");
     });
@@ -266,7 +329,7 @@ describe("MockVerdiktaAggregator (v2)", function () {
       const r = await info(aggregator, id);
       expect(r.phase).to.equal(PH.COMMIT);
       expect(r.baseFees).to.equal(6n * CEILING);
-      expect(r.deadline).to.equal(at + (await aggregator.responseTimeoutSeconds()));
+      expect(r.deadline).to.equal(at + 300n);   // the request's jury timeout (Small)
       expect(r.windowEnd).to.equal(at + (await aggregator.tPlus()));
       await expect(aggregator.drawJury(id)).to.be.revertedWithCustomError(aggregator, "WrongPhase");
     });
@@ -438,7 +501,7 @@ describe("MockVerdiktaAggregator (v2)", function () {
     it("setRequestGasCost makes a request spend about that much more gas, and run out of gas without it", async function () {
       const { aggregator, hunter } = await deploy();
       const a = args();
-      const required = await aggregator.maxTotalFee(a.maxFee, 0, false);
+      const required = await aggregator.maxTotalFee(a.maxFee, 0, false, 6, 3);
       const go = (gasLimit) => send(aggregator, hunter, a, required, { gasLimit });
       expect(await aggregator.requestGasCost()).to.equal(0n);
       await (await go(5_000_000n)).wait(); // the first request also writes the counter from zero

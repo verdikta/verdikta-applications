@@ -26,6 +26,9 @@ describe("BountyEscrow", function () {
   const EST_BASE_COST = ethers.parseEther("0.00001");
   const MAX_FEE_SCALING = 2;
   const ADDENDUM = "";
+  // The default bounty's jury: the Small class preset (K, M, N, P, timeout), as CreateParams.jury.
+  const SMALL = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
+  const JURY = [SMALL.K, SMALL.M, SMALL.N, SMALL.P, SMALL.timeout];
 
   // Scores that sum to 1,000,000. acceptance = scores[1]/10000
   const PASSING_SCORES = [200000n, 800000n]; // 20% reject, 80% accept (>= 70 threshold)
@@ -34,7 +37,8 @@ describe("BountyEscrow", function () {
   // The real aggregator's draw and promote rewards, in fees (the fixture turns them off).
   const REWARDS = [2, 1];
   // Gas ceilings of the four hot paths (see "gas ceilings" below), ~15% over what was measured
-  // 2026-11-23: create 359k, prepare 329k (binds the wallet to its aggregator), start 707k (of which
+  // 2026-11-23: create 359k, prepare 329k (298k from 2026-11-24: the wallet's aggregator is an
+  // immutable of the shared code, no per-clone init), start 707k (of which
   // the mock's request, which stores every forwarded parameter for inspection, is most; the real
   // v2 request is ~205k), finalize 154k (reads every counted score for the Q-of-N rule).
   const GAS_CEILING = { create: 415_000n, prepare: 380_000n, start: 815_000n, finalize: 180_000n };
@@ -53,7 +57,7 @@ describe("BountyEscrow", function () {
     const verdiktaAggregator = withV2Hooks(mockAgg);
 
     const BountyEscrow = await ethers.getContractFactory("BountyEscrow");
-    const deployed = await BountyEscrow.deploy([await mockAgg.getAddress()]);
+    const deployed = await BountyEscrow.deploy(await mockAgg.getAddress());
     // Attach the MERGED ABI (escrow + lens views): the read-only views live in
     // BountyEscrowLens and are served at the escrow address through its fallback, so the
     // compiled BountyEscrow artifact's ABI alone does not list them.
@@ -136,7 +140,7 @@ describe("BountyEscrow", function () {
         minOracleFee: overrides.minOracleFee ?? 0n,
         withBeacons: overrides.withBeacons ?? false,
       },
-      jury: overrides.jury ?? 0,
+      jury: overrides.jury ?? SMALL,
       quota: overrides.quota ?? 1,
       forfeitLine: overrides.forfeitLine ?? 1,
       bond: overrides.bond ?? 0n,
@@ -218,24 +222,18 @@ describe("BountyEscrow", function () {
 
   // =========================================================================
   describe("Deployment", function () {
-    it("Should deploy with the approved aggregator list", async function () {
+    it("Should deploy with its one aggregator", async function () {
       const { bountyEscrow, verdiktaAggregator } =
         await loadFixture(deployBountyEscrowFixture);
 
-      expect(await bountyEscrow.aggregatorCount()).to.equal(1);
-      expect(await bountyEscrow.aggregators(0)).to.equal(
-        await verdiktaAggregator.getAddress()
-      );
+      expect(await bountyEscrow.aggregator()).to.equal(await verdiktaAggregator.getAddress());
+      const impl = await ethers.getContractAt("EvaluationWallet", await bountyEscrow.walletImplementation());
+      expect(await impl.verdikta()).to.equal(await verdiktaAggregator.getAddress());
     });
 
-    it("Should reject a zero aggregator address, and an empty or oversized list, in the constructor", async function () {
+    it("Should reject a zero aggregator address in the constructor", async function () {
       const BountyEscrow = await ethers.getContractFactory("BountyEscrow");
-      const { verdiktaAggregator } = await loadFixture(deployBountyEscrowFixture);
-      const a = await verdiktaAggregator.getAddress();
-
-      await expect(BountyEscrow.deploy([a, ethers.ZeroAddress])).to.be.revertedWith("zero addr");
-      await expect(BountyEscrow.deploy([])).to.be.revertedWith("bad aggregators");
-      await expect(BountyEscrow.deploy(Array(9).fill(a))).to.be.revertedWith("bad aggregators");
+      await expect(BountyEscrow.deploy(ethers.ZeroAddress)).to.be.revertedWith("zero addr");
     });
   });
 
@@ -766,8 +764,8 @@ describe("BountyEscrow", function () {
       const b = await createDefaultBounty(bountyEscrow, creator, { maxOracleFee: highFee, estimatedBaseCost: 0n });
       const sa = await prepareDefaultSubmission(bountyEscrow, hunter, a.bountyId);
       const sb = await prepareDefaultSubmission(bountyEscrow, hunter2, b.bountyId);
-      expect(sa.ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(lowFee, 0, false));
-      expect(sb.ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(highFee, 0, false));
+      expect(sa.ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(lowFee, 0, false, SMALL.K, SMALL.P));
+      expect(sb.ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(highFee, 0, false, SMALL.K, SMALL.P));
       expect(sb.ethMaxBudget).to.be.gt(sa.ethMaxBudget);
       await expect(bountyEscrow.connect(hunter).startPreparedSubmission(a.bountyId, sa.submissionId, { value: sb.ethMaxBudget }))
         .to.be.revertedWith("wrong eth amount");
@@ -1153,7 +1151,7 @@ describe("BountyEscrow", function () {
       const e = await bountyEscrow.effectiveOracleParams(bountyId);
       expect(e.maxOracleFee).to.equal(newCeiling); expect(e.estimatedBaseCost).to.equal(BASE);
       const live = await bountyEscrow.requiredPrepay(bountyId);
-      expect(live).to.equal(await verdiktaAggregator.maxTotalFee(newCeiling, 0, false));
+      expect(live).to.equal(await verdiktaAggregator.maxTotalFee(newCeiling, 0, false, SMALL.K, SMALL.P));
       expect(live).to.be.lt(estimate);
       await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: live }))
         .to.emit(bountyEscrow, "WorkSubmitted");
@@ -1184,7 +1182,7 @@ describe("BountyEscrow", function () {
       const { verdiktaAggregator, hunter } = await loadFixture(deployBountyEscrowFixture);
       await verdiktaAggregator.setMaxOracleFee(ethers.parseEther("0.00005"));
       await expect(
-        verdiktaAggregator.connect(hunter).requestAIEvaluationWithApproval(["a", "b"], "", 500, FEE, 0, BASE, 3, 128, false, { value: 0 })
+        verdiktaAggregator.connect(hunter).requestAIEvaluationWithApproval(["a", "b"], "", 500, FEE, 0, BASE, 3, 128, false, JURY, { value: 0 })
       ).to.be.revertedWithCustomError(verdiktaAggregator, "BadInput");
     });
 
@@ -1211,7 +1209,7 @@ describe("BountyEscrow", function () {
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
       const { ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
       expect(await bountyEscrow.requiredPrepay(bountyId)).to.equal(ethMaxBudget);
-      expect(ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(MAX_ORACLE_FEE, 0, false));
+      expect(ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(MAX_ORACLE_FEE, 0, false, SMALL.K, SMALL.P));
     });
 
     it("Requirement RISES after prepare: the old estimate is rejected, the live value works, and it is recorded", async function () {
@@ -4182,18 +4180,19 @@ describe("BountyEscrow", function () {
       const size = (code.length - 2) / 2;
       expect(size).to.be.lessThan(EIP170_LIMIT);
       // Room for the next contract change without another size exercise (v2 added the Q-of-N
-      // rule, bonds and re-runs: 22.9 KB, 2026-11-23).
+      // rule, bonds and re-runs: 22.9 KB, 2026-11-23; the per-bounty jury on one aggregator,
+      // with startValue moved to the lens: 23.07 KB, 2026-11-24).
       expect(EIP170_LIMIT - size).to.be.greaterThan(1500);
     });
 
-    it("creates the lens in the constructor, pointing back at the escrow (each bounty's aggregator is read from it)", async function () {
+    it("creates the lens in the constructor, pointing back at the escrow (the aggregator is read from it)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator } = await loadFixture(deployBountyEscrowFixture);
       const lensAddr = await bountyEscrow.lens();
       expect(lensAddr).to.not.equal(ethers.ZeroAddress);
       const lens = await ethers.getContractAt("BountyEscrowLens", lensAddr);
       expect(await lens.escrow()).to.equal(await bountyEscrow.getAddress());
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      expect(await bountyEscrow.aggregatorOf(bountyId)).to.equal(await verdiktaAggregator.getAddress());
+      expect(await lens.startValue(bountyId)).to.equal(await bountyEscrow.requiredPrepay(bountyId));
     });
 
     it("answers the lens views at the escrow address, identically to a direct lens call", async function () {
@@ -4427,26 +4426,22 @@ describe("BountyEscrow", function () {
       ).to.be.revertedWith("no arbiter payment");
     });
 
-    it("EvaluationWallet: only its escrow may operate it; bound to one aggregator once; it may run several rounds", async function () {
+    it("EvaluationWallet: only its escrow may operate it; bound to the escrow's aggregator; it may run several rounds", async function () {
       const { bountyEscrow, verdiktaAggregator, owner, hunter, other } = await loadFixture(deployBountyEscrowFixture);
       // A wallet created by the escrow rejects strangers, and is already bound
       const { bountyId } = await createDefaultBounty(bountyEscrow, owner);
       const { evalWallet } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
       const w = await ethers.getContractAt("EvaluationWallet", evalWallet);
       expect(await w.verdikta()).to.equal(await verdiktaAggregator.getAddress());
-      const req = ["", ALPHA, MAX_ORACLE_FEE, 0, EST_BASE_COST, MAX_FEE_SCALING, CLASS_ID, false];
-      const value = await verdiktaAggregator.maxTotalFee(MAX_ORACLE_FEE, 0, false);
+      const req = ["", ALPHA, MAX_ORACLE_FEE, 0, EST_BASE_COST, MAX_FEE_SCALING, CLASS_ID, false, JURY];
+      const value = await verdiktaAggregator.maxTotalFee(MAX_ORACLE_FEE, 0, false, SMALL.K, SMALL.P);
       await expect(w.connect(other).refundLeftoverEth()).to.be.revertedWith("Not bounty");
       await expect(w.connect(other).drawJury()).to.be.revertedWith("Not bounty");
-      await expect(w.connect(other).init(await verdiktaAggregator.getAddress())).to.be.revertedWith("Not bounty");
       await expect(w.connect(other).startEvaluation([EVAL_CID, HUNTER_CID], req, { value }))
         .to.be.revertedWith("Not bounty");
       // A wallet whose "bounty contract" is a test signer can be driven directly
       const W = await ethers.getContractFactory("EvaluationWallet");
-      const direct = await W.deploy(owner.address);
-      await expect(direct.init(ethers.ZeroAddress)).to.be.revertedWith("bad init");
-      await direct.init(await verdiktaAggregator.getAddress());
-      await expect(direct.init(await verdiktaAggregator.getAddress())).to.be.revertedWith("bad init");
+      const direct = await W.deploy(owner.address, await verdiktaAggregator.getAddress());
       await direct.startEvaluation([EVAL_CID, HUNTER_CID], req, { value });
       const first = await direct.aggId();
       await direct.startEvaluation([EVAL_CID, HUNTER_CID], req, { value });   // the escrow's re-run

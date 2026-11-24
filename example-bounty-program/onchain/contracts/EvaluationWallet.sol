@@ -10,14 +10,13 @@ import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 ///         whoever funded the round (Submission.funder).
 /// @dev Deployed ONCE by the escrow's constructor as an implementation; every submission gets an
 ///      EIP-1167 minimal-proxy clone (BountyEscrow.walletImplementation / Clones.clone), ~40k gas
-///      instead of a full deployment. `bountyContract` is an immutable (part of the shared code);
-///      `verdikta` is per-clone storage, set once by init() at prepare, because a bounty picks its
-///      aggregator (one per jury size) from the escrow's approved list. The implementation itself is
-///      never operated.
+///      instead of a full deployment. `bountyContract` and `verdikta` are immutables (part of the
+///      shared code): one aggregator serves every jury size, and the jury goes with each request
+///      (Request.jury). The implementation itself is never operated.
 contract EvaluationWallet {
     address public immutable bountyContract;   // only this can operate
 
-    IVerdiktaAggregator public verdikta;       // the bounty's aggregator, set once by init()
+    IVerdiktaAggregator public immutable verdikta;   // the escrow's aggregator
     bytes32 public aggId;                      // the latest round
     uint8   public rounds;                     // rounds started (a submission may re-run, item 12)
 
@@ -26,13 +25,8 @@ contract EvaluationWallet {
         _;
     }
 
-    constructor(address _bounty) {
+    constructor(address _bounty, IVerdiktaAggregator _verdikta) {
         bountyContract = _bounty;
-    }
-
-    /// @dev Bind this clone to the bounty's aggregator. Once.
-    function init(IVerdiktaAggregator _verdikta) external onlyBounty {
-        require(address(verdikta) == address(0) && address(_verdikta) != address(0), "bad init");
         verdikta = _verdikta;
     }
 
@@ -47,6 +41,7 @@ contract EvaluationWallet {
         uint256 maxFeeBasedScaling;
         uint64  requestedClass;
         bool    withBeacons;
+        IVerdiktaAggregator.Jury jury;   // the bounty's jury
     }
 
     /// @dev Start a round, funding the request with the attached ETH. The escrow starts a new round
@@ -63,7 +58,8 @@ contract EvaluationWallet {
             q.estimatedBaseCost,
             q.maxFeeBasedScaling,
             q.requestedClass,
-            q.withBeacons
+            q.withBeacons,
+            q.jury
         );
         aggId = id;
         rounds += 1;

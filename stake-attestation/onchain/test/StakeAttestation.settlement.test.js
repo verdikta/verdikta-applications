@@ -70,7 +70,7 @@ async function fullRound(aggregator, requestId, vector, drawer, justification = 
   await aggregator.scriptCommits(requestId, 6);
   await mine(1);
   await aggregator.connect(drawer).promote(requestId);
-  const n = Number((await aggregator.N()));
+  const n = Number((await aggregator.getJury(requestId))[2]);   // the listing's N
   await aggregator.scriptReveals(requestId, Array.from({ length: n }, () => [...vector].map(BigInt)), justification);
 }
 
@@ -196,8 +196,7 @@ describe("StakeAttestation: judgement and settlement (P2c)", function () {
       // One counted reveal (N = 1, P = 1), so the mock averages nothing and a vector reaches the
       // contract as scripted: the extreme components below would overflow its sum of N reveals
       // (the real aggregator caps each component at MAX_SCORE, 1e34, before averaging).
-      await aggregator.setConfig(6, 5, 1, 1);
-      const id = await openListing(sa, maker);
+      const id = await openListing(sa, maker, params({ oracle: { ...H.ORACLE, jury: { K: 6, M: 5, N: 1, P: 1, timeout: 300 } } }));
       const { claimId, requestId } = await revealedClaim(sa, hunter, id);
       await drawAs(sa, aggregator, claimId);
       const MAX = (1n << 256n) - 1n;

@@ -9,9 +9,12 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 /// @notice Test double for the v2 ReputationAggregator (verdikta-dispatcher, `beacon` branch). It
 ///         reproduces what a requester can observe, with the real numbers, and nothing more:
 ///         - Poll-only: the aggregator never calls the requester. There is no receive().
-///         - The request escrows maxTotalFee(maxFee, minFee, withBeacons) by the real formula,
+///         - The request escrows maxTotalFee(maxFee, minFee, withBeacons, K, P) by the real formula,
 ///           max(eff, minFee) x (K + B x P [+ quorum]) + eff x (drawRewardFees + promoteRewardFees):
 ///           msg.value first, then credit for any shortfall, any excess value to credit.
+///         - The jury (K, M, N, P, timeout) is the request's, stored per round (getJury), and checked
+///           by the real rules (BadJury): K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1,
+///           K <= maxJury (no keeper here, so no separate shortlist bound), tPlus < timeout <= maxTimeout.
 ///         - Sequential ids from 1, the same input limits (BadInput), pause gate, errors and events.
 ///         - The phases: draw from block B+2 within a day, the beacon stage, commits closing at M+
 ///           (or closeCommits after T+ with >= M), promote from C+2, finalization at the N-th reveal,
@@ -23,7 +26,7 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 /// @dev Test hooks stand in for the arbiters and the owner:
 ///         arbiters: scriptCommits, scriptReveals, scriptResult (a shortcut from any drawn phase),
 ///                   scriptBeacons, setPoolShortage;
-///         owner:    setConfig, setTimeouts, setRewards, setBonusMultiplier, setMaxOracleFee,
+///         owner:    setLimits, setTimeouts, setRewards, setBonusMultiplier, setMaxOracleFee,
 ///                   setArbiterFee (the jurors' posted fee; 0 = the ceiling), setTreasury,
 ///                   setBeacons, setPaused;
 ///         faults:   setRequestGasCost, setWithdrawBroken, setWithdrawBurnsGas.
@@ -60,6 +63,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     error DrawExpired();
     error NothingOwed();
     error EthTransferFailed();
+    error BadJury();   // AggregatorLib's
     /// @dev Mock-only: a scripted outcome no real round could produce.
     error Unreachable();
 
@@ -71,15 +75,12 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     event RevealReceived(bytes32 indexed aggRequestId, uint256 pollIndex, bool late, uint8 qcode);
 
     // ---- configuration (owner-set on the real contract) ----
-    uint8 public override K = 6;
-    uint8 public override M = 5;
-    uint8 public override N = 4;
-    uint8 public override P = 3;
+    uint8 public override maxJury = 50;
+    uint40 public override maxTimeout = 3600;
     uint8 public bonusMultiplier = 3;
     uint8 public drawRewardFees = 2;
     uint8 public promoteRewardFees = 1;
     uint40 public requesterDrawPriority = 30;
-    uint40 public override responseTimeoutSeconds = 300;
     uint40 public tPlus = 155;
     uint40 public revealWindow = 120;
     uint256 public override maxOracleFee = 4e14;
@@ -117,6 +118,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         uint40 anchor;             // the draw's 30 s priority runs from here
         uint40 windowEnd;
         uint40 deadline;
+        uint40 timeout;            // the jury's: the deadline runs this long from the draw
         bytes32 sealedHash;
         uint256 eff;
         uint256 minFee;
@@ -149,12 +151,13 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     //                         owner stand-ins
     // ------------------------------------------------------------------
 
-    function setConfig(uint8 k, uint8 m, uint8 n, uint8 p) external {
-        if (k == 0 || m == 0 || n == 0 || p == 0 || m > k || n > m || p > n) revert BadInput();
-        (K, M, N, P) = (k, m, n, p);
+    /// @notice The real setLimits(maxJury, maxTimeout, tPlus), without T+ (see setTimeouts).
+    function setLimits(uint8 maxJury_, uint40 maxTimeout_) external {
+        if (maxJury_ == 0 || maxTimeout_ <= tPlus) revert BadInput();
+        (maxJury, maxTimeout) = (maxJury_, maxTimeout_);
     }
-    function setTimeouts(uint40 timeout, uint40 tPlus_, uint40 revealWindow_) external {
-        (responseTimeoutSeconds, tPlus, revealWindow) = (timeout, tPlus_, revealWindow_);
+    function setTimeouts(uint40 tPlus_, uint40 revealWindow_) external {
+        (tPlus, revealWindow) = (tPlus_, revealWindow_);
     }
     function setRewards(uint8 drawFees_, uint8 promoteFees_) external {
         (drawRewardFees, promoteRewardFees) = (drawFees_, promoteFees_);
@@ -236,17 +239,20 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         uint256 estimatedBaseCost,
         uint256 maxFeeBasedScalingFactor,
         uint64 requestedClass,
-        bool withBeacons
+        bool withBeacons,
+        Jury calldata j
     ) external payable override nonReentrant whenNotPaused returns (bytes32 aggId) {
         _burnGas(requestGasCost);
         if (cids.length == 0 || cids.length > MAX_CID_COUNT || bytes(addendumText).length > MAX_ADDENDUM_LENGTH)
             revert BadInput();
         for (uint256 i = 0; i < cids.length; i++) if (bytes(cids[i]).length > MAX_CID_LENGTH) revert BadInput();
+        if (!(j.K >= j.M && j.M >= j.N && j.N >= j.P && j.N >= 1 && j.N <= 40 && (j.P >= 2 || j.N == 1) && j.P >= 1)
+            || j.K > maxJury || j.timeout <= tPlus || j.timeout > maxTimeout) revert BadJury();
 
         uint256 eff = maxFee < maxOracleFee ? maxFee : maxOracleFee;
         if (estimatedBaseCost >= eff || alpha > 1000 || maxFeeBasedScalingFactor < 1 || maxFeeBasedScalingFactor > type(uint16).max)
             revert BadInput();
-        uint256 required = maxTotalFee(maxFee, minFee, withBeacons);
+        uint256 required = maxTotalFee(maxFee, minFee, withBeacons, j.K, j.P);
         if (required > type(uint88).max) revert BadInput();
         uint256 fromCredit = msg.value < required ? required - msg.value : 0;
         uint256 credit = ethOwed[msg.sender];
@@ -258,7 +264,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         Round storage r = _rounds[id];
         r.requester = msg.sender;
         r.phase = PH_DRAW;
-        (r.k, r.m, r.n, r.p) = (K, M, N, P);
+        (r.k, r.m, r.n, r.p, r.timeout) = (j.K, j.M, j.N, j.P, j.timeout);
         r.bonusMult = bonusMultiplier;
         r.drawFees = drawRewardFees;
         r.promoteFees = promoteRewardFees;
@@ -277,7 +283,9 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         emit RequestAIEvaluation(aggId, cids);
     }
 
-    function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) public view override returns (uint256) {
+    function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P)
+        public view override returns (uint256)
+    {
         uint256 eff = maxFee < maxOracleFee ? maxFee : maxOracleFee;
         uint256 juror = minFee > eff ? minFee : eff;
         uint256 n = uint256(K) + uint256(bonusMultiplier) * P;
@@ -336,7 +344,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         uint256 juror = posted < r.minFee ? r.minFee : posted;
         r.phase = PH_COMMIT;
         r.windowEnd = uint40(block.timestamp) + tPlus;
-        r.deadline = uint40(block.timestamp) + responseTimeoutSeconds;
+        r.deadline = uint40(block.timestamp) + r.timeout;
         for (uint256 i = 0; i < r.k; i++) emit BasePayment(aggId, i, ARBITERS, juror);
         ethOwed[ARBITERS] += juror * r.k;
         r.baseFees = juror * r.k;
@@ -432,6 +440,13 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         Round storage r = _rounds[uint256(aggId)];
         return (r.phase, r.requestBlock, r.sealedHash, r.closeBlock, r.received, r.baseFees, r.bonuses, r.rewards,
                 r.deadline, r.windowEnd, r.commits, r.requestTime);
+    }
+
+    function getJury(bytes32 aggId)
+        external view override returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout)
+    {
+        Round storage r = _rounds[uint256(aggId)];
+        return (r.k, r.m, r.n, r.p, r.timeout);
     }
 
     function isFailed(bytes32 aggId) external view override returns (bool) {

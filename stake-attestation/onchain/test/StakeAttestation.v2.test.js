@@ -40,7 +40,7 @@ describe("StakeAttestation: the v2 aggregator", function () {
       const { sa, aggregator, listingId } = await loadFixture(fixture);
       expect(await sa.commitPrice(listingId)).to.equal(BOND + FEE);
       expect(FEE).to.equal(EFF * 18n);
-      expect(FEE).to.equal(await aggregator.maxTotalFee(EFF, 0, false));
+      expect(FEE).to.equal(await aggregator.maxTotalFee(EFF, 0, false, 6, 3));   // the Small jury's K and P
       expect(await sa.disputeFee(listingId)).to.equal(H.DISPUTE_FEE);
     });
 
@@ -80,6 +80,66 @@ describe("StakeAttestation: the v2 aggregator", function () {
       await aggregator.setBeacons(false, 2);
       await expect(listAs(sa, maker, at({ withBeacons: true }))).to.be.revertedWith("bad budget");
       await listAs(sa, maker, at({ withBeacons: false }));
+    });
+  });
+
+  describe("the listing's jury (OracleParams.jury): one aggregator for every jury size", function () {
+    const SMALL = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
+    const JUMBO = { K: 50, M: 38, N: 27, P: 17, timeout: 600 };
+    const J = (j) => [BigInt(j.K), BigInt(j.M), BigInt(j.N), BigInt(j.P), BigInt(j.timeout)];
+
+    it("a Small and a Jumbo (with beacons) listing on one aggregator: each quotes, requests and disputes with its own jury", async function () {
+      const { sa, aggregator, maker, hunter, other } = await loadFixture(fixture);
+      const small = await openListing(sa, maker, withOracle({ jury: SMALL }));
+      const jumbo = await openListing(sa, maker, withOracle({ jury: JUMBO, withBeacons: true }), { escrow: AWARDS[3] * 2n });
+      expect((await sa.getListing(jumbo)).oracle.jury).to.deep.equal(J(JUMBO));
+      expect(await sa.commitPrice(small)).to.equal(BOND + await aggregator.maxTotalFee(EFF, 0, false, 6, 3));
+      expect(await sa.commitPrice(jumbo)).to.equal(BOND + await aggregator.maxTotalFee(EFF, 0, true, 50, 17));
+      expect(await sa.disputeFee(jumbo)).to.equal(await aggregator.maxTotalFee(ORACLE.disputeMaxOracleFee, 0, true, 50, 17));
+      const a = await revealedClaim(sa, hunter, small);
+      const b = await revealedClaim(sa, other, jumbo);
+      expect(await aggregator.getJury(a.requestId)).to.deep.equal(J(SMALL));
+      expect(await aggregator.getJury(b.requestId)).to.deep.equal(J(JUMBO));
+      // the Jumbo round: the beacon stage, then a jury of 50 whose deadline runs 600 s from the draw
+      await drawAs(sa, aggregator, b.claimId);
+      await aggregator.scriptBeacons(b.requestId, 2, false);
+      await sa.drawJury(b.claimId);
+      const r = await roundInfo(aggregator, b.requestId);
+      expect([r.phase, r.baseFees, r.deadline]).to.deep.equal([Phase.Commit, 50n * EFF, BigInt(await time.latest()) + 600n]);
+      await aggregator.scriptResult(b.requestId, V.HIGH, "QmJ");               // 27 counted reveals
+      expect((await aggregator.getOutcomeScores(b.requestId, 4))[0].length).to.equal(27);
+      await sa.finalize(b.claimId);
+      expect((await sa.getClaim(b.claimId)).state).to.equal(ClaimState.Judged);
+      // the dispute panel asks for the listing's jury too
+      const d = await disputeAs(sa, maker, b.claimId);
+      expect(await aggregator.getJury(d.requestId)).to.deep.equal(J(JUMBO));
+      expect((await aggregator.requestParams(d.requestId)).withBeacons).to.equal(true);
+    });
+
+    for (const [label, jury] of [
+      ["M above K", { ...SMALL, K: 4 }],
+      ["N above M", { ...SMALL, N: 6 }],
+      ["P above N", { ...SMALL, P: 5 }],
+      ["P = 0", { ...SMALL, P: 0 }],
+      ["P = 1 with N > 1", { ...SMALL, P: 1 }],
+      ["N above 40", { K: 50, M: 45, N: 41, P: 17, timeout: 600 }],
+      ["a zero timeout", { ...SMALL, timeout: 0 }],
+    ]) {
+      it(`list refuses a jury with ${label} ("bad jury")`, async function () {
+        const { sa, maker } = await loadFixture(fixture);
+        await expect(listAs(sa, maker, withOracle({ jury }))).to.be.revertedWith("bad jury");
+      });
+    }
+
+    it("list accepts N = P = 1; the aggregator's live limits (maxJury) are left to the request, which reverts BadJury", async function () {
+      const { sa, aggregator, maker, hunter } = await loadFixture(fixture);
+      await listAs(sa, maker, withOracle({ jury: { K: 1, M: 1, N: 1, P: 1, timeout: 300 } }));
+      const id = await openListing(sa, maker, withOracle({ jury: JUMBO }), { escrow: AWARDS[3] });
+      await aggregator.setLimits(40, 3600);                                   // the owner lowers maxJury below K = 50
+      const { claimId } = await H.claimAs(sa, hunter, id);
+      const { requestId } = await H.revealAs(sa, hunter, claimId);          // the submission is refused, not reverted
+      expect(requestId).to.equal(ZeroHash);
+      expect((await sa.getClaim(claimId)).requestId).to.equal(ZeroHash);
     });
   });
 

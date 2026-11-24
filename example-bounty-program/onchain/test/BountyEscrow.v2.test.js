@@ -30,20 +30,21 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
   // scores for one arbiter: [DONT_FUND, FUND]
   const yes = (fund = 900_000n) => [1_000_000n - fund, fund];
   const no = (fund = 400_000n) => [1_000_000n - fund, fund];
+  // Juries (CreateParams.jury): the Small class preset, and a bigger one. One aggregator runs both.
+  const SMALL = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
+  const LARGE = { K: 10, M: 8, N: 7, P: 4, timeout: 600 };
 
   async function fixture() {
     const [owner, creator, hunter, hunter2, other] = await ethers.getSigners();
     const Mock = await ethers.getContractFactory("MockVerdiktaAggregator");
-    const small = await Mock.deploy();                        // jury 0: 6/5/4, P = 3 (default)
-    const large = await Mock.deploy();                        // jury 1: a bigger jury
-    await large.setConfig(10, 8, 7, 4);
+    const agg = await Mock.deploy();                          // one aggregator for every jury
     const Escrow = await ethers.getContractFactory("BountyEscrow");
-    const deployed = await Escrow.deploy([await small.getAddress(), await large.getAddress()]);
+    const deployed = await Escrow.deploy(await agg.getAddress());
     const escrow = new ethers.Contract(await deployed.getAddress(), mergedAbi(), owner);
-    return { escrow, small, large, owner, creator, hunter, hunter2, other };
+    return { escrow, agg, owner, creator, hunter, hunter2, other };
   }
 
-  // A bounty with item 12's rule. Defaults: jury 0 (N = 4), Q = 3, R = 2, a bond.
+  // A bounty with item 12's rule. Defaults: the Small jury (N = 4), Q = 3, R = 2, a bond.
   async function createBounty(f, o = {}) {
     const deadline = o.deadline ?? (await time.latest()) + 7 * 24 * HOUR;
     const p = {
@@ -63,7 +64,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
         minOracleFee: o.minOracleFee ?? 0n,
         withBeacons: o.withBeacons ?? false,
       },
-      jury: o.jury ?? 0,
+      jury: o.jury ?? SMALL,
       quota: o.quota ?? 3,
       forfeitLine: o.forfeitLine ?? 2,
       bond: o.bond ?? BOND,
@@ -92,7 +93,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
     return { ...p, aggId };
   }
 
-  const aggOf = async (f, bountyId) => ethers.getContractAt("MockVerdiktaAggregator", await f.escrow.aggregatorOf(bountyId));
+  const aggOf = async (f) => ethers.getContractAt("MockVerdiktaAggregator", await f.escrow.aggregator());
   const phase = async (agg, aggId) => (await agg.getRoundInfo(aggId))[0];
 
   // Drive a round to its reveals the way arbiters would: draw (through the escrow), M+ commits
@@ -104,7 +105,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       await mine(2);
       await f.escrow.connect(f.other).drawJury(bountyId, submissionId);
     }
-    const K = Number(await agg.K()), M = Number(await agg.M());
+    const [K, M] = (await agg.getJury(aggId)).map(Number);
     const mPlus = M + Math.ceil((K - M) / 2);
     await agg.scriptCommits(aggId, mPlus);
     await mine(2);
@@ -118,19 +119,25 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
   describe("creation: the creator's jury, rule and money", function () {
     it("stores the jury, Q, R, bond, fee floor and beacon flag, and quotes prepay + bond", async function () {
       const f = await loadFixture(fixture);
-      const { bountyId } = await createBounty(f, { jury: 1, quota: 5, forfeitLine: 3, minOracleFee: FEE * 2n, withBeacons: true });
+      const { bountyId } = await createBounty(f, { jury: LARGE, quota: 5, forfeitLine: 3, minOracleFee: FEE * 2n, withBeacons: true });
       const b = await f.escrow.getBounty(bountyId);
-      expect([b.jury, b.quota, b.forfeitLine, b.bond]).to.deep.equal([1n, 5n, 3n, BOND]);
+      expect([b.juryK, b.juryM, b.juryN, b.juryP, b.juryTimeout]).to.deep.equal([10n, 8n, 7n, 4n, 600n]);
+      expect([b.quota, b.forfeitLine, b.bond]).to.deep.equal([5n, 3n, BOND]);
       expect(b.oracle.minOracleFee).to.equal(FEE * 2n);
       expect(b.oracle.withBeacons).to.equal(true);
-      expect(await f.escrow.aggregatorOf(bountyId)).to.equal(await f.large.getAddress());
-      const prepay = await f.large.maxTotalFee(FEE, FEE * 2n, true);
+      expect(await f.escrow.aggregator()).to.equal(await f.agg.getAddress());
+      const prepay = await f.agg.maxTotalFee(FEE, FEE * 2n, true, LARGE.K, LARGE.P);
       expect(await f.escrow.requiredPrepay(bountyId)).to.equal(prepay);
       expect(await f.escrow.startValue(bountyId)).to.equal(prepay + BOND);
     });
 
     for (const [label, o, reason] of [
-      ["an unknown jury", { jury: 2 }, "bad jury"],
+      ["a jury with M above K", { jury: { ...SMALL, K: 4 } }, "bad jury"],
+      ["a jury with N above M", { jury: { ...SMALL, N: 6 } }, "bad jury"],
+      ["a jury with P above N", { jury: { ...SMALL, P: 5 } }, "bad jury"],
+      ["a jury with P = 0", { jury: { ...SMALL, P: 0 } }, "bad jury"],
+      ["a jury with P = 1 and N > 1", { jury: { ...SMALL, P: 1 }, quota: 1, forfeitLine: 1 }, "bad jury"],
+      ["a jury with N above 40", { jury: { K: 50, M: 45, N: 41, P: 17, timeout: 600 } }, "bad jury"],
       ["Q = 0", { quota: 0, forfeitLine: 0 }, "bad quota"],
       ["R above Q", { quota: 2, forfeitLine: 3 }, "bad quota"],
       ["Q above the jury's N", { quota: 5, forfeitLine: 1 }, "bad quota"],
@@ -145,7 +152,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
 
     it("rejects beacons on an aggregator without a beacon contract (its quote reverts)", async function () {
       const f = await loadFixture(fixture);
-      await f.small.setBeacons(false, 2);
+      await f.agg.setBeacons(false, 2);
       await expect(createBounty(f, { withBeacons: true })).to.be.reverted;
       await createBounty(f, { withBeacons: false });
     });
@@ -171,7 +178,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       const aggId = await start(f, bountyId, submissionId);
       const s = await f.escrow.getSubmission(bountyId, submissionId);
       expect([s.bondHeld, s.bondFunder, s.rounds]).to.deep.equal([BOND, f.hunter.address, 1n]);
-      expect(await f.small.requesterOf(aggId)).to.equal(wallet);
+      expect(await f.agg.requesterOf(aggId)).to.equal(wallet);
       expect(await ethers.provider.getBalance(await f.escrow.getAddress())).to.equal(BOUNTY + BOND);
     });
 
@@ -180,16 +187,16 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       const { bountyId } = await createBounty(f);
       const { submissionId, aggId, wallet } = await submit(f, bountyId);
       await expect(f.escrow.connect(f.other).drawJury(bountyId, submissionId))
-        .to.be.revertedWithCustomError(f.small, "TooEarly");                 // block B+1
+        .to.be.revertedWithCustomError(f.agg, "TooEarly");                 // block B+1
       await mine(1);
       await expect(f.escrow.connect(f.other).drawJury(bountyId, submissionId))
-        .to.emit(f.small, "JuryDrawn").withArgs(aggId, wallet, FEE * 2n);
-      expect(await f.small.ethOwed(wallet)).to.equal(FEE * 2n);
-      await expect(f.escrow.drawJury(bountyId, submissionId)).to.be.revertedWithCustomError(f.small, "WrongPhase");
+        .to.emit(f.agg, "JuryDrawn").withArgs(aggId, wallet, FEE * 2n);
+      expect(await f.agg.ethOwed(wallet)).to.equal(FEE * 2n);
+      await expect(f.escrow.drawJury(bountyId, submissionId)).to.be.revertedWithCustomError(f.agg, "WrongPhase");
 
       await runRound(f, bountyId, submissionId, mix(4, 4));
       const before = await ethers.provider.getBalance(f.hunter.address);
-      const i = await f.small.getRoundInfo(aggId);
+      const i = await f.agg.getRoundInfo(aggId);
       const refund = i[4] - i[5] - i[6] - i[7];                                // the promote reward went to `other`
       await f.escrow.finalizeSubmission(bountyId, submissionId);
       // bounty + bond + this round's refund + the draw reward, all to the hunter
@@ -203,14 +210,14 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       await expect(f.escrow.drawJury(bountyId, submissionId)).to.be.revertedWith("not pending");
     });
 
-    it("start rechecks Q against the jury's live N", async function () {
+    it("a jury the aggregator's live limits refuse (K above maxJury) reverts at start, BadJury", async function () {
       const f = await loadFixture(fixture);
-      const { bountyId } = await createBounty(f, { quota: 4, forfeitLine: 2 });
+      const { bountyId } = await createBounty(f, { jury: LARGE });
       const { submissionId } = await prepare(f, bountyId);
-      await f.small.setConfig(6, 5, 3, 3);                                   // the owner shrinks N to 3
+      await f.agg.setLimits(8, 3600);                                       // the owner lowers maxJury below K = 10
       const value = await f.escrow.startValue(bountyId);
       await expect(f.escrow.connect(f.hunter).startPreparedSubmission(bountyId, submissionId, { value }))
-        .to.be.revertedWith("quota above jury size");
+        .to.be.revertedWithCustomError(f.agg, "BadJury");
     });
   });
 
@@ -352,7 +359,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       expect(s.rounds).to.equal(2);
       expect(s.bondHeld).to.equal(BOND);
       expect(s.verdiktaAggId).to.not.equal(aggId);
-      expect(await f.small.requesterOf(s.verdiktaAggId)).to.equal(wallet);
+      expect(await f.agg.requesterOf(s.verdiktaAggId)).to.equal(wallet);
       expect(await f.escrow.activeEvaluations(bountyId)).to.equal(1);
       // the second round passes
       await runRound(f, bountyId, submissionId, mix(4, 4));
@@ -450,7 +457,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       const { submissionId, aggId } = await submit(f, bountyId);
       await mine(2);
       await f.escrow.drawJury(bountyId, submissionId);
-      await f.small.scriptCommits(aggId, 2);                                 // too few commits
+      await f.agg.scriptCommits(aggId, 2);                                 // too few commits
       await time.increase(301);
       expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("CLOSE_FAILED");
       await expect(f.escrow.connect(f.other).closeFailedRound(bountyId, submissionId))
@@ -469,16 +476,16 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       expect(await act()).to.equal("DRAW");
       await f.escrow.drawJury(bountyId, submissionId);
       expect(await act()).to.equal("AWAIT_ORACLE");
-      await f.small.scriptCommits(aggId, 5);                                 // M = 5 of the M+ = 6
+      await f.agg.scriptCommits(aggId, 5);                                 // M = 5 of the M+ = 6
       expect(await act()).to.equal("AWAIT_ORACLE");
       await time.increase(156);                                              // past T+
       expect(await act()).to.equal("CLOSE_COMMITS");
-      await f.small.closeCommits(aggId);
+      await f.agg.closeCommits(aggId);
       await mine(2);
       expect(await act()).to.equal("PROMOTE");
-      await f.small.promote(aggId);
+      await f.agg.promote(aggId);
       expect(await act()).to.equal("AWAIT_ORACLE");
-      await f.small.scriptReveals(aggId, mix(4, 4), JUST);
+      await f.agg.scriptReveals(aggId, mix(4, 4), JUST);
       expect(await act()).to.equal("FINALIZE");
     });
 
@@ -486,15 +493,15 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       const f = await loadFixture(fixture);
       const { bountyId } = await createBounty(f, { withBeacons: true });
       const { submissionId, aggId } = await submit(f, bountyId);
-      expect((await f.small.requestParams(aggId)).withBeacons).to.equal(true);
+      expect((await f.agg.requestParams(aggId)).withBeacons).to.equal(true);
       await mine(2);
-      await expect(f.escrow.drawJury(bountyId, submissionId)).to.emit(f.small, "BeaconStageStarted");
-      expect(await phase(f.small, aggId)).to.equal(2n);
+      await expect(f.escrow.drawJury(bountyId, submissionId)).to.emit(f.agg, "BeaconStageStarted");
+      expect(await phase(f.agg, aggId)).to.equal(2n);
       expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("AWAIT_ORACLE");
-      await f.small.scriptBeacons(aggId, 2, false);
+      await f.agg.scriptBeacons(aggId, 2, false);
       expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("DRAW");
-      await expect(f.escrow.drawJury(bountyId, submissionId)).to.emit(f.small, "JuryDrawn");
-      expect(await phase(f.small, aggId)).to.equal(3n);
+      await expect(f.escrow.drawJury(bountyId, submissionId)).to.emit(f.agg, "JuryDrawn");
+      expect(await phase(f.agg, aggId)).to.equal(3n);
     });
 
     it("a missed beacon quorum ends the round (prepay to the treasury); it re-runs with the bond kept", async function () {
@@ -503,27 +510,60 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       const { submissionId, aggId } = await submit(f, bountyId);
       await mine(2);
       await f.escrow.drawJury(bountyId, submissionId);
-      await f.small.scriptBeacons(aggId, 1, true);                           // 1 of 2, deadline passed
+      await f.agg.scriptBeacons(aggId, 1, true);                           // 1 of 2, deadline passed
       expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("DRAW");
-      const treasury = await f.small.treasury();
-      await expect(f.escrow.drawJury(bountyId, submissionId)).to.emit(f.small, "EvaluationFailed").withArgs(aggId, 2);
-      expect(await f.small.ethOwed(treasury)).to.be.gt(0);
+      const treasury = await f.agg.treasury();
+      await expect(f.escrow.drawJury(bountyId, submissionId)).to.emit(f.agg, "EvaluationFailed").withArgs(aggId, 2);
+      expect(await f.agg.ethOwed(treasury)).to.be.gt(0);
       expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("CLOSE_FAILED");
       await expect(f.escrow.closeFailedRound(bountyId, submissionId)).to.emit(f.escrow, "RerunAwaited");
       expect((await f.escrow.getSubmission(bountyId, submissionId)).bondHeld).to.equal(BOND);
     });
   });
 
-  describe("juries: one approved aggregator per size", function () {
-    it("a bounty on the second jury runs its rounds there, with its Q checked against that jury's N", async function () {
+  describe("juries: each bounty's own, on one aggregator", function () {
+    it("a bounty's jury reaches its request, and its re-runs (getJury)", async function () {
       const f = await loadFixture(fixture);
-      await expect(createBounty(f, { jury: 0, quota: 7, forfeitLine: 5 })).to.be.revertedWith("bad quota");
-      const { bountyId } = await createBounty(f, { jury: 1, quota: 5, forfeitLine: 3 });
+      const { bountyId } = await createBounty(f, { jury: LARGE, quota: 5, forfeitLine: 3 });
       const { submissionId, wallet, aggId } = await submit(f, bountyId);
-      expect(await f.large.requesterOf(aggId)).to.equal(wallet);
-      expect(await f.small.roundCount()).to.equal(0);
-      await runRound(f, bountyId, submissionId, mix(7, 5));                  // 5 of 7 = Q
-      await expect(f.escrow.finalizeSubmission(bountyId, submissionId)).to.emit(f.escrow, "PayoutSent");
+      expect(await f.agg.requesterOf(aggId)).to.equal(wallet);
+      expect(await f.agg.getJury(aggId)).to.deep.equal([10n, 8n, 7n, 4n, 600n]);
+      // the deadline runs the jury's timeout from the draw
+      await mine(2);
+      await f.escrow.drawJury(bountyId, submissionId);
+      expect((await f.agg.getRoundInfo(aggId))[8]).to.equal(BigInt(await time.latest()) + 600n);
+      await runRound(f, bountyId, submissionId, mix(7, 4));                  // 4 of 7: soft fail (R = 3)
+      await f.escrow.finalizeSubmission(bountyId, submissionId);
+      const value = await f.escrow.requiredPrepay(bountyId);
+      await f.escrow.connect(f.hunter).rerunSubmission(bountyId, submissionId, { value });
+      const again = (await f.escrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+      expect(again).to.not.equal(aggId);
+      expect(await f.agg.getJury(again)).to.deep.equal([10n, 8n, 7n, 4n, 600n]);
+    });
+
+    it("Q is checked against the bounty's own N", async function () {
+      const f = await loadFixture(fixture);
+      await expect(createBounty(f, { jury: SMALL, quota: 5, forfeitLine: 3 })).to.be.revertedWith("bad quota");
+      await createBounty(f, { jury: LARGE, quota: 7, forfeitLine: 3 });     // Q = N
+      await expect(createBounty(f, { jury: LARGE, quota: 8, forfeitLine: 3 })).to.be.revertedWith("bad quota");
+    });
+
+    it("two bounties with different juries run on one aggregator, each with its own jury and prepay", async function () {
+      const f = await loadFixture(fixture);
+      const small = await createBounty(f, { jury: SMALL });
+      const large = await createBounty(f, { jury: LARGE, quota: 5, forfeitLine: 3 });
+      expect(await f.escrow.requiredPrepay(small.bountyId)).to.equal(await f.agg.maxTotalFee(FEE, 0, false, 6, 3));
+      expect(await f.escrow.requiredPrepay(large.bountyId)).to.equal(await f.agg.maxTotalFee(FEE, 0, false, 10, 4));
+      expect(await f.escrow.requiredPrepay(large.bountyId)).to.be.gt(await f.escrow.requiredPrepay(small.bountyId));
+      const a = await submit(f, small.bountyId);
+      const b = await submit(f, large.bountyId, f.hunter2);
+      expect(await f.agg.roundCount()).to.equal(2);
+      expect((await f.agg.getJury(a.aggId)).slice(0, 4)).to.deep.equal([6n, 5n, 4n, 3n]);
+      expect((await f.agg.getJury(b.aggId)).slice(0, 4)).to.deep.equal([10n, 8n, 7n, 4n]);
+      await runRound(f, small.bountyId, a.submissionId, mix(4, 3));          // 3 of 4 = Q
+      await runRound(f, large.bountyId, b.submissionId, mix(7, 5));          // 5 of 7 = Q
+      await expect(f.escrow.finalizeSubmission(small.bountyId, a.submissionId)).to.emit(f.escrow, "PayoutSent");
+      await expect(f.escrow.finalizeSubmission(large.bountyId, b.submissionId)).to.emit(f.escrow, "PayoutSent");
     });
   });
 });

@@ -11,7 +11,8 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 /// @notice Bounty escrow with four effective states: OPEN, EXPIRED, AWARDED, CLOSED
 /// @dev No cancellation - creator can only reclaim funds after deadline via closeExpiredBounty
 /// @dev Built on the v2 aggregator (verdikta-dispatcher `beacon` branch) and its TODO items:
-///      - one approved aggregator per jury size (item 15), fixed at deployment; each bounty names one;
+///      - one aggregator, fixed at deployment, serving every jury size: each bounty carries its own
+///        jury (K, M, N, P, timeout; item 15), passed with every request and fee quote;
 ///      - the creator's fee floor and beacon flag per bounty (items 8, 9);
 ///      - the two-phase round: drawJury (through the submission's wallet, so the draw reward comes
 ///        back to the funder) and promote, then the result; a dead round is closed with settle or
@@ -66,14 +67,16 @@ contract BountyEscrow {
         uint256 arbiterDeterminationPayment; // paid if the oracle approves
         uint64  creatorAssessmentWindowSize; // seconds; 0 = no window (then the two payments must be equal)
         OracleParams oracle;
-        uint8   jury;                        // index of the approved aggregator (one per jury size, see aggregators())
+        IVerdiktaAggregator.Jury jury;       // the bounty's jury: K drawn, M promoted, N counted, P clustered, timeout (s)
         uint8   quota;                       // Q: a round passes with at least Q of its N scores >= threshold
         uint8   forfeitLine;                 // R <= Q: fewer than R scores >= threshold forfeits the bond
         uint256 bond;                        // wei the hunter (funder) posts at start; 0 = bondless
     }
 
     /// @dev Storage layout: fields are declared in ABI order but typed as narrowly as their
-    ///      domain allows so that adjacent ones share a slot (12 slots instead of 15).
+    ///      domain allows so that adjacent ones share a slot (15 slots in all). The jury is
+    ///      stored flat (juryK..juryTimeout, the fields of CreateParams.jury) so it shares slot 14:
+    ///      a nested struct would start a slot of its own.
     ///      Every integer still ABI-encodes as one 32-byte word, so an off-chain decoder
     ///      that declares these fields as uint256 keeps decoding them correctly. Bounds:
     ///      wei amounts fit uint128 (total ETH supply ~2^87 wei); timestamps fit uint64.
@@ -93,7 +96,11 @@ contract BountyEscrow {
         uint128 arbiterDeterminationPayment;  // slot 6: Payment if arbiters approve via Verdikta
         uint64  creatorAssessmentWindowSize;  // slot 7: Window duration in seconds (0 = no window)
         OracleParams oracle;                  // slots 8-13: creator-chosen oracle request settings (also the createBounty input type — not narrowed)
-        uint8   jury;                         // slot 14: approved aggregator index
+        uint8   juryK;                        // slot 14: the jury (CreateParams.jury): K drawn
+        uint8   juryM;                        // slot 14: M promoted
+        uint8   juryN;                        // slot 14: N counted
+        uint8   juryP;                        // slot 14: P clustered
+        uint40  juryTimeout;                  // slot 14: round timeout (seconds, from the draw)
         uint8   quota;                        // slot 14: Q
         uint8   forfeitLine;                  // slot 14: R
         uint128 bond;                         // slot 14: hunter bond (wei)
@@ -128,23 +135,24 @@ contract BountyEscrow {
         uint8   passCount;          // slot 7: the last judged round's scores >= threshold (Q-of-N)
     }
 
-    /// @dev The approved aggregators, one per jury size (item 15), fixed by the constructor. A bounty
-    ///      names one by index (Bounty.jury); hunters' prepays and bonds only ever go to these.
-    IVerdiktaAggregator[] private _aggregators;
+    /// @notice The aggregator every bounty's rounds run on, fixed by the constructor. One deployment
+    ///         serves every jury size (item 15): the jury is the bounty's, sent with each request.
+    ///         Hunters' prepays only ever go to it.
+    IVerdiktaAggregator public immutable aggregator;
 
     /// @notice The read-only extension of this contract (see BountyEscrowLens): the
     ///         convenience views that no longer fit in this bytecode — getSubmissions,
     ///         getBounties, getOracleResult, nextAction, prepareCutoff, canBeClosed,
-    ///         isAcceptingSubmissions, getEffectiveBountyStatus. They are still callable AT
+    ///         isAcceptingSubmissions, getEffectiveBountyStatus, startValue. They are still callable AT
     ///         THIS ADDRESS with the merged ABI (see fallback); this getter only exists so a
     ///         block explorer or a curious caller can find the verified lens source.
     ///         Created once, in the constructor. No setter, no owner, no upgrade path.
     BountyEscrowLens public immutable lens;
 
     /// @notice The EvaluationWallet implementation every submission's wallet is a minimal-proxy
-    ///         clone of (EIP-1167). Created once, in the constructor; its immutable bountyContract
-    ///         (this) is shared by all clones, and each clone is bound to its bounty's aggregator at
-    ///         prepare. Informational — nothing ever operates the implementation itself.
+    ///         clone of (EIP-1167). Created once, in the constructor; its immutables (bountyContract,
+    ///         this, and the aggregator) are shared by all clones. Informational — nothing ever
+    ///         operates the implementation itself.
     EvaluationWallet public immutable walletImplementation;
 
     Bounty[] public bounties;
@@ -382,17 +390,14 @@ contract BountyEscrow {
     /// @notice A hard fail (fewer than R scores at the threshold): the bond went to the creator.
     event BondForfeited(uint256 indexed bountyId, uint256 indexed submissionId, address indexed creator, uint256 amount);
 
-    /// @param aggregators_ the approved aggregators, one per jury size (1..8; fixed for life)
-    constructor(IVerdiktaAggregator[] memory aggregators_) {
-        require(aggregators_.length > 0 && aggregators_.length <= 8, "bad aggregators");
-        for (uint256 i = 0; i < aggregators_.length; i++) {
-            require(address(aggregators_[i]) != address(0), "zero addr");
-            _aggregators.push(aggregators_[i]);
-        }
+    /// @param aggregator_ the aggregator (fixed for life)
+    constructor(IVerdiktaAggregator aggregator_) {
+        require(address(aggregator_) != address(0), "zero addr");
+        aggregator = aggregator_;
         // The lens's creation code lives in THIS contract's initcode (its own, larger,
         // EIP-3860 budget), not in the runtime bytecode that EIP-170 caps.
         lens = new BountyEscrowLens();
-        walletImplementation = new EvaluationWallet(address(this));
+        walletImplementation = new EvaluationWallet(address(this), aggregator_);
     }
 
     modifier nonReentrant() {
@@ -426,8 +431,15 @@ contract BountyEscrow {
         );
 
         // Oracle settings: reject anything the aggregator/keeper would reject at start.
-        require(p.jury < _aggregators.length, "bad jury");
-        IVerdiktaAggregator agg = _aggregators[p.jury];
+        // The jury: the aggregator's structural rules (AggregatorLib.checkJury), so a bad jury is
+        // refused here rather than at the first start. Its live limits (maxJury, the keeper's
+        // shortlist, T+ < timeout <= maxTimeout) are owner-set and checked by each request.
+        IVerdiktaAggregator.Jury memory j = p.jury;
+        require(
+            j.P != 0 && j.P <= j.N && j.N <= j.M && j.M <= j.K && j.N <= 40 && (j.P != 1 || j.N == 1),
+            "bad jury"
+        );
+        IVerdiktaAggregator agg = aggregator;
         OracleParams calldata o = p.oracle;
         require(o.maxOracleFee > 0, "bad oracle fee");
         require(o.maxOracleFee <= agg.maxOracleFee(), "oracle fee above ceiling");
@@ -435,12 +447,10 @@ contract BountyEscrow {
         require(o.maxFeeBasedScaling >= 1 && o.maxFeeBasedScaling <= MAX_FEE_SCALING_FACTOR, "bad fee scaling");
         require(o.alpha <= MAX_ALPHA, "bad alpha");
         // The floor may exceed the ceiling (it prices jurors, not eligibility); the aggregator
-        // stores it as uint96. maxTotalFee reverts if beacons are asked for and the aggregator has none.
+        // stores it as uint96.
         require(o.minOracleFee <= type(uint96).max, "bad fee floor");
-        uint256 budget = agg.maxTotalFee(o.maxOracleFee, o.minOracleFee, o.withBeacons);
-        require(budget > 0 && budget <= type(uint88).max, "bad budget");
-        // Item 12's decision rule: R <= Q <= N (N of the jury's aggregator, rechecked at each start).
-        require(p.quota >= 1 && p.forfeitLine <= p.quota && p.quota <= agg.N(), "bad quota");
+        // Item 12's decision rule: R <= Q <= N (the bounty's own N, fixed with it).
+        require(p.quota >= 1 && p.forfeitLine <= p.quota && p.quota <= j.N, "bad quota");
         require(p.bond <= type(uint96).max, "bad bond");
 
         // The uint128 casts are safe: msg.value == max(payments), so both payments and the
@@ -461,13 +471,22 @@ contract BountyEscrow {
             arbiterDeterminationPayment: uint128(p.arbiterDeterminationPayment),
             creatorAssessmentWindowSize: p.creatorAssessmentWindowSize,
             oracle: o,
-            jury: p.jury,
+            juryK: j.K,
+            juryM: j.M,
+            juryN: j.N,
+            juryP: j.P,
+            juryTimeout: j.timeout,
             quota: p.quota,
             forfeitLine: p.forfeitLine,
             bond: uint128(p.bond)
         }));
 
         bountyId = bounties.length - 1;
+        // The budget, quoted from the stored bounty (its oracle settings are already within the
+        // ceiling, so the effective ones are the creator's). maxTotalFee reverts if beacons are
+        // asked for and the aggregator has none.
+        uint256 budget = _prepay(bounties[bountyId]);
+        require(budget > 0 && budget <= type(uint88).max, "bad budget");
         emit BountyCreated(
             bountyId,
             msg.sender,
@@ -559,10 +578,8 @@ contract BountyEscrow {
         ethMaxBudget = _prepay(b);
         require(ethMaxBudget > 0 && ethMaxBudget <= type(uint96).max, "bad budget");
 
-        // EIP-1167 clone of the shared implementation: ~40k gas instead of a ~390k deployment,
-        // bound to the bounty's aggregator.
+        // EIP-1167 clone of the shared implementation: ~40k gas instead of a ~390k deployment.
         address wallet = Clones.clone(address(walletImplementation));
-        EvaluationWallet(payable(wallet)).init(_aggregators[b.jury]);
 
         uint64 window = b.creatorAssessmentWindowSize;
         bool hasWindow = window > 0;
@@ -714,7 +731,7 @@ contract BountyEscrow {
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
 
         BountyRules.Verdict memory v = BountyRules.judge(
-            _aggregators[b.jury], s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine
+            aggregator, s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine
         );
         if (!v.hasResult) {
             // A round that ended with no result at all is closed by closeFailedRound (which also
@@ -796,7 +813,7 @@ contract BountyEscrow {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
-        IVerdiktaAggregator agg = _aggregators[b.jury];
+        IVerdiktaAggregator agg = aggregator;
         bytes32 aggId = s.verdiktaAggId;
 
         // Best effort: each reverts when it does not apply (NotDue, WrongPhase, TooEarly).
@@ -905,30 +922,10 @@ contract BountyEscrow {
         return _prepay(_mustBounty(bountyId));
     }
 
-    /// @notice What startPreparedSubmission takes RIGHT NOW: requiredPrepay plus the hunter bond.
-    function startValue(uint256 bountyId) external view returns (uint256) {
-        Bounty storage b = _mustBounty(bountyId);
-        return _prepay(b) + b.bond;
-    }
-
-    /// @notice The approved aggregators (one per jury size), fixed at deployment.
-    function aggregators(uint256 i) external view returns (IVerdiktaAggregator) {
-        return _aggregators[i];
-    }
-
-    function aggregatorCount() external view returns (uint256) {
-        return _aggregators.length;
-    }
-
-    /// @notice The aggregator a bounty's rounds run on.
-    function aggregatorOf(uint256 bountyId) external view returns (IVerdiktaAggregator) {
-        return _aggregators[_mustBounty(bountyId).jury];
-    }
-
     /// @notice The oracle settings that startPreparedSubmission will actually forward RIGHT NOW.
-    /// @dev Upstream configuration policy: the aggregator's fee ceiling, poll count, bonus
-    ///      multiplier, cluster size and response timeout are owner-settable and may change
-    ///      after a bounty is created. Creation validates the creator's settings against the
+    /// @dev Upstream configuration policy: the aggregator's fee ceiling, bonus multiplier and
+    ///      rewards are owner-settable and may change after a bounty is created (the jury and its
+    ///      timeout are the bounty's, fixed with it). Creation validates the creator's settings against the
     ///      ceiling of that moment only. At start the escrow reads the live ceiling and CLAMPS:
     ///        - maxOracleFee     → min(bounty fee, current ceiling)  (the aggregator does this
     ///                             itself; mirrored here so the quote and the keeper agree)
@@ -944,7 +941,7 @@ contract BountyEscrow {
 
     function _effectiveOracle(Bounty storage b) internal view returns (OracleParams memory o) {
         o = b.oracle;
-        uint256 ceiling = _aggregators[b.jury].maxOracleFee();
+        uint256 ceiling = aggregator.maxOracleFee();
         if (o.maxOracleFee > ceiling) o.maxOracleFee = ceiling;
         if (o.estimatedBaseCost >= o.maxOracleFee) {
             o.estimatedBaseCost = o.maxOracleFee > 0 ? o.maxOracleFee - 1 : 0;
@@ -954,8 +951,17 @@ contract BountyEscrow {
     // ------------- Internals -------------
 
     function _prepay(Bounty storage b) internal view returns (uint256) {
-        OracleParams memory o = _effectiveOracle(b);
-        return _aggregators[b.jury].maxTotalFee(o.maxOracleFee, o.minOracleFee, o.withBeacons);
+        return _quote(b, _effectiveOracle(b));
+    }
+
+    /// @dev The aggregator's maxTotalFee for the bounty's jury and the (effective) oracle settings `o`.
+    function _quote(Bounty storage b, OracleParams memory o) internal view returns (uint256) {
+        return aggregator.maxTotalFee(o.maxOracleFee, o.minOracleFee, o.withBeacons, b.juryK, b.juryP);
+    }
+
+    /// @dev The bounty's jury, as the aggregator takes it.
+    function _jury(Bounty storage b) internal view returns (IVerdiktaAggregator.Jury memory) {
+        return IVerdiktaAggregator.Jury(b.juryK, b.juryM, b.juryN, b.juryP, b.juryTimeout);
     }
 
     /// @dev Start a round (first start or re-run): checks, the prepay through the wallet, and the
@@ -973,16 +979,14 @@ contract BountyEscrow {
         // If an in-flight round has already passed, it (or an earlier one) will be paid: a new
         // round could never win and would only waste its prepay.
         _requireNoPassingSubmission(bountyId, b);
-        IVerdiktaAggregator agg = _aggregators[b.jury];
-        // The jury's size is owner-set on the aggregator: Q must still fit N.
-        require(b.quota <= agg.N(), "quota above jury size");
+        // Q <= N was checked at create against the bounty's own jury, which never changes.
 
         // The requirement is recomputed HERE from the bounty's fee policy: the aggregator's
-        // maxTotalFee depends on owner-settable parameters (fee ceiling, jury size, bonus
-        // multiplier, rewards), so any earlier figure is only an estimate. Checking against the
-        // live value means a parameter change can never strand a prepared submission.
+        // maxTotalFee depends on owner-settable parameters (fee ceiling, bonus multiplier,
+        // rewards), so any earlier figure is only an estimate. Checking against the live value
+        // means a parameter change can never strand a prepared submission.
         OracleParams memory o = _effectiveOracle(b);   // clamped to the aggregator's live ceiling
-        uint256 required = agg.maxTotalFee(o.maxOracleFee, o.minOracleFee, o.withBeacons);
+        uint256 required = _quote(b, o);
         require(required > 0, "bad budget");
         require(prepay == required, "wrong eth amount");
         s.ethMaxBudget = uint96(required); // what this round prepaid (== the value, so it fits)
@@ -1001,7 +1005,7 @@ contract BountyEscrow {
             cids,
             EvaluationWallet.Request(
                 ADDENDUM, o.alpha, o.maxOracleFee, o.minOracleFee, o.estimatedBaseCost,
-                o.maxFeeBasedScaling, b.requestedClass, o.withBeacons
+                o.maxFeeBasedScaling, b.requestedClass, o.withBeacons, _jury(b)
             )
         );
 
@@ -1080,7 +1084,7 @@ contract BountyEscrow {
     function _requireNoPassingSubmission(uint256 bountyId, Bounty storage b) internal view {
         uint256[] storage pending = _pending[bountyId];
         Submission[] storage list = subs[bountyId];
-        IVerdiktaAggregator agg = _aggregators[b.jury];
+        IVerdiktaAggregator agg = aggregator;
         uint256 n = pending.length;
 
         for (uint256 i = 0; i < n; ) {

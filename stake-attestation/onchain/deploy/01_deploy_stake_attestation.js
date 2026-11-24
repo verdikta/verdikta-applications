@@ -75,8 +75,9 @@ function configFromEnv(network, env = process.env) {
 
 /**
  * Refuse an aggregator address with no contract, or one that is not a v2 ReputationAggregator: it
- * must answer maxOracleFee() and the v2 quote, maxTotalFee(fee, floor, withBeacons). A v1
- * aggregator (maxTotalFee(fee) only) reverts on the three-argument call.
+ * must answer maxOracleFee() and the v2 quote, maxTotalFee(fee, floor, withBeacons, K, P) (the jury goes
+ * with each request). A v1 aggregator (maxTotalFee(fee) only), or a v2 one from before the per-request
+ * jury (three arguments), reverts on the five-argument call.
  */
 async function checkAggregator(hre, address) {
   const code = await hre.ethers.provider.getCode(address);
@@ -84,9 +85,9 @@ async function checkAggregator(hre, address) {
   const aggregator = await hre.ethers.getContractAt("IVerdiktaAggregator", address);
   const ceiling = await aggregator.maxOracleFee();
   try {
-    await aggregator.maxTotalFee(ceiling, 0, false);
+    await aggregator.maxTotalFee(ceiling, 0, false, 6, 3);   // the Small jury's K and P
   } catch {
-    throw new Error(`The aggregator at ${address} does not answer the v2 maxTotalFee(fee, floor, withBeacons): not a v2 ReputationAggregator`);
+    throw new Error(`The aggregator at ${address} does not answer the v2 maxTotalFee(fee, floor, withBeacons, K, P): not a v2 ReputationAggregator`);
   }
   return ceiling;
 }

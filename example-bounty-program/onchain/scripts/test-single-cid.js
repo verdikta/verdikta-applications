@@ -29,6 +29,9 @@ const MAX_FEE_SCALING = 5;
 const ALPHA = 500;
 const MIN_FEE = 0n;            // fee floor (item 8); 0 = none
 const WITH_BEACONS = false;    // item 9's beacon flag (Jumbo)
+// The round's jury, sent with the request (item 15): the Small class preset. Override with
+// JURY=K,M,N,P,timeout (e.g. JURY=50,38,27,17,600 for Jumbo).
+const JURY = (process.env.JURY || "6,5,4,3,300").split(",").map(Number);
 
 const POLL_INTERVAL = 15_000; // 15 seconds
 const MAX_POLLS = 60; // 15 minutes total
@@ -48,8 +51,8 @@ async function getSigner() {
   console.log("Network:", hre.network.name);
 
 const aggAbi = [
-  "function requestAIEvaluationWithApproval(string[] cids, string addendum, uint256 alpha, uint256 maxFee, uint256 minFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 requestedClass, bool withBeacons) payable returns (bytes32)",
-  "function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) view returns (uint256)",
+  "function requestAIEvaluationWithApproval(string[] cids, string addendum, uint256 alpha, uint256 maxFee, uint256 minFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 requestedClass, bool withBeacons, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury) payable returns (bytes32)",
+  "function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P) view returns (uint256)",
   "function ethOwed(address account) view returns (uint256)",
   "function drawJury(bytes32 aggId)",
   "function closeCommits(bytes32 aggId)",
@@ -68,7 +71,7 @@ const PHASES = ["?", "draw", "beacons", "commit", "closing", "reveal", "final", 
   // Size the ETH prepay: worst-case fee minus any existing pull-payment credit.
   const [ethBal, maxTotal, credit] = await Promise.all([
     hre.ethers.provider.getBalance(me),
-    agg.maxTotalFee(MAX_ORACLE_FEE, MIN_FEE, WITH_BEACONS),
+    agg.maxTotalFee(MAX_ORACLE_FEE, MIN_FEE, WITH_BEACONS, JURY[0], JURY[3]),
     agg.ethOwed(me),
   ]);
   const value = maxTotal > credit ? maxTotal - credit : 0n;   // msg.value first, credit covers the rest
@@ -92,6 +95,7 @@ const PHASES = ["?", "draw", "beacons", "commit", "closing", "reveal", "final", 
     MAX_FEE_SCALING,
     JOB_CLASS,
     WITH_BEACONS,
+    JURY,
     { value }
   );
   console.log("Transaction:", tx.hash);

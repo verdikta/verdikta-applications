@@ -62,6 +62,8 @@ const ORACLE = {
   maxFeeBasedScaling: 1n,
   minOracleFee: 0n, // the v2 fee floor: none
   withBeacons: false,
+  // the jury every round of the listing asks for: the Small class preset (K, M, N, P, timeout)
+  jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 },
 };
 // The v2 mock's maxTotalFee at its defaults: eff x (K + B x P + draw + promote) = 18 eff
 // (helpers/claims.js, quote).
@@ -1253,7 +1255,7 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
     // The request's settings, as one struct (EvaluationWallet.Request).
     const REQUEST = {
       addendumText: "", alpha: 500n, maxOracleFee: ORACLE.maxOracleFee, minOracleFee: 0n, estimatedBaseCost: 0n,
-      maxFeeBasedScaling: 1n, requestedClass: 133n, withBeacons: false,
+      maxFeeBasedScaling: 1n, requestedClass: 133n, withBeacons: false, jury: ORACLE.jury,
     };
     it("only its requester operates it; it starts once and hands every refund back to the requester", async function () {
       const { aggregator, owner, other } = await loadFixture(deploy);

@@ -35,7 +35,7 @@ contract EvaluationWallet {
 
     /// @dev The request's settings (IVerdiktaAggregator.requestAIEvaluationWithApproval's arguments
     ///      after the CIDs), as one struct, as example-bounty-program's wallet takes them: nine
-    ///      arguments would not fit the stack of the caller's try/catch.
+    ///      arguments and the jury would not fit the stack of the caller's try/catch.
     struct Request {
         string  addendumText;
         uint256 alpha;
@@ -45,6 +45,7 @@ contract EvaluationWallet {
         uint256 maxFeeBasedScaling;
         uint64  requestedClass;
         bool    withBeacons;
+        IVerdiktaAggregator.Jury jury;   // the round's jury (the listing's, OracleParams.jury)
     }
 
     /// @dev Start the evaluation, funding the request with the attached ETH. This wallet is
@@ -64,7 +65,8 @@ contract EvaluationWallet {
             q.estimatedBaseCost,
             q.maxFeeBasedScaling,
             q.requestedClass,
-            q.withBeacons
+            q.withBeacons,
+            q.jury
         );
         aggId = id;
     }

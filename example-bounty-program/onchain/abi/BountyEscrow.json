@@ -2,9 +2,9 @@
   {
     "inputs": [
       {
-        "internalType": "contract IVerdiktaAggregator[]",
-        "name": "aggregators_",
-        "type": "address[]"
+        "internalType": "contract IVerdiktaAggregator",
+        "name": "aggregator_",
+        "type": "address"
       }
     ],
     "stateMutability": "nonpayable",
@@ -684,45 +684,7 @@
   },
   {
     "inputs": [],
-    "name": "aggregatorCount",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "bountyId",
-        "type": "uint256"
-      }
-    ],
-    "name": "aggregatorOf",
-    "outputs": [
-      {
-        "internalType": "contract IVerdiktaAggregator",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "i",
-        "type": "uint256"
-      }
-    ],
-    "name": "aggregators",
+    "name": "aggregator",
     "outputs": [
       {
         "internalType": "contract IVerdiktaAggregator",
@@ -852,8 +814,28 @@
       },
       {
         "internalType": "uint8",
-        "name": "jury",
+        "name": "juryK",
         "type": "uint8"
+      },
+      {
+        "internalType": "uint8",
+        "name": "juryM",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint8",
+        "name": "juryN",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint8",
+        "name": "juryP",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint40",
+        "name": "juryTimeout",
+        "type": "uint40"
       },
       {
         "internalType": "uint8",
@@ -1000,9 +982,36 @@
             "type": "tuple"
           },
           {
-            "internalType": "uint8",
+            "components": [
+              {
+                "internalType": "uint8",
+                "name": "K",
+                "type": "uint8"
+              },
+              {
+                "internalType": "uint8",
+                "name": "M",
+                "type": "uint8"
+              },
+              {
+                "internalType": "uint8",
+                "name": "N",
+                "type": "uint8"
+              },
+              {
+                "internalType": "uint8",
+                "name": "P",
+                "type": "uint8"
+              },
+              {
+                "internalType": "uint40",
+                "name": "timeout",
+                "type": "uint40"
+              }
+            ],
+            "internalType": "struct IVerdiktaAggregator.Jury",
             "name": "jury",
-            "type": "uint8"
+            "type": "tuple"
           },
           {
             "internalType": "uint8",
@@ -1280,8 +1289,28 @@
           },
           {
             "internalType": "uint8",
-            "name": "jury",
+            "name": "juryK",
             "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "juryM",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "juryN",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "juryP",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint40",
+            "name": "juryTimeout",
+            "type": "uint40"
           },
           {
             "internalType": "uint8",
@@ -1573,25 +1602,6 @@
     "name": "startPreparedSubmission",
     "outputs": [],
     "stateMutability": "payable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "bountyId",
-        "type": "uint256"
-      }
-    ],
-    "name": "startValue",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -1918,8 +1928,28 @@
           },
           {
             "internalType": "uint8",
-            "name": "jury",
+            "name": "juryK",
             "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "juryM",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "juryN",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint8",
+            "name": "juryP",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint40",
+            "name": "juryTimeout",
+            "type": "uint40"
           },
           {
             "internalType": "uint8",
@@ -2314,6 +2344,25 @@
       }
     ],
     "name": "prepareCutoff",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
+      }
+    ],
+    "name": "startValue",
     "outputs": [
       {
         "internalType": "uint256",

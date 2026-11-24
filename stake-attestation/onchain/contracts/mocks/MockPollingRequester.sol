@@ -25,10 +25,11 @@ contract MockPollingRequester {
         uint256 estimatedBaseCost,
         uint256 scaling,
         uint64 requestedClass,
-        bool withBeacons
+        bool withBeacons,
+        IVerdiktaAggregator.Jury calldata jury
     ) external payable {
         lastRequestId = aggregator.requestAIEvaluationWithApproval{value: msg.value}(
-            cids, addendum, alpha, maxFee, minFee, estimatedBaseCost, scaling, requestedClass, withBeacons
+            cids, addendum, alpha, maxFee, minFee, estimatedBaseCost, scaling, requestedClass, withBeacons, jury
         );
     }
 

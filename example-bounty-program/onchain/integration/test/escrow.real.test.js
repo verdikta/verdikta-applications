@@ -23,6 +23,11 @@ const FEE = ethers.parseEther("0.00002");   // bounty fee ceiling (arbiters post
 const BOND = ethers.parseEther("0.005");
 const PASS = 900_000n, FAIL = 400_000n;     // FUND scores; threshold 70
 const HOUR = 3600;
+// The juries (CreateParams.jury), all on ONE aggregator: the Small class preset, a 12-arbiter jury, and
+// the Jumbo class preset (example-bounty-program/shared/classPresets.js).
+const SMALL = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
+const J12 = { K: 12, M: 10, N: 8, P: 4, timeout: 300 };
+const JUMBO = { K: 50, M: 38, N: 27, P: 17, timeout: 600 };
 
 function mergedAbi() {
   const rd = (n) => JSON.parse(fs.readFileSync(path.join(__dirname, "..", ".artifacts", ".contracts", "apps", `${n}.sol`, `${n}.json`))).abi;
@@ -32,7 +37,7 @@ function mergedAbi() {
 }
 
 describe("BountyEscrow x real v2 aggregator", function () {
-  let core, keeper, beacons, small, jumbo, jumbo50, escrow, arbs, history;
+  let core, keeper, beacons, agg, escrow, arbs, history;
   let deployer, creator, hunter, other;
   const lensLog = [];      // [scenario, step, nextAction, consistent, note]
   const mismatches = [];
@@ -66,8 +71,8 @@ describe("BountyEscrow x real v2 aggregator", function () {
     return rc;
   }
 
-  const drvFor = (agg) => new RoundDriver({ agg, keeper, beacons, link: core.link }, arbs, hunter);
-  const aggOf = async (b) => { const a = await escrow.aggregatorOf(b); return [small, jumbo, jumbo50].find((x) => x.target === a); };
+  const drvFor = () => new RoundDriver({ agg, keeper, beacons, link: core.link }, arbs, hunter);
+  const aggOf = async () => { expect(await escrow.aggregator()).to.equal(agg.target); return agg; };
 
   async function createBounty(o = {}) {
     const p = {
@@ -75,7 +80,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
       submissionDeadline: (await time.latest()) + 7 * 24 * HOUR, targetHunter: ethers.ZeroAddress,
       creatorDeterminationPayment: BOUNTY, arbiterDeterminationPayment: BOUNTY, creatorAssessmentWindowSize: 0,
       oracle: { maxOracleFee: FEE, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1, minOracleFee: 0n, withBeacons: o.withBeacons ?? false },
-      jury: o.jury ?? 0, quota: o.quota ?? 3, forfeitLine: o.forfeitLine ?? 2, bond: BOND,
+      jury: o.jury ?? SMALL, quota: o.quota ?? 3, forfeitLine: o.forfeitLine ?? 2, bond: BOND,
     };
     const rc = await (await escrow.connect(creator).createBounty(p, { value: BOUNTY })).wait();
     const ev = rc.logs.map((l) => { try { return escrow.interface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "BountyCreated");
@@ -95,7 +100,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
   /** nextAction, cross-checked against what actually simulates */
   async function lens(scn, step, b, s, expectAction) {
     const act = await escrow.nextAction(b, s);
-    const agg = await aggOf(b);
+    const agg = await aggOf();
     const aggId = (await escrow.getSubmission(b, s)).verdiktaAggId;
     const calls = {
       DRAW: () => escrow.connect(other).drawJury.staticCall(b, s),
@@ -146,7 +151,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
   /** commits -> (closeCommits) -> promote -> reveals, checking the lens at each step */
   async function runRound(scn, b, s, round, { pw, viaCloseCommits = false, oneNumber = false, mixLen = false }) {
     const agg = round.drv.agg;
-    const K = Number(await agg.K()), M = Number(await agg.M()), N = Number(await agg.N());
+    const [K, M, N] = (await agg.getJury(round.aggId)).map(Number);
     const mPlus = M + Math.ceil((K - M) / 2);
     const nCommit = viaCloseCommits ? M : mPlus;
     const plan = vectorsFor(nCommit, M, N, pw, oneNumber);
@@ -179,29 +184,24 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const aggLib = await (await ethers.getContractFactory("AggregatorLib")).deploy();
     const scoring = await (await ethers.getContractFactory("ScoringLib")).deploy();
     const F = await ethers.getContractFactory("ReputationAggregator", { libraries: { AggregatorLib: aggLib.target, ScoringLib: scoring.target } });
-    small = await F.deploy(core.link.target, keeper.target);
-    jumbo = await F.deploy(core.link.target, keeper.target);
+    // ONE aggregator serves every jury (item 15): each bounty's jury goes with its requests
+    agg = await F.deploy(core.link.target, keeper.target);
     beacons = await (await ethers.getContractFactory("JuryBeacons")).deploy(keeper.target);
-    await keeper.setApproved(small.target, true);
-    await keeper.setApproved(jumbo.target, true);
+    await keeper.setApproved(agg.target, true);
     await keeper.setApproved(beacons.target, true);
-    await beacons.setApproved(jumbo.target, true);
-    await small.setContracts(keeper.target, ethers.ZeroAddress, deployer.address);     // small: no beacons
-    await jumbo.setContracts(keeper.target, beacons.target, deployer.address);
-    await jumbo.setConfig(12, 10, 8, 4, 300, 155);
-    jumbo50 = await F.deploy(core.link.target, keeper.target);
-    await keeper.setApproved(jumbo50.target, true);
-    await beacons.setApproved(jumbo50.target, true);
-    await jumbo50.setContracts(keeper.target, beacons.target, deployer.address);
-    await jumbo50.setConfig(50, 38, 27, 17, 600, 155);                                  // dispatcher deploy/03_config.js jumbo
+    await beacons.setApproved(agg.target, true);
+    await agg.setContracts(keeper.target, beacons.target, deployer.address);
+    await agg.setLimits(50, 3600, 155);                                                 // dispatcher deploy/03_config.js
+    expect(await agg.maxJury()).to.equal(50n);
+    expect(await agg.maxTimeout()).to.equal(3600n);
     arbs = await H.registerArbiters(core, 26, { cls: CLS });
     arbs = arbs.concat(await H.registerArbiters(core, 64, { cls: CLS + 1 }));          // the K=50 jury's own class
     history = await H.installHistory();
     const E = await ethers.getContractFactory("BountyEscrow");
-    const d = await E.deploy([small.target, jumbo.target, jumbo50.target]);
+    const d = await E.deploy(agg.target);
     escrow = new ethers.Contract(d.target, mergedAbi(), deployer);
     const sz = async (a) => (await ethers.provider.getCode(a)).length / 2 - 1;
-    console.log("sizes (bytes): escrow", await sz(d.target), "lens", await sz(await escrow.lens()), "aggregator", await sz(small.target), "keeper", await sz(keeper.target));
+    console.log("sizes (bytes): escrow", await sz(d.target), "lens", await sz(await escrow.lens()), "aggregator", await sz(agg.target), "keeper", await sz(keeper.target));
   });
 
   // ------------------------------------------------------------------ 1. pass
@@ -209,12 +209,13 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const scn = "1 pass";
     const { b, evalCid } = await createBounty();
     const { s, wallet, aggId } = await prepareStart(b, evalCid);
-    const round = { aggId, slots: {}, drv: drvFor(small) };
+    const round = { aggId, slots: {}, drv: drvFor() };
+    expect(await agg.getJury(aggId)).to.deep.equal([6n, 5n, 4n, 3n, 300n]);   // the bounty's Small jury
     await lens(scn, "started (block B)", b, s);
     await mine(1);
     await lens(scn, "B+1 mined", b, s, "DRAW");
     const drc = await draw(round, b, s, "drawJury (small K=6)");
-    const jd = drc.logs.filter((l) => l.address === small.target).map((l) => { try { return small.interface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "JuryDrawn");
+    const jd = drc.logs.filter((l) => l.address === agg.target).map((l) => { try { return agg.interface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "JuryDrawn");
     expect(jd.args.drawer).to.equal(wallet);
     const drawReward = jd.args.reward;
     expect(drawReward).to.equal(2n * FEE);
@@ -224,7 +225,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const r = await escrow.getOracleResult(b, s);
     const hb = await ethers.provider.getBalance(hunter.address);
     const rc = await sendExact("finalizeSubmission (pass, K=6)", escrow.connect(other), "finalizeSubmission", [b, s]);
-    const i = await small.getRoundInfo(aggId);
+    const i = await agg.getRoundInfo(aggId);
     const leftover = i[4] - i[5] - i[6] - i[7];
     const delta = (await ethers.provider.getBalance(hunter.address)) - hb;
     const sub = await escrow.getSubmission(b, s);
@@ -233,12 +234,12 @@ describe("BountyEscrow x real v2 aggregator", function () {
     expect(sub.passCount).to.equal(3n);
     expect(sub.bondHeld).to.equal(0n);
     expect(delta).to.equal(BOUNTY + BOND + leftover + drawReward);
-    expect(await small.ethOwed(wallet)).to.equal(0n);
+    expect(await agg.ethOwed(wallet)).to.equal(0n);
     expect(await ethers.provider.getBalance(wallet)).to.equal(0n);
     await lens(scn, "finalized", b, s, "DONE");
     // settle later (keeper scoring) does not disturb the escrow
     await time.increase(301);
-    await small.connect(other).settle(aggId);
+    await agg.connect(other).settle(aggId);
     await lens(scn, "round settled (7)", b, s, "DONE");
   });
 
@@ -247,7 +248,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const scn = "2 soft->rerun";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
-    let round = { aggId, slots: {}, drv: drvFor(small) };
+    let round = { aggId, slots: {}, drv: drvFor() };
     await mine(1);
     await lens(scn, "B+1 mined", b, s, "DRAW");
     await draw(round, b, s, "drawJury (small K=6)");
@@ -262,7 +263,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await sendExact("rerunSubmission (small)", escrow.connect(hunter), "rerunSubmission", [b, s], { value: prepay });
     sub = await escrow.getSubmission(b, s);
     expect(sub.rounds).to.equal(2n);
-    round = { aggId: sub.verdiktaAggId, slots: {}, drv: drvFor(small) };
+    round = { aggId: sub.verdiktaAggId, slots: {}, drv: drvFor() };
     await mine(1);
     await lens(scn, "round 2, B+1", b, s, "DRAW");
     await draw(round, b, s, "drawJury (small K=6)");
@@ -280,7 +281,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const scn = "3 hard fail";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
-    const round = { aggId, slots: {}, drv: drvFor(small) };
+    const round = { aggId, slots: {}, drv: drvFor() };
     await mine(1);
     await draw(round, b, s, "drawJury (small K=6)");
     await runRound(scn, b, s, round, { pw: 1 });
@@ -300,7 +301,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const scn = "4a few commits";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
-    const round = { aggId, slots: {}, drv: drvFor(small) };
+    const round = { aggId, slots: {}, drv: drvFor() };
     await mine(1);
     await draw(round, b, s, "drawJury (small K=6)");
     for (const x of [0, 1]) await round.drv.commit(round, x, [100_000n, PASS]);
@@ -308,9 +309,9 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await time.increase(301);
     await lens(scn, "past deadline", b, s, "CLOSE_FAILED");
     const hb = await ethers.provider.getBalance(hunter.address);
-    const i0 = await small.getRoundInfo(aggId);
+    const i0 = await agg.getRoundInfo(aggId);
     await sendExact("closeFailedRound (settle path, K=6)", escrow.connect(other), "closeFailedRound", [b, s]);
-    const i = await small.getRoundInfo(aggId);
+    const i = await agg.getRoundInfo(aggId);
     const sub = await escrow.getSubmission(b, s);
     const delta = (await ethers.provider.getBalance(hunter.address)) - hb;
     results[scn] = { phase: i[0], status: sub.status, bondHeld: sub.bondHeld, hunterRefund: delta, expected: i0[4] - i0[5] };
@@ -332,18 +333,18 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const scn = "4b M commits unpromoted";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
-    const round = { aggId, slots: {}, drv: drvFor(small) };
+    const round = { aggId, slots: {}, drv: drvFor() };
     await mine(1);
     await draw(round, b, s, "drawJury (small K=6)");
     for (const x of [0, 1, 2, 3, 4]) await round.drv.commit(round, x, [100_000n, PASS]);
     await time.increase(301);
     await lens(scn, "past deadline", b, s, "CLOSE_FAILED");
-    const t0 = await small.ethOwed(deployer.address);
+    const t0 = await agg.ethOwed(deployer.address);
     const hb = await ethers.provider.getBalance(hunter.address);
     await sendExact("closeFailedRound (settle path, K=6)", escrow.connect(other), "closeFailedRound", [b, s]);
-    const i = await small.getRoundInfo(aggId);
+    const i = await agg.getRoundInfo(aggId);
     const sub = await escrow.getSubmission(b, s);
-    results[scn] = { phase: i[0], status: sub.status, treasuryGot: (await small.ethOwed(deployer.address)) - t0, hunterGot: (await ethers.provider.getBalance(hunter.address)) - hb };
+    results[scn] = { phase: i[0], status: sub.status, treasuryGot: (await agg.ethOwed(deployer.address)) - t0, hunterGot: (await ethers.provider.getBalance(hunter.address)) - hb };
     expect(sub.status).to.equal(6n);
     expect(sub.bondHeld).to.equal(BOND);
   });
@@ -357,12 +358,12 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await lens(scn, "1 day, unsealed", b, s, "AWAIT_ORACLE");
     await mine(8200);
     await lens(scn, "past 8,191 blocks", b, s, "CLOSE_FAILED");
-    const t0 = await small.ethOwed(deployer.address);
+    const t0 = await agg.ethOwed(deployer.address);
     const hb = await ethers.provider.getBalance(hunter.address);
     await sendExact("closeFailedRound (cancelUnsealed path)", escrow.connect(other), "closeFailedRound", [b, s]);
-    const i = await small.getRoundInfo(aggId);
+    const i = await agg.getRoundInfo(aggId);
     const sub = await escrow.getSubmission(b, s);
-    results[scn] = { phase: i[0], status: sub.status, bondHeld: sub.bondHeld, treasuryGot: (await small.ethOwed(deployer.address)) - t0, received: i[4], hunterGot: (await ethers.provider.getBalance(hunter.address)) - hb };
+    results[scn] = { phase: i[0], status: sub.status, bondHeld: sub.bondHeld, treasuryGot: (await agg.ethOwed(deployer.address)) - t0, received: i[4], hunterGot: (await ethers.provider.getBalance(hunter.address)) - hb };
     expect(i[0]).to.equal(9n);
     expect(sub.status).to.equal(6n);
     expect(sub.bondHeld).to.equal(BOND);
@@ -374,14 +375,14 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
     await mine(1);
-    await small.connect(other).sealSeed(aggId);
+    await agg.connect(other).sealSeed(aggId);
     await time.increase(24 * HOUR - 60);
     await lens(scn, "sealed, < 1 day", b, s, "DRAW");
     await time.increase(61);
     await lens(scn, "sealed, > 1 day", b, s, "CLOSE_FAILED");
     await sendExact("closeFailedRound (cancelUnsealed path)", escrow.connect(other), "closeFailedRound", [b, s]);
     const sub = await escrow.getSubmission(b, s);
-    results[scn] = { phase: (await small.getRoundInfo(aggId))[0], status: sub.status, bondHeld: sub.bondHeld };
+    results[scn] = { phase: (await agg.getRoundInfo(aggId))[0], status: sub.status, bondHeld: sub.bondHeld };
     expect(sub.status).to.equal(6n);
   });
 
@@ -391,10 +392,10 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const { s, aggId } = await prepareStart(b, evalCid);
     await mine(300);
     await lens(scn, "300 blocks, no history entry", b, s);
-    const [, B] = await small.getRoundInfo(aggId);
+    const [, B] = await agg.getRoundInfo(aggId);
     await H.recordHash(history, B + 1n);
     await lens(scn, "300 blocks, history has B+1", b, s, "DRAW");
-    const round = { aggId, slots: {}, drv: drvFor(small) };
+    const round = { aggId, slots: {}, drv: drvFor() };
     await draw(round, b, s, "drawJury (small K=6)");
     // leave it to fail: no commits
     await time.increase(301);
@@ -406,16 +407,16 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const scn = "6a one-number";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
-    const round = { aggId, slots: {}, drv: drvFor(small) };
+    const round = { aggId, slots: {}, drv: drvFor() };
     await mine(1);
     await draw(round, b, s, "drawJury (small K=6)");
     await runRound(scn, b, s, round, { pw: 3, oneNumber: true });
-    const [agg] = await small.getEvaluation(aggId);
+    const [scoresOut] = await agg.getEvaluation(aggId);
     await lens(scn, "result", b, s, "FINALIZE");
     await escrow.connect(other).finalizeSubmission(b, s);
     const sub = await escrow.getSubmission(b, s);
-    results[scn] = { aggregatedLen: agg.length, aggregated: agg.map(String).join("/"), status: sub.status, passCount: sub.passCount, acceptance: sub.acceptance, rejection: sub.rejection };
-    expect(agg.length).to.equal(1);
+    results[scn] = { aggregatedLen: scoresOut.length, aggregated: scoresOut.map(String).join("/"), status: sub.status, passCount: sub.passCount, acceptance: sub.acceptance, rejection: sub.rejection };
+    expect(scoresOut.length).to.equal(1);
     expect(sub.status).to.equal(3n);
   });
 
@@ -423,28 +424,28 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const scn = "6b mixed lengths";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
-    const round = { aggId, slots: {}, drv: drvFor(small) };
+    const round = { aggId, slots: {}, drv: drvFor() };
     await mine(1);
     await draw(round, b, s, "drawJury (small K=6)");
     await runRound(scn, b, s, round, { pw: 4, mixLen: true });
-    const [agg] = await small.getEvaluation(aggId);
-    const [scores] = await small.getOutcomeScores(aggId, 1);
+    const [scoresOut] = await agg.getEvaluation(aggId);
+    const [scores] = await agg.getOutcomeScores(aggId, 1);
     await escrow.connect(other).finalizeSubmission(b, s);
     const sub = await escrow.getSubmission(b, s);
-    results[scn] = { aggregatedLen: agg.length, fundScores: scores.map(String).join("/"), status: sub.status, passCount: sub.passCount };
+    results[scn] = { aggregatedLen: scoresOut.length, fundScores: scores.map(String).join("/"), status: sub.status, passCount: sub.passCount };
   });
 
   // ------------------------------------------------------------------ 7. beacons (jumbo)
   it("7. jumbo (12/10/8/4) with beacons: drawJury twice, pass 7 of 8 (Q=6, R=4)", async () => {
     const scn = "7 jumbo beacons";
-    const { b, evalCid } = await createBounty({ jury: 1, withBeacons: true, quota: 6, forfeitLine: 4 });
+    const { b, evalCid } = await createBounty({ jury: J12, withBeacons: true, quota: 6, forfeitLine: 4 });
     const { s, wallet, aggId } = await prepareStart(b, evalCid, "jumbo+beacons");
-    const drv = drvFor(jumbo);
+    const drv = drvFor();
     const round = { aggId, slots: {}, drv };
     await mine(1);
     await lens(scn, "B+1", b, s, "DRAW");
     const rc1 = await sendExact("drawJury (beacon start)", escrow.connect(other), "drawJury", [b, s]);
-    expect((await jumbo.getRoundInfo(aggId))[0]).to.equal(2n);
+    expect((await agg.getRoundInfo(aggId))[0]).to.equal(2n);
     const topic = beacons.interface.getEvent("BeaconCalled").topicHash;
     round.beacons = rc1.logs.filter((l) => l.topics[0] === topic).map((l) => beacons.interface.parseLog(l).args)
       .map((a) => ({ index: Number(a.index), key: a.key, arb: drv.byKey.get(a.key) }));
@@ -455,27 +456,27 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await lens(scn, "beacon stage, quorum", b, s, "DRAW");
     for (const bc of round.beacons.slice(2)) await drv.answerBeacon(round, bc.index);   // keep them unfrozen
     const rc2 = await draw(round, b, s, "drawJury (jumbo K=12 after beacons)");
-    const jd = rc2.logs.filter((l) => l.address === jumbo.target).map((l) => { try { return jumbo.interface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "JuryDrawn");
+    const jd = rc2.logs.filter((l) => l.address === agg.target).map((l) => { try { return agg.interface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "JuryDrawn");
     expect(Object.keys(round.slots).length).to.equal(12);
     await lens(scn, "drawn", b, s, "AWAIT_ORACLE");
     await runRound(scn, b, s, round, { pw: 7 });
     await lens(scn, "result", b, s, "FINALIZE");
     const hb = await ethers.provider.getBalance(hunter.address);
     await sendExact("finalizeSubmission (pass, jumbo N=8)", escrow.connect(other), "finalizeSubmission", [b, s]);
-    const i = await jumbo.getRoundInfo(aggId);
+    const i = await agg.getRoundInfo(aggId);
     const sub = await escrow.getSubmission(b, s);
     const delta = (await ethers.provider.getBalance(hunter.address)) - hb;
     results[scn] = { status: sub.status, passCount: sub.passCount, drawReward: jd.args.reward, drawer: jd.args.drawer === wallet ? "wallet" : jd.args.drawer, delta, expected: BOUNTY + BOND + (i[4] - i[5] - i[6] - i[7]) + jd.args.reward };
     expect(sub.status).to.equal(3n);
     expect(delta).to.equal(BOUNTY + BOND + (i[4] - i[5] - i[6] - i[7]) + jd.args.reward);
     await time.increase(301);
-    await sendExact("settle (jumbo, direct)", jumbo.connect(other), "settle", [aggId]);
+    await sendExact("settle (jumbo, direct)", agg.connect(other), "settle", [aggId]);
   });
 
   it("7b. jumbo: failed round settle path gas (too few commits)", async () => {
-    const { b, evalCid } = await createBounty({ jury: 1, quota: 6, forfeitLine: 4 });
+    const { b, evalCid } = await createBounty({ jury: J12, quota: 6, forfeitLine: 4 });
     const { s, aggId } = await prepareStart(b, evalCid, "jumbo");
-    const round = { aggId, slots: {}, drv: drvFor(jumbo) };
+    const round = { aggId, slots: {}, drv: drvFor() };
     await mine(1);
     await draw(round, b, s, "drawJury (jumbo K=12, no beacons)");
     for (const x of [0, 1, 2]) await round.drv.commit(round, x, [100_000n, PASS]);
@@ -488,9 +489,10 @@ describe("BountyEscrow x real v2 aggregator", function () {
   // ------------------------------------------------------------------ 8. the real Jumbo config K=50
   it("8a. jumbo K=50/38/27/17 with beacons: pass 20 of 27 (Q=18, R=12)", async () => {
     const scn = "8a jumbo50 beacons";
-    const { b, evalCid } = await createBounty({ jury: 2, cls: CLS + 1, withBeacons: true, quota: 18, forfeitLine: 12 });
+    const { b, evalCid } = await createBounty({ jury: JUMBO, cls: CLS + 1, withBeacons: true, quota: 18, forfeitLine: 12 });
     const { s, aggId } = await prepareStart(b, evalCid, "jumbo50+beacons");
-    const drv = drvFor(jumbo50);
+    expect(await agg.getJury(aggId)).to.deep.equal([50n, 38n, 27n, 17n, 600n]);   // Jumbo, on the same aggregator
+    const drv = drvFor();
     const round = { aggId, slots: {}, drv };
     await mine(2);
     await lens(scn, "B+2", b, s, "DRAW");
@@ -516,11 +518,11 @@ describe("BountyEscrow x real v2 aggregator", function () {
   it("8b. jumbo K=50: a start that settles 2 due K=50 rounds; closeFailedRound settle path at K=50", async () => {
     const scn = "8b jumbo50 settle";
     const signers = await ethers.getSigners();
-    const { b, evalCid } = await createBounty({ jury: 2, cls: CLS + 1, quota: 18, forfeitLine: 12 });
+    const { b, evalCid } = await createBounty({ jury: JUMBO, cls: CLS + 1, quota: 18, forfeitLine: 12 });
     const subs = [];
     for (const who of [signers[2], signers[3]]) {
       const x = await prepareStart(b, evalCid, "jumbo50", who);
-      const round = { aggId: x.aggId, slots: {}, drv: drvFor(jumbo50) };
+      const round = { aggId: x.aggId, slots: {}, drv: drvFor() };
       await mine(2);   // eth_call runs at the latest block: B+2 must be mined for the gas search
       await draw(round, b, x.s, "drawJury (K=50, no beacons)");
       for (const sl of [0, 1, 2]) await round.drv.commit(round, sl, [100_000n, PASS]);
@@ -529,13 +531,13 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await time.increase(601);
     await lens(scn, "X past deadline", b, subs[0].s, "CLOSE_FAILED");
     // the queue now holds 8a's final round + X + Y, all due: the next request settles two of them
-    const { b: b2, evalCid: e2 } = await createBounty({ jury: 2, cls: CLS + 1, quota: 18, forfeitLine: 12 });
+    const { b: b2, evalCid: e2 } = await createBounty({ jury: JUMBO, cls: CLS + 1, quota: 18, forfeitLine: 12 });
     const z = await prepareStart(b2, e2, "jumbo50, settles 2 due K=50 rounds", signers[5]);
     const rc = await ethers.provider.getTransactionReceipt((await escrow.queryFilter(escrow.filters.WorkSubmitted(b2))).pop().transactionHash);
-    const settled = rc.logs.filter((l) => l.address === jumbo50.target && l.topics[0] === jumbo50.interface.getEvent("RoundSettled").topicHash).length;
+    const settled = rc.logs.filter((l) => l.address === agg.target && l.topics[0] === agg.interface.getEvent("RoundSettled").topicHash).length;
     results[scn] = { settledInsideStart: settled, startGas: Number(rc.gasUsed) };
     for (const x of subs) {
-      const ph = (await jumbo50.getRoundInfo(x.aggId))[0];
+      const ph = (await agg.getRoundInfo(x.aggId))[0];
       await lens(scn, `sub ${x.s} phase ${ph}`, b, x.s, "CLOSE_FAILED");
       await sendExact(`closeFailedRound (K=50, round phase ${ph} before)`, escrow.connect(other), "closeFailedRound", [b, x.s]);
       expect((await escrow.getSubmission(b, x.s)).status).to.equal(6n);

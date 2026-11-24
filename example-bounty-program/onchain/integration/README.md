@@ -2,12 +2,14 @@
 
 The unit tests in `../test` run BountyEscrow against `MockVerdiktaAggregator`. This opt-in suite
 runs it against the real v2 `ReputationAggregator`, `ReputationKeeper` and `JuryBeacons` from
-verdikta-dispatcher, with arbiters driven through the dispatcher's `TestOperator`. It covers what
-the mock does not model:
+verdikta-dispatcher, with arbiters driven through the dispatcher's `TestOperator`. One aggregator
+(limits set with `setLimits(50, 3600, 155)`) serves every bounty: Small (6/5/4/3), a 12-arbiter jury
+and Jumbo (50/38/27/17) bounties each send their own jury with every request. It covers what the mock
+does not model:
 
 - the draw's real gas (about 2.0M with 6 arbiters, 3.7M with 12, 13.5M with 50, against the 2^24
   per-transaction cap);
-- the auto-settle a new request runs on up to 2 overdue rounds;
+- the auto-settle a new request runs on overdue rounds (within 2 x its own K slots);
 - the P-closest clustering of the combined score;
 - the real phase and deadline rules.
 
@@ -16,9 +18,11 @@ At every step it also checks that the lens's `nextAction` names a call that succ
 ## Run
 
 ```
-# verdikta-dispatcher checked out beside verdikta-applications, on its `beacon` branch
+# verdikta-dispatcher checked out beside verdikta-applications as `dispatcher`, on its `beacon` branch
 cd example-bounty-program/onchain
 npm run test:integration
+# or, with the dispatcher elsewhere:
+VERDIKTA_DISPATCHER_DIR=/path/to/dispatcher/reputationBasedAggregator npm run test:integration
 ```
 
 `prepare.js` copies this package's contracts and the dispatcher's

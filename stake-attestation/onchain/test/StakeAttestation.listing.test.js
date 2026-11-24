@@ -42,6 +42,8 @@ const ORACLE = {
   maxFeeBasedScaling: 1n,
   minOracleFee: 0n, // the v2 fee floor: none
   withBeacons: false,
+  // the jury every round of the listing asks for: the Small class preset (K, M, N, P, timeout)
+  jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 },
 };
 
 function artifact(overrides = {}) {

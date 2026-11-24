@@ -1463,9 +1463,12 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   once it is where it says and as deep as a commit must be: it is not waited for a second time. A receipt is evidence
   only of what its block holds: one that is not this transaction's, or names a block that does not hold it, is acted
   on by no run, and the signed bytes stay. That goes for a revert the wait itself brings back too: a revert reopens
-  the folder, so it is believed only as the chain bears it out now. And no receipt is not yet another transaction: a
-  commit that reverted used its nonce too, so the node is asked whether it knows the saved transaction as mined, and
-  if it does, the run is to be made again for the receipt. Logs that a node did not give are no proof that no other transaction made
+  the folder, so it is believed only as the chain bears it out now, and once the revert the chain has is as deep as a
+  commit must be. And no receipt is not yet another transaction: a commit that reverted used its nonce too. So which
+  transaction used the nonce is read from the chain itself, in the block where the wallet's count passed it. If it is
+  the saved commit, the run is to be made again for its receipt; if the node does not show it (it keeps no count that
+  far back), nothing is said to be for good; and the text of `COMMIT_REPLACED` names the transaction that did. Logs
+  that a node did not give are no proof that no other transaction made
   the claim, so then the run is to be made again through an RPC that serves them. An anchor that can never show its
   bound is no reason to run again: the saved commit can never be mined, so the folder signs nothing more, and the
   look for a claim of its own two hashes is the hunter's with the rest. And a run whose wait ended after it saw the

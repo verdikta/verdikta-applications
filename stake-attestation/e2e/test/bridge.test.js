@@ -174,6 +174,9 @@ test('the job\'s requests: K commits with the real cid string and the aggregator
   }
   for (const c of reveals) assert.match(c.data.cid, /^2:[0-9a-f]{64}$/, 'the aggregator asks in 64 lowercase hex, not the commit\'s decimal');
   assert.equal(new Set(commits.map((c) => c.id)).size, REAL_CONFIG.k, 'one job per slot');
+  // a slot's reveal comes from the job that committed: the body's id is the job's externalJobID
+  const idOfSlot = new Map(record.jobs.filter((j) => j.phase === 'commit').map((j, i) => [j.slot, commits[i].id]));
+  for (const [i, j] of record.jobs.filter((x) => x.phase === 'reveal').entries()) assert.equal(reveals[i].id, idOfSlot.get(j.slot), `slot ${j.slot}: the reveal's id is its commit's`);
   // the slots the real promotion draw names: the seed from blockhash(C + 1)
   const chosen = pickPromoted(Array(6).fill(true), 5, promoteSeedOf(AGG, blockHashOf(fake.mock.round.closeBlock + 1)));
   assert.deepEqual(record.jobs.filter((j) => j.phase === 'reveal').map((j) => j.slot), chosen);
@@ -263,6 +266,34 @@ test('stopping does not wait for an EA that does not answer: every request still
   assert.ok(Date.now() - started < 3000, `${Date.now() - started} ms`);
   for (const s of sockets) s.destroy();
   server.close();
+});
+
+test('evaluateOver sends the EA its service token as a bearer header, and no header without one', async () => {
+  const seen = [];
+  const server = http.createServer((req, res) => { seen.push(req.headers.authorization); res.setHeader('content-type', 'application/json'); res.end('{"data":{}}'); });
+  await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const token = 'a'.repeat(64);
+  assert.equal((await evaluateOver(url, { token })({ id: '1', data: {} })).status, 200);
+  await evaluateOver(url)({ id: '2', data: {} });
+  server.close();
+  assert.deepEqual(seen, [`Bearer ${token}`, undefined]);
+});
+
+test('the bridge sends its transactions one at a time, so jobs that answer at once never share a nonce', async () => {
+  // All K commits answer in the same tick: each scriptCommits must start only once the one before is mined.
+  const fake = fakeMock();
+  let inFlight = 0, most = 0;
+  const real = fake.mock.scriptCommits;
+  fake.mock.scriptCommits = async (...args) => {
+    inFlight += 1;
+    most = Math.max(most, inFlight);
+    const tx = await real(...args);
+    return { ...tx, wait: async () => { await new Promise((r) => { setTimeout(r, 5); }); inFlight -= 1; return tx.wait ? tx.wait() : undefined; } };
+  };
+  await serve(fake, honestEa().evaluate);
+  assert.equal(named(fake, 'scriptCommits').length, REAL_CONFIG.k);
+  assert.equal(most, 1, 'one transaction out at a time');
 });
 
 test('whoever waits on a round is told when the bridge stops: a stopping round must get its main flow back', async () => {

@@ -305,7 +305,11 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     // the dispute panel's other jurors answer as the claim panel's second: the confirmation's average is the claim's
     for (const n of disputePanel) script[n.model] ??= juror(n.model, JUROR_SCORES[1]);
     const callLog = path.join(logDir, 'provider-calls.jsonl');
-    aiNode = track(await owned(h.startAiNode({ logDir, callLog, script, justifierModel: `${JUSTIFIER.provider}:${JUSTIFIER.model}` }), (a) => a.close()));
+    // Service tokens (verdikta-arbiter #210): the AI Node and the EA each refuse a caller without
+    // their own; one for each, never the same. An arbiter from before them ignores both.
+    const aiToken = crypto.randomBytes(32).toString('hex');
+    const eaToken = crypto.randomBytes(32).toString('hex');
+    aiNode = track(await owned(h.startAiNode({ logDir, callLog, script, justifierModel: `${JUSTIFIER.provider}:${JUSTIFIER.model}`, aiToken }), (a) => a.close()));
     const aiProxy = await owned(h.startRecordingProxy(aiNode.url), (p) => p.close());
     const providerCalls = () => (fs.existsSync(callLog) ? fs.readFileSync(callLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
@@ -411,11 +415,11 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('feed.counted', inFeed.notCounted.length === 0, `${inFeed.listings.length} counted, ${inFeed.notCounted.length} not`);
 
     // The EA starts now, with the key the listing was signed by: dev trust is one explicit key.
-    const adapter = track(await owned(h.startAdapter({ logDir, aiNodeUrl: aiProxy.url, runnerUrl: runnerProxy.url, runnerToken, ipfsUrl: ipfs.url, pinKey: ipfs.pinKey, devKey, operator: OPERATOR }), (a) => a.close()));
+    const adapter = track(await owned(h.startAdapter({ logDir, aiNodeUrl: aiProxy.url, aiToken, eaToken, runnerUrl: runnerProxy.url, runnerToken, ipfsUrl: ipfs.url, pinKey: ipfs.pinKey, devKey, operator: OPERATOR }), (a) => a.close()));
     one('ea.devTrust', adapter.health.codeReview.trust === 'dev' && adapter.health.codeReview.devKeyCount === 1 && adapter.health.codeReview.chainId === 31337, JSON.stringify(adapter.health.codeReview));
     bridge = createBridge({
       mock: chain.aggregator,
-      evaluate: evaluateOver(adapter.url),
+      evaluate: evaluateOver(adapter.url, { token: eaToken }),
       operator: OPERATOR,
       requestedClass: codeReview.CODE_CLASSES['code-standard'].classId,
       config: ROUND_CONFIG,

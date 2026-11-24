@@ -37,12 +37,14 @@ export const JOB_TIMEOUT_MS = 840_000;
  * POST <ea>/evaluate over node:http: fetch has a five-minute limit on response headers, and the job waits 840 s.
  * Its cancelAll() ends every request still out: a stopping round does not wait for them.
  */
-export function evaluateOver(eaUrl, { timeoutMs = JOB_TIMEOUT_MS } = {}) {
+export function evaluateOver(eaUrl, { timeoutMs = JOB_TIMEOUT_MS, token } = {}) {
   const target = new URL('/evaluate', eaUrl);
   const live = new Set();
   const evaluate = (body) => new Promise((resolve, reject) => {
     const payload = Buffer.from(JSON.stringify(body));
-    const req = http.request(target, { method: 'POST', agent: false, headers: { 'content-type': 'application/json', 'content-length': payload.length } }, (res) => {
+    // The EA's service token (EA_API_TOKEN), as the Chainlink job's bridge sends it.
+    const auth = token ? { authorization: `Bearer ${token}` } : {};
+    const req = http.request(target, { method: 'POST', agent: false, headers: { 'content-type': 'application/json', 'content-length': payload.length, ...auth } }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
@@ -135,14 +137,28 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     if (!map.has(aggId)) map.set(aggId, []);
     map.get(aggId).push({ resolve, reject });
   });
-  const mined = async (p) => (await p).wait();
+  // The bridge's transactions go out one at a time, each once the one before is mined: jobs that
+  // answer in the same millisecond (all K, on a fast machine) would otherwise send from one
+  // account at once and be given the same nonce. `send` makes the transaction; a failure is the
+  // caller's, and the next one still goes.
+  let txQueue = Promise.resolve();
+  // Each slot stands for one arbiter's Chainlink job, whose request body's id is its
+  // externalJobID (basicJobSpec): the same for its commit and its reveal, and an EA reveals only to
+  // the job that committed (verdikta-arbiter #210).
+  const jobIds = new Map();
+  const jobIdOf = (slot) => { if (!jobIds.has(slot)) jobIds.set(slot, crypto.randomUUID()); return jobIds.get(slot); };
+  const mined = (send) => {
+    const run = txQueue.then(() => send()).then((tx) => tx.wait());
+    txQueue = run.catch(() => {});
+    return run;
+  };
 
   /** The mock's settings, the real contract's: K, M, N, P, the bonus multiplier, the rewards and the timeouts. */
   async function configure() {
-    await mined(mock.setConfig(config.k, config.m, config.n, config.p));
-    await mined(mock.setBonusMultiplier(config.bonus));
-    await mined(mock.setRewards(config.drawFees, config.promoteFees));
-    await mined(mock.setTimeouts(config.responseTimeoutSeconds, config.tPlus, config.revealWindow));
+    await mined(() => mock.setConfig(config.k, config.m, config.n, config.p));
+    await mined(() => mock.setBonusMultiplier(config.bonus));
+    await mined(() => mock.setRewards(config.drawFees, config.promoteFees));
+    await mined(() => mock.setTimeouts(config.responseTimeoutSeconds, config.tPlus, config.revealWindow));
   }
 
   const info = async (aggId) => {
@@ -226,7 +242,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
     if (!drawn) {
       log(`[bridge] ${aggId.slice(0, 12)}: nobody drew it in ${drawAfterMs} ms; the bridge draws`);
       try {
-        await mined(mock.drawJury(aggId));
+        await mined(() => mock.drawJury(aggId));
       } catch { /* drawn by someone else meanwhile: the phase says so */ }
     }
     let r = await info(aggId);
@@ -256,7 +272,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
       record.likelihoods = likelihoods;
       record.justifications = justifications;
       record.clustered = clustered;
-      await mined(mock.scriptResult(aggId, likelihoods, justifications));
+      await mined(() => mock.scriptResult(aggId, likelihoods, justifications));
       record.spent = await spentOf(aggId, record);
       record.status = 'fulfilled';
       wake(waiters, aggId, record);
@@ -272,7 +288,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
         if (stopped) return;
         if (!done) {
           try {
-            await mined(mock.promote(aggId));
+            await mined(() => mock.promote(aggId));
             record.promotedBy = 'bridge';
           } catch { /* promoted by someone else, or past the deadline: the phase says which */ }
         }
@@ -289,7 +305,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
       const started = Date.now();
       const entry = { slot, phase, status: null, ms: null, outcome: null, error: null, scores: null };
       record.jobs.push(entry);
-      const running = evaluate({ id: crypto.randomUUID(), data: { cid, aggId: hexOf(aggId) } }).then(
+      const running = evaluate({ id: jobIdOf(slot), data: { cid, aggId: hexOf(aggId) } }).then(
         (answer) => answer,
         (err) => ({ status: 599, json: null, error: err.message }),
       ).then(async (answer) => {
@@ -311,7 +327,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
         if (effect.kind === 'ignored') record.ignored.push({ slot, phase, reason: effect.reason });
         if (effect.kind === 'commit' || effect.kind === 'closed') {
           record.commits += 1;
-          await mined(mock.scriptCommits(aggId, 1));
+          await mined(() => mock.scriptCommits(aggId, 1));
         }
         if (effect.kind === 'closed') return promote();
         if (effect.kind === 'reveal' || effect.kind === 'finalized') record.reveals += 1;
@@ -339,7 +355,7 @@ export function createBridge({ mock, evaluate, operator, requestedClass, log = (
         if (now > windowEnd) {
           if (!(await until(async () => (await info(aggId)).phase !== PHASE.commit, actAfterMs))) {
             try {
-              await mined(mock.closeCommits(aggId));
+              await mined(() => mock.closeCommits(aggId));
               record.closedBy = 'bridge';
             } catch { /* closed by someone else, or past the deadline: the phase says which */ }
           }

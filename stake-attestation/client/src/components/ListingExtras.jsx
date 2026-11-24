@@ -24,9 +24,12 @@ const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
  * What the record mirror knows of one listing: its claims (Committed and LateClaim events, ids
  * only, as the site shows every claim that is not a valid finding), its identity (the Listed
  * event: kind, repository, commit) and the other listings of its repository (node P35). Null
- * `record` while it is read; { failed } when it cannot be.
+ * `record` while it is read; { failed } when it cannot be. The site's mirror may trail a listing that
+ * opened a moment ago (no record yet, or one without this listing): `again` is a count the caller
+ * raises to have the record read once more, and the answer says which count it is of. The answer
+ * before it stays until the new one is there.
  */
-export function useListingRecord(listingId, artifactHash, opened) {
+export function useListingRecord(listingId, artifactHash, opened, again = 0) {
   const [state, setState] = useState(null);
   useEffect(() => {
     if (!opened) return undefined;
@@ -48,11 +51,12 @@ export function useListingRecord(listingId, artifactHash, opened) {
           why: apart ? apart.detail ?? apart.reason : null,
           identity: listed ? { kind: listed.args.kind, repo: listed.args.repo, baseCommit: listed.args.baseCommit } : null,
           sameRepository: otherListingsOfRecord(r, id),
+          again,
         });
       })
-      .catch((err) => { if (live) setState({ failed: siteErrorText(err) }); });
+      .catch((err) => { if (live) setState({ failed: siteErrorText(err), again }); });
     return () => { live = false; };
-  }, [listingId, artifactHash, opened]);
+  }, [listingId, artifactHash, opened, again]);
   return state;
 }
 
@@ -104,7 +108,7 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
  * asked. `onChanged(block)`: the listing rolled in that block, so the page reads it again from
  * there (a hold ends in the roll).
  */
-export function RollForward({ listingId, listing, record, hold = NO_HOLD, onChanged = () => {} }) {
+export function RollForward({ listingId, listing, record, recordReading = false, hold = NO_HOLD, onRecordAgain = () => {}, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const state = LISTING_STATES[Number(listing.state)];
@@ -183,8 +187,18 @@ export function RollForward({ listingId, listing, record, hold = NO_HOLD, onChan
     return undefined;
   };
 
+  // Looking again: the successors are found by this listing's identity, which is the site's record's. Where the record
+  // did not have it (the mirror trailed the opening, or its read failed), the record is read again first, and the
+  // successors are looked for once it does (the effect above follows `identity`).
+  const lookAgain = () => {
+    setError(null);
+    if (!identity) return onRecordAgain();
+    setOptions(null);
+    return setAgain((n) => n + 1);
+  };
+
   let body;
-  if (!record) body = <p className="hint">{RF.loading}</p>;
+  if (!record || recordReading) body = <p className="hint">{RF.loading}</p>;
   else if (record.failed) body = <p className="hint" data-testid="roll-record-failed">{fill(RF.recordFailed, { reason: record.failed })}</p>;
   else if (!identity) body = <p className="hint">{RF.noIdentity}</p>;
   else if (options === null) body = <p className="hint">{RF.loading}</p>;
@@ -225,9 +239,10 @@ export function RollForward({ listingId, listing, record, hold = NO_HOLD, onChan
         </>
       )}
       {body}
-      {/* with a hold the fixed version is listed after this page was opened: the panel looks again when asked */}
-      {hold.supported && identity && options !== null && (
-        <button type="button" className="secondary" data-testid="roll-look-again" onClick={() => { setError(null); setOptions(null); setAgain((n) => n + 1); }} disabled={busy}>{RF.again}</button>
+      {/* with a hold the fixed version is listed after this page was opened: the panel looks again when asked, also
+          when the site's record did not have this listing yet */}
+      {hold.supported && record && !recordReading && (!identity || options !== null) && (
+        <button type="button" className="secondary" data-testid="roll-look-again" onClick={lookAgain} disabled={busy}>{RF.again}</button>
       )}
       {error && <p className="error" role="alert">{error}</p>}
     </section>
@@ -267,7 +282,11 @@ function CommitOffer({ data, held = false, takesCommits = true }) {
 export function ListingMore({ listingId, listing, hold = NO_HOLD, takesCommits = true, onHeld = () => {}, onChanged = () => {} }) {
   const state = LISTING_STATES[Number(listing.state)];
   const opened = state !== 'Listed';
-  const data = useListingRecord(listingId, listing.artifactHash, opened);
+  // how many times the record was asked for again (the roll forward panel's "look again"), and whether that read is out
+  const [again, setAgain] = useState(0);
+  const data = useListingRecord(listingId, listing.artifactHash, opened, again);
+  const reading = data !== null && data.again !== again;
+  const recordAgain = () => setAgain((n) => n + 1);
   if (!opened) return null;
   return (
     <>
@@ -279,7 +298,7 @@ export function ListingMore({ listingId, listing, hold = NO_HOLD, takesCommits =
       {/* the hold is the chain's alone, as roll forward's lines are: neither waits for the site's record */}
       <HoldListing listingId={listingId} listing={listing} hold={hold} onHeld={onHeld} onChanged={onChanged} />
       {/* whatever the record's read came to: what the panel says before a fix is the chain's, and only its picker is the record's */}
-      <RollForward listingId={listingId} listing={listing} record={data} hold={hold} onChanged={onChanged} />
+      <RollForward listingId={listingId} listing={listing} record={data} recordReading={reading} hold={hold} onRecordAgain={recordAgain} onChanged={onChanged} />
     </>
   );
 }

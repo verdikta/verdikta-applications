@@ -115,14 +115,14 @@ test('the panel renders the three lines once each, after its intro and before th
 test('the panel shows from the listing\'s state on-chain: a record that is still read, or cannot be, only leaves the picker out', () => {
   const panel = read('../src/components/ListingExtras.jsx');
   // the listing's page renders the panel whatever the record's read came to
-  assert.match(panel, /\n      <RollForward listingId=\{listingId\} listing=\{listing\} record=\{data\} hold=\{hold\} onChanged=\{onChanged\} \/>\n/);
+  assert.match(panel, /\n      <RollForward listingId=\{listingId\} listing=\{listing\} record=\{data\} recordReading=\{reading\} hold=\{hold\} onRecordAgain=\{recordAgain\} onChanged=\{onChanged\} \/>\n/);
   assert.doesNotMatch(panel, /&& <RollForward /);
   assert.equal(panel.split('<RollForward ').length, 2, 'rendered in one place');
   // inside, only the state decides whether there is a panel, and the record only what the picker's place holds
   const body = panel.slice(panel.indexOf('export function RollForward('), panel.indexOf('/** Whether the site offers a commit'));
   assert.match(body, /const identity = record && !record\.failed \? record\.identity : null;/);
   assert.match(body, /if \(!ROLLABLE\.has\(state\)\) return null;/);
-  assert.match(body, /if \(!record\) body = <p className="hint">\{RF\.loading\}<\/p>;\s*else if \(record\.failed\) body = <p className="hint" data-testid="roll-record-failed">\{fill\(RF\.recordFailed, \{ reason: record\.failed \}\)\}<\/p>;/);
+  assert.match(body, /if \(!record \|\| recordReading\) body = <p className="hint">\{RF\.loading\}<\/p>;\s*else if \(record\.failed\) body = <p className="hint" data-testid="roll-record-failed">\{fill\(RF\.recordFailed, \{ reason: record\.failed \}\)\}<\/p>;/);
   assert.match(R.recordFailed, /^This listing's record could not be read, so its successors cannot be found here: \{reason\}$/);
 });
 

@@ -133,13 +133,18 @@ const UNKNOWN_FUNCTION = "Error: VM Exception while processing transaction: reve
 const UNKNOWN_FUNCTION_DATA = new Interface(['error Error(string)']).encodeErrorResult('Error', ['unknown function']);
 export const REFUSED_CALL = Object.freeze({ code: -32603, message: UNKNOWN_FUNCTION, data: { message: UNKNOWN_FUNCTION, data: UNKNOWN_FUNCTION_DATA } });
 
-const HELD_AT_SELECTOR = new Interface(['function heldAt(uint256) view returns (uint64)']).getFunction('heldAt').selector;
+/** Whether a JSON-RPC request is an eth_call of the function with this signature ("heldAt(uint256)"). */
+export const isCallOf = (signature) => {
+  const selector = new Interface([`function ${signature}`]).getFunction(signature.slice(0, signature.indexOf('('))).selector;
+  return (p) => p?.method === 'eth_call' && String(p.params?.[0]?.data ?? p.params?.[0]?.input ?? '').startsWith(selector);
+};
 /** Whether a JSON-RPC request is a call of the contract's heldAt view. */
-export const isHeldAtCall = (p) => p?.method === 'eth_call' && String(p.params?.[0]?.data ?? p.params?.[0]?.input ?? '').startsWith(HELD_AT_SELECTOR);
+export const isHeldAtCall = isCallOf('heldAt(uint256)');
 
 /**
  * Node P42: answers some of this page's JSON-RPC requests in the node's place. `answer(request)` returns { result } or
- * { error } for a request it answers, and nothing for one that goes to the node as it is, alone or in the same batch.
+ * { error } for a request it answers (or a promise of one, for an answer made from the node's own), and nothing for one
+ * that goes to the node as it is, alone or in the same batch.
  * The page reaches the node two ways, both a fetch of its URL: the site's reader (`from: 'reader'`) and the test
  * wallet (`from: 'wallet'`), which marks its requests in the URL. So a test can give the reader a view of the chain
  * the wallet's node does not share: a reader a block behind, or a chain on which a hold was dropped.
@@ -157,7 +162,7 @@ export async function interceptRpc(page, stack, answer, { from = 'any' } = {}) {
       // not JSON-RPC
     }
     const list = Array.isArray(body) ? body : [body];
-    const answered = list.map((p) => (p ? answer(p) : undefined));
+    const answered = await Promise.all(list.map((p) => (p ? answer(p) : undefined)));
     if (!answered.some(Boolean)) return route.continue();
     const answers = [];
     for (const [i, p] of list.entries()) {

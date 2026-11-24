@@ -385,6 +385,9 @@ export const STRINGS = {
     funding: 'Sending fund()…',
     opened: 'Listing {id} is open until {until} (transaction {tx}).',
     openedNoTime: 'Listing {id} is open (transaction {tx}). Its page shows until when.',
+    // on the listing's own page, once the page has read the listing with the opening in it: what the listing is now
+    // (open until when, on hold, rolled forward, closed) is said from that read, and this line keeps the transaction
+    openedHere: 'This page opened listing {id} (transaction {tx}).',
     fundLater: 'If you leave this page before funding, fund the listing from its own page:',
     fundPage: 'Listing {id}',
     // tester bounty 400, the maker review (C4): once it is open, where the listing is managed
@@ -400,6 +403,11 @@ export const STRINGS = {
     load: 'Load the listing',
     loading: 'Reading the listing…',
     notFound: 'There is no listing {id}.',
+    // the page showed the listing, and a read of a later block has none (the block it was created in was dropped)
+    gone:
+      'Listing {id} was on this page a moment ago and is not on the chain as this page now reads it. Nothing sent ' +
+      'from this page for it stands, a hold included: do not publish a fix on the strength of it. Look the ' +
+      'transactions up before sending anything again.',
     readFailed: 'The listing could not be read: {reason}',
     retry: 'Read again',
     summary: 'Listing {id}',
@@ -415,10 +423,11 @@ export const STRINGS = {
     // Node P42: the maker's hold (StakeAttestation.hold) is not a state. A listing on hold stays Open or Depleted, so
     // the page says the hold beside the state, with its time, and never "open until" of a listing that takes no claims.
     heldSince: 'On hold since',
-    // after a transaction sent from this page: the site's reader has not reached the block it was mined in
+    // after a transaction sent from this page, or a read through the wallet that found the listing changed: the
+    // site's reader has not reached that block
     behind:
-      'This page has not read the chain as of block {block} yet, where the last transaction sent from it was mined: ' +
-      'what it shows of the listing may be from before that transaction.',
+      'This page has not read the chain as of block {block} yet, which the wallet\'s node has reached: what it shows ' +
+      'of the listing may be from before the last change sent or seen through the wallet.',
     held:
       'Listing {id} is on hold since {time}: it takes no new claims. Claims committed before the hold run as before, and ' +
       'a finding can still be filed on it as a late claim, which is judged and recorded and carries no award. The hold ' +
@@ -1095,6 +1104,11 @@ export const STRINGS = {
     sending: 'Sending hold()…',
     done: 'Listing {id} is on hold since {time} (transaction {tx}).',
     changed: 'Nothing was sent: listing {id} changed on-chain since this page read it. It has been read again.',
+    // mined, and the receipt holds no Held event of this contract for this listing: no hold is claimed
+    notConfirmed:
+      'Transaction {tx} was mined, and its receipt does not show a hold of listing {id}: this page does not say the ' +
+      'listing is on hold on the strength of it. It reads the listing again from that block; look the transaction up ' +
+      'before sending another.',
     since: 'This listing is on hold since {time}.',
     // a hold this page saw mined, which a later read of the chain does not show (its block was dropped)
     dropped:

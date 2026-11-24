@@ -153,7 +153,8 @@ test('a listing on hold: a renewal and a top-up are taken as before, and neither
   const actions = fs.readFileSync(new URL('../src/components/ListingActions.jsx', import.meta.url), 'utf8');
   assert.match(actions, /fill\(held \? T\.depletedHeld : T\.depleted, \{ eth: formatEth\(terms\.toReopenWei\) \}\)/);
   assert.match(actions, /\{effect\.reopens \? ` \$\{held \? T\.reopensHeld : T\.reopens\}` : ''\}/);
-  assert.match(actions, /\{done\.reopened \? ` \$\{held \? T\.reopenedHeld : T\.reopened\}` : ''\}/);
+  // said of the listing as last read: on hold, in the hold's words; and not at all once it reads rolled forward or closed
+  assert.match(actions, /\{done\.reopened && terms\.state === 'Open' \? ` \$\{held \? T\.reopenedHeld : T\.reopened\}` : ''\}/);
   assert.match(actions, /fill\(terms\.lapsed \? \(held \? R\.lapsedHeld : R\.lapsed\) : R\.until, \{ time: formatTime\(terms\.fundedUntil\) \}\)/);
   assert.match(actions, /\{terms\.can && held && <p className="hint" data-testid="renew-held">\{R\.held\}<\/p>\}/);
   // the page hands both the hold as it read it

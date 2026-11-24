@@ -21,10 +21,15 @@ const C = STRINGS.chain;
  * top up (with a listing fee of 0 the two cannot be told apart). Once the transaction is mined
  * the button is gone for good, whatever a later read says.
  *
- * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string }} props - `top`
+ * Its line after the opening says the listing is open, and until when as the wallet read it then. On the listing's
+ * own page the listing goes on changing under that line (a hold, a renewal, a roll forward, a close), so there
+ * `followed` is true from the page's first read that has the opening: the line then keeps the transaction and says
+ * only that this page opened the listing, and what the listing is now is the page's to say, from its latest read.
+ *
+ * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string, followed?: boolean }} props - `top`
  *        is the awards[CRITICAL] this page shows
  */
-export function FundListing({ listingId, top, maker, artifactHash, onOpened = () => {} }) {
+export function FundListing({ listingId, top, maker, artifactHash, followed = false, onOpened = () => {} }) {
   const w = useWalletContext();
   const [escrow, setEscrow] = useState(formatEth(top));
   const [fee, setFee] = useState(null);
@@ -88,13 +93,10 @@ export function FundListing({ listingId, top, maker, artifactHash, onOpened = ()
   };
 
   if (opened) {
-    return (
-      <p data-testid="opened" className="ok">
-        {opened.until
-          ? fill(C.opened, { id: String(listingId), until: formatTime(opened.until), tx: opened.tx })
-          : fill(C.openedNoTime, { id: String(listingId), tx: opened.tx })}
-      </p>
-    );
+    let text = fill(C.openedNoTime, { id: String(listingId), tx: opened.tx });
+    if (followed) text = fill(C.openedHere, { id: String(listingId), tx: opened.tx });
+    else if (opened.until) text = fill(C.opened, { id: String(listingId), until: formatTime(opened.until), tx: opened.tx });
+    return <p data-testid="opened" className="ok">{text}</p>;
   }
   return (
     <>

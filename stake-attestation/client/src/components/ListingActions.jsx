@@ -77,10 +77,12 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
-      const mine = await reader.getListing(BigInt(listingId), { blockTag: await blockNow(provider) });
+      const blockTag = await blockNow(provider);
+      const mine = await reader.getListing(BigInt(listingId), { blockTag });
       if (!topUpTerms(mine).can || !same(mine.maker, account)) {
         setError(fill(T.changed, { id: listingId, state: stateWords(mine) }));
-        onChanged();
+        // the block the wallet saw the change at: the page reads the listing from there (FundPage refresh)
+        onChanged(blockTag);
         return undefined;
       }
       const tx = await stakeAttestation(signer).fund(BigInt(listingId), 0n, { value: wei });
@@ -128,7 +130,8 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
           {done.toOwed > 0n
             ? fill(T.doneOwed, { tx: done.tx, owed: formatEth(done.toOwed), eth: formatEth(done.escrow) })
             : fill(T.done, { tx: done.tx, eth: formatEth(done.escrow) })}
-          {done.reopened ? ` ${held ? T.reopenedHeld : T.reopened}` : ''}
+          {/* "open again" is said of the listing as last read: not once it has rolled forward or closed since */}
+          {done.reopened && terms.state === 'Open' ? ` ${held ? T.reopenedHeld : T.reopened}` : ''}
         </p>
       )}
       {terms.can && (
@@ -199,7 +202,7 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
       const [mine, due] = await Promise.all([reader.getListing(BigInt(listingId), { blockTag }), reader.listingFeeWei({ blockTag })]);
       if (!renewTerms(mine, 0).can || !same(mine.maker, account)) {
         setError(fill(R.changed, { id: listingId, state: stateWords(mine) }));
-        onChanged();
+        onChanged(blockTag);
         return undefined;
       }
       if (due !== fee) {
@@ -293,7 +296,7 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
       if (!holdTerms(mine, now).can || !same(mine.maker, sender)) {
         setError(fill(H.changed, { id: listingId }));
         setAsking(false);
-        onChanged();
+        onChanged(blockTag);
         return undefined;
       }
       const tx = await stakeAttestation(signer).hold(BigInt(listingId));
@@ -303,8 +306,9 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
       const held = heldEvent(reader, receipt, listingId);
       setAsking(false);
       if (!held) {
-        // mined, and no hold of this listing in it: nothing is claimed, and the listing is read from that block
-        setError(fill(H.changed, { id: listingId }));
+        // mined, and no hold of this listing in it: no hold is claimed, the maker is told which transaction it was,
+        // and the listing is read from that block
+        setError(fill(H.notConfirmed, { id: listingId, tx: receipt.hash }));
         onChanged(receipt.blockNumber);
         return undefined;
       }
@@ -320,10 +324,15 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
 
   let body;
   if (hold.held) {
+    // The time is the page's one answer for this hold (`hold.heldAt`: the chain's once a read has it), here as in the
+    // summary and the roll forward panel. The transaction this page saw mined is named with it only while the hold
+    // read is that transaction's: a hold the chain dates otherwise (the call mined again in another block, or
+    // another hold altogether) is said by its own time, without a transaction this page cannot vouch for.
+    const mine = done !== null && BigInt(done.heldAt) === hold.heldAt;
     body = (
       <>
-        {done
-          ? <p className="ok" data-testid="held">{fill(H.done, { id: listingId, time: formatTime(done.heldAt), tx: done.tx })}</p>
+        {mine
+          ? <p className="ok" data-testid="held">{fill(H.done, { id: listingId, time: formatTime(hold.heldAt), tx: done.tx })}</p>
           : <p data-testid="hold-since">{fill(H.since, { time: formatTime(hold.heldAt) })}</p>}
         <p className="hint">{H.next}</p>
       </>
@@ -398,12 +407,13 @@ export function CloseListing({ listingId, listing, onChanged = () => {} }) {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
-      const mine = await reader.getListing(BigInt(listingId), { blockTag: await blockNow(provider) });
+      const blockTag = await blockNow(provider);
+      const mine = await reader.getListing(BigInt(listingId), { blockTag });
       // what this page offered is what is sent: a claim that came in, or an escrow that moved, asks again
       if (!closeTerms(mine).can || !same(mine.maker, account) || BigInt(mine.escrowWei) !== terms.escrowWei) {
         setError(fill(C.changed, { id: listingId }));
         setAsking(false);
-        onChanged();
+        onChanged(blockTag);
         return undefined;
       }
       const tx = await stakeAttestation(signer).close(BigInt(listingId));

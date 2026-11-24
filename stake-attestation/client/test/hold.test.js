@@ -314,8 +314,12 @@ test('a hold the page saw mined stands only until a read reaches its block: then
   // says the hold is not on the chain, in an alert, and offers the action again
   const actions = component('ListingActions.jsx');
   const body = actions.slice(actions.indexOf('export function HoldListing('), actions.indexOf('\n}\n', actions.indexOf('export function HoldListing(')));
-  assert.match(body, /if \(hold\.held\) \{\s*body = \(/);
+  assert.match(body, /if \(hold\.held\) \{[\s\S]*?const mine = done !== null && BigInt\(done\.heldAt\) === hold\.heldAt;\s*body = \(/);
   assert.doesNotMatch(body, /if \(done \|\| /, 'a mined hold alone never draws the listing as on hold');
+  // one answer for when the hold began: the time the page states (the chain's, once a read has it), in the section as
+  // in the summary. The receipt's transaction is named with it only while the hold read is that receipt's.
+  assert.match(body, /\{mine\s*\? <p className="ok" data-testid="held">\{fill\(H\.done, \{ id: listingId, time: formatTime\(hold\.heldAt\), tx: done\.tx \}\)\}<\/p>\s*: <p data-testid="hold-since">\{fill\(H\.since, \{ time: formatTime\(hold\.heldAt\) \}\)\}<\/p>\}/);
+  assert.doesNotMatch(body, /formatTime\(done\.heldAt\)/, 'the receipt\'s time is never drawn beside the chain\'s');
   assert.match(body, /\{done && <p className="error" role="alert" data-testid="hold-dropped">\{fill\(H\.dropped, \{ tx: done\.tx \}\)\}<\/p>\}/);
   assert.match(H.dropped, /is not on the chain as this page now reads it: this listing is not on hold, and takes claims as before\./);
   assert.match(H.dropped, /Do not publish a fix on the strength of it/);
@@ -323,14 +327,24 @@ test('a hold the page saw mined stands only until a read reaches its block: then
 
 test('after a transaction the page reads from the block it was mined in, and says so when no read reached it', () => {
   const page = component('FundPage.jsx');
-  assert.match(page, /readFrom\(\(\) => readListing\(listingId\), minBlock, \{ live: wanted \}\)\.then\(\(\{ read, reached \}\) => \{/);
-  assert.match(page, /if \(reached\) \{\s*setLoaded\(read\);\s*setBehind\(null\);/);
-  assert.match(page, /\} else if \(minBlock > 0\) setBehind\(minBlock\);/);
+  // the newest block any action named is kept for the page's life: a later refresh that names none (or an earlier
+  // one) still reads from it, so it can neither take a read from before a mined roll nor clear the warning of one
+  assert.match(page, /const needed = useRef\(0\);/);
+  assert.match(page, /needed\.current = Math\.max\(needed\.current, minBlock\);\s*const from = needed\.current;/);
+  assert.match(page, /readFrom\(\(\) => readListing\(listingId\), from, \{ live: wanted \}\)\.then\(\(\{ read, reached \}\) => \{/);
+  assert.doesNotMatch(page, /readFrom\([^)]*minBlock/, 'never from the one refresh\'s own block alone');
+  assert.match(page, /if \(reached\) \{\s*(?:\/\/[^\n]*\n\s*)?setLoaded\(\(was\) => \(read\.missing && was && !was\.failed && \(!was\.missing \|\| was\.gone\) \? \{ \.\.\.read, gone: true \} : read\)\);\s*setBehind\(null\);/);
+  assert.match(page, /\} else if \(from > 0\) setBehind\(from\);/);
+  // the page is keyed by its listing (App.jsx), so the kept block is one listing's
+  assert.match(read('../src/App.jsx'), /<FundPage key=\{r\.listingId \?\? 'none'\} listingId=\{r\.listingId\} \/>/);
   assert.match(page, /\{behind !== null && \(\s*<>\s*<p className="warning" role="status" data-testid="listing-behind">\{fill\(F\.behind, \{ block: behind \}\)\}<\/p>\s*<button type="button" className="secondary" data-testid="listing-read-again" onClick=\{\(\) => refresh\(behind\)\}>\{F\.retry\}<\/button>/);
-  assert.equal(fill(STRINGS.fund.behind, { block: 90 }), 'This page has not read the chain as of block 90 yet, where the last transaction sent from it was mined: what it shows of the listing may be from before that transaction.');
+  assert.equal(fill(STRINGS.fund.behind, { block: 90 }), 'This page has not read the chain as of block 90 yet, which the wallet\'s node has reached: what it shows of the listing may be from before the last change sent or seen through the wallet.');
   // every action of the page hands the refresh its receipt's block: the hold, the roll, the close, the top-up, the renewal, the opening
   const actions = component('ListingActions.jsx');
   assert.equal(actions.split('onChanged(receipt.blockNumber);').length - 1, 4, 'top-up, renew, close, and a mined hold() with no Held event');
+  // and an action that sends nothing because the wallet's read found the listing changed hands over that read's block
+  assert.equal(actions.split('onChanged(blockTag);').length - 1, 4, 'top-up, renew, hold, close');
+  assert.doesNotMatch(actions, /onChanged\(\)/, 'no refresh without a block from an action that read one');
   assert.match(actions, /onHeld\(held\.args\.heldAt, receipt\.blockNumber\);/);
   const extras = component('ListingExtras.jsx');
   assert.match(extras, /const receipt = await minedReceipt\(tx\);\s*setDone\(\{ id: pick, tx: receipt\.hash \}\);\s*onChanged\(receipt\.blockNumber\);/);
@@ -338,6 +352,37 @@ test('after a transaction the page reads from the block it was mined in, and say
   // a listing opened from its own page: its line stays, and the page follows the listing, so the hold is there without a reload
   assert.match(page, /const onOpened = useCallback\(\(block = 0\) => \{\s*setOpenedHere\(true\);\s*refresh\(block\);/);
   assert.match(page, /\{\(state === 'Listed' \|\| openedHere\) && <FundListing /);
+});
+
+test('a listing that is gone as of a later block is an answer of that block: the page says so, and drops the hold it saw mined', () => {
+  const page = component('FundPage.jsx');
+  // the count is read at the block of the rest, and "no such listing" carries that block: readFrom takes it once it
+  // reaches the block waited for, where a bare null would be tried again for ever
+  assert.match(page, /const block = Number\(await provider\.send\('eth_blockNumber', \[\]\)\);\s*const at = \{ blockTag: block \};\s*if \(id === 0n \|\| id > \(await sa\.listingCount\(at\)\)\) return \{ missing: true, block \};/);
+  assert.doesNotMatch(page, /return null;\s*\/\/ a raw eth_blockNumber/);
+  assert.doesNotMatch(page, /sa\.listingCount\(\)/, 'never at another block than the rest');
+  // the hold seen mined is dropped by any read of its block or later, the missing one included
+  assert.match(page, /setHeldHere\(\(seen\) => \(seen && read\.block >= seen\.block \? null : seen\)\);/);
+  assert.match(page, /\{loaded\.gone && <p className="error" role="alert" data-testid="listing-gone">\{fill\(F\.gone, \{ id: listingId \}\)\}<\/p>\}/);
+  assert.match(STRINGS.fund.gone, /^Listing \{id\} was on this page a moment ago and is not on the chain as this page now reads it\./);
+  assert.match(STRINGS.fund.gone, /Nothing sent from this page for it stands, a hold included: do not publish a fix on the strength of it\./);
+  oneLine('STRINGS.fund.gone', STRINGS.fund.gone);
+  assert.deepEqual(wordingProblems(STRINGS.fund.gone), []);
+});
+
+test('the opening\'s line on the listing\'s own page keeps its transaction and never says what the listing is now', () => {
+  const page = component('FundPage.jsx');
+  const funding = component('FundListing.jsx');
+  // from the page's first read that has the opening, the line is the past-tense one, and "is open until" is the page's
+  // own line, of the listing and its hold as last read: so it goes when the listing is put on hold, rolled or closed
+  assert.match(page, /<FundListing listingId=\{BigInt\(listingId\)\} top=\{l\.awards\[3\]\} maker=\{l\.maker\} artifactHash=\{l\.artifactHash\} followed=\{state !== 'Listed'\} onOpened=\{onOpened\} \/>/);
+  assert.match(page, /\{state === 'Open' && !hold\.held && <p className="ok" data-testid="listing-open-until">\{fill\(F\.alreadyOpen, \{ id: listingId, until: formatTime\(l\.fundedUntil\) \}\)\}<\/p>\}/);
+  assert.match(funding, /let text = fill\(C\.openedNoTime, \{ id: String\(listingId\), tx: opened\.tx \}\);\s*if \(followed\) text = fill\(C\.openedHere, \{ id: String\(listingId\), tx: opened\.tx \}\);\s*else if \(opened\.until\) text = fill\(C\.opened,/);
+  assert.equal(fill(STRINGS.chain.openedHere, { id: 7, tx: '0xabc' }), 'This page opened listing 7 (transaction 0xabc).');
+  assert.doesNotMatch(STRINGS.chain.openedHere, /is open|until/);
+  // the list flow's own page has no later action under the line: there it says open, and until when, as before
+  assert.match(component('ListAndFund.jsx'), /<FundListing listingId=\{listed\.listingId\} top=\{BigInt\(params\.awards\[3\]\)\} maker=\{listed\.maker\} artifactHash=\{view\.artifactHash\} onOpened=\{\(\) => setOpened\(true\)\} \/>/);
+  assert.equal(fill(STRINGS.chain.opened, { id: 7, until: 'T', tx: '0xabc' }), 'Listing 7 is open until T (transaction 0xabc).');
 });
 
 test('the commit offer follows the contract: offered only while the listing takes a commit, and never once it has rolled forward or closed', () => {
@@ -365,7 +410,13 @@ test('a successor is never a listing on hold: the picker leaves it out, the read
   assert.match(panel, /if \(successorHold\.heldAt !== 0n\) \{\s*setAgain\(\(n\) => n \+ 1\);\s*return setError\(fill\(RF\.successorOnHold, \{ id: pick \}\)\);\s*\}\s*const tx = await stakeAttestation\(signer\)\.rollForward\(/);
   assert.equal(fill(STRINGS.roll.successorOnHold, { id: 9 }), 'Nothing was sent: listing 9 is on hold and takes no commits, so this listing is not rolled forward to it. Choose another listing.');
   // looked for again when asked, where the contract has the hold; against one without, the panel is what it was
-  assert.match(panel, /\{hold\.supported && identity && options !== null && \(\s*<button type="button" className="secondary" data-testid="roll-look-again"/);
+  assert.match(panel, /\{hold\.supported && record && !recordReading && \(!identity \|\| options !== null\) && \(\s*<button type="button" className="secondary" data-testid="roll-look-again" onClick=\{lookAgain\}/);
+  // a record that did not have this listing yet (the site's mirror trailed its opening), or whose read failed, is
+  // read again first; the successors are then looked for by the identity it brings
+  assert.match(panel, /const lookAgain = \(\) => \{\s*setError\(null\);\s*if \(!identity\) return onRecordAgain\(\);\s*setOptions\(null\);\s*return setAgain\(\(n\) => n \+ 1\);\s*\};/);
+  assert.match(extras, /export function useListingRecord\(listingId, artifactHash, opened, again = 0\) \{/);
+  assert.match(extras, /\}, \[listingId, artifactHash, opened, again\]\);/);
+  assert.match(extras, /const data = useListingRecord\(listingId, listing\.artifactHash, opened, again\);\s*const reading = data !== null && data\.again !== again;\s*const recordAgain = \(\) => setAgain\(\(n\) => n \+ 1\);/);
   assert.match(panel, /\}, \[listingId, listing\.maker, state, identity, hold\.supported, again\]\);/);
   assert.equal(STRINGS.roll.again, 'Look again for listings to roll to');
 });
@@ -425,8 +476,11 @@ test('the action asks for confirmation before anything is sent, reads the listin
   // hold and its time; and the page says it with the mined transaction, and is told the block to read from
   assert.match(body, /const receipt = await minedReceipt\(tx\);\s*\/\/[^\n]*\n\s*const held = heldEvent\(reader, receipt, listingId\);/);
   assert.match(actions, /if \(!same\(log\.address, contract\.target\)\) continue;[\s\S]*?if \(event\?\.name === 'Held' && event\.args\.listingId === BigInt\(listingId\)\) return event;/);
-  assert.match(body, /if \(!held\) \{[\s\S]*?setError\(fill\(H\.changed, \{ id: listingId \}\)\);\s*onChanged\(receipt\.blockNumber\);\s*return undefined;\s*\}\s*setDone\(\{ tx: receipt\.hash, heldAt: held\.args\.heldAt \}\);\s*onHeld\(held\.args\.heldAt, receipt\.blockNumber\);/);
-  assert.match(body, /fill\(H\.done, \{ id: listingId, time: formatTime\(done\.heldAt\), tx: done\.tx \}\)/);
+  // a mined transaction whose receipt shows no hold: never "nothing was sent", but which transaction it was, and no hold claimed
+  assert.match(body, /if \(!held\) \{[\s\S]*?setError\(fill\(H\.notConfirmed, \{ id: listingId, tx: receipt\.hash \}\)\);\s*onChanged\(receipt\.blockNumber\);\s*return undefined;\s*\}\s*setDone\(\{ tx: receipt\.hash, heldAt: held\.args\.heldAt \}\);\s*onHeld\(held\.args\.heldAt, receipt\.blockNumber\);/);
+  assert.equal(fill(H.notConfirmed, { id: 7, tx: '0xabc' }).startsWith('Transaction 0xabc was mined, and its receipt does not show a hold of listing 7:'), true);
+  assert.doesNotMatch(H.notConfirmed, /Nothing was sent/);
+  assert.match(body, /fill\(H\.done, \{ id: listingId, time: formatTime\(hold\.heldAt\), tx: done\.tx \}\)/);
   assert.match(SOURCE, /event Held\(uint256 indexed listingId, uint64 heldAt\);/);
 });
 
@@ -437,7 +491,7 @@ test('against a contract with no hold the page shows no hold action: the section
   assert.ok(body.indexOf('if (!hold.supported) return null;') < body.indexOf('data-testid="hold"'), 'before anything is drawn');
   // the listing's own page reads the view at the block it reads the listing at, and a refusal is "no hold"
   const page = component('FundPage.jsx');
-  assert.match(page, /const block = Number\(await provider\.send\('eth_blockNumber', \[\]\)\);\s*const at = \{ blockTag: block \};\s*const \[listing, hold, takesCommits\] = await Promise\.all\(\[sa\.getListing\(id, at\), readHold\(sa, id, at\), sa\.acceptsCommits\(id, at\)\]\);\s*return \{ listing, hold, takesCommits, block \};/);
+  assert.match(page, /const block = Number\(await provider\.send\('eth_blockNumber', \[\]\)\);\s*const at = \{ blockTag: block \};\s*if \([^\n]*\) return \{ missing: true, block \};\s*const \[listing, hold, takesCommits\] = await Promise\.all\(\[sa\.getListing\(id, at\), readHold\(sa, id, at\), sa\.acceptsCommits\(id, at\)\]\);\s*return \{ listing, hold, takesCommits, block \};/);
   // a read that fails any other way rejects with the rest: the page's "could not be read", never a listing "not on hold"
   assert.doesNotMatch(page, /readHold\([^)]*\)\.catch/);
   const lib = read('../src/lib/hold.js');
@@ -450,7 +504,7 @@ test('once on hold, the page says so with the time, and still offers roll forwar
   assert.match(page, /\{hold\.held && <><dt>\{F\.heldSince\}<\/dt><dd data-testid="listing-held-since">\{formatTime\(hold\.heldAt\)\}<\/dd><\/>\}/);
   assert.match(page, /\{hold\.held && <p className="warning" data-testid="listing-held">\{fill\(F\.held, \{ id: listingId, time: formatTime\(hold\.heldAt\) \}\)\}<\/p>\}/);
   // "open until" is said of a listing that takes claims, never of one on hold
-  assert.match(page, /\{state === 'Open' && !hold\.held && !openedHere && <p className="ok">\{fill\(F\.alreadyOpen,/);
+  assert.match(page, /\{state === 'Open' && !hold\.held && <p className="ok" data-testid="listing-open-until">\{fill\(F\.alreadyOpen,/);
   assert.equal(fill(STRINGS.fund.held, { id: 7, time: 'T' }).startsWith('Listing 7 is on hold since T: it takes no new claims.'), true);
   assert.match(STRINGS.fund.held, /a late claim/);
   assert.match(STRINGS.fund.held, /The hold ends when the listing is rolled forward or closed\.$/);

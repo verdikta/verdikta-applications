@@ -120,7 +120,8 @@ export const AFTER_TX_WAIT_MS = 2000;
  * longer than `readTimeoutMs`, is tried again. After `tries` reads the caller is told it has no read of that block,
  * and says so on the page.
  * @template {{ block: number }} T
- * @param {() => Promise<T|null>} read - one read, with the block it is of
+ * @param {() => Promise<T|null>} read - one read, with the block it is of; "nothing is there" is an answer with its
+ *        block like any other, since null says nothing of any block and is tried again
  * @param {number} minBlock
  * @param {object} [o]
  * @param {() => boolean} [o.live] - false once the answer is no longer wanted: no further read starts

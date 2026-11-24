@@ -196,15 +196,27 @@ test.describe('maker actions', () => {
     // the lines are the chain's: with the hold this contract has, the hold's order (node P42)
     expect(await panel.getByTestId('roll-hold-first').innerText()).toBe(STRINGS.roll.hold.first);
     expect((await panel.getByTestId('roll-hold-order').innerText()).split('\n')).toEqual([STRINGS.roll.hold.order, STRINGS.roll.hold.close]);
-    // nothing to pick and nothing to send: the picker is the record's
+    // nothing to pick and nothing to send: the picker is the record's. The one thing offered is to read it again.
     await expect(panel.getByRole('combobox')).toHaveCount(0);
-    await expect(panel.getByRole('button')).toHaveCount(0);
+    await expect(panel.getByRole('button')).toHaveCount(1);
+    const again = panel.getByRole('button', { name: STRINGS.roll.again });
+    await expect(again).toBeVisible();
     // and the hold and the close those lines send the maker to are on the same page: both are read from the chain
     await expect(page.getByTestId('hold').getByTestId('hold-warning')).toBeVisible();
     await page.getByRole('button', { name: STRINGS.wallet.connect }).click();
     await expect(page.getByTestId('hold').getByRole('button', { name: fill(STRINGS.hold.ask, { id: listingId }) })).toBeVisible();
     await expect(page.getByTestId('close').getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) })).toBeVisible();
     expect(wordingProblems(await panel.innerText())).toEqual([]);
+    // while the record still does not answer, looking again says so again and leaves the lines where they are
+    await again.click();
+    await expect(panel.getByTestId('roll-record-failed')).toBeVisible();
+    expect(await panel.getByTestId('roll-hold-first').innerText()).toBe(STRINGS.roll.hold.first);
+    // once it answers, looking again reads it, and the panel is the picker's: the maker's open listings of the
+    // repository, or that there is none
+    await page.unroute('**/api/records/**');
+    await again.click();
+    await expect(panel.getByTestId('roll-record-failed')).toHaveCount(0);
+    await expect(panel.getByRole('combobox').or(panel.getByText(STRINGS.roll.none))).toBeVisible();
   });
 
   test('dispute: the escalation prepay is shown, the statement pinned and named by CID in the request', async ({ page, stack, chain }) => {

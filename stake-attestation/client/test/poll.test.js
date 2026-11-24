@@ -191,6 +191,10 @@ test('readFrom: reads until a read is of the transaction\'s block or later, and 
   assert.deepEqual(await readFrom(reads([new Error('a'), new Error('b'), new Error('c'), new Error('d')]), 90, { sleep }), { read: null, reached: false });
   // with no block to reach (a read after an action that sent nothing), the first read that answers is the one
   assert.deepEqual(await readFrom(reads([7]), 0, { sleep }), { read: { block: 7 }, reached: true });
+  // "nothing there" is an answer of a block as any other: one from before the block is not taken, one of it is
+  const none = (block) => ({ missing: true, block });
+  const answers = [none(89), none(90)];
+  assert.deepEqual(await readFrom(async () => answers.shift(), 90, { sleep }), { read: none(90), reached: true });
   // once the answer is no longer wanted, no further read starts
   let asked = 0;
   const r = await readFrom(async () => { asked += 1; return { block: 1 }; }, 90, { sleep, live: () => asked < 2 });

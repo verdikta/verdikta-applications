@@ -1553,17 +1553,27 @@ goes in a URL.
   A successor is never a listing that is itself on hold: it is Open, and the contract would take it,
   but it takes no commits and a hold has no resume, so the picker leaves it out and the read before
   sending refuses it. The fixed version is listed after the hold, often in another tab, so the panel
-  looks for successors again when asked.
+  looks for successors again when asked; where the site's record did not have this listing yet (its
+  mirror trailed the opening) or could not be read, looking again reads the record first.
   **What the page saw mined, against what it reads.** The site's reader can trail the node the
   wallet sent through. After each transaction sent from the page it reads the listing again until
   a read is of the block the transaction was mined in (`readFrom` in `client/src/lib/poll.js`), takes
-  no earlier read for the new state, and says so, with a way to read again, when none reached it. A
-  hold the page saw mined stands by its receipt only while the page's read is from before that
-  block; from that block on the read decides, and a hold that is not there (its block was dropped)
-  is said in an alert, never drawn as a hold, and offered again. The commit offer follows the
-  contract's `acceptsCommits`, read with the listing: a listing that rolled forward or closed is
-  never said to be offered. A listing opened from its own page is followed the same way, so its
-  claims, the hold and the rest are there without a reload.
+  no earlier read for the new state, and says so, with a way to read again, when none reached it.
+  The page keeps the newest block it was told of, from a receipt or from a read through the wallet
+  that found the listing changed (an action that then sends nothing hands over that read's block),
+  and no later read of the page is taken from before it: a refused renewal cannot bring back the
+  listing as it was before a roll the page is still waiting to read. A hold the page saw mined
+  stands by its receipt only while the page's read is from before that block; from that block on
+  the read decides. A hold that is not there (its block was dropped) is said in an alert, never
+  drawn as a hold, and offered again; a listing that is not there either is said as gone, with
+  nothing of the hold left on the page; and a hold the chain dates otherwise than the receipt did
+  is said by the chain's time everywhere, without the transaction. A `hold()` that was mined with
+  no `Held` event of this listing in its receipt is named by its transaction and claims no hold.
+  The commit offer follows the contract's `acceptsCommits`, read with the listing: a listing that
+  rolled forward or closed is never said to be offered. A listing opened from its own page is
+  followed the same way, so its claims, the hold and the rest are there without a reload; the
+  opening's line then keeps its transaction and says only that this page opened the listing, and
+  "open until" is said, as on any visit, of the listing and its hold as last read.
   **How the page knows.** It reads `heldAt(listingId)` at the block it reads the listing at. A
   call the contract refuses means a contract from before the hold: the page then draws no hold
   section, and the roll-forward panel says what it said before the hold existed, character for

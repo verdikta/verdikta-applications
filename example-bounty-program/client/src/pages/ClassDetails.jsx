@@ -116,7 +116,14 @@ function ClassDetails() {
             <thead>
               <tr>
                 <th>Address</th>
+                <th title="The arbiter's keeper key (keyOf)">Key</th>
                 <th>Job ID</th>
+                <th title="active · new (both scores at the start) · frozen (unanswered health call or re-sync) · blocked (banned, or locked after a score reached 0) · inactive (paused, exiting or under-staked)">Status</th>
+                <th>Quality</th>
+                <th>Timeliness</th>
+                <th>Offenses</th>
+                <th>Stake</th>
+                <th>Fee (ETH)</th>
               </tr>
             </thead>
             <tbody>
@@ -141,18 +148,21 @@ function ClassDetails() {
                         <code>{arb.address}</code>
                       </a>
                     </td>
+                    <td><code title={arb.key || ''}>{arb.key ? `${arb.key.slice(0, 10)}…${arb.key.slice(-4)}` : '-'}</code></td>
                     <td>
                       <code title={[
                         arb.classes?.length ? `Capability Classes: ${arb.classes.join(', ')}` : '',
-                        `Status: ${arb.status ?? 'N/A'}`,
-                        `Call Count: ${arb.callCount ?? 'N/A'}`,
-                        `Quality Score: ${arb.qualityScore ?? 'N/A'}`,
-                        `Timeliness Score: ${arb.timelinessScore ?? 'N/A'}`,
-                        `Fee: ${arb.fee != null ? `${arb.fee} ETH` : 'N/A'}`
+                        arb.jobId ? `Raw: ${arb.jobId}` : ''
                       ].filter(Boolean).join('\n')}>
-                        {arb.jobId}
+                        {jobIdText(arb.jobId)}
                       </code>
                     </td>
+                    <td>{arb.status ?? '-'}</td>
+                    <td>{arb.qualityScore ?? '-'}</td>
+                    <td>{arb.timelinessScore ?? '-'}</td>
+                    <td>{arb.offenses ?? '-'}</td>
+                    <td>{arb.stakeAmount ?? '-'}</td>
+                    <td>{arb.fee ?? '-'}</td>
                   </tr>
                 );
               })}
@@ -164,6 +174,19 @@ function ClassDetails() {
       </section>
     </div>
   );
+}
+
+/** A Chainlink jobId (bytes32 holding ASCII text) as its text; the hex when it is not text. */
+function jobIdText(jobId) {
+  if (!jobId || !/^0x[0-9a-fA-F]{64}$/.test(jobId)) return jobId || '-';
+  let out = '';
+  for (let i = 2; i < 66; i += 2) {
+    const c = parseInt(jobId.slice(i, i + 2), 16);
+    if (c === 0) break;
+    if (c < 0x20 || c > 0x7e) return jobId;
+    out += String.fromCharCode(c);
+  }
+  return out || jobId;
 }
 
 export default ClassDetails;

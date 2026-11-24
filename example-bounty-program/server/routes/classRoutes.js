@@ -224,7 +224,8 @@ router.get('/api/classes/:classId/models', (req, res) => {
 // ReputationKeeper. Lets creators and agents see who can serve a class before
 // creating a bounty for it. Optional ?maxOracleFee= (decimal ETH or integer wei)
 // defaults to the server's default bounty fee limit; only arbiters priced at or
-// below it can be selected.
+// below it can be selected. A draw needs K distinct eligible arbiters, so fewer
+// makes the class unservable.
 router.get('/api/classes/:classId/coverage', async (req, res) => {
   const classId = Number(req.params.classId);
   if (!Number.isSafeInteger(classId) || classId < 0) {
@@ -252,8 +253,9 @@ router.get('/api/classes/:classId/coverage', async (req, res) => {
     classId,
     listed: !!classInfo,
     className: classInfo ? classInfo.name : unlistedClassName(classId),
-    // false only when the chain was read and no arbiter could serve the class;
-    // null when coverage could not be checked.
+    // false when the chain was read and fewer than K distinct arbiters (the draw size of
+    // the aggregator coverage reads) are eligible, so every draw would fail; null when
+    // coverage could not be checked.
     servable: coverage.checked ? !refusal : null,
     refusal,
     coverage,

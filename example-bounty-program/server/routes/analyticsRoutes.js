@@ -15,6 +15,7 @@ const { classMap } = require('@verdikta/common');
 const { summarizeTemplateUsage } = require('../utils/templateUsage');
 const hunterLinks = require('../utils/hunterLinks');
 const scoreSpread = require('../utils/scoreSpread');
+const { ethers } = require('ethers');
 
 /**
  * GET /api/analytics/overview
@@ -36,14 +37,15 @@ router.get('/overview', async (req, res) => {
     }
 
     // Gather all analytics data
-    const [arbiterData, bountyData, submissionData, systemData, fulfilledData, templateData, hunterData] = await Promise.all([
+    const [arbiterData, bountyData, submissionData, systemData, fulfilledData, templateData, hunterData, roundData] = await Promise.all([
       getArbiterAnalytics(),
       getBountyAnalytics(),
       getSubmissionAnalytics(),
       getSystemHealth(),
       getFulfilledBounties(),
       getTemplateUsageAnalytics(),
-      getHunterAnalytics()
+      getHunterAnalytics(),
+      getRoundAnalytics()
     ]);
 
     const result = {
@@ -53,6 +55,7 @@ router.get('/overview', async (req, res) => {
       system: systemData,
       fulfilledBounties: fulfilledData,
       templates: templateData,
+      rounds: roundData,
       // Counts only; the per-address list is served by GET /hunters.
       hunters: {
         totalSubmitters: hunterData.totalSubmitters,
@@ -296,8 +299,9 @@ router.get('/hunters/connections', async (req, res) => {
 /**
  * GET /api/analytics/score-spread?days=14
  * How far apart the arbiters' scores are for the same submission in the same
- * round: per-round standard deviation over the 3 or 4 verified reveals,
- * pooled and per day, plus every round (worst first) and a per-bounty roll-up.
+ * round: per-round standard deviation of the FUND score over the round's N counted
+ * reveals (getOutcomeScores), pooled and per day, the bonus-paid cluster where known,
+ * each round's pass count against Q, plus every round (worst first) and a per-bounty roll-up.
  * Served from the background collection in utils/scoreSpread.js; never waits on RPC.
  */
 router.get('/score-spread', async (req, res) => {
@@ -501,6 +505,24 @@ function effectiveBountyAmount(job) {
 }
 
 /**
+ * ETH actually paid to a bounty's winner: the escrow's PayoutSent.amountWei or
+ * CreatorApproved.amountPaid (synced onto the winning submission and the job as
+ * payoutWei / payoutAmountWei). The two configured payments differ (creator
+ * approval vs arbiter pass), so their max is not what was paid. Records synced
+ * before the amount was stored fall back to the payment that applies: the
+ * creator's for a creator-approved winner, else the arbiters'.
+ */
+function paidAmountEth(job, winningSub) {
+  const wei = winningSub?.payoutWei ?? job?.payoutAmountWei;
+  if (wei != null && wei !== '') {
+    try { return Number(ethers.formatEther(BigInt(String(wei)))); } catch { /* fall through */ }
+  }
+  const pay = parseFloat(winningSub?.creatorApproved ? job?.creatorDeterminationPayment : job?.arbiterDeterminationPayment);
+  if (Number.isFinite(pay) && pay > 0) return pay;
+  return effectiveBountyAmount(job);
+}
+
+/**
  * Get bounty statistics from job storage
  * Only counts jobs from the current contract
  */
@@ -547,199 +569,165 @@ async function getBountyAnalytics() {
 }
 
 /**
- * Get submission statistics from job storage
+ * Which outcome bucket a submission is in (v2, the escrow's Q-of-N rule). `round` is the live
+ * round's state from checkEvaluationReady, for a submission whose local status still says the
+ * round is in flight; otherwise the synced status decides. Buckets:
+ *   approvedPaid      PassedPaid (oracle pass or creator approval, paid)
+ *   approvedUnpaid    PassedUnpaid (passed after another submission won)
+ *   passPending       the round passed (>= Q scores at the threshold): finalize pays
+ *   awaitingCreator   PendingCreatorApproval
+ *   awaitingRerun     soft fail (R..Q-1), or AwaitingRerun on-chain: may re-run
+ *   noResult          a round with no result (dead round, bad result shape) or a re-run never taken
+ *                     (RERUN_EXPIRED); the bond is returned
+ *   hardFail          fewer than R scores at the threshold: Failed, bond forfeited to the creator
+ *   evaluating        the round has no result yet
+ *   prepared          prepared, not started
+ *   unknown           none of the above
+ */
+function submissionBucket(sub, round = null) {
+  const status = (sub.status || '').toLowerCase();
+  const onChain = (sub.onChainStatus || '').toLowerCase();
+  if (status === 'passedpaid' || onChain === 'passedpaid') return 'approvedPaid';
+  if (status === 'passedunpaid' || onChain === 'passedunpaid' || sub.passedUnpaid) return 'approvedUnpaid';
+  if (status === 'approved' || status === 'passed' || status === 'accepted') return sub.paidWinner ? 'approvedPaid' : 'approvedUnpaid';
+  if (status === 'pendingcreatorapproval' || onChain === 'pendingcreatorapproval') return 'awaitingCreator';
+  if (status === 'awaiting_rerun' || onChain === 'awaitingrerun' || status === 'soft_fail_pending_finalization') return 'awaitingRerun';
+  if (status === 'no_result_pending_close' || status === 'timeout') return 'noResult';
+  if (status === 'failed' || status === 'rejected' || onChain === 'failed') {
+    return sub.failureReason === 'NO_RESULT' || sub.failureReason === 'RERUN_EXPIRED' ? 'noResult' : 'hardFail';
+  }
+  if (status === 'rejected_pending_finalization') return 'hardFail';
+  if (status === 'accepted_pending_claim') return 'passPending';
+  if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation' || onChain === 'pendingverdikta') {
+    if (round?.ready) {
+      if (round.outcome === 'pass') return 'passPending';
+      if (round.outcome === 'hard_fail') return 'hardFail';
+      return 'awaitingRerun';   // soft fail, or a result of the wrong shape: finalize lets it re-run
+    }
+    if (round?.outcome === 'no_result') return 'noResult';
+    return 'evaluating';
+  }
+  if (status === 'prepared' || onChain === 'prepared') return 'prepared';
+  return 'unknown';
+}
+
+/**
+ * Get submission statistics from job storage (v2: outcomes from the escrow's Q-of-N rule)
  */
 async function getSubmissionAnalytics() {
   try {
     const jobs = await jobStorage.listJobs({});
     const jobList = jobs.jobs || jobs;
 
+    const byOutcome = {
+      approvedPaid: 0, approvedUnpaid: 0, passPending: 0, awaitingCreator: 0, awaitingRerun: 0,
+      noResult: 0, hardFail: 0, evaluating: 0, prepared: 0, unknown: 0
+    };
     let totalSubmissions = 0;
-    let approvedPaid = 0;
-    let approvedUnpaid = 0;
-    let rejected = 0;
-    let evaluating = 0;
-    let prepared = 0;
-    let timeout = 0;
-    let unknown = 0;
-    let scores = [];
+    let creatorApproved = 0;     // passed by the creator, not the arbiters: not in passRate
+    const scores = [];
+    const passCounts = [];
     const statusCounts = {}; // Track all status values for debugging
     const evaluatingSamples = []; // Sample of submissions counted as evaluating for debugging
+    // v2 round and bond facts from the synced escrow events
+    const v2 = { rerunSubmissions: 0, totalRounds: 0, bondsReturned: 0, bondReturnedWei: 0n, bondsForfeited: 0, bondForfeitedWei: 0n };
 
     for (const job of jobList) {
       if (!job.submissions) continue;
 
-      // Get the bounty's pass threshold for comparison
-      const passThreshold = job.passThreshold || job.threshold || 90;
-
-      // Check if the bounty is expired or closed - no further evaluations can happen
-      const bountyStatus = (job.status || '').toUpperCase();
-      const bountyExpiredOrClosed = bountyStatus === 'EXPIRED' || bountyStatus === 'CLOSED';
-
       for (const sub of job.submissions) {
         totalSubmissions++;
-
-        // Normalize status to handle different naming conventions
         const status = (sub.status || '').toLowerCase();
-        // Also check onChainStatus for more accurate paid/unpaid distinction
-        const onChainStatus = (sub.onChainStatus || '').toLowerCase();
-
-        // Track all statuses for debugging
         statusCounts[status] = (statusCounts[status] || 0) + 1;
 
-        // Check if submission has evaluation results
-        // Results can be in sub.result (from updateSubmissionResult) or directly on sub (from sync)
-        const hasResult = (sub.result && (sub.result.score != null || sub.result.acceptance != null)) ||
-                          sub.acceptance > 0 || sub.rejection > 0 || sub.score != null;
-        const score = sub.result?.score ?? sub.result?.acceptance ?? sub.acceptance ?? sub.score;
-        const didPass = hasResult && score != null && score >= passThreshold;
-
-        // Check for PassedPaid - either from status directly or from onChainStatus
-        if (status === 'passedpaid' || onChainStatus === 'passedpaid') {
-          approvedPaid++;
-          if (hasResult) scores.push(score);
-        } else if (status === 'passed' || status === 'passedunpaid' || status === 'approved' || status === 'accepted' || status === 'accepted_pending_claim' || onChainStatus === 'passedunpaid') {
-          approvedUnpaid++;
-          if (hasResult) scores.push(score);
-        } else if (status === 'failed' || status === 'rejected' || status === 'rejected_pending_finalization') {
-          rejected++;
-        } else if (status === 'pending' || status === 'pendingverdikta' || status === 'pending_evaluation') {
-          // Check if evaluation is actually complete but status wasn't updated
-          if (hasResult) {
-            if (didPass) {
-              approvedUnpaid++; // Approved but unclosed
-              scores.push(score);
-            } else {
-              rejected++;
-            }
-          } else {
-            // Check Verdikta Aggregator for evaluation result
-            // Need on-chain bountyId and submissionId to query the contract
-            let evalResult = null;
-            const onChainBountyId = job.jobId;
-            const onChainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
-
-            if (onChainBountyId != null && onChainSubmissionId != null) {
-              try {
-                const contractService = getContractService();
-                evalResult = await contractService.checkEvaluationReady(onChainBountyId, onChainSubmissionId);
-                if (evalResult?.ready) {
-                  logger.info('Evaluation result found', {
-                    bountyId: onChainBountyId,
-                    submissionId: onChainSubmissionId,
-                    acceptance: evalResult.scores.acceptance,
-                    threshold: passThreshold
-                  });
-                }
-              } catch (err) {
-                // Contract service might not be available
-                logger.warn('Could not check evaluation ready', {
-                  bountyId: onChainBountyId,
-                  submissionId: onChainSubmissionId,
-                  msg: err.message
-                });
-              }
-            } else {
-              logger.debug('Missing on-chain IDs for submission', {
-                jobId: job.jobId,
-                submissionId: sub.submissionId,
-                onChainBountyId,
-                onChainSubmissionId
-              });
-            }
-
-            if (evalResult?.ready) {
-              // Evaluation is complete but submission wasn't updated
-              const evalScore = evalResult.scores.acceptance;
-              const evalPassed = evalScore >= passThreshold;
-              if (evalPassed) {
-                approvedUnpaid++;
-                scores.push(evalScore);
-              } else {
-                rejected++;
-              }
-            } else if (bountyExpiredOrClosed) {
-              // Bounty is expired/closed and no evaluation results exist
-              // This submission timed out without getting results
-              timeout++;
-              // Log why this went to timeout instead of rejected
-              if (evaluatingSamples.length < 5) {
-                evaluatingSamples.push({
-                  category: 'timeout',
-                  jobId: job.jobId,
-                  jobTitle: job.title,
-                  submissionId: sub.submissionId,
-                  onChainBountyId,
-                  onChainSubmissionId,
-                  status: sub.status,
-                  bountyStatus: job.status,
-                  evalResultReason: evalResult?.reason || evalResult?.error || 'no_result'
-                });
-              }
-            } else {
-              evaluating++; // Truly still waiting for evaluation
-              // Capture sample for debugging (first 5)
-              if (evaluatingSamples.length < 5) {
-                evaluatingSamples.push({
-                  jobId: job.jobId,
-                  jobTitle: job.title,
-                  submissionId: sub.submissionId,
-                  onChainBountyId,
-                  onChainSubmissionId,
-                  status: sub.status,
-                  onChainStatus: sub.onChainStatus,
-                  bountyStatus: job.status,
-                  hasResultObj: !!sub.result,
-                  resultKeys: sub.result ? Object.keys(sub.result) : [],
-                  acceptance: sub.acceptance,
-                  rejection: sub.rejection,
-                  score: sub.score,
-                  verdiktaAggId: sub.verdiktaAggId
-                });
-              }
+        // A submission whose local status says the round is in flight: ask the escrow's lens.
+        let round = null;
+        if (['pending', 'pendingverdikta', 'pending_evaluation'].includes(status)) {
+          const onChainSubmissionId = sub.onChainSubmissionId ?? sub.submissionId;
+          if (job.jobId != null && onChainSubmissionId != null) {
+            try {
+              round = await getContractService().checkEvaluationReady(job.jobId, onChainSubmissionId);
+            } catch (err) {
+              logger.warn('Could not check evaluation ready', { bountyId: job.jobId, submissionId: onChainSubmissionId, msg: err.message });
             }
           }
-        } else if (status === 'prepared') {
-          prepared++;
-        } else if (status === 'timeout') {
-          timeout++;
-        } else {
-          unknown++;
         }
+        const bucket = submissionBucket(sub, round);
+        byOutcome[bucket]++;
+        if (sub.creatorApproved) creatorApproved++;
+
+        const acceptance = round?.ready ? round.scores?.acceptance : (sub.result?.acceptance ?? sub.acceptance ?? sub.score);
+        if (['approvedPaid', 'approvedUnpaid', 'passPending'].includes(bucket) && !sub.creatorApproved && Number(acceptance) > 0) {
+          scores.push(Number(acceptance));
+        }
+        const pc = round?.ready ? round.passCount : sub.passCount;
+        if (pc != null && (round?.ready || sub.roundOutcome || ['approvedPaid', 'approvedUnpaid', 'hardFail'].includes(bucket)) && !sub.creatorApproved) {
+          passCounts.push(Number(pc));
+        }
+
+        if (bucket === 'evaluating' && evaluatingSamples.length < 5) {
+          evaluatingSamples.push({
+            jobId: job.jobId, jobTitle: job.title, submissionId: sub.submissionId,
+            status: sub.status, onChainStatus: sub.onChainStatus, bountyStatus: job.status,
+            phase: round?.phaseName ?? null, nextAction: round?.nextAction ?? null,
+            verdiktaAggId: sub.verdiktaAggId
+          });
+        }
+
+        const rounds = Math.max(Number(sub.rounds) || 0, Array.isArray(sub.aggIds) ? sub.aggIds.length : 0);
+        v2.totalRounds += rounds;
+        if (rounds > 1) v2.rerunSubmissions++;
+        if (sub.bondReturnedWei && sub.bondReturnedWei !== '0') { v2.bondsReturned++; v2.bondReturnedWei += BigInt(sub.bondReturnedWei); }
+        if (sub.bondForfeitedWei && sub.bondForfeitedWei !== '0') { v2.bondsForfeited++; v2.bondForfeitedWei += BigInt(sub.bondForfeitedWei); }
       }
     }
 
-    // Log status breakdown for debugging
     logger.info('Submission status breakdown', { statusCounts });
 
-    const totalApproved = approvedPaid + approvedUnpaid;
-    const totalRejected = rejected;
-    const evaluated = totalApproved + totalRejected;
-    const passRate = evaluated > 0 ? Math.round((totalApproved / evaluated) * 100) : null;
-    const avgScore = scores.length > 0
-      ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
-      : null;
+    // Pass rate over the arbiters' decided outcomes: a pass (>= Q scores at the threshold) against a
+    // hard fail (< R). Soft fails re-run and rounds with no result have no verdict, so neither counts;
+    // creator approvals are not the arbiters' verdict.
+    const passed = byOutcome.approvedPaid + byOutcome.approvedUnpaid + byOutcome.passPending - creatorApproved;
+    const decided = passed + byOutcome.hardFail;
+    const passRate = decided > 0 ? Math.round((passed / decided) * 100) : null;
+    const avgScore = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+    const avgPassCount = passCounts.length > 0 ? Math.round((passCounts.reduce((a, b) => a + b, 0) / passCounts.length) * 10) / 10 : null;
 
     return {
       total: totalSubmissions,
-      byOutcome: {
-        approvedPaid,
-        approvedUnpaid,
-        rejected,
-        evaluating,
-        prepared,
-        timeout,
-        unknown
-      },
+      byOutcome,
+      creatorApproved,
       statusBreakdown: statusCounts, // Raw status counts for debugging
       evaluatingSamples, // Sample of submissions counted as evaluating for debugging
       passRate,
       avgScore,
+      avgPassCount,
+      v2: {
+        rerunSubmissions: v2.rerunSubmissions,
+        totalRounds: v2.totalRounds,
+        bondsReturned: v2.bondsReturned,
+        bondReturnedEth: ethers.formatEther(v2.bondReturnedWei),
+        bondsForfeited: v2.bondsForfeited,
+        bondForfeitedEth: ethers.formatEther(v2.bondForfeitedWei)
+      },
       timestamp: Date.now()
     };
   } catch (error) {
     logger.error('Failed to get submission analytics', { msg: error.message });
     throw error;
+  }
+}
+
+/**
+ * Round-level v2 facts from the score-spread collector's cache (no RPC): beacon stages, prepay lost
+ * to the treasury, late reveals, how rounds ended.
+ */
+async function getRoundAnalytics() {
+  try {
+    return { ...scoreSpread.summarizeRounds(await scoreSpread.readState()), timestamp: Date.now() };
+  } catch (error) {
+    logger.warn('Failed to summarize rounds', { msg: error.message });
+    return null;
   }
 }
 
@@ -750,6 +738,7 @@ async function getSystemHealth() {
   const verdiktaService = getVerdiktaService();
 
   let aggregatorConfig = null;
+  let aggregatorConfigs = null;
   let verdiktaHealth = null;
 
   if (verdiktaService) {
@@ -757,6 +746,12 @@ async function getSystemHealth() {
       verdiktaHealth = await verdiktaService.healthCheck();
       if (verdiktaHealth.healthy) {
         aggregatorConfig = verdiktaHealth.config;
+        // The config of every aggregator the server is configured with.
+        try {
+          aggregatorConfigs = await verdiktaService.getAllAggregatorConfigs();
+        } catch (error) {
+          logger.warn('Failed to read the aggregator configs', { msg: error.message });
+        }
       }
     } catch (error) {
       logger.warn('Failed to get Verdikta health', { msg: error.message });
@@ -781,11 +776,16 @@ async function getSystemHealth() {
       configured: isVerdiktaServiceAvailable(),
       healthy: verdiktaHealth?.healthy || false,
       aggregatorAddress: verdiktaHealth?.aggregatorAddress || null,
+      // the aggregator(s) the server is configured with
+      aggregators: verdiktaHealth?.aggregators || [],
       keeperAddress: verdiktaHealth?.keeperAddress || null,
       wvdkaAddress: verdiktaHealth?.wvdkaAddress || null,
       error: verdiktaHealth?.error || null
     },
     aggregatorConfig,
+    // each configured aggregator: K/M/N/P, M+, T+, timeout (from the draw), reward fees, beacons,
+    // spreadFloor, maxOracleFee
+    aggregatorConfigs,
     sync: syncStatus ? {
       enabled: syncStatus.enabled,
       isSyncing: syncStatus.isSyncing,
@@ -820,7 +820,7 @@ async function getTemplateUsageAnalytics() {
  * Hunters on the current contract: every distinct address that has a submission
  * (prepared or evaluated), and which of them won. A win is a PassedPaid
  * submission, or the bounty's recorded winner, counted once per bounty.
- * ETH won uses effectiveBountyAmount, since payoutWei is zeroed after payout.
+ * ETH won is the amount actually paid (paidAmountEth), not the configured payments.
  */
 async function getHunterAnalytics() {
   try {
@@ -849,6 +849,7 @@ async function getHunterAnalytics() {
 
     for (const job of jobList) {
       const winners = new Set();
+      const winningSubs = new Map();   // hunter (lowercased) -> its paid submission
       for (const sub of job.submissions || []) {
         if (!sub.hunter) continue;
         const h = entryFor(sub.hunter);
@@ -860,14 +861,17 @@ async function getHunterAnalytics() {
           if (h.lastSubmittedAt == null || at > h.lastSubmittedAt) h.lastSubmittedAt = at;
         }
         const status = (sub.onChainStatus || sub.status || '').toLowerCase();
-        if (status === 'passedpaid') winners.add(sub.hunter.toLowerCase());
+        if (status === 'passedpaid') {
+          winners.add(sub.hunter.toLowerCase());
+          winningSubs.set(sub.hunter.toLowerCase(), sub);
+        }
       }
       if (job.status === 'AWARDED' && job.winner) winners.add(job.winner.toLowerCase());
 
       for (const key of winners) {
         const h = byAddress.get(key) || entryFor(job.winner);
         h.wins++;
-        h.ethWon += effectiveBountyAmount(job);
+        h.ethWon += paidAmountEth(job, winningSubs.get(key));
         h.wonBountyIds.push(job.jobId);
       }
     }
@@ -931,7 +935,8 @@ async function getFulfilledBounties() {
         // Post-payout the on-chain payoutWei is zero, so j.bountyAmount loses
         // the original value. Fall back to the determination-payment fields
         // preserved on the Bounty struct so the row shows what was paid out.
-        bountyAmount: effectiveBountyAmount(j),
+        bountyAmount: paidAmountEth(j, (j.submissions || []).find(s =>
+          s.hunter && j.winner && s.hunter.toLowerCase() === j.winner.toLowerCase() && (s.paidWinner || (s.onChainStatus || '').toLowerCase() === 'passedpaid'))),
         txHash: j.txHash || null,
         awardTxHash: j.awardTxHash || null,
         settledAt: j.settledAt,

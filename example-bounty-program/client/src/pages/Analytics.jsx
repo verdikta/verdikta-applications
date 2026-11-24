@@ -68,7 +68,7 @@ ChartJS.defaults.elements.arc.borderColor = prefersDark ? '#1e293b' : '#ffffff';
 const COLORS = {
   active: '#22c55e',
   new: '#8b5cf6',
-  unresponsive: '#f59e0b',
+  frozen: '#f59e0b',
   blocked: '#ef4444',
   inactive: '#6b7280',
   open: '#22c55e',
@@ -78,20 +78,24 @@ const COLORS = {
   orphaned: '#a855f7',
   approvedPaid: '#22c55e',
   approvedUnpaid: '#86efac',
-  rejected: '#ef4444',
+  passPending: '#4ade80',
+  awaitingCreator: '#14b8a6',
+  awaitingRerun: '#eab308',
+  noResult: '#6b7280',
+  hardFail: '#ef4444',
   evaluating: '#f59e0b',
   prepared: '#3b82f6',
-  timeout: '#6b7280',
   unknown: '#a855f7'
 };
 
-// Arbiter status descriptions for tooltips
+// Arbiter status descriptions for tooltips: the v2 keeper states, named as the server's
+// arbiterStatus() names them (server/utils/verdiktaService.js): active, new, frozen, blocked, inactive.
 const ARBITER_STATUS_DESCRIPTIONS = {
-  Active: 'Registered, responding normally, available for selection, and called three or more times',
-  New: 'Arbiters that have been called fewer than three times',
-  Unresponsive: 'Registered but showing signs of poor availability: timeliness score <= -60, or 60%+ declining trend in recent scores, or sustained score decline (140+ points in last 8 updates)',
-  Blocked: 'Temporarily locked due to severe performance issues (timeliness or quality score below threshold)',
-  Inactive: 'Not currently registered or has been deactivated in the contract'
+  Active: 'Registered and selectable: not paused, exiting, under-staked, banned, blocked or frozen',
+  New: 'Selectable, with both scores still at the keeper\'s starting value (points().start)',
+  Frozen: 'Not drawn until it answers: a health call went unanswered past the deadline, or its chain is re-syncing',
+  Blocked: 'Banned, or locked by the keeper (the Table 2 lock after a score reached 0) until its block ends',
+  Inactive: 'Paused, exiting or under-staked (or no longer registered): never drawn'
 };
 
 // Bounty status descriptions for tooltips
@@ -107,15 +111,33 @@ const BOUNTY_STATUS_DESCRIPTIONS = {
 const JURY_NAMES = ['small', 'medium', 'large', 'jumbo'];
 
 // Submission status descriptions for tooltips
+// Outcomes follow the escrow's Q-of-N rule: a round passes when at least Q arbiter scores reach
+// the threshold, soft-fails (may re-run) with R..Q-1, and hard-fails (bond forfeited) below R.
 const SUBMISSION_STATUS_DESCRIPTIONS = {
-  ApprovedPaid: 'Submission passed evaluation and payment has been completed',
-  ApprovedUnpaid: 'Submission passed evaluation but payment is pending',
-  Rejected: 'Submission did not meet the evaluation threshold',
-  Evaluating: 'Submission is on-chain and waiting for AI jury evaluation',
-  Prepared: 'Submission is ready but not yet submitted to the blockchain',
-  Timeout: 'No result: the round ended without enough arbiter responses (closed as failed, or a re-run was not taken in time)',
+  ApprovedPaid: 'Passed (at least Q arbiter scores at the threshold, or approved by the creator) and paid',
+  ApprovedUnpaid: 'Passed, but another submission was paid first',
+  PassPending: 'The round passed (at least Q scores at the threshold); finalize pays it',
+  AwaitingCreator: 'Waiting for the bounty creator\'s approval window',
+  AwaitingRerun: 'Soft fail (R to Q-1 scores at the threshold), or a round with no result: may re-run within 2 hours, keeping its place and bond',
+  NoResult: 'No result: the round failed or was cancelled, or a re-run was not taken in time (RERUN_EXPIRED); the bond is returned',
+  HardFail: 'Hard fail: fewer than R arbiter scores at the threshold; the bond went to the creator',
+  Evaluating: 'The round is running (draw, commits, reveals) and has no result yet',
+  Prepared: 'Prepared on-chain but not started',
   Unknown: 'Submission has an unrecognized status'
 };
+// Doughnut order: [byOutcome key, label, description key]
+const SUBMISSION_BUCKETS = [
+  ['approvedPaid', 'Approved (Paid)', 'ApprovedPaid'],
+  ['approvedUnpaid', 'Approved (Unpaid)', 'ApprovedUnpaid'],
+  ['passPending', 'Passed, to finalize', 'PassPending'],
+  ['awaitingCreator', 'Awaiting creator', 'AwaitingCreator'],
+  ['awaitingRerun', 'Soft fail / re-run', 'AwaitingRerun'],
+  ['noResult', 'No result', 'NoResult'],
+  ['hardFail', 'Hard fail', 'HardFail'],
+  ['evaluating', 'Evaluating', 'Evaluating'],
+  ['prepared', 'Prepared', 'Prepared'],
+  ['unknown', 'Unknown', 'Unknown']
+];
 
 // How the creator started the rubric (job.rubricTemplate.source). Bounties labelled after
 // the fact have source 'unknown' and are left out of the "Started from" column.
@@ -255,9 +277,9 @@ function Analytics() {
         backgroundColor: COLORS.new
       },
       {
-        label: 'Unresponsive',
-        data: Object.values(data.arbiters.byClass).map(c => c.unresponsive ?? 0),
-        backgroundColor: COLORS.unresponsive
+        label: 'Frozen',
+        data: Object.values(data.arbiters.byClass).map(c => c.frozen ?? c.unresponsive ?? 0),
+        backgroundColor: COLORS.frozen
       },
       {
         label: 'Blocked',
@@ -295,26 +317,10 @@ function Analytics() {
 
   // Prepare chart data for submission outcomes
   const submissionChartData = data?.submissions?.byOutcome ? {
-    labels: ['Approved (Paid)', 'Approved (Unpaid)', 'Rejected', 'Evaluating', 'Prepared', 'Timeout', 'Unknown'],
+    labels: SUBMISSION_BUCKETS.map(([, label]) => label),
     datasets: [{
-      data: [
-        data.submissions.byOutcome.approvedPaid || 0,
-        data.submissions.byOutcome.approvedUnpaid || 0,
-        data.submissions.byOutcome.rejected || 0,
-        data.submissions.byOutcome.evaluating || 0,
-        data.submissions.byOutcome.prepared || 0,
-        data.submissions.byOutcome.timeout || 0,
-        data.submissions.byOutcome.unknown || 0
-      ],
-      backgroundColor: [
-        COLORS.approvedPaid,
-        COLORS.approvedUnpaid,
-        COLORS.rejected,
-        COLORS.evaluating,
-        COLORS.prepared,
-        COLORS.timeout,
-        COLORS.unknown
-      ]
+      data: SUBMISSION_BUCKETS.map(([key]) => data.submissions.byOutcome[key] || 0),
+      backgroundColor: SUBMISSION_BUCKETS.map(([key]) => COLORS[key])
     }]
   } : null;
 
@@ -450,7 +456,7 @@ function Analytics() {
 
       {/* Arbiter Availability Section */}
       <section className="analytics-section">
-        <h2 title="Six non-blocked arbiter queries will be made, with duplicate selection if necessary, and four must respond."><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
+        <h2 title="A draw picks K distinct eligible arbiters from the bounty's class (selectable and priced at or below its fee ceiling); with fewer, every draw fails. The commit window closes at M+ commits (or after T+ with at least M), M are promoted, and the N-th reveal finalizes."><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
         {(!data?.arbiters?.verdiktaConnected || data?.arbiters?.stale) && (
           <div className="info-banner">
             <AlertTriangle size={16} />
@@ -471,9 +477,9 @@ function Analytics() {
                     <span className="legend-color" style={{ backgroundColor: COLORS.new }}></span>
                     New
                   </span>
-                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive}>
-                    <span className="legend-color" style={{ backgroundColor: COLORS.unresponsive }}></span>
-                    Unresponsive
+                  <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Frozen}>
+                    <span className="legend-color" style={{ backgroundColor: COLORS.frozen }}></span>
+                    Frozen
                   </span>
                   <span className="legend-item" title={ARBITER_STATUS_DESCRIPTIONS.Blocked}>
                     <span className="legend-color" style={{ backgroundColor: COLORS.blocked }}></span>
@@ -494,8 +500,9 @@ function Analytics() {
                       <th title="Total number of Chainlink operator contracts used to serve the arbiters in this class" className="tooltip-header">Operators</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.Active} className="tooltip-header">Active</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.New} className="tooltip-header">New</th>
-                      <th title={ARBITER_STATUS_DESCRIPTIONS.Unresponsive} className="tooltip-header">Unresponsive</th>
+                      <th title={ARBITER_STATUS_DESCRIPTIONS.Frozen} className="tooltip-header">Frozen</th>
                       <th title={ARBITER_STATUS_DESCRIPTIONS.Blocked} className="tooltip-header">Blocked</th>
+                      <th title={ARBITER_STATUS_DESCRIPTIONS.Inactive} className="tooltip-header">Inactive</th>
                       <th>Total</th>
                       <th>Avg Quality</th>
                       <th>Avg Timeliness</th>
@@ -520,8 +527,9 @@ function Analytics() {
                         >{cls.operators ?? '-'}</td>
                         <td style={{ color: COLORS.active, fontWeight: 600 }}>{cls.active ?? '-'}</td>
                         <td style={{ color: COLORS.new, fontWeight: 600 }}>{cls.new ?? '-'}</td>
-                        <td style={{ color: COLORS.unresponsive, fontWeight: 600 }}>{cls.unresponsive ?? '-'}</td>
+                        <td style={{ color: COLORS.frozen, fontWeight: 600 }}>{cls.frozen ?? cls.unresponsive ?? '-'}</td>
                         <td style={{ color: COLORS.blocked, fontWeight: 600 }}>{cls.blocked ?? '-'}</td>
+                        <td style={{ color: COLORS.inactive, fontWeight: 600 }}>{cls.inactive ?? '-'}</td>
                         <td>{cls.total ?? '-'}</td>
                         <td>{cls.avgQualityScore ?? '-'}</td>
                         <td>{cls.avgTimelinessScore ?? '-'}</td>
@@ -820,10 +828,20 @@ function Analytics() {
               <div className="stat-value">{data?.submissions?.byOutcome?.approvedUnpaid ?? 0}</div>
               <div className="stat-label">Approved (Unpaid)</div>
             </div>
-            <div className="stat-card danger" title={SUBMISSION_STATUS_DESCRIPTIONS.Rejected}>
+            <div className="stat-card" style={{ borderColor: COLORS.awaitingRerun }} title={SUBMISSION_STATUS_DESCRIPTIONS.AwaitingRerun}>
+              <div className="stat-icon" style={{ color: COLORS.awaitingRerun }}><RefreshCw size={24} /></div>
+              <div className="stat-value">{data?.submissions?.byOutcome?.awaitingRerun ?? 0}</div>
+              <div className="stat-label">Soft Fail / Re-run</div>
+            </div>
+            <div className="stat-card" title={SUBMISSION_STATUS_DESCRIPTIONS.NoResult}>
+              <div className="stat-icon"><Clock size={24} /></div>
+              <div className="stat-value">{data?.submissions?.byOutcome?.noResult ?? 0}</div>
+              <div className="stat-label">No Result</div>
+            </div>
+            <div className="stat-card danger" title={SUBMISSION_STATUS_DESCRIPTIONS.HardFail}>
               <div className="stat-icon"><XCircle size={24} /></div>
-              <div className="stat-value">{data?.submissions?.byOutcome?.rejected ?? 0}</div>
-              <div className="stat-label">Rejected</div>
+              <div className="stat-value">{data?.submissions?.byOutcome?.hardFail ?? 0}</div>
+              <div className="stat-label">Hard Fail</div>
             </div>
             <div className="stat-card warning" title={SUBMISSION_STATUS_DESCRIPTIONS.Evaluating}>
               <div className="stat-icon"><Hourglass size={24} /></div>
@@ -833,15 +851,20 @@ function Analytics() {
           </div>
           <div className="metrics-row">
             {data?.submissions?.passRate != null && (
-              <div className="metric-badge success">
+              <div className="metric-badge success" title="Arbiter passes (at least Q scores at the threshold) out of passes plus hard fails. Soft fails, rounds with no result and creator approvals are left out.">
                 <TrendingUp size={16} />
-                <span>{data.submissions.passRate}% Pass Rate</span>
+                <span>{data.submissions.passRate}% Pass Rate (Q of N)</span>
               </div>
             )}
             {data?.submissions?.avgScore != null && (
               <div className="metric-badge">
                 <Zap size={16} />
-                <span>Avg Score: {data.submissions.avgScore}</span>
+                <span title="Average aggregated FUND score of the arbiters' passes">Avg Score: {data.submissions.avgScore}</span>
+              </div>
+            )}
+            {data?.submissions?.avgPassCount != null && (
+              <div className="metric-badge" title="Average number of arbiter scores at or above the threshold per judged round">
+                <span>Avg scores at threshold: {data.submissions.avgPassCount}</span>
               </div>
             )}
           </div>
@@ -849,41 +872,64 @@ function Analytics() {
             <div className="chart-container chart-doughnut">
               <Doughnut data={submissionChartData} options={submissionChartOptions} />
               <div className="custom-legend">
-                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.ApprovedPaid}>
-                  <span className="legend-color" style={{ backgroundColor: COLORS.approvedPaid }}></span>
-                  Approved (Paid)
-                </span>
-                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.ApprovedUnpaid}>
-                  <span className="legend-color" style={{ backgroundColor: COLORS.approvedUnpaid }}></span>
-                  Approved (Unpaid)
-                </span>
-                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Rejected}>
-                  <span className="legend-color" style={{ backgroundColor: COLORS.rejected }}></span>
-                  Rejected
-                </span>
-                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Evaluating}>
-                  <span className="legend-color" style={{ backgroundColor: COLORS.evaluating }}></span>
-                  Evaluating
-                </span>
-                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Prepared}>
-                  <span className="legend-color" style={{ backgroundColor: COLORS.prepared }}></span>
-                  Prepared
-                </span>
-                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Timeout}>
-                  <span className="legend-color" style={{ backgroundColor: COLORS.timeout }}></span>
-                  Timeout
-                </span>
-                <span className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS.Unknown}>
-                  <span className="legend-color" style={{ backgroundColor: COLORS.unknown }}></span>
-                  Unknown
-                </span>
+                {SUBMISSION_BUCKETS.map(([key, label, desc]) => (
+                  <span key={key} className="legend-item" title={SUBMISSION_STATUS_DESCRIPTIONS[desc]}>
+                    <span className="legend-color" style={{ backgroundColor: COLORS[key] }}></span>
+                    {label}
+                  </span>
+                ))}
               </div>
+            </div>
+          )}
+          {(data?.submissions?.v2 || data?.rounds) && (
+            <div className="stats-table">
+              <h3 className="table-title">Rounds and Bonds (v2)</h3>
+              <table>
+                <tbody>
+                  {data?.submissions?.v2 && (
+                    <>
+                      <tr title="Submissions that ran more than one round (a soft fail or a round with no result, then rerunSubmission)">
+                        <td>Re-run submissions</td>
+                        <td>{data.submissions.v2.rerunSubmissions} ({data.submissions.v2.totalRounds} rounds in all)</td>
+                      </tr>
+                      <tr title="BondReturned: a pass, or any exit that is not a hard fail">
+                        <td>Bonds returned</td>
+                        <td>{data.submissions.v2.bondsReturned} · {Number(data.submissions.v2.bondReturnedEth).toFixed(4)} ETH</td>
+                      </tr>
+                      <tr title="BondForfeited: a hard fail; the bond went to the bounty creator">
+                        <td>Bonds forfeited</td>
+                        <td>{data.submissions.v2.bondsForfeited} · {Number(data.submissions.v2.bondForfeitedEth).toFixed(4)} ETH</td>
+                      </tr>
+                    </>
+                  )}
+                  {data?.rounds && (
+                    <>
+                      <tr title="Ended rounds read by the score collector (its look-back)">
+                        <td>Ended rounds (last {data.rounds.lookbackDays} days)</td>
+                        <td>{data.rounds.rounds}: {data.rounds.finalized} finalized · {data.rounds.failed} failed · {data.rounds.cancelled} cancelled</td>
+                      </tr>
+                      <tr title="Unspent prepay sent to the treasury, not refunded: a missed beacon quorum, M commits never closed or promoted, a failed draw after beacons on a class larger than one selection walk, or a round never drawn (cancelled)">
+                        <td>Prepay lost to the treasury</td>
+                        <td>{data.rounds.treasuryRounds} rounds · {Number(data.rounds.toTreasuryEth).toFixed(6)} ETH</td>
+                      </tr>
+                      <tr title="Rounds that ran a beacon stage (BeaconStageStarted)">
+                        <td>Beacon rounds</td>
+                        <td>{data.rounds.beaconRounds}</td>
+                      </tr>
+                      <tr title="Reveals after the N-th finalized the round: scored by quality, not counted">
+                        <td>Late reveals</td>
+                        <td>{data.rounds.lateReveals} in {data.rounds.roundsWithLate} rounds</td>
+                      </tr>
+                    </>
+                  )}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
       </section>
 
-      {/* Arbiter Score Spread: per-round sd of the 3-4 reveals, 14-day trend, worst-case drill-down */}
+      {/* Arbiter Score Spread: per-round sd of the N counted reveals, 14-day trend, worst-case drill-down */}
       <ScoreSpreadSection refreshKey={lastUpdated?.getTime()} />
 
       {/* System Health Section */}
@@ -970,60 +1016,76 @@ function Analytics() {
               </div>
             </div>
 
-            {/* Aggregator Config */}
-            {data?.system?.aggregatorConfig && (
-              <div className="health-card wide">
+            {/* Aggregator Config: every aggregator the server is configured with */}
+            {(data?.system?.aggregatorConfigs || (data?.system?.aggregatorConfig ? [data.system.aggregatorConfig] : [])).map((c) => (
+              <div className="health-card wide" key={c.aggregator || c.jury || 0}>
                 <div className="health-header">
                   <span className="health-status healthy"><Zap size={16} /></span>
                   <span className="health-title">
-                    Aggregator Configuration (jury {data.system.aggregatorConfig.jury ?? 0}
-                    {JURY_NAMES[data.system.aggregatorConfig.jury ?? 0] ? `, ${JURY_NAMES[data.system.aggregatorConfig.jury ?? 0]}` : ''})
+                    Aggregator Configuration (jury {c.jury ?? 0}
+                    {JURY_NAMES[c.jury ?? 0] ? `, ${JURY_NAMES[c.jury ?? 0]}` : ''})
                   </span>
                 </div>
                 <div className="health-details config-grid">
-                  <div className="config-item">
+                  <div className="config-item" title="Distinct eligible arbiters drawn per round; with fewer eligible in the class, every draw fails">
                     <span className="config-label">Jurors Drawn (K)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.commitOraclesToPoll}</span>
+                    <span className="config-value">{c.K ?? c.commitOraclesToPoll}</span>
                   </div>
-                  <div className="config-item">
-                    <span className="config-label">Commits Needed (M)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.oraclesToPoll}</span>
+                  <div className="config-item" title="The commit window closes at M+ commits, or after T+ (from the draw) with at least M; M of the commits are promoted to reveal">
+                    <span className="config-label">Promoted (M) · Closes at (M+)</span>
+                    <span className="config-value">{c.M ?? c.oraclesToPoll} · {c.mPlus ?? '-'}</span>
                   </div>
-                  <div className="config-item">
+                  <div className="config-item" title="The N-th counted reveal finalizes the round; later reveals are scored, not counted">
                     <span className="config-label">Reveals Counted (N)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.requiredResponses}</span>
+                    <span className="config-value">{c.N ?? c.requiredResponses}</span>
                   </div>
-                  <div className="config-item">
+                  <div className="config-item" title="The P nearest reveals set the score and earn the bonus">
                     <span className="config-label">Cluster (P)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.clusterSize}</span>
+                    <span className="config-value">{c.P ?? c.clusterSize}</span>
                   </div>
                   <div className="config-item">
                     <span className="config-label">Bonus Multiplier</span>
-                    <span className="config-value">{data.system.aggregatorConfig.bonusMultiplier}x</span>
+                    <span className="config-value">{c.bonusMultiplier}x</span>
                   </div>
-                  <div className="config-item">
-                    <span className="config-label">Round Timeout</span>
-                    <span className="config-value">{data.system.aggregatorConfig.responseTimeoutSeconds}s</span>
+                  <div className="config-item" title="The round deadline, from the draw (not the request)">
+                    <span className="config-label">Round Timeout (from the draw)</span>
+                    <span className="config-value">{c.responseTimeoutSeconds}s</span>
                   </div>
-                  {data.system.aggregatorConfig.tPlus != null && (
-                    <div className="config-item">
-                      <span className="config-label">Commit Grace (T+)</span>
-                      <span className="config-value">{data.system.aggregatorConfig.tPlus}s</span>
+                  {c.tPlus != null && (
+                    <div className="config-item" title="After T+ from the draw the window closes once M commits are in">
+                      <span className="config-label">Commit Window (T+)</span>
+                      <span className="config-value">{c.tPlus}s</span>
                     </div>
                   )}
-                  {data.system.aggregatorConfig.revealWindow != null && (
-                    <div className="config-item">
+                  {c.revealWindow != null && (
+                    <div className="config-item" title="Reveal time guaranteed after promotion">
                       <span className="config-label">Reveal Window</span>
-                      <span className="config-value">{data.system.aggregatorConfig.revealWindow}s</span>
+                      <span className="config-value">{c.revealWindow}s</span>
+                    </div>
+                  )}
+                  {c.drawRewardFees != null && (
+                    <div className="config-item" title="Rewards in per-arbiter fees (the bounty's effective fee ceiling): to whoever draws the jury, and to whoever promotes">
+                      <span className="config-label">Draw · Promote Reward</span>
+                      <span className="config-value">{c.drawRewardFees} · {c.promoteRewardFees ?? '-'} fees</span>
+                    </div>
+                  )}
+                  <div className="config-item" title="Beacon contract (JuryBeacons) and the values a beacon stage needs">
+                    <span className="config-label">Beacons</span>
+                    <span className="config-value">{c.beacons ? `quorum ${c.beaconQuorum ?? '?'} of ${Math.max(c.beaconPolled ?? 0, c.beaconQuorum ?? 0) || '?'}` : 'none'}</span>
+                  </div>
+                  {c.spreadFloor != null && (
+                    <div className="config-item" title="Minimum quality spread used to classify reveals close / off / far, on the 0..1,000,000 scale">
+                      <span className="config-label">Spread Floor</span>
+                      <span className="config-value">{c.spreadFloor} ({c.spreadFloor / 10000} pts)</span>
                     </div>
                   )}
                   <div className="config-item">
                     <span className="config-label">Max Oracle Fee</span>
-                    <span className="config-value">{data.system.aggregatorConfig.maxOracleFee} ETH</span>
+                    <span className="config-value">{c.maxOracleFee} ETH</span>
                   </div>
                 </div>
               </div>
-            )}
+            ))}
           </div>
         </div>
       </section>

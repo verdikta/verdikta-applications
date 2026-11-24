@@ -188,24 +188,38 @@ describe('checkClassCoverage()', () => {
     expect(r.coverage).toMatchObject({ checked: true, eligibleCount: 0 });
   });
 
-  it('refuses with a fee fix when every active arbiter is priced out', async () => {
-    mockEligibility.mockResolvedValue(pool({ eligible: 0, total: 4, active: 4, pricedOut: 4 }));
-    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/charge more than this bounty's max oracle fee.*Raise oracleMaxOracleFee/);
+  it('refuses with a fee fix when the fee ceiling leaves fewer than K eligible', async () => {
+    mockEligibility.mockResolvedValue(pool({ eligible: 2, total: 8, active: 8, pricedOut: 6 }));
+    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/charge more than this bounty's max oracle fee.*draws 6 distinct.*Raise oracleMaxOracleFee/);
   });
 
   it('refuses when registered arbiters are inactive or blocked', async () => {
     mockEligibility.mockResolvedValue(pool({ eligible: 0, total: 3, active: 0 }));
-    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/None of the 3 arbiter\(s\) registered for class 717 is currently active/);
+    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/Only 0 of the 3 arbiter\(s\) registered for class 717 are currently selectable/);
   });
 
-  it('warns on thin coverage, a single operator, and creator-operated arbiters', async () => {
-    mockEligibility.mockResolvedValue(pool({ eligible: 3, owners: [CREATOR] }));
+  it('v2: refuses below K distinct eligible arbiters, not only at zero (every draw would fail)', async () => {
+    mockEligibility.mockResolvedValue(pool({ eligible: 5, toPoll: 6 }));
+    const r = await checkClassCoverage(717, settings);
+    expect(r.refusal).toMatch(/this jury draws 6 distinct arbiters, so every draw would fail/);
+    expect(r.refusal).not.toMatch(/No active oracles available|duplicate/);
+    expect(r.coverage).toMatchObject({ eligibleCount: 5, juryDrawSize: 6 });
+    mockEligibility.mockResolvedValue(pool({ eligible: 6, toPoll: 6, owners: [OPERATOR_OWNER, '0x' + '33'.repeat(20)] }));
+    expect((await checkClassCoverage(717, settings)).refusal).toBeNull();
+  });
+
+  it('v2: refuses a beacon bounty whose beacon quorum cannot be met', async () => {
+    mockEligibility.mockResolvedValue({ ...pool({ eligible: 8, active: 8 }), beaconQuorum: 10, beaconsServable: false });
+    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/beacon stage needs 10 selectable.*no fee cap/);
+  });
+
+  it('warns on a single operator and creator-operated arbiters', async () => {
+    mockEligibility.mockResolvedValue(pool({ eligible: 6, owners: [CREATOR] }));
     const r = await checkClassCoverage(717, settings, { creator: CREATOR.toUpperCase().replace('0X', '0x') });
     expect(r.refusal).toBeNull();
-    expect(r.coverage).toMatchObject({ eligibleCount: 3, distinctOwnersEligible: 1, creatorOperatedCount: 3 });
-    expect(r.warnings.join('\n')).toMatch(/Only 3 eligible arbiter/);
+    expect(r.coverage).toMatchObject({ eligibleCount: 6, distinctOwnersEligible: 1, creatorOperatedCount: 6 });
     expect(r.warnings.join('\n')).toMatch(/belong to one operator/);
-    expect(r.warnings.join('\n')).toMatch(/creator's address operates 3 of the 3/);
+    expect(r.warnings.join('\n')).toMatch(/creator's address operates 6 of the 6/);
   });
 
   it('has no coverage warnings for a healthy multi-operator class', async () => {

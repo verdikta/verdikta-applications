@@ -110,3 +110,20 @@ test('connections: overview counts are null before the first analysis run', asyn
   expect(overview.status).toBe(200);
   expect(overview.body.data.hunters).toMatchObject({ totalSubmitters: 3, linkedHunters: null, connectionGroups: null });
 });
+
+test('ETH won is the amount actually paid (PayoutSent / CreatorApproved), not the larger configured payment', async () => {
+  mockJobs = [
+    // creator approval paid 0.002 though the arbiter payment is 0.01
+    { jobId: 4, status: 'AWARDED', winner: A, bountyAmount: '0', arbiterDeterminationPayment: '0.01', creatorDeterminationPayment: '0.002',
+      submissions: [{ hunter: A, onChainStatus: 'PassedPaid', creatorApproved: true, payoutWei: '2000000000000000', submittedAt: 1 }] },
+    // an older record without a stored amount: the creator's payment, since the creator approved it
+    { jobId: 5, status: 'AWARDED', winner: B, bountyAmount: '0', arbiterDeterminationPayment: '0.01', creatorDeterminationPayment: '0.003',
+      submissions: [{ hunter: B, onChainStatus: 'PassedPaid', creatorApproved: true, submittedAt: 2 }] },
+    // an arbiter pass recorded on the job by PayoutSent
+    { jobId: 6, status: 'AWARDED', winner: C, bountyAmount: '0', payoutAmountWei: '7000000000000000', arbiterDeterminationPayment: '0.01',
+      creatorDeterminationPayment: '0.02', submissions: [{ hunter: C, onChainStatus: 'PassedPaid', submittedAt: 3 }] },
+  ];
+  const res = await request(app).get('/api/analytics/hunters');
+  const won = Object.fromEntries(res.body.data.hunters.map(h => [h.address.toLowerCase(), h.ethWon]));
+  expect(won).toEqual({ [A]: 0.002, [B]: 0.003, [C]: 0.007 });
+});

@@ -3,24 +3,33 @@
  * submission in the same evaluation round.
  *
  * v2 aggregator: a finalized round (phase 6 final or 7 settled) keeps every
- * counted reveal's raw scores on chain, read with getOutcomeScores(aggId, o)
- * for each outcome o, in reveal order. The RevealReceived(aggId, slot, late=false)
- * events give that order as slots, and getSlot(aggId, slot) the arbiter
- * (operator and key). The aggregator checked each reveal against its commit, so
- * every counted reveal is verified. A late reveal stores only its quality code,
- * not its scores, so it is not in the spread (v1 recovered it from operator
- * calldata).
+ * counted reveal's raw scores on chain, read with getOutcomeScores(aggId, o), in
+ * reveal order (r.order). A round has exactly N counted reveals (the N-th
+ * finalizes it: 4 / 13 / 27 for the small / medium / large juries). The
+ * RevealReceived(aggId, slot, late=false) events give that order as slots, and
+ * getSlot(aggId, slot) the arbiter (operator and key; the keeper's jobIdOf(key)
+ * names its Chainlink job). Every counted reveal was checked against its commit.
+ * A late reveal (after finalization) stores only its quality code, never its
+ * scores, so it is counted (lateReveals) but not in the spread.
  *
- * Metric: scores become shares of 100 (s = 100 * v / sum(v)). A round's spread
- * is the sample standard deviation of those shares across its reveals (for
- * two-outcome bounties, the sd of the "accept" share). The pooled sd across
- * rounds, sqrt(sum (n-1) var / sum (n-1)), is the per-response noise and is
- * the headline number. A one-number result has no shares and is not measured.
+ * Metric: the FUND score, the one the escrow judges (BountyRules.judge): index
+ * len - 1 of a one-number or two-outcome result, divided by 10,000 (0..100).
+ * A round's spread is the sample standard deviation of those scores across its
+ * counted reveals. The pooled sd across rounds, sqrt(sum (n-1) var / sum (n-1)),
+ * is the per-response noise and is the headline number.
+ *
+ * The cluster (the P nearest reveals, which set the aggregate and earn the bonus)
+ * is read from the round's BonusPayment events, never recomputed: with zero fees
+ * no bonus is paid and the cluster is unknown.
+ *
+ * Pass count: the reveals whose FUND score is at or above threshold x 10,000; the
+ * bounty's quota Q and forfeit line R turn it into pass / soft fail / hard fail.
  *
  * v2 round ids are sequential per aggregator, so rounds are cached under
- * "<jobId>:<aggId>" (a bounty uses one aggregator). Finalized and dead rounds
- * never change, so they are cached in data/<network>/scoreSpread.json and
- * fetched once; a background pass picks up new rounds. Readers never wait on RPC.
+ * "<jobId>:<aggId>" (a bounty uses one aggregator). Every re-run round of a
+ * submission is kept (submission.aggIds). Finalized and dead rounds never change,
+ * so they are cached in data/<network>/scoreSpread.json and fetched once; a
+ * background pass picks up new rounds. Readers never wait on RPC.
  */
 
 const fs = require('fs').promises;
@@ -32,7 +41,7 @@ const { AGGREGATOR_ABI } = require('./aggregatorAbi');
 
 const NETWORK = config.network || 'base-sepolia';
 const STATE_FILE = path.join(__dirname, `../data/${NETWORK}/scoreSpread.json`);
-const STATE_VERSION = 2;   // 2: v2 aggregator, rounds keyed <jobId>:<aggId>
+const STATE_VERSION = 3;   // 3: FUND scores, cluster from BonusPayment, late reveals, arbiter keys
 
 const LOOKBACK_DAYS = parseFloat(process.env.SCORE_SPREAD_LOOKBACK_DAYS) || 30; // rounds collected
 const MAX_REPORT_DAYS = LOOKBACK_DAYS;
@@ -41,17 +50,16 @@ const SETTLE_SECONDS = 60 * 60;
 // Reveals land before the round's deadline; the log scan runs from the request block to
 // the deadline plus this slack, converted with the measured block time.
 const EVENT_SLACK_SECONDS = 10 * 60;
-const MAX_OUTCOMES = 16;              // getOutcomeScores is read for outcomes 0.. until invalid
 const LOG_CHUNK_BLOCKS = 9000;        // keyless/public RPCs reject eth_getLogs over 10,000 blocks
 const ROUND_PARALLEL = 3;
 // Round sd at or below AGREE_SD: the arbiters agree. Above OUTLIER_SD: one or more
-// arbiters disagree (often one outlier, which the closest-pair rule drops).
-// Both sit at the goal, SD 3, so every round either meets it or counts as an outlier.
+// arbiters disagree. Both sit at the goal, SD 3, so every round either meets it or counts as an outlier.
 const AGREE_SD = 3;
 const OUTLIER_SD = 3;
 // An arbiter's score this far from the other arbiters' mean in the same round counts as far off.
 const FAR_GAP = 15;
-const ACCEPT_INDEX = 1;            // BountyEscrow: scores[0] = reject, scores[1] = accept
+const SCORE_SCALE = 1_000_000;     // BountyRules.SCORE_SCALE
+const SCORE_DIVISOR = 10_000;      // BountyRules.SCORE_DIVISOR: threshold (0..100) x this = raw score
 
 const lc = (s) => String(s || '').toLowerCase();
 // Creator-approved submissions never go to the arbiters and carry a zero aggId.
@@ -63,6 +71,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ------------------------------------------------------------
 
 const AGG_IFACE = new ethers.Interface(AGGREGATOR_ABI);
+const KEEPER_IFACE = new ethers.Interface(['function jobIdOf(bytes32 key) view returns (bytes32)']);
 const FINAL_PHASES = new Set([6, 7]);  // final, settled: scores readable and fixed
 const DEAD_PHASES = new Set([8, 9]);   // failed, cancelled: no scores, ever
 
@@ -95,69 +104,42 @@ function jobIdText(jobId) {
 }
 const round2 = (x) => (Number.isFinite(x) ? Math.round(x * 100) / 100 : null);
 
+/** A raw FUND score (0..1,000,000) on the threshold's 0..100 scale. */
+const fundScore = (raw) => Number(raw) / SCORE_DIVISOR;
+
 /**
- * Spread of one round's verified reveals. Each reveal is { scores: string[] }.
- * Reveals whose vector length differs from the round's most common length are
- * dropped (the aggregator normalizes to the modal length the same way).
- * Returns null when fewer than two usable reveals remain.
+ * Spread of one round's scores (0..100 each). Returns null when fewer than two remain.
  */
-function roundSpread(reveals) {
-  let vs = reveals
-    .map((r) => ({ ...r, vec: (r.scores || []).map(Number) }))
-    .filter((r) => r.vec.length >= 2 && r.vec.every(Number.isFinite) && r.vec.reduce((a, b) => a + b, 0) > 0);
-  if (vs.length < 2) return null;
-  const lens = {};
-  for (const v of vs) lens[v.vec.length] = (lens[v.vec.length] || 0) + 1;
-  const L = Number(Object.entries(lens).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0]);
-  vs = vs.filter((v) => v.vec.length === L);
-  if (vs.length < 2) return null;
-  const shares = vs.map((v) => { const s = v.vec.reduce((a, b) => a + b, 0); return v.vec.map((x) => (100 * x) / s); });
-  const byOutcome = [...Array(L).keys()].map((c) => shares.map((s) => s[c]));
-  const varAll = mean(byOutcome.map(variance)); // equals the accept-share variance for 2 outcomes
-  const idx = Math.min(ACCEPT_INDEX, L - 1);
-  const accept = byOutcome[idx];
-  const med = quantile(accept, 0.5);
+function roundSpread(scores) {
+  const xs = (scores || []).map(Number).filter(Number.isFinite);
+  if (xs.length < 2) return null;
+  const v = variance(xs);
+  const med = quantile(xs, 0.5);
   return {
-    n: vs.length,
-    var: varAll,
-    sd: Math.sqrt(varAll),
-    accept,                      // per reveal, same order as the usable reveals
-    used: vs.map((v) => v.slot),
-    mean: mean(accept),
+    n: xs.length,
+    var: v,
+    sd: Math.sqrt(v),
+    mean: mean(xs),
     median: med,
-    range: Math.max(...accept) - Math.min(...accept),
-    maxDev: Math.max(...accept.map((s) => Math.abs(s - med)))
+    range: Math.max(...xs) - Math.min(...xs),
+    maxDev: Math.max(...xs.map((s) => Math.abs(s - med)))
   };
 }
 
 /**
- * Spread of a round's counted reveals with unclustered outliers removed.
- * The aggregator (AggregatorLib.findBestCluster, cluster size P = 2) sets the score
- * from the closest pair of counted reveals by squared distance between raw score
- * vectors (first strict minimum in reveal order). Any other counted reveal is kept
- * unless its accept score is more than FAR_GAP from the pair's mean; the spread is
- * then computed over what is kept (the pair alone: var = Δ²/2 on 1 degree of freedom).
- * Measuring the closest pair alone would be biased low (it is the tightest of three
- * pairs), so a reveal that agrees with the pair stays in. `reveals` must be in reveal
- * order. Returns { n, var, sd, dropped } or null when fewer than two usable reveals.
+ * The escrow's Q-of-N rule (BountyRules.judge) over a round's raw FUND scores: count the scores at or
+ * above threshold x 10,000; pass at quota Q, soft fail at the forfeit line R, else hard fail.
+ * Outcome is null when the quota is unknown.
  */
-function clusteredSpread(reveals) {
-  const all = roundSpread(reveals);
-  if (!all) return null;
-  const used = new Set(all.used);
-  const usable = reveals.filter((r) => used.has(r.slot)); // same order as all.accept
-  const vecs = usable.map((r) => r.scores.map(Number));
-  let best = null;
-  for (let i = 0; i < usable.length - 1; i++) {
-    for (let j = i + 1; j < usable.length; j++) {
-      const d = vecs[i].reduce((acc, v, k) => acc + (v - vecs[j][k]) ** 2, 0);
-      if (!best || d < best.d) best = { d, i, j };
-    }
-  }
-  const pairMean = (all.accept[best.i] + all.accept[best.j]) / 2;
-  const kept = usable.filter((_, k) => k === best.i || k === best.j || Math.abs(all.accept[k] - pairMean) <= FAR_GAP);
-  const sp = kept.length === usable.length ? all : roundSpread(kept);
-  return { n: sp.n, var: sp.var, sd: sp.sd, dropped: usable.length - kept.length };
+function judgeRound(rawFund, threshold, quota, forfeitLine) {
+  if (threshold == null) return { passCount: null, outcome: null };
+  const t = Number(threshold) * SCORE_DIVISOR;
+  const passCount = rawFund.filter((s) => Number(s) >= t && Number(s) <= SCORE_SCALE).length;
+  if (quota == null) return { passCount, outcome: null };
+  const q = Number(quota);
+  const r = Number(forfeitLine ?? q);
+  const outcome = passCount >= q ? 'pass' : passCount >= r ? 'soft_fail' : 'hard_fail';
+  return { passCount, outcome };
 }
 
 /** Pooled per-response sd plus distribution of round sds over [{ n, var }]. */
@@ -178,13 +160,30 @@ function pooled(rs) {
   };
 }
 
+/** Every round id a submission ran (re-runs included), oldest first. */
+function submissionRoundIds(sub) {
+  const ids = [];
+  for (const id of [...(Array.isArray(sub?.aggIds) ? sub.aggIds : []), sub?.verdiktaAggId]) {
+    const v = lc(id);
+    if (isRoundId(v) && !ids.includes(v)) ids.push(v);
+  }
+  return ids;
+}
+
+/** The bounty's Q-of-N settings, when the job record has them. */
+function decisionOf(job) {
+  const d = job?.decisionSettings;
+  if (!d || d.quota == null) return { quota: null, forfeitLine: null, jury: d?.jury != null ? Number(d.jury) : null };
+  return { quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? d.quota), jury: d.jury != null ? Number(d.jury) : null };
+}
+
 // ------------------------------------------------------------
 // Report (pure): join cached rounds with bounty/submission data
 // ------------------------------------------------------------
 
 /**
- * @param state  cached { rounds: { aggId: record } }
- * @param jobs   bounty jobs (with submissions[].verdiktaAggId)
+ * @param state  cached { rounds: { "<jobId>:<aggId>": record } }
+ * @param jobs   bounty jobs (with submissions[].verdiktaAggId and, for re-runs, submissions[].aggIds)
  * @param opts   { days = 14, now = seconds }
  */
 function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 1000) } = {}) {
@@ -193,73 +192,78 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
   const rounds = state?.rounds || {};
 
   const samples = [];
-  const coverage = { submissions: 0, pending: 0, notFound: 0, tooFewReveals: 0, failedCommitCheck: 0, undecodable: 0 };
+  const coverage = { submissions: 0, rounds: 0, pending: 0, notFound: 0, noResult: 0, badShape: 0, tooFewReveals: 0, lateReveals: 0 };
   for (const job of jobs || []) {
+    const { quota, forfeitLine, jury } = decisionOf(job);
     for (const sub of job.submissions || []) {
-      const aggId = lc(sub.verdiktaAggId);
-      if (!isRoundId(aggId)) continue;
-      const rec = rounds[roundKey(job.jobId, aggId)];
-      const ts = rec?.startTs || sub.submittedAt || 0;
-      if (ts < from || ts > now) continue;
-      coverage.submissions++;
-      if (!rec) { coverage.pending++; continue; }
-      if (rec.notFound) { coverage.notFound++; continue; }
-      coverage.failedCommitCheck += rec.reveals.filter((r) => r.hashOk === false).length;
-      coverage.undecodable += rec.reveals.filter((r) => r.decodeError).length;
-      const verified = rec.reveals.filter((r) => r.hashOk === true && r.scores);
-      const sp = roundSpread(verified);
-      if (!sp) { coverage.tooFewReveals++; continue; }
-      const countedReveals = verified.filter((r) => r.counted);
-      const counted = roundSpread(countedReveals);
-      const clustered = clusteredSpread([...countedReveals].sort((a, b) => (a.block || 0) - (b.block || 0) || a.slot - b.slot));
-      const acceptBySlot = Object.fromEntries(sp.used.map((slot, i) => [slot, sp.accept[i]]));
-      samples.push({
-        jobId: job.jobId,
-        title: job.title || null,
-        threshold: job.threshold ?? null,
-        submissionId: sub.submissionId,
-        hunter: sub.hunter || null,
-        status: sub.onChainStatus || sub.status || null,
-        finalScore: rec.finalAccept ?? sub.acceptance ?? null,
-        aggId,
-        ts,
-        n: sp.n,
-        sd: round2(sp.sd),
-        var: sp.var,
-        countedN: counted ? counted.n : 0,
-        countedSd: counted ? round2(counted.sd) : null,
-        countedVar: counted ? counted.var : null,
-        clusteredN: clustered ? clustered.n : 0,
-        clusteredSd: clustered ? round2(clustered.sd) : null,
-        clusteredVar: clustered ? clustered.var : null,
-        clusteredDropped: clustered ? clustered.dropped : 0,
-        median: round2(sp.median),
-        range: round2(sp.range),
-        maxDev: round2(sp.maxDev),
-        reveals: verified
-          .filter((r) => acceptBySlot[r.slot] != null)
-          .sort((a, b) => a.block - b.block || a.slot - b.slot)
-          .map((r) => ({
+      const ids = submissionRoundIds(sub);
+      let counted = false;
+      ids.forEach((aggId, k) => {
+        const rec = rounds[roundKey(job.jobId, aggId)];
+        const ts = rec?.startTs || sub.submittedAt || 0;
+        if (ts < from || ts > now) return;
+        if (!counted) { coverage.submissions++; counted = true; }
+        coverage.rounds++;
+        if (!rec) { coverage.pending++; return; }
+        if (rec.notFound) { coverage.notFound++; return; }
+        coverage.lateReveals += (rec.late || []).length;
+        if (!rec.finalized) { if (rec.settled) coverage.noResult++; return; }
+        if (rec.badShape) { coverage.badShape++; return; }
+        const reveals = rec.reveals || [];
+        const sp = roundSpread(reveals.map((r) => fundScore(r.fund)));
+        if (!sp) { coverage.tooFewReveals++; return; }
+        const cluster = Array.isArray(rec.cluster) && rec.cluster.length ? new Set(rec.cluster) : null;
+        const cl = cluster ? roundSpread(reveals.filter((r) => cluster.has(r.slot)).map((r) => fundScore(r.fund))) : null;
+        const { passCount, outcome } = judgeRound(reveals.map((r) => r.fund), job.threshold, quota, forfeitLine);
+        const latest = k === ids.length - 1;
+        samples.push({
+          jobId: job.jobId,
+          title: job.title || null,
+          threshold: job.threshold ?? null,
+          quota,
+          forfeitLine,
+          jury,
+          submissionId: sub.submissionId,
+          round: k + 1,
+          rounds: ids.length,
+          hunter: sub.hunter || null,
+          // the submission's status describes its latest round only
+          status: latest ? (sub.onChainStatus || sub.status || null) : null,
+          finalScore: rec.finalAccept ?? null,
+          passCount,
+          outcome,
+          aggId,
+          ts,
+          n: sp.n,
+          sd: round2(sp.sd),
+          var: sp.var,
+          clusterKnown: !!cluster,
+          clusterN: cl ? cl.n : (cluster ? cluster.size : 0),
+          clusterSd: cl ? round2(cl.sd) : null,
+          clusterVar: cl ? cl.var : null,
+          lateReveals: (rec.late || []).length,
+          median: round2(sp.median),
+          range: round2(sp.range),
+          maxDev: round2(sp.maxDev),
+          reveals: reveals.map((r) => ({
             slot: r.slot,
             operator: r.operator,
+            key: r.key || null,
             jobId: jobIdText(r.jobId),
-            accept: round2(acceptBySlot[r.slot]),
-            counted: !!r.counted,
-            justificationCid: r.cid || null,
+            accept: round2(fundScore(r.fund)),
+            inCluster: cluster ? cluster.has(r.slot) : null,
             block: r.block
           }))
+        });
       });
     }
   }
   samples.sort((a, b) => b.sd - a.sd || b.ts - a.ts);
 
-  // mode: all verified reveals (default), 'counted' (the aggregator's 3), or
-  // 'clustered' (counted, minus a reveal far from the clustered pair).
+  // mode: every counted reveal (default) or 'cluster' (the bonus-paid P, where known).
   const strip = (rs, mode) => rs
-    .filter((s) => (mode === 'counted' ? s.countedVar != null : mode === 'clustered' ? s.clusteredVar != null : true))
-    .map((s) => (mode === 'counted' ? { n: s.countedN, var: s.countedVar }
-      : mode === 'clustered' ? { n: s.clusteredN, var: s.clusteredVar }
-        : { n: s.n, var: s.var }));
+    .filter((s) => (mode === 'cluster' ? s.clusterVar != null : true))
+    .map((s) => (mode === 'cluster' ? { n: s.clusterN, var: s.clusterVar } : { n: s.n, var: s.var }));
 
   // Daily buckets measured back from `now` (newest = daysAgo 0), like the arbiters
   // site's Response Timing chart.
@@ -269,9 +273,9 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
     const lo = hi - 86400;
     const day = samples.filter((s) => s.ts > lo && s.ts <= hi);
     const p = pooled(strip(day));
-    const c = pooled(strip(day, 'clustered'));
+    const c = pooled(strip(day, 'cluster'));
     daily.push({ daysAgo: d, rounds: p.rounds, pooledSd: p.pooledSd, medianRoundSd: p.medianRoundSd, p90RoundSd: p.p90RoundSd,
-      clusteredPooledSd: c.pooledSd });
+      clusterPooledSd: c.pooledSd });
   }
 
   // First half vs second half of the window: is the spread coming down?
@@ -284,38 +288,48 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
 
   const byBounty = new Map();
   for (const s of samples) {
-    if (!byBounty.has(s.jobId)) byBounty.set(s.jobId, { jobId: s.jobId, title: s.title, threshold: s.threshold, list: [] });
+    if (!byBounty.has(s.jobId)) byBounty.set(s.jobId, { jobId: s.jobId, title: s.title, threshold: s.threshold, quota: s.quota, list: [] });
     byBounty.get(s.jobId).list.push(s);
   }
   const bounties = [...byBounty.values()].map((b) => ({
-    jobId: b.jobId, title: b.title, threshold: b.threshold, ...pooled(strip(b.list)),
+    jobId: b.jobId, title: b.title, threshold: b.threshold, quota: b.quota, ...pooled(strip(b.list)),
     lastTs: Math.max(...b.list.map((s) => s.ts))
   })).sort((a, b) => b.pooledSd - a.pooledSd || b.rounds - a.rounds);
 
-  // Per arbiter (operator + jobId): how far each of its scores sits from the mean
-  // of the OTHER arbiters in the same round. A consistent sign is a lean (the
-  // arbiter scores persistently high or low); a large mean |gap| is noise.
+  // Per arbiter (keeper key): how far each of its scores sits from the mean of the
+  // OTHER arbiters in the same round. A consistent sign is a lean (the arbiter scores
+  // persistently high or low); a large mean |gap| is noise.
   const arb = new Map();
   for (const s of samples) {
     const total = s.reveals.reduce((acc, r) => acc + r.accept, 0);
     for (const r of s.reveals) {
       const gap = r.accept - (total - r.accept) / (s.reveals.length - 1);
-      const key = `${r.operator}:${r.jobId || ''}`;
-      if (!arb.has(key)) arb.set(key, { operator: r.operator, jobId: r.jobId, gaps: [], rounds: [] });
+      const key = r.key || `${r.operator}:${r.jobId || ''}`;
+      if (!arb.has(key)) arb.set(key, { key: r.key, operator: r.operator, jobId: r.jobId, gaps: [], rounds: [], inCluster: 0, clusterKnown: 0 });
       const a = arb.get(key);
       a.gaps.push(gap);
-      a.rounds.push({ jobId: s.jobId, submissionId: s.submissionId, gap: round2(gap) });
+      a.rounds.push({ jobId: s.jobId, submissionId: s.submissionId, round: s.round, gap: round2(gap) });
+      if (r.inCluster != null) { a.clusterKnown++; if (r.inCluster) a.inCluster++; }
     }
   }
   const arbiters = [...arb.values()].map((a) => ({
+    key: a.key,
     operator: a.operator,
     jobId: a.jobId,
     reveals: a.gaps.length,
     meanGap: round2(mean(a.gaps)),
     meanAbsGap: round2(mean(a.gaps.map(Math.abs))),
     farFrac: round2(a.gaps.filter((g) => Math.abs(g) > FAR_GAP).length / a.gaps.length),
+    clusterFrac: a.clusterKnown ? round2(a.inCluster / a.clusterKnown) : null,
     worst: [...a.rounds].sort((x, y) => Math.abs(y.gap) - Math.abs(x.gap))[0]
   })).sort((x, y) => y.meanAbsGap - x.meanAbsGap || y.reveals - x.reveals);
+
+  // Rounds by their jury's N (the counted reveals: 4 small, 13 medium, 27 large).
+  const revealCounts = {};
+  for (const s of samples) revealCounts[s.n] = (revealCounts[s.n] || 0) + 1;
+
+  const outcomes = { pass: 0, soft_fail: 0, hard_fail: 0, unknown: 0 };
+  for (const s of samples) outcomes[s.outcome || 'unknown']++;
 
   return {
     windowDays,
@@ -323,25 +337,47 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
     to: now,
     thresholds: { agreeSd: AGREE_SD, outlierSd: OUTLIER_SD, farGap: FAR_GAP },
     summary: pooled(strip(samples)),
-    summaryCounted: pooled(strip(samples, 'counted')),
-    summaryClustered: {
-      ...pooled(strip(samples, 'clustered')),
-      droppedRounds: samples.filter((s) => s.clusteredDropped > 0).length
+    summaryCluster: {
+      ...pooled(strip(samples, 'cluster')),
+      unknownRounds: samples.filter((s) => !s.clusterKnown).length
     },
-    revealCounts: {
-      three: samples.filter((s) => s.n === 3).length,
-      four: samples.filter((s) => s.n === 4).length,
-      other: samples.filter((s) => s.n !== 3 && s.n !== 4).length
-    },
+    revealCounts,
+    outcomes,
     halves,
     daily,
     bounties,
     arbiters,
-    samples: samples.map(({ var: _v, countedVar: _cv, clusteredVar: _clv, ...s }) => s),
+    samples: samples.map(({ var: _v, clusterVar: _cv, ...s }) => s),
     coverage,
     lastRunAt: state?.lastRunAt || null,
     lastError: state?.lastError || null
   };
+}
+
+/**
+ * Round-level v2 facts over every cached round (the collector's look-back): how rounds ended,
+ * beacon stages, prepay lost to the treasury, and late reveals (scored, not counted).
+ */
+function summarizeRounds(state) {
+  const out = { rounds: 0, finalized: 0, failed: 0, cancelled: 0, beaconRounds: 0, treasuryRounds: 0,
+    toTreasuryWei: '0', lateReveals: 0, roundsWithLate: 0, lookbackDays: LOOKBACK_DAYS };
+  let wei = 0n;
+  for (const r of Object.values(state?.rounds || {})) {
+    if (r.notFound || !r.settled) continue;
+    out.rounds++;
+    if (r.finalized) out.finalized++;
+    else if (r.phase === 9) out.cancelled++;
+    else if (r.phase === 8) out.failed++;
+    if (r.beacons > 0) out.beaconRounds++;
+    const t = BigInt(r.toTreasuryWei || '0');
+    if (t > 0n) { out.treasuryRounds++; wei += t; }
+    const late = (r.late || []).length;
+    out.lateReveals += late;
+    if (late) out.roundsWithLate++;
+  }
+  out.toTreasuryWei = wei.toString();
+  out.toTreasuryEth = ethers.formatEther(wei);
+  return out;
 }
 
 // ------------------------------------------------------------
@@ -368,9 +404,24 @@ async function getLogsChunked(provider, filter, fromBlock, toBlock) {
 
 const roundKey = (jobId, aggId) => `${jobId}:${lc(aggId)}`;
 
-async function aggCall(ctx, aggAddr, fn, args) {
-  const data = await withRetry(() => ctx.provider.call({ to: aggAddr, data: AGG_IFACE.encodeFunctionData(fn, args) }));
-  return AGG_IFACE.decodeFunctionResult(fn, data);
+async function ifaceCall(ctx, iface, to, fn, args) {
+  const data = await withRetry(() => ctx.provider.call({ to, data: iface.encodeFunctionData(fn, args) }));
+  return iface.decodeFunctionResult(fn, data);
+}
+const aggCall = (ctx, aggAddr, fn, args) => ifaceCall(ctx, AGG_IFACE, aggAddr, fn, args);
+
+/** The keeper's jobIdOf(key) (static per key; memoized on ctx). Null when unreadable. */
+async function jobIdOfKey(ctx, aggAddr, key) {
+  ctx.jobIds = ctx.jobIds || {};
+  ctx.keepers = ctx.keepers || {};
+  if (ctx.jobIds[key] !== undefined) return ctx.jobIds[key];
+  try {
+    if (!ctx.keepers[aggAddr]) ctx.keepers[aggAddr] = lc((await aggCall(ctx, aggAddr, 'keeper', []))[0]);
+    ctx.jobIds[key] = (await ifaceCall(ctx, KEEPER_IFACE, ctx.keepers[aggAddr], 'jobIdOf', [key]))[0];
+  } catch {
+    ctx.jobIds[key] = null;
+  }
+  return ctx.jobIds[key];
 }
 
 /**
@@ -395,54 +446,99 @@ async function fetchRound(ctx, aggregator, aggId, hintTs = 0) {
   const base = { aggId, aggregator: aggAddr, phase, startTs, reqBlock, fetchedAt };
   if (!FINAL_PHASES.has(phase)) {
     // Still running (re-read next pass), or dead with no scores (final).
-    return { ...base, finalized: false, finalAccept: null, settled: DEAD_PHASES.has(phase), reveals: [] };
+    if (!DEAD_PHASES.has(phase)) return { ...base, finalized: false, finalAccept: null, settled: false, reveals: [] };
+    return { ...base, finalized: false, finalAccept: null, settled: true, reveals: [], ...(await roundMoney(ctx, aggAddr, aggId, info, phase)) };
   }
 
-  // Every outcome's counted scores, in reveal order.
-  const perOutcome = [];
-  for (let o = 0; o < MAX_OUTCOMES; o++) {
-    const r = await aggCall(ctx, aggAddr, 'getOutcomeScores', [aggId, o]);
-    if (!r.valid) break;
-    perOutcome.push(r.scores.map((x) => x.toString()));
-  }
-  const n = perOutcome[0]?.length || 0;
-  const vectors = Array.from({ length: n }, (_, i) => perOutcome.map((col) => col[i]));
-
+  // The result's shape decides the FUND index (BountyRules.judge: len - 1, len 1 or 2 only).
   const ev = await aggCall(ctx, aggAddr, 'getEvaluation', [aggId]);
-  const lk = ev.aggregated.map(Number);
-  const sum = lk.reduce((x, y) => x + y, 0);
-  const finalAccept = lk.length > ACCEPT_INDEX && sum > 0 ? round2((100 * lk[ACCEPT_INDEX]) / sum) : null;
+  const len = ev.aggregated.length;
+  const badShape = len !== 1 && len !== 2;
+  const fundIdx = Math.max(0, len - 1);
+  const finalAccept = len ? round2(fundScore(ev.aggregated[fundIdx])) : null;
+  const os = await aggCall(ctx, aggAddr, 'getOutcomeScores', [aggId, fundIdx]);
+  const fund = os.valid ? os.scores.map((x) => x.toString()) : [];
+  const n = fund.length;
 
-  // Reveal order -> slots, from the counted RevealReceived events.
+  // Reveal order -> slots (counted RevealReceived), late reveals, and the cluster (BonusPayment).
   const deadline = Number(info.deadline) || startTs;
   const span = Math.max(0, deadline - startTs) + EVENT_SLACK_SECONDS;
   const toBlock = Math.min(head, reqBlock + Math.ceil(span / ctx.blockTime));
-  const topics = [AGG_IFACE.getEvent('RevealReceived').topicHash, aggId];
-  const logs = await getLogsChunked(provider, { address: aggAddr, topics }, reqBlock, toBlock);
-  logs.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
+  const scan = async (name) => {
+    const logs = await getLogsChunked(provider, { address: aggAddr, topics: [AGG_IFACE.getEvent(name).topicHash, aggId] }, reqBlock, toBlock);
+    return logs.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index)
+      .map((log) => ({ log, e: AGG_IFACE.parseLog(log) })).filter((x) => x.e);
+  };
+  const [revealLogs, bonusLogs] = [await scan('RevealReceived'), await scan('BonusPayment')];
   const order = [];
-  for (const log of logs) {
-    const e = AGG_IFACE.parseLog(log);
-    if (e && !e.args.late) order.push({ slot: Number(e.args.pollIndex), block: log.blockNumber });
+  const late = [];
+  for (const { log, e } of revealLogs) {
+    if (e.args.late) late.push({ slot: Number(e.args.pollIndex), qcode: Number(e.args.qcode), block: log.blockNumber });
+    else order.push({ slot: Number(e.args.pollIndex), block: log.blockNumber });
   }
+  // No BonusPayment (zero fees, or bonusMultiplier 0): the cluster is unknown, not empty.
+  const cluster = bonusLogs.length ? [...new Set(bonusLogs.map(({ e }) => Number(e.args.pollIndex)))] : null;
+
   // The scores are authoritative; if the scan missed reveals, keep them without an arbiter.
   const known = order.length === n;
   const reveals = [];
   for (let i = 0; i < n; i++) {
-    const at = known ? order[i] : { slot: i, block: null };
+    const at = known ? order[i] : { slot: null, block: null };
     let operator = null;
     let key = null;
+    let jobId = null;
     if (known) {
       const sl = (await aggCall(ctx, aggAddr, 'getSlot', [aggId, at.slot]))[0];
       operator = lc(sl.oracle);
       key = lc(sl.key);
+      jobId = await jobIdOfKey(ctx, aggAddr, sl.key);
     }
-    reveals.push({ slot: at.slot, operator, jobId: key, block: at.block, counted: true, hashOk: true, scores: vectors[i] });
+    reveals.push({ slot: at.slot, operator, key, jobId, block: at.block, fund: fund[i] });
   }
-  // getEvaluation's justifications name only the clustered P arbiters, so they are not mapped
-  // onto reveals; a reveal carries no CID.
 
-  return { ...base, finalized: true, finalAccept, revealRequests: n, settled: true, arbitersKnown: known, reveals };
+  return { ...base, finalized: true, finalAccept, outcomes: len, badShape, settled: true, arbitersKnown: known,
+    cluster: known ? cluster : null, late, reveals, ...(await roundMoney(ctx, aggAddr, aggId, info, phase)) };
+}
+
+/**
+ * Where an ended round's unspent prepay went, and whether it ran a beacon stage (analytics' v2
+ * section). A finalized round refunds the requester; a cancelled one (phase 9) sends everything
+ * received to the treasury (RoundCancelled); a failed one (phase 8) emits RequesterRefunded, whose
+ * payee is the treasury for a missed beacon quorum, a commit phase with M commits never closed or
+ * promoted, or a failed draw after beacons when the walk does not scan the whole class.
+ * Returns { beacons, failPhase, refundedWei, toTreasuryWei } (null: the event was not found).
+ */
+async function roundMoney(ctx, aggAddr, aggId, info, phase) {
+  if (phase === 9) {
+    return { beacons: null, failPhase: null, refundedWei: '0', toTreasuryWei: info.received.toString() };
+  }
+  // A failed round's refund comes when it is settled, possibly well after the deadline (or, for a
+  // failed draw, within the draw's 1-day limit): scan a day past either.
+  const startTs = Number(info.requestTime);
+  const reqBlock = Number(info.requestBlock);
+  const end = Math.max(Number(info.deadline) || startTs, startTs) + (phase === 8 ? 86400 : 0) + EVENT_SLACK_SECONDS;
+  const toBlock = Math.min(ctx.head, reqBlock + Math.ceil((end - startTs) / ctx.blockTime));
+  const scan = async (name) => (await getLogsChunked(ctx.provider,
+    { address: aggAddr, topics: [AGG_IFACE.getEvent(name).topicHash, aggId] }, reqBlock, toBlock))
+    .map((log) => AGG_IFACE.parseLog(log)).filter(Boolean);
+  const beaconLogs = await scan('BeaconStageStarted');
+  const beacons = beaconLogs.length ? Number(beaconLogs[0].args.beacons) : 0;
+  if (phase !== 8) return { beacons, failPhase: null, refundedWei: null, toTreasuryWei: '0' };
+  ctx.treasuries = ctx.treasuries || {};
+  if (!ctx.treasuries[aggAddr]) ctx.treasuries[aggAddr] = lc((await aggCall(ctx, aggAddr, 'treasury', []))[0]);
+  const [refunds, fails] = [await scan('RequesterRefunded'), await scan('EvaluationFailed')];
+  let refunded = 0n;
+  let toTreasury = 0n;
+  for (const e of refunds) {
+    if (lc(e.args.requester) === ctx.treasuries[aggAddr]) toTreasury += e.args.amount;
+    else refunded += e.args.amount;
+  }
+  return {
+    beacons,
+    failPhase: fails.length ? Number(fails[0].args.phase) : null,
+    refundedWei: refunded.toString(),
+    toTreasuryWei: toTreasury.toString()
+  };
 }
 
 // ------------------------------------------------------------
@@ -541,7 +637,7 @@ async function runCollection(targets, provider, { file = STATE_FILE, now = Math.
 let timer = null;
 
 /**
- * @param getTargets  async () => [{ jobId, aggId, ts, aggregator }] for every evaluated submission
+ * @param getTargets  async () => [{ jobId, aggId, ts, aggregator }] for every round of every evaluated submission
  * @param getService  () => VerdiktaService (its provider) or null
  */
 function startScoreSpreadService(getTargets, getService) {
@@ -576,12 +672,14 @@ module.exports = {
   runCollection,
   fetchRound,
   buildReport,
+  summarizeRounds,
   readState,
   getStatus,
   MAX_REPORT_DAYS,
   // exported for tests
   roundSpread,
-  clusteredSpread,
+  judgeRound,
+  submissionRoundIds,
   pooled,
   roundKey,
   jobIdText,

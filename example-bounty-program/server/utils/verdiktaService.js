@@ -38,6 +38,7 @@ const KEEPER_ABI = [
   'function jobIdOf(bytes32 key) view returns (bytes32)',
   'function isFrozen(bytes32 key) view returns (bool)',
   'function classSize(uint64 cls) view returns (uint256)',
+  'function scansAll(uint64 cls) view returns (bool)',
   'function points() view returns (uint16 gain, uint16 minor, uint16 major, uint16 fail, uint16 nocommit, uint16 start, uint16 cap)',
   'function stakeRequirement() view returns (uint256)',
   'function callDeadline() view returns (uint40)',
@@ -47,8 +48,31 @@ const KEEPER_ABI = [
 // The keeper's arbiter flags.
 const F_REGISTERED = 1, F_PAUSED = 2, F_BANNED = 4, F_EXITING = 8, F_UNDERSTAKED = 32, F_RESYNC = 64;
 // getSlot flags.
-const S_COMMITTED = 2, S_PROMOTED = 4, S_REVEALED = 8, S_COUNTED = 16;
+const S_DISPATCHED = 1, S_COMMITTED = 2, S_PROMOTED = 4, S_REVEALED = 8, S_COUNTED = 16;
 const QCODES = { 0: null, 1: 'close', 2: 'off', 3: 'far' };
+// SlotSkipped reasons (ReputationAggregator._pollSlot / _promote / _settle).
+const SKIP_REASONS = Object.freeze({
+  1: 'operator owner() failed (no payee): not dispatched, not paid',
+  2: 'commit request dispatch reverted: not paid',
+  3: 'reveal request dispatch reverted (promoted, but never asked to reveal)',
+  4: 'keeper outcome call reverted at settlement (scores not applied)'
+});
+// The draw may not run later than this after the request (ReputationAggregator.DRAW_GRACE).
+const DRAW_GRACE_SECONDS = 86400;
+// What happens to the unspent prepay of a round that failed in each phase (EvaluationFailed.phase).
+const FAIL_MONEY = Object.freeze({
+  1: 'draw failed: refunded (a pool shortage or too few eligible), but to the treasury after a beacon stage when the selection walk does not cover the whole class',
+  2: 'beacon quorum missed: the beacons that answered are paid, the rest goes to the treasury',
+  3: 'commit phase: to the treasury if M commits arrived (never closed), otherwise refunded',
+  4: 'closed but never promoted: to the treasury',
+  5: 'reveal phase: refunded'
+});
+
+// JuryBeacons: a beacon stage needs `quorum` values; it polls max(polled, quorum) beacons.
+const BEACONS_ABI = [
+  'function quorum() view returns (uint8)',
+  'function polled() view returns (uint8)'
+];
 
 // ArbiterOperator (Chainlink Operator) ABI — ownership is the operator's own `owner()`.
 const OPERATOR_ABI = [
@@ -56,17 +80,18 @@ const OPERATOR_ABI = [
 ];
 
 /**
- * An arbiter's status for analytics, from its keeper state (v2):
- *   inactive  not registered, paused, exiting, banned or under-staked: never selected
- *   blocked   blocked for offenses until blockedUntil
+ * An arbiter's status for analytics, from its keeper state (v2). The client shows the same names
+ * (Analytics.jsx ARBITER_STATUS):
+ *   inactive  not registered, paused, exiting or under-staked: never selected
+ *   blocked   banned, or locked until blockedUntil (the keeper's Table 2 lock after a score reached 0)
  *   frozen    a health call went unanswered (or its chain is re-syncing): not selected until it answers
- *   new       still at the starting scores
+ *   new       both scores still at points().start
  *   active    selectable
  */
 function arbiterStatus(a, { now = Math.floor(Date.now() / 1000), start = 500 } = {}) {
   const f = Number(a.flags);
-  if (!(f & F_REGISTERED) || (f & (F_PAUSED | F_BANNED | F_EXITING | F_UNDERSTAKED))) return 'inactive';
-  if (Number(a.blockedUntil) > now) return 'blocked';
+  if (!(f & F_REGISTERED) || (f & (F_PAUSED | F_EXITING | F_UNDERSTAKED))) return 'inactive';
+  if ((f & F_BANNED) || Number(a.blockedUntil) > now) return 'blocked';
   if (a.frozen || (f & F_RESYNC)) return 'frozen';
   if (Number(a.qualityScore) === start && Number(a.timelinessScore) === start) return 'new';
   return 'active';
@@ -80,6 +105,7 @@ class VerdiktaService {
    * @param {number} deployBlock  lower bound for event scans (the earliest aggregator's deploy block)
    */
   constructor(providerUrl, aggregators, deployBlock = 0) {
+    this._treasuries = {};               // aggregator -> treasury() (owner-settable; cached 10 min)
     this.provider = new ethers.JsonRpcProvider(providerUrl);
     this.aggregatorAddresses = (Array.isArray(aggregators) ? aggregators : [aggregators]).filter(Boolean);
     this.aggregatorAddress = this.aggregatorAddresses[0];
@@ -163,9 +189,11 @@ class VerdiktaService {
   }
 
   /**
-   * One jury's configuration. K arbiters are drawn, the first M of the commits are promoted, the
-   * N-th reveal finalizes, P cluster for the bonus. The v1 names are kept as aliases for older
-   * clients (commitOraclesToPoll = K, oraclesToPoll = M, requiredResponses = N, clusterSize = P).
+   * One jury's configuration. K arbiters are drawn; the commit window closes at M+ commits, or after
+   * T+ (from the draw) with at least M; M of the commits are promoted; the N-th reveal finalizes; the
+   * P nearest reveals cluster for the bonus. The round deadline (responseTimeoutSeconds) runs from
+   * the draw. The v1 names are kept as aliases for older clients (commitOraclesToPoll = K,
+   * oraclesToPoll = M, requiredResponses = N, clusterSize = P).
    */
   async getAggregatorConfig(jury = 0) {
     const agg = this.aggregatorFor({ jury });
@@ -174,11 +202,25 @@ class VerdiktaService {
         agg.K(), agg.M(), agg.N(), agg.P(), agg.bonusMultiplier(), agg.responseTimeoutSeconds(),
         agg.maxOracleFee(), agg.tPlus(), agg.revealWindow()
       ]), 'aggregator-config');
+    // Newer reads: optional, so an older deployment still answers the core config.
+    const opt = async (fn) => { try { return await this._withRetry(fn, 'aggregator-config-opt', 2); } catch { return null; } };
+    const [drawRewardFees, promoteRewardFees, spreadFloor, beaconsAddr, treasury] = await Promise.all([
+      opt(() => agg.drawRewardFees()), opt(() => agg.promoteRewardFees()), opt(() => agg.spreadFloor()),
+      opt(() => agg.beacons()), opt(() => agg.treasury())
+    ]);
+    let beaconQuorum = null;
+    let beaconPolled = null;
+    if (beaconsAddr && beaconsAddr !== ethers.ZeroAddress) {
+      const jb = new ethers.Contract(beaconsAddr, BEACONS_ABI, this.provider);
+      [beaconQuorum, beaconPolled] = await Promise.all([opt(() => jb.quorum()), opt(() => jb.polled())]);
+    }
     const k = Number(K), m = Number(M), n = Number(N), p = Number(P);
     return {
       jury: Number(jury),
       aggregator: this.aggregatorAddresses[jury],
       K: k, M: m, N: n, P: p,
+      // the commit window closes at once at M+ commits (ReputationAggregator.drawJury)
+      mPlus: m + Math.floor((k - m + 1) / 2),
       commitOraclesToPoll: k,
       oraclesToPoll: m,
       requiredResponses: n,
@@ -187,7 +229,15 @@ class VerdiktaService {
       responseTimeoutSeconds: Number(responseTimeoutSeconds),
       tPlus: Number(tPlus),
       revealWindow: Number(revealWindow),
-      maxOracleFee: ethers.formatEther(maxOracleFee)
+      maxOracleFee: ethers.formatEther(maxOracleFee),
+      drawRewardFees: drawRewardFees == null ? null : Number(drawRewardFees),
+      promoteRewardFees: promoteRewardFees == null ? null : Number(promoteRewardFees),
+      // on the arbiters' 0..1,000,000 scale; / 10,000 = points of 100
+      spreadFloor: spreadFloor == null ? null : Number(spreadFloor),
+      beacons: beaconsAddr && beaconsAddr !== ethers.ZeroAddress ? beaconsAddr : null,
+      beaconQuorum: beaconQuorum == null ? null : Number(beaconQuorum),
+      beaconPolled: beaconPolled == null ? null : Number(beaconPolled),
+      treasury: treasury || null
     };
   }
 
@@ -315,6 +365,11 @@ class VerdiktaService {
    * draw under its settings. Eligible (the keeper's own rule, _eligibleAt): registered, not paused,
    * banned, exiting or under-staked, not blocked, not frozen, and posting a fee at or below the
    * bounty's fee ceiling. A fee below the bounty's floor is paid the floor (it doesn't exclude).
+   * The draw needs K DISTINCT eligible arbiters (the keeper reverts NotEnoughEligible otherwise and
+   * the round fails with a refund).
+   *
+   * A beacon bounty also needs the JuryBeacons quorum from the same class, checked separately:
+   * beacons have no fee cap (ReputationKeeper.pickBeacons: registered and selectable only).
    *
    * @param {number} classId
    * @param {{maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling, minOracleFee?, withBeacons?}} oracleSettings (wei strings)
@@ -334,7 +389,22 @@ class VerdiktaService {
     try {
       K = Number(await this._withRetry(() => this.aggregatorFor({ jury }).K(), 'K')) || K;
     } catch (_) { /* keep default */ }
-    const drawSize = K + (withBeacons ? 4 : 0);   // beacons are drawn from the same class (4 polled)
+    // Beacon quorum (JuryBeacons.quorum) and whether a draw walks the whole class list.
+    let beaconQuorum = null;
+    let scansAll = null;
+    if (withBeacons) {
+      try {
+        const addr = await this._withRetry(() => this.aggregatorFor({ jury }).beacons(), 'beacons');
+        if (addr && addr !== ethers.ZeroAddress) {
+          beaconQuorum = Number(await this._withRetry(() => new ethers.Contract(addr, BEACONS_ABI, this.provider).quorum(), 'quorum'));
+        }
+      } catch (_) { /* unknown */ }
+      try {
+        const keeper = await this.getReputationKeeper();
+        scansAll = Boolean(await this._withRetry(() => keeper.scansAll(cls), 'scansAll'));
+      } catch (_) { /* unknown */ }
+    }
+    const drawSize = K;
 
     const now = Math.floor(Date.now() / 1000);
     const inClass = oracles.filter(o => !o.error && Array.isArray(o.classes) && o.classes.includes(cls));
@@ -348,6 +418,10 @@ class VerdiktaService {
     });
     const pricedOut = selectable.length - eligible.length;
     const frozen = inClass.filter(o => arbiterStatus(o, { now, start }) === 'frozen').length;
+    // distinct keys: the keeper never draws one arbiter twice
+    const eligibleCount = new Set(eligible.map(o => o.key)).size;
+    const juryServable = eligibleCount >= K;
+    const beaconsServable = !withBeacons || (beaconQuorum != null ? selectable.length >= beaconQuorum : null);
 
     // Owner concentration among the eligible pool.
     const ownerMap = await this.getOwnerMap(eligible.map(o => o.oracle));
@@ -369,10 +443,18 @@ class VerdiktaService {
     const warnings = [];
     if (inClass.length === 0) {
       warnings.push(`No arbiters are registered for class ${cls}. Evaluations for this bounty cannot be drawn until at least ${K} join the class.`);
-    } else if (eligible.length === 0) {
-      warnings.push(`None of the ${inClass.length} arbiter(s) registered for class ${cls} is selectable and priced at or below this bounty's fee ceiling (${ethers.formatEther(maxFeeWei)} ETH). A draw would fail for want of a jury (the prepay is refunded) — raise the ceiling or pick another class.`);
-    } else if (eligible.length < drawSize) {
-      warnings.push(`Only ${eligible.length} eligible arbiter(s) in class ${cls}, but this bounty's jury draws ${K}${withBeacons ? ' (plus 4 beacon candidates)' : ''}. Draws would fail for want of a jury (the prepay is refunded) until more join or unfreeze.`);
+    } else if (!juryServable) {
+      warnings.push(`Only ${eligibleCount} distinct arbiter(s) in class ${cls} are selectable and priced at or below this bounty's fee ceiling (${ethers.formatEther(maxFeeWei)} ETH), but this jury draws ${K}. Every draw would fail (EvaluationFailed in the draw phase; the prepay is refunded) until more join, unfreeze, or the ceiling is raised.`);
+    }
+    if (withBeacons) {
+      if (beaconQuorum == null) {
+        warnings.push(`This bounty uses beacons, but the beacon quorum could not be read; the beacon stage needs that many selectable arbiters in class ${cls} (any fee).`);
+      } else if (!beaconsServable) {
+        warnings.push(`This bounty uses beacons: the beacon stage needs ${beaconQuorum} selectable arbiter(s) in class ${cls} (beacons have no fee cap), but only ${selectable.length} are. The draw would fail at the beacon stage (pool shortage; the prepay is refunded).`);
+      }
+      if (scansAll === false) {
+        warnings.push(`Class ${cls} is longer than one selection walk covers, so whether a draw finds ${K} eligible arbiters depends on the seed. After a beacon stage such a failed draw sends the unspent prepay to the treasury, not back to the requester.`);
+      }
     }
     if (pricedOut > 0) {
       warnings.push(`${pricedOut} selectable arbiter(s) in class ${cls} charge more than this bounty's fee ceiling (${ethers.formatEther(maxFeeWei)} ETH) and will not be drawn.`);
@@ -412,7 +494,11 @@ class VerdiktaService {
       totalInClass: inClass.length,
       activeInClass: selectable.length,
       frozenInClass: frozen,
-      eligibleCount: eligible.length,
+      eligibleCount,
+      juryServable,
+      beaconQuorum,
+      beaconsServable,
+      scansAll,
       pricedOutCount: pricedOut,
       distinctOwnersEligible,
       dominantOwner: dominantOwner && !dominantOwner.startsWith('unknown:') ? dominantOwner : null,
@@ -480,6 +566,7 @@ class VerdiktaService {
             timelinessScore: oracle.timelinessScore,
             offenses: oracle.offenses,
             fee: oracle.fee,
+            stakeAmount: oracle.stakeAmount,
             status
           });
         }
@@ -540,13 +627,16 @@ class VerdiktaService {
       deadline: Number(info.deadline) || null,
       windowEnd: Number(info.windowEnd) || null,
       requestTime: Number(info.requestTime),
+      // an undrawn round can be drawn until then; after it only cancelUnsealed (to the treasury)
+      drawExpiresAt: Number(info.requestTime) ? Number(info.requestTime) + DRAW_GRACE_SECONDS : null,
       receivedWei: info.received.toString(),
       baseFeesWei: info.baseFees.toString(),
       bonusesWei: info.bonuses.toString(),
       rewardsWei: info.rewards.toString()
     };
 
-    // Jurors: one slot per drawn arbiter (none before the draw).
+    // Jurors: one slot per drawn arbiter (none before the draw). A skipped slot (SlotSkipped
+    // reason 1 or 2) has its oracle, key and fee set but no flags: it was never dispatched or paid.
     const slots = [];
     if (phase >= 3 && phase !== 9) {
       for (let i = 0; i < K; i++) {
@@ -557,6 +647,8 @@ class VerdiktaService {
           slot: i,
           oracle: s.oracle,
           key: s.key,
+          payee: s.payee && s.payee !== ethers.ZeroAddress ? s.payee : null,
+          dispatched: (f & S_DISPATCHED) !== 0,
           committed: (f & S_COMMITTED) !== 0,
           revealRequested: (f & S_PROMOTED) !== 0,
           revealOK: (f & S_REVEALED) !== 0,
@@ -568,15 +660,18 @@ class VerdiktaService {
       }
     }
 
-    // Events, for timing: from the request block, a bounded window.
+    // Events, for timing and money: from the request block, a bounded window.
     const fromBlock = aggregationStatus.requestBlock;
     const toBlock = Math.min(currentBlock, fromBlock + EVENT_WINDOW);
     const names = ['RequestAIEvaluation', 'JuryDrawn', 'CommitReceived', 'CommitWindowClosed', 'CommitPhaseComplete',
-      'RevealReceived', 'FulfillAIEvaluation', 'EvaluationFailed', 'RoundSettled', 'RoundCancelled'];
+      'RevealReceived', 'FulfillAIEvaluation', 'EvaluationFailed', 'RoundSettled', 'RoundCancelled',
+      'BeaconStageStarted', 'BeaconPayment', 'BasePayment', 'BonusPayment', 'RequesterRefunded', 'SlotSkipped'];
     const byName = {};
     await Promise.all(names.map(async (name) => {
-      const sig = agg.interface.getEvent(name).topicHash;
-      byName[name] = (await this._getLogsChunked(aggAddress, [sig, aggId], fromBlock, toBlock))
+      let ev;
+      try { ev = agg.interface.getEvent(name); } catch { ev = null; }
+      if (!ev) { byName[name] = []; return; }
+      byName[name] = (await this._getLogsChunked(aggAddress, [ev.topicHash, aggId], fromBlock, toBlock))
         .map((log) => ({ log, args: agg.interface.parseLog(log).args }));
     }));
     const first = (name) => byName[name][0] || null;
@@ -603,6 +698,7 @@ class VerdiktaService {
     }
     const failure = first('EvaluationFailed')
       ? { phase: Number(first('EvaluationFailed').args.phase), phaseName: PHASES[Number(first('EvaluationFailed').args.phase)],
+          moneyRule: FAIL_MONEY[Number(first('EvaluationFailed').args.phase)] || null,
           block: first('EvaluationFailed').log.blockNumber, txHash: first('EvaluationFailed').log.transactionHash }
       : null;
     const bySlot = (name) => {
@@ -612,46 +708,160 @@ class VerdiktaService {
     };
     const commits = bySlot('CommitReceived');
     const reveals = bySlot('RevealReceived');
+    const basePaid = bySlot('BasePayment');
+    const bonusPaid = bySlot('BonusPayment');
+    // SlotSkipped: reasons per slot; reason 4 (keeper call at settlement) names no slot.
+    const skips = {};
+    let keeperCallReverted = false;
+    for (const e of byName.SlotSkipped) {
+      const reason = Number(e.args.reason);
+      if (reason === 4) { keeperCallReverted = true; continue; }
+      const i = Number(e.args.pollIndex);
+      (skips[i] = skips[i] || []).push(reason);
+    }
+    const promoteEvent = first('CommitPhaseComplete');
 
     const blockTimestamps = await this._getBlockTimestamps([
-      requestEvent?.block, drawEvent?.block, fulfillment?.block, failure?.block,
+      requestEvent?.block, drawEvent?.block, fulfillment?.block, failure?.block, promoteEvent?.log.blockNumber,
+      first('CommitWindowClosed')?.log.blockNumber,
       ...Object.values(commits).map(e => e.log.blockNumber), ...Object.values(reveals).map(e => e.log.blockNumber)
     ]);
     const at = (e) => e ? { block: e.log.blockNumber, timestamp: blockTimestamps[e.log.blockNumber] ?? null, txHash: e.log.transactionHash } : null;
     if (requestEvent) requestEvent.timestamp = blockTimestamps[requestEvent.block] ?? null;
     if (drawEvent) drawEvent.timestamp = blockTimestamps[drawEvent.block] ?? null;
     if (fulfillment) fulfillment.timestamp = blockTimestamps[fulfillment.block] ?? null;
+    if (failure) failure.timestamp = blockTimestamps[failure.block] ?? null;
+    // Offsets are measured from the draw: the round's deadline and T+ run from it.
+    const drawTs = drawEvent?.timestamp ?? null;
+    const sinceDraw = (t) => (t != null && drawTs != null ? t - drawTs : null);
     for (const s of slots) {
-      s.late = reveals[s.slot] ? Boolean(reveals[s.slot].args.late) : false;
-      s.timing = { commit: at(commits[s.slot]), reveal: at(reveals[s.slot]) };
+      const rv = reveals[s.slot];
+      // A late reveal (after the N-th finalized the round) is scored by its quality code, not counted.
+      s.late = rv ? Boolean(rv.args.late) : false;
+      if (s.late && rv.args.qcode != null) s.quality = QCODES[Number(rv.args.qcode) & 0x0f] || s.quality;
+      s.timing = { commit: at(commits[s.slot]), reveal: at(rv) };
+      s.timing.commitSinceDraw = sinceDraw(s.timing.commit?.timestamp ?? s.committedAt);
+      s.timing.revealSinceDraw = sinceDraw(s.timing.reveal?.timestamp ?? null);
+      s.skipReasons = (skips[s.slot] || []).map((r) => ({ reason: r, text: SKIP_REASONS[r] }));
+      s.skipped = !s.dispatched;
+      s.basePaidWei = basePaid[s.slot] ? basePaid[s.slot].args.amount.toString() : null;
+      s.bonusPaidWei = bonusPaid[s.slot] ? bonusPaid[s.slot].args.amount.toString() : null;
+      // the cluster is known only from bonuses (none are paid when fees are zero)
+      s.inCluster = byName.BonusPayment.length ? Boolean(bonusPaid[s.slot]) : null;
     }
 
+    // Money: refunded vs to the treasury, the reward split, beacons.
+    let treasury = null;
+    try {
+      const c = this._treasuries[aggAddress];
+      if (c && Date.now() - c.ts < 600000) treasury = c.address;
+      else {
+        treasury = await this._withRetry(() => agg.treasury(), 'treasury', 2);
+        this._treasuries[aggAddress] = { address: treasury, ts: Date.now() };
+      }
+    } catch { treasury = null; }
+    const isTreasury = (a) => treasury != null && String(a).toLowerCase() === String(treasury).toLowerCase();
+    const refunds = byName.RequesterRefunded.map((e) => ({
+      to: e.args.requester,
+      amountWei: e.args.amount.toString(),
+      toTreasury: treasury == null ? null : isTreasury(e.args.requester),
+      block: e.log.blockNumber,
+      txHash: e.log.transactionHash
+    }));
+    const cancelled = first('RoundCancelled')
+      ? { toTreasuryWei: first('RoundCancelled').args.toTreasury.toString(), block: first('RoundCancelled').log.blockNumber,
+          txHash: first('RoundCancelled').log.transactionHash }
+      : null;
+    const beaconPayments = byName.BeaconPayment.map((e) => ({ payee: e.args.payee, amountWei: e.args.amount.toString() }));
+    const sumWei = (xs) => xs.reduce((a, x) => a + BigInt(x), 0n);
+    const drawRewardWei = drawEvent ? BigInt(drawEvent.rewardWei) : 0n;
+    const beaconWei = sumWei(beaconPayments.map((b) => b.amountWei));
+    const rewardsWei = BigInt(aggregationStatus.rewardsWei);
+    // promote() emits no reward event: its reward (effMaxFee x promoteRewardFees) is what
+    // getRoundInfo.rewards holds beyond the draw reward and the beacon payments.
+    const promoteRewardWei = promoteEvent && rewardsWei > drawRewardWei + beaconWei ? rewardsWei - drawRewardWei - beaconWei : 0n;
+    let promoter = null;
+    if (promoteEvent) {
+      try {
+        const tx = await this._withRetry(() => this.provider.getTransaction(promoteEvent.log.transactionHash), 'promote tx', 2);
+        promoter = tx?.from || null;
+      } catch { promoter = null; }
+    }
+    const refundedWei = sumWei(refunds.filter((r) => r.toTreasury !== true).map((r) => r.amountWei));
+    const toTreasuryWei = sumWei(refunds.filter((r) => r.toTreasury === true).map((r) => r.amountWei)) +
+      (cancelled ? BigInt(cancelled.toTreasuryWei) : 0n);
+    const money = {
+      treasury,
+      receivedWei: aggregationStatus.receivedWei,
+      baseFeesWei: aggregationStatus.baseFeesWei,
+      bonusesWei: aggregationStatus.bonusesWei,
+      rewardsWei: aggregationStatus.rewardsWei,
+      rewards: {
+        drawWei: drawRewardWei.toString(),
+        drawer: drawEvent?.drawer || null,
+        promoteWei: promoteRewardWei.toString(),
+        promoter,
+        promoteMethod: 'getRoundInfo.rewards - JuryDrawn.reward - BeaconPayment total (promote emits no reward event); the promoter is the CommitPhaseComplete transaction sender',
+        beaconsWei: beaconWei.toString()
+      },
+      beacons: first('BeaconStageStarted')
+        ? { stageStarted: true, picked: Number(first('BeaconStageStarted').args.beacons), payments: beaconPayments,
+            block: first('BeaconStageStarted').log.blockNumber }
+        : (beaconPayments.length ? { stageStarted: true, picked: null, payments: beaconPayments } : null),
+      refunds,
+      cancelled,
+      refundedWei: refundedWei.toString(),
+      toTreasuryWei: toTreasuryWei.toString(),
+      keeperCallReverted
+    };
+    const promotion = promoteEvent
+      ? { ...at(promoteEvent), promoted: Number(promoteEvent.args.promoted), promoter,
+          sinceDraw: sinceDraw(blockTimestamps[promoteEvent.log.blockNumber] ?? null) }
+      : null;
+    const windowClosed = first('CommitWindowClosed')
+      ? { ...at(first('CommitWindowClosed')), sinceDraw: sinceDraw(blockTimestamps[first('CommitWindowClosed').log.blockNumber] ?? null) }
+      : null;
+
+    const dispatched = slots.filter(s => s.dispatched);
     const committed = slots.filter(s => s.committed).length;
     const revealed = slots.filter(s => s.revealOK).length;
     const nowSec = Math.floor(Date.now() / 1000);
+    // Malformed: jurors were actually asked (dispatched slots exist) and none committed. Skipped
+    // slots were never asked, so they say nothing about the package.
+    const malformed = dispatched.length > 0 && committed === 0;
+    const drawExpired = (phase === 1 || phase === 2) && aggregationStatus.requestTime > 0 &&
+      nowSec > aggregationStatus.requestTime + DRAW_GRACE_SECONDS;
     let outcome;
     if (phase === 6 || phase === 7) outcome = 'COMPLETED';
-    else if (phase === 9) outcome = 'CANCELLED (never drawn)';
+    else if (phase === 9) outcome = 'CANCELLED (never drawn; prepay to the treasury)';
     else if (phase === 8) {
-      if (slots.length > 0 && committed === 0) outcome = LIKELY_MALFORMED_OUTCOME;
+      if (malformed) outcome = LIKELY_MALFORMED_OUTCOME;
       else outcome = `FAILED (${failure ? failure.phaseName : 'unknown'} phase)`;
+    } else if (drawExpired) {
+      outcome = 'DRAW EXPIRED: can only be cancelled (prepay to the treasury)';
     } else if (phase >= 3 && aggregationStatus.deadline && nowSec > aggregationStatus.deadline) {
       // past its deadline, not yet settled
-      outcome = slots.length > 0 && committed === 0 ? LIKELY_MALFORMED_OUTCOME : `FAILED (${PHASES[phase]} phase, not yet settled)`;
+      outcome = malformed ? LIKELY_MALFORMED_OUTCOME : `FAILED (${PHASES[phase]} phase, not yet settled)`;
     } else {
       outcome = `IN PROCESS (${PHASES[phase]} phase)`;
     }
 
     const analysis = {
       totalSlots: slots.length,
+      dispatched: dispatched.length,
+      skipped: slots.filter(s => s.skipped).length,
+      skippedSlotIds: slots.filter(s => s.skipped).map(s => s.slot),
       committed,
       promoted: slots.filter(s => s.revealRequested).length,
       revealed,
       counted: slots.filter(s => s.counted).length,
-      nonResponding: slots.filter(s => !s.committed).length,
-      nonRespondingSlotIds: slots.filter(s => !s.committed).map(s => s.slot),
+      late: slots.filter(s => s.late).length,
+      nonResponding: dispatched.filter(s => !s.committed).length,
+      nonRespondingSlotIds: dispatched.filter(s => !s.committed).map(s => s.slot),
       promotedNotRevealed: slots.filter(s => s.revealRequested && !s.revealOK).map(s => s.slot),
       likelyMalformed: outcome === LIKELY_MALFORMED_OUTCOME,
+      drawExpired,
+      clusterKnown: byName.BonusPayment.length > 0,
       uniqueOracles: new Set(slots.map(s => s.oracle)).size,
       quality: {
         close: slots.filter(s => s.quality === 'close').length,
@@ -668,9 +878,12 @@ class VerdiktaService {
       aggregationStatus,
       requestEvent,
       drawEvent,
+      windowClosed,
+      promotion,
       slots,
       fulfillment,
       failure,
+      money,
       outcome,
       analysis
     };
@@ -741,5 +954,7 @@ module.exports = {
   isVerdiktaServiceAvailable,
   VerdiktaService,
   LIKELY_MALFORMED_OUTCOME,
+  SKIP_REASONS,
+  FAIL_MONEY,
   arbiterStatus
 };

@@ -704,11 +704,13 @@ async uploadRubric(rubricJson, classId = 128) {
   /**
    * Get the history of one v2 aggregator round
    * @param {string} aggId - The aggregation ID (0x + 64 hex chars)
-   * @param {{jury?: string|number, aggregator?: string}} [where] - which aggregator (round ids are
-   *   sequential per aggregator; each jury has its own). Sent as query parameters.
+   * @param {{bountyId?: string|number, jury?: string|number, aggregator?: string}} [where] - which
+   *   aggregator (round ids are sequential per aggregator): the bounty's (the server reads it),
+   *   a jury index, or an address. Sent as query parameters.
    */
   async getAggHistory(aggId, where = {}) {
     const params = {};
+    if (where.bountyId !== undefined && where.bountyId !== null && where.bountyId !== '') params.bountyId = where.bountyId;
     if (where.jury !== undefined && where.jury !== null && where.jury !== '') params.jury = where.jury;
     if (where.aggregator) params.aggregator = where.aggregator;
     const response = await api.get(`/api/verdikta/agg-history/${aggId}`, { params, timeout: 60000 });

@@ -67,7 +67,7 @@ const classRoutes = require('./routes/classRoutes');
 const templateRoutes = require('./routes/templateRoutes');
 const { initializeVerdiktaService, getVerdiktaService } = require('./utils/verdiktaService');
 const { startHunterLinksService } = require('./utils/hunterLinks');
-const { startScoreSpreadService } = require('./utils/scoreSpread');
+const { startScoreSpreadService, submissionRoundIds } = require('./utils/scoreSpread');
 const jobStorage = require('./utils/jobStorage');
 const clientIdentification = require('./middleware/clientIdentification');
 
@@ -341,8 +341,10 @@ const startServer = async () => {
           spreadAggregatorOf.set(j.jobId, await agg.getAddress());
         } catch { /* not on-chain yet, or RPC down: retried next pass */ }
       }
+      // every round of a submission, re-runs included (sub.aggIds; older records only verdiktaAggId)
       return jobs.flatMap((j) => (j.submissions || [])
-        .map((sub) => ({ jobId: j.jobId, aggId: sub.verdiktaAggId, ts: sub.submittedAt, aggregator: spreadAggregatorOf.get(j.jobId) })));
+        .flatMap((sub) => submissionRoundIds(sub)
+          .map((aggId) => ({ jobId: j.jobId, aggId, ts: sub.submittedAt, aggregator: spreadAggregatorOf.get(j.jobId) }))));
     }, getVerdiktaService);
 
     // Hunter connection analysis (RPC-heavy; runs in the background, results cached on disk)

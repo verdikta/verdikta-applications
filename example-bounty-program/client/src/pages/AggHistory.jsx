@@ -2,9 +2,10 @@
  * Aggregation History Page
  * Shows one v2 aggregator round (a Verdikta aggregation ID): its phase and timing
  * (getRoundInfo), each drawn juror's slot (getSlot: committed, reveal requested, revealed,
- * counted, quality, late) and the round's events. Round ids are sequential per aggregator,
- * and each jury has its own aggregator: `?jury=<index>` or `?aggregator=<address>` names it
- * (passed to the server; the first approved aggregator is assumed otherwise).
+ * counted, quality, late) and the round's events. Round ids are sequential per aggregator:
+ * `?bountyId=<jobId>` (the server reads that bounty's aggregator), `?jury=<index>` or
+ * `?aggregator=<address>` names it; the server's first aggregator is assumed otherwise.
+ * Times are measured from the draw (the round's deadline and T+ run from it).
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -32,6 +33,7 @@ function AggHistory() {
   const [searchParams] = useSearchParams();
   const jury = searchParams.get('jury');
   const aggregator = searchParams.get('aggregator');
+  const bountyId = searchParams.get('bountyId');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -42,7 +44,7 @@ function AggHistory() {
       setLoading(true);
       setError(null);
       try {
-        const result = await apiService.getAggHistory(aggId, { jury, aggregator });
+        const result = await apiService.getAggHistory(aggId, { jury, aggregator, bountyId });
         setData(result.data);
       } catch (err) {
         setError(err.response?.data?.error || err.message);
@@ -51,7 +53,7 @@ function AggHistory() {
       }
     }
     fetchHistory();
-  }, [aggId, jury, aggregator]);
+  }, [aggId, jury, aggregator, bountyId]);
 
   const handleCopy = async (text, key = 'aggId') => {
     try {
@@ -116,12 +118,14 @@ function AggHistory() {
     );
   }
 
-  const { contractParams, aggregationStatus, requestEvent, drawEvent, slots, fulfillment, failure, outcome, analysis } = data;
+  const { contractParams, aggregationStatus, requestEvent, drawEvent, slots, fulfillment, failure, outcome, analysis,
+    money, promotion, windowClosed } = data;
   const status = aggregationStatus || {};
   const quality = analysis?.quality || { close: 0, off: 0, far: 0 };
 
   const isCompleted = outcome === 'COMPLETED';
   const isRunning = outcome?.startsWith('RUNNING') || outcome?.startsWith('IN PROCESS');
+  const drawTs = drawEvent?.timestamp ?? null;
   const outcomeClass = isCompleted ? 'completed' : isRunning ? 'running' : 'failed';
   const OutcomeIcon = isCompleted ? CheckCircle : isRunning ? Clock : XCircle;
 
@@ -168,6 +172,11 @@ function AggHistory() {
               >
                 {data.aggregator} <ExternalLink size={10} style={{ verticalAlign: 'middle' }} />
               </a>
+              {!bountyId && !jury && !aggregator && (
+                <span className="timing-hint" style={{ marginLeft: '0.5rem' }}>
+                  (no bounty given: the server&apos;s default aggregator; round ids are per aggregator)
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -191,6 +200,15 @@ function AggHistory() {
             <span className="detail-label">Seed sealed:</span>
             <span className="detail-value">{status.sealed ? 'yes' : 'no'}</span>
           </div>
+          {(status.phase === 1 || status.phase === 2) && status.drawExpiresAt && (
+            <div className="detail-row">
+              <span className="detail-label">Draw possible until:</span>
+              <span className="detail-value">
+                {formatTime(status.drawExpiresAt)} (1 day after the request; after that the round can only be
+                cancelled, and its prepay goes to the treasury)
+              </span>
+            </div>
+          )}
           {status.windowEnd && (
             <div className="detail-row">
               <span className="detail-label">Commit window ends:</span>
@@ -200,13 +218,28 @@ function AggHistory() {
           {status.deadline && (
             <div className="detail-row">
               <span className="detail-label">Round deadline:</span>
-              <span className="detail-value">{formatTime(status.deadline)}</span>
+              <span className="detail-value">{formatTime(status.deadline)} (runs from the draw)</span>
             </div>
           )}
           {status.closeBlock && (
             <div className="detail-row">
-              <span className="detail-label">Commits closed at block:</span>
-              <span className="detail-value">{status.closeBlock}</span>
+              <span className="detail-label">Commit window closed:</span>
+              <span className="detail-value">
+                block {status.closeBlock}
+                {windowClosed?.sinceDraw != null ? ` (${formatOffset(windowClosed.sinceDraw)} after the draw)` : ''}
+              </span>
+            </div>
+          )}
+          {promotion && (
+            <div className="detail-row">
+              <span className="detail-label">Promoted:</span>
+              <span className="detail-value">
+                {promotion.promoted} commits, block {promotion.block}
+                {promotion.timestamp ? ` (${formatTime(promotion.timestamp)}` : ''}
+                {promotion.sinceDraw != null ? `, ${formatOffset(promotion.sinceDraw)} after the draw` : ''}
+                {promotion.timestamp ? ')' : ''}
+                {promotion.promoter ? ` by ${promotion.promoter.slice(0, 6)}...${promotion.promoter.slice(-4)}` : ''}
+              </span>
             </div>
           )}
           <div className="detail-row">
@@ -216,6 +249,44 @@ function AggHistory() {
               bonuses {formatEthWei(status.bonusesWei)} · rewards {formatEthWei(status.rewardsWei)} ETH
             </span>
           </div>
+          {money?.rewards && (
+            <div className="detail-row">
+              <span className="detail-label">Rewards:</span>
+              <span className="detail-value" title={money.rewards.promoteMethod}>
+                draw {formatEthWei(money.rewards.drawWei)} · promote {formatEthWei(money.rewards.promoteWei)}
+                {' '}(rewards − draw − beacons; promote emits no event) · beacons {formatEthWei(money.rewards.beaconsWei)} ETH
+              </span>
+            </div>
+          )}
+          {money?.beacons && (
+            <div className="detail-row">
+              <span className="detail-label">Beacon stage:</span>
+              <span className="detail-value">
+                {money.beacons.picked != null ? `${money.beacons.picked} beacons polled` : 'started'} ·{' '}
+                {money.beacons.payments.length} paid ({formatEthWei(money.rewards?.beaconsWei)} ETH)
+              </span>
+            </div>
+          )}
+          {money && (money.refunds?.length > 0 || money.cancelled) && (
+            <div className="detail-row">
+              <span className="detail-label">Unspent prepay:</span>
+              <span className="detail-value">
+                {money.refunds.map((r, i) => (
+                  <span key={`rf-${i}`}>
+                    {i > 0 && ' · '}
+                    {formatEthWei(r.amountWei)} ETH {r.toTreasury === true ? 'to the treasury' : r.toTreasury === false ? 'refunded to the requester' : `to ${r.to.slice(0, 6)}...${r.to.slice(-4)}`}
+                  </span>
+                ))}
+                {money.cancelled && <>{money.refunds.length > 0 && ' · '}{formatEthWei(money.cancelled.toTreasuryWei)} ETH to the treasury (round cancelled)</>}
+              </span>
+            </div>
+          )}
+          {money?.keeperCallReverted && (
+            <div className="detail-row">
+              <span className="detail-label">Settlement:</span>
+              <span className="detail-value">the keeper&apos;s outcome call reverted (SlotSkipped reason 4): scores were not applied</span>
+            </div>
+          )}
           {drawEvent && (
             <div className="detail-row">
               <span className="detail-label">Jury drawn:</span>
@@ -240,7 +311,7 @@ function AggHistory() {
               <span className="req-actual-value">{contractParams.K}</span>
             </div>
             <div className="req-actual-row">
-              <span className="req-actual-label">Commits needed (M)</span>
+              <span className="req-actual-label" title="The commit window closes at M+ commits, or after T+ (from the draw) with at least M; M of the commits are promoted to reveal">Commits promoted (M)</span>
               <span className="req-actual-value">{contractParams.M}</span>
             </div>
             <div className="req-actual-row">
@@ -262,6 +333,11 @@ function AggHistory() {
               <span className="req-actual-value">{safeSlots.length} / {contractParams.K}</span>
             </div>
             {chips(safeSlots, 'p')}
+            {analysis.skipped > 0 && (
+              <div className="req-actual-detail">
+                Skipped (never dispatched, not paid): slots {analysis.skippedSlotIds.join(', ')}
+              </div>
+            )}
 
             <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
               <span className="req-actual-label">Commits</span>
@@ -293,7 +369,7 @@ function AggHistory() {
             {analysis.nonResponding > 0 && (
               <>
                 <div className="req-actual-row" style={{ marginTop: '0.75rem' }}>
-                  <span className="req-actual-label">No commit</span>
+                  <span className="req-actual-label">Dispatched, no commit</span>
                   <span className="req-actual-value val-warn">{analysis.nonResponding}</span>
                 </div>
                 <div className="req-actual-detail">
@@ -311,6 +387,7 @@ function AggHistory() {
               <div className="req-actual-failures" style={{ marginTop: '0.75rem' }}>
                 <span className="req-actual-label" style={{ marginBottom: '0.25rem', display: 'block' }}>Quality of revealed scores</span>
                 <div className="failure-line"><CheckCircle size={12} className="icon-ok" /> {quality.close} close to the consensus</div>
+                {analysis.late > 0 && <div className="failure-line"><Clock size={12} className="icon-warn" /> {analysis.late} late (after finalization): scored by quality, not counted</div>}
                 {quality.off > 0 && <div className="failure-line"><AlertTriangle size={12} className="icon-warn" /> {quality.off} off</div>}
                 {quality.far > 0 && <div className="failure-line"><XCircle size={12} className="icon-fail" /> {quality.far} far</div>}
               </div>
@@ -328,6 +405,17 @@ function AggHistory() {
               <span className="detail-label">Failed in phase:</span>
               <span className="detail-value">{failure.phaseName || failure.phase}</span>
             </div>
+            {failure.moneyRule && (
+              <div className="detail-row">
+                <span className="detail-label">Prepay:</span>
+                <span className="detail-value">
+                  {failure.moneyRule}
+                  {money && (money.refunds?.length > 0)
+                    ? ` (here: ${BigInt(money.toTreasuryWei || 0) > 0n ? `${formatEthWei(money.toTreasuryWei)} ETH to the treasury` : `${formatEthWei(money.refundedWei)} ETH refunded`})`
+                    : ''}
+                </span>
+              </div>
+            )}
             <div className="detail-row">
               <span className="detail-label">Block:</span>
               <span className="detail-value">
@@ -408,11 +496,13 @@ function AggHistory() {
                   <th>Arbiter Addr</th>
                   <th>Key</th>
                   <th>Fee (ETH)</th>
+                  <th title="Asked to commit (flag 1). A skipped slot was never asked or paid.">Dispatched</th>
                   <th>Commit</th>
                   <th>Reveal Req</th>
                   <th>Reveal OK</th>
                   <th>Late</th>
                   <th>Counted</th>
+                  <th title="Bonus paid (BonusPayment). Unknown when no bonus was paid (zero fees).">Cluster</th>
                   <th>Quality</th>
                 </tr>
               </thead>
@@ -441,12 +531,19 @@ function AggHistory() {
                         </span>
                       ) : '-'}
                     </td>
-                    <td>{slot.feeWei ? formatEthWei(slot.feeWei) : '-'}</td>
+                    <td title={slot.skipReasons?.map(r => r.text).join('; ') || ''}>
+                      {slot.skipped
+                        ? <span className="icon-warn">{slot.feeWei ? formatEthWei(slot.feeWei) : '-'} not paid{slot.skipReasons?.length ? ` (${slot.skipReasons.map(r => r.text.split(':')[0]).join('; ')})` : ''}</span>
+                        : (slot.feeWei ? formatEthWei(slot.feeWei) : '-')}
+                      {!slot.skipped && slot.skipReasons?.length > 0 && <div className="timing-hint">{slot.skipReasons.map(r => r.text).join('; ')}</div>}
+                    </td>
+                    <BoolCell value={slot.dispatched} />
                     <BoolCell value={slot.committed} />
                     <BoolCell value={slot.revealRequested} />
                     <BoolCell value={slot.revealOK} />
-                    <BoolCell value={slot.late} invert />
+                    <td>{slot.late ? <span className="icon-warn" title="Revealed after the N-th reveal finalized the round: scored by its quality code, not counted">late ({slot.quality || '?'})</span> : <span className="icon-na">-</span>}</td>
                     <BoolCell value={slot.counted} />
+                    <td>{slot.inCluster == null ? <span className="icon-na" title="No bonus paid: cluster unknown">?</span> : slot.inCluster ? <CheckCircle size={14} className="icon-ok" /> : <span className="icon-na">-</span>}</td>
                     <td><QualityTag quality={slot.quality} /></td>
                   </tr>
                 ))}
@@ -461,8 +558,8 @@ function AggHistory() {
         <div className="analytics-section">
           <h2><Clock size={20} /> Timing</h2>
           <p className="timing-hint">
-            Block and time of each event per juror. The offset (+m:ss) is measured from the request
-            {requestEvent?.timestamp ? ` at ${formatTime(requestEvent.timestamp)}` : ''}.
+            Block and time of each event per juror. The offset (+m:ss) is measured from the draw
+            {drawTs ? ` at ${formatTime(drawTs)}` : ' (not drawn: no offsets)'}: the round deadline and T+ run from it.
           </p>
           <div className="slots-table timing-table">
             <table>
@@ -491,15 +588,15 @@ function AggHistory() {
                           <ExternalLink size={10} />
                         </a>
                       </td>
-                      <TimingCell evt={t.commit} base={requestEvent?.timestamp} />
-                      <TimingCell evt={t.reveal} base={requestEvent?.timestamp} failed={slot.late} />
+                      <TimingCell evt={t.commit} base={drawTs} />
+                      <TimingCell evt={t.reveal} base={drawTs} late={slot.late} quality={slot.quality} />
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-          <TimingScatter slots={safeSlots} requestTimestamp={requestEvent?.timestamp} drawTimestamp={drawEvent?.timestamp} />
+          <TimingScatter slots={safeSlots} drawTimestamp={drawTs} promoteTimestamp={promotion?.timestamp} />
         </div>
       )}
 
@@ -537,7 +634,7 @@ function AggHistory() {
               <span className="detail-value">
                 {fulfillment.block}
                 {fulfillment.timestamp ? ` (${formatTime(fulfillment.timestamp)}` : ''}
-                {fulfillment.timestamp && requestEvent?.timestamp ? `, ${formatOffset(fulfillment.timestamp - requestEvent.timestamp)} after request` : ''}
+                {fulfillment.timestamp && drawTs ? `, ${formatOffset(fulfillment.timestamp - drawTs)} after the draw` : ''}
                 {fulfillment.timestamp ? ')' : ''}
               </span>
             </div>
@@ -605,15 +702,16 @@ function formatOffset(seconds) {
 
 /**
  * Timing cell: block number (linked to the tx), wall-clock time, and offset
- * from the request. `evt` is { block, timestamp, txHash } or null.
+ * from the draw. `evt` is { block, timestamp, txHash } or null. A late reveal (after
+ * finalization) is marked with its quality code: it is scored, not rejected.
  */
-function TimingCell({ evt, base, failed }) {
+function TimingCell({ evt, base, late, quality }) {
   if (!evt || evt.block == null) {
     return <td><span className="icon-na">-</span></td>;
   }
   const offset = (base && evt.timestamp) ? formatOffset(evt.timestamp - base) : null;
   return (
-    <td className={`timing-cell${failed ? ' timing-failed' : ''}`} title={evt.txHash || ''}>
+    <td className={`timing-cell${late ? ' timing-failed' : ''}`} title={evt.txHash || ''}>
       <div className="timing-block">
         {evt.txHash ? (
           <a
@@ -625,7 +723,7 @@ function TimingCell({ evt, base, failed }) {
             #{evt.block} <ExternalLink size={10} />
           </a>
         ) : `#${evt.block}`}
-        {failed && <AlertTriangle size={12} className="icon-warn" title="Late reveal" />}
+        {late && <span className="icon-warn" title="Late reveal: scored, not counted"> late ({quality || '?'})</span>}
       </div>
       <div className="timing-time">{evt.timestamp ? formatTime(evt.timestamp) : 'time unavailable'}</div>
       {offset && <div className="timing-offset">{offset}</div>}
@@ -634,15 +732,15 @@ function TimingCell({ evt, base, failed }) {
 }
 
 /**
- * Scatter plot: one row per unique arbiter address (y), time since the request (x).
- * Commits and reveals are separate series; a late reveal is drawn hollow.
+ * Scatter plot: one row per unique arbiter address (y), time since the draw (x).
+ * Commits and reveals are separate series; a late reveal (scored, not counted) is drawn hollow.
  */
 const SCATTER_SERIES = {
   commit: { label: 'Commit', color: '#2a78d6' },
   reveal: { label: 'Reveal', color: '#eb6834' }
 };
 
-function TimingScatter({ slots, requestTimestamp, drawTimestamp }) {
+function TimingScatter({ slots, drawTimestamp, promoteTimestamp }) {
   const [hover, setHover] = useState(null);
   const svgRef = useRef(null);
 
@@ -660,13 +758,13 @@ function TimingScatter({ slots, requestTimestamp, drawTimestamp }) {
   }
   if (points.length === 0) return null;
 
-  // Reference line: when the jury was drawn (the commit phase opens). The v2 history has
-  // no per-slot promotion time, so there is no reveal-request line.
+  // Reference lines: the draw (the commit phase opens) and the promotion (CommitPhaseComplete:
+  // the reveal requests go out).
   const selectedTs = drawTimestamp ? [drawTimestamp] : [];
-  const revealReqTs = [];
+  const revealReqTs = promoteTimestamp ? [promoteTimestamp] : [];
 
-  // Time base: the request, else the earliest event
-  const base = requestTimestamp || Math.min(...points.map(p => p.ts), ...selectedTs);
+  // Time base: the draw, else the earliest event
+  const base = drawTimestamp || Math.min(...points.map(p => p.ts));
   for (const p of points) p.x = p.ts - base;
 
   // Group points that land on exactly the same spot (same arbiter, same
@@ -749,6 +847,7 @@ function TimingScatter({ slots, requestTimestamp, drawTimestamp }) {
       return;
     }
     // No dot nearby: fall back to the reference lines (within the plot rows).
+    // (Reveal requested = the promotion.)
     if (py >= margin.top && py <= margin.top + plotH) {
       const lines = [
         ...selectedTs.map(t => ({ kind: 'commit', label: 'Jury drawn', ts: t })),
@@ -836,7 +935,7 @@ function TimingScatter({ slots, requestTimestamp, drawTimestamp }) {
             </g>
           ))}
           <text x={margin.left + plotW / 2} y={height - 4} className="scatter-xtitle" textAnchor="middle">
-            time since request
+            time since the draw
           </text>
           {/* Reference lines: selection (commit phase opens) and reveal requests */}
           {selectedTs.map(t => (

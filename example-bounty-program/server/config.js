@@ -156,11 +156,15 @@ config.rpcProviderUrl = config.rpcUrl;
 
 // BOUNTY ORACLE DEFAULTS (the key is still `submissionDefaults` to minimise churn).
 //
-// Since the September 2026 BountyEscrow revision these four values are chosen by
-// the CREATOR at createBounty time (the `oracle` member of the CreateParams struct)
-// and used verbatim for every evaluation of that bounty. Hunters no longer pass
-// any of them to prepareSubmission — the contract reads bounty.oracle and sizes
-// ethMaxBudget = aggregator.maxTotalFee(bounty.oracle.maxOracleFee).
+// These values are chosen by the CREATOR at createBounty time (the `oracle` member
+// of the CreateParams struct, which also carries minOracleFee and withBeacons; those
+// two come from the size-class presets in shared/classPresets.js, not from here).
+// Hunters pass none of them to prepareSubmission. At start the escrow clamps the
+// fee ceiling to the aggregator's live maxOracleFee (effectiveOracleParams) and
+// sizes the prepay as aggregator.maxTotalFee(maxOracleFee, minOracleFee, withBeacons):
+// juror x (K + bonusMultiplier x P [+ the beacon quorum]) + eff x (drawRewardFees +
+// promoteRewardFees), where eff = min(maxOracleFee, the aggregator's ceiling) and
+// juror = max(eff, minOracleFee).
 //
 // They are the defaults for POST /api/jobs/create (oracleMaxOracleFee /
 // oracleAlpha / oracleEstimatedBaseCost / oracleMaxFeeBasedScaling), the create

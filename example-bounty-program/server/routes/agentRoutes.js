@@ -434,10 +434,11 @@ creators then post bounties with classId X.
   identifiers the class's operators advertise. An identifier their nodes don't
   serve makes every evaluation fail, and the bounty can't be edited or canceled.
 - Every class must have arbiters: GET /api/classes/:classId/coverage
-  [?maxOracleFee=] reads the on-chain registry. /jobs/create (and
-  /rubric/validate) refuse with code CLASS_UNSERVABLE only when ZERO arbiters
-  are eligible at the bounty's fee, because then every evaluation start
-  reverts "No active oracles available". Thin coverage, a single operator, or
+  [?maxOracleFee=] reads the on-chain registry.
+  /jobs/create (and /rubric/validate) refuse with code CLASS_UNSERVABLE when
+  fewer than K distinct arbiters (the jury's draw size) are eligible at the
+  bounty's fee, because then every draw fails (the keeper finds too few; the
+  round fails in the draw phase, prepay refunded). A single operator, or
   arbiters owned by the creator's own address are warnings, returned in the
   create response's classPolicy and shown to hunters on the bounty page.
 
@@ -1602,7 +1603,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/classes/:classId/coverage',
-        description: 'Live arbiter coverage for ANY class from the on-chain registry: { listed, servable (false = zero eligible arbiters, /jobs/create would refuse; null = could not check), refusal, coverage: { totalInClass, activeInClass, eligibleCount, pricedOutCount, distinctOwnersEligible, oraclesToPoll }, warnings[] }.',
+        description: 'Live arbiter coverage for ANY class from the on-chain registry: { listed, servable (false = fewer than K distinct eligible arbiters, so every draw fails and /jobs/create would refuse; null = could not check), refusal, coverage: { totalInClass, activeInClass, eligibleCount, pricedOutCount, distinctOwnersEligible, oraclesToPoll (K), juryDrawSize }, warnings[] }.',
         params: ['maxOracleFee (optional; decimal ETH or integer wei; defaults to the API default fee)']
       },
       ...wagerEndpointDocs()

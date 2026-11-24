@@ -87,6 +87,14 @@ function localStatusForRound(state) {
   return 'PENDING_EVALUATION';
 }
 
+/** `ids` plus `aggId` (lowercased, once). A submission's round ids, oldest first. */
+function appendAggId(ids, aggId) {
+  const list = Array.isArray(ids) ? [...ids] : [];
+  const v = String(aggId || '').toLowerCase();
+  if (/^0x[0-9a-f]{64}$/.test(v) && !/^0x0{64}$/.test(v) && !list.includes(v)) list.push(v);
+  return list;
+}
+
 /** Does this submission still need the hot poll (a round in flight, or a re-run to watch)? */
 function needsHotPoll(s) {
   return IN_FLIGHT_LOCAL_STATUSES.has(s.status) || s.status === 'AWAITING_RERUN' ||
@@ -1435,6 +1443,9 @@ class SyncService {
           sub.status = 'PENDING_EVALUATION';
           sub.onChainStatus = 'PendingVerdikta';
           sub.verdiktaAggId = verdiktaAggId;
+          // Every round's id, oldest first: a re-run replaces verdiktaAggId, and analytics (score
+          // spread, re-run counts) reads the earlier rounds from here.
+          sub.aggIds = appendAggId(sub.aggIds, verdiktaAggId);
           // A re-run (item 12) starts a fresh round: forget the previous round's outcome.
           delete sub.rerunDeadline;
           delete sub.roundOutcome;
@@ -1445,6 +1456,7 @@ class SyncService {
           job.submissions.push({
             submissionId,
             verdiktaAggId,
+            aggIds: appendAggId(null, verdiktaAggId),
             status: 'PENDING_EVALUATION',
             onChainStatus: 'PendingVerdikta',
             submittedAt: Math.floor(Date.now() / 1000)
@@ -1550,7 +1562,10 @@ class SyncService {
           // rather than "passed the evaluation threshold". A creator-approved
           // submission never ran the oracle, so it has no verdiktaAggId.
           sub.creatorApproved = true;
+          // What was actually paid (analytics' ETH won), wei string
+          if (amountPaid != null) sub.payoutWei = amountPaid;
         }
+        if (amountPaid != null) job.payoutAmountWei = amountPaid;
 
         logger.info('[event] CreatorApproved', { bountyId, submissionId, hunter, amountPaid });
         break;
@@ -1574,12 +1589,15 @@ class SyncService {
         job.winner = winner;
         job.settledAt = Math.floor(Date.now() / 1000);
         job.awardTxHash = transactionHash;
+        // The amount actually paid (wei string): analytics' ETH won reads this, not the configured payments
+        if (args.amountWei != null) job.payoutAmountWei = args.amountWei.toString();
         this.hotBountyIds.delete(bountyId);
 
         // Mark the winning submission
         const winningSub = (job.submissions || []).find(s => s.hunter?.toLowerCase() === winner?.toLowerCase());
         if (winningSub) {
           winningSub.paidWinner = true;
+          if (args.amountWei != null) winningSub.payoutWei = args.amountWei.toString();
         }
 
         logger.info('[event] PayoutSent', { bountyId, winner });
@@ -1863,6 +1881,11 @@ class SyncService {
       creatorAssessmentWindowSize: bounty.creatorAssessmentWindowSize || 0,
       // Creator-chosen oracle request settings from getBounty().oracle
       oracleSettings: bounty.oracleSettings || null,
+      // v2: jury, quota Q, forfeit line R and bond from getBounty() (analytics' Q-of-N rule)
+      decisionSettings: bounty.decisionSettings
+        ? { jury: bounty.decisionSettings.jury, quota: bounty.decisionSettings.quota,
+            forfeitLine: bounty.decisionSettings.forfeitLine, bond: bounty.decisionSettings.bondWei }
+        : null,
       onChain: true,
       syncedFromBlockchain: true,
       lastSyncedAt: Math.floor(Date.now() / 1000),
@@ -1966,6 +1989,7 @@ class SyncService {
           hunterCid: sub.hunterCid,
           evalWallet: sub.evalWallet,
           verdiktaAggId: sub.verdiktaAggId,
+          aggIds: appendAggId(existing?.aggIds, sub.verdiktaAggId),
           status: backendStatus,
           onChainStatus: sub.status,
           acceptance: sub.acceptance,

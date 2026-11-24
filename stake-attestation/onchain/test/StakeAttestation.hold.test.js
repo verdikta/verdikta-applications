@@ -7,9 +7,8 @@
 // pending claim alone.
 //   - hold(listingId): the maker only, on an Open or a Depleted listing, once. It records the time
 //     (heldAt) and emits Held. No delay and no resume: a hold ends in rollForward or in close,
-//     whose conditions are what they were. Its refusals use reasons the contract already had:
-//     "not maker", "not rollable" (neither Open nor Depleted: where a roll forward is refused
-//     too) and "not accepting commits" (held already).
+//     whose conditions are what they were. Its refusals: "not maker", "not rollable" (neither
+//     Open nor Depleted: where a roll forward is refused too) and "already held" (a second hold).
 //   - While held the listing takes no commit (acceptsCommits is false) and takes a late claim, as a
 //     Rolled listing does (decision D6: judged, recorded under `later`, no award).
 //   - Nothing else reads the hold, so a claim committed before it keeps every path: its fix
@@ -369,14 +368,14 @@ describe("StakeAttestation: the maker's hold (P39)", function () {
       const at = {};
       for (const id of [open, depleted]) {
         at[id] = await blockTime(await (await sa.connect(maker).hold(id)).wait());
-        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("not accepting commits");
+        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("already held");
       }
       await sa.connect(maker).renew(open, { value: LISTING_FEE });
       await sa.connect(maker).fund(open, 0n, { value: 1n });
       await expect(sa.connect(maker).fund(depleted, 0n, { value: TOP })).to.emit(sa, "Reopened");
       expect((await sa.getListing(depleted)).state).to.equal(ListingState.Open);
       for (const id of [open, depleted]) {
-        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("not accepting commits");
+        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("already held");
         expect(await sa.heldAt(id)).to.equal(at[id]);
       }
       const successor = await openListing(sa, maker, fresh());

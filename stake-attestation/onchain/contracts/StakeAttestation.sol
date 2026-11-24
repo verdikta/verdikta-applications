@@ -987,8 +987,8 @@ contract StakeAttestation is Ownable2Step {
     ///         ends in rollForward or in close, whose conditions are what they were. The state
     ///         stays Open or Depleted, and heldAt says since when.
     /// @dev Refused with "not maker" for anyone else, "not rollable" on a listing that is neither
-    ///      Open nor Depleted (where rollForward is refused too), and "not accepting commits" on
-    ///      one already held (ClaimLogic.hold).
+    ///      Open nor Depleted (where rollForward is refused too), and "already held" on one its
+    ///      maker has held (ClaimLogic.hold).
     function hold(uint256 listingId) external {
         ClaimLogic.hold(_mustListing(listingId), _heldAt, listingId);
     }

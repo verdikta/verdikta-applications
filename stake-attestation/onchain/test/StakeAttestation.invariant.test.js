@@ -58,9 +58,9 @@
 // claim made on a listing after its hold is a late claim, and the sequence must have settled late
 // claims made on a listing on hold and paid awards to claims committed before a hold and settled
 // after it. One seed, with none of the safeguards'
-// or the appeal's streams: the suite runs close to its job's time limit, and
-// StakeAttestation.hold.test.js runs every claim path against the hold. Skipped under
-// solidity-coverage, where that file covers every line the seed reaches.
+// or the appeal's streams: a second seed, with every stream together, added minutes to the
+// Contracts job, and StakeAttestation.hold.test.js runs every claim path against the hold.
+// Skipped under solidity-coverage, where that file covers every line the seed reaches.
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers } = hre;

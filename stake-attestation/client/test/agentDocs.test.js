@@ -863,7 +863,7 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   const holdBody = /function hold\([\s\S]*?\n {4}\}/.exec(logic)[0];
   assert.match(holdBody, /require\(msg\.sender == l\.maker, "not maker"\);/);
   assert.match(holdBody, /require\(s == StakeAttestation\.ListingState\.Open \|\| s == StakeAttestation\.ListingState\.Depleted, "not rollable"\);/);
-  assert.match(holdBody, /require\(heldAt\[listingId\] == 0, "not accepting commits"\);\s*heldAt\[listingId\] = uint64\(block\.timestamp\);/);
+  assert.match(holdBody, /require\(heldAt\[listingId\] == 0, "already held"\);\s*heldAt\[listingId\] = uint64\(block\.timestamp\);/);
   assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /&& l\.escrowWei >= l\.awards\[3\]\s*&& _heldAt\[listingId\] == 0;/, 'acceptsCommits is false on a held listing');
   assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /uint256 pendingClaims; +\/\/ claims neither settled nor expired \(P2b\); never a late claim \(P2e\)/);
   assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /uint64 +headClaim; +\/\/ the earliest claim neither settled nor expired \(0 = none\)/);

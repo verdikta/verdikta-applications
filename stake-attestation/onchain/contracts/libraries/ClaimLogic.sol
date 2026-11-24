@@ -113,10 +113,10 @@ library ClaimLogic {
 
     /// @notice The maker's hold (see StakeAttestation.hold; P39; here for the size limit): once,
     ///         on an Open or a Depleted listing. It records the time; nothing else is written.
-    /// @dev No revert string of its own: each refusal gives the reason the contract already has
-    ///      for that condition. "not rollable" is rollForward's for a listing that is neither Open
-    ///      nor Depleted (a hold is the first half of a roll forward, taken where one is), and
-    ///      "not accepting commits" is commit's: a held listing takes none already.
+    /// @dev Refusals: "not maker"; "not rollable", rollForward's own reason, for a listing that is
+    ///      neither Open nor Depleted (a hold is the first half of a roll forward, taken where one
+    ///      is); "already held" for a second hold, as every repeated action here is refused
+    ///      ("already closed", "already flagged", ...). "not accepting commits" stays commit's.
     /// @param heldAt StakeAttestation._heldAt: each listing's time of hold, 0 = never
     function hold(StakeAttestation.Listing storage l, mapping(uint256 => uint64) storage heldAt, uint256 listingId)
         external
@@ -124,7 +124,7 @@ library ClaimLogic {
         require(msg.sender == l.maker, "not maker");
         StakeAttestation.ListingState s = l.state;
         require(s == StakeAttestation.ListingState.Open || s == StakeAttestation.ListingState.Depleted, "not rollable");
-        require(heldAt[listingId] == 0, "not accepting commits");
+        require(heldAt[listingId] == 0, "already held");
         heldAt[listingId] = uint64(block.timestamp);
         emit StakeAttestation.Held(listingId, uint64(block.timestamp));
     }

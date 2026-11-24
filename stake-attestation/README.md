@@ -137,8 +137,9 @@ escrow once no claim is pending and nothing is owed.
   closed.** A fix in the public repository tells its readers where the bug
   was, and a hunter who reads it can claim the bug on the old listing for as
   long as that listing takes commits (`acceptsCommits`: Open, its paid period
-  not over, its escrow at least the top award). A `close` can come before the
-  push; a roll cannot. `rollForward` needs a successor that is the same
+  not over, its escrow at least the top award, and not held by its maker with
+  `hold`). A `close` can come before the push; a roll cannot.
+  `rollForward` needs a successor that is the same
   maker's own listing, already Open, so the fixed commit is listed and funded
   before the roll; the site counts a listing only with a builder's signature
   ("The environment builder"), and the builder fetches a listed commit from
@@ -158,7 +159,7 @@ escrow once no claim is pending and nothing is owed.
     first: push the fix, then validate, list and fund the fixed commit, and
     roll forward, all in one sitting. The fix is public from the push, and
     until the roll is mined the old listing takes commits as before, for as
-    long as it meets the three conditions of `acceptsCommits` above (a
+    long as it meets the four conditions of `acceptsCommits` above (a
     Depleted listing, or one whose paid period is over, takes none). A roll
     stops new commits on the old listing and ends the fix window of every
     claim disclosed on it; those claims still settle against the old

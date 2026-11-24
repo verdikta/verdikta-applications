@@ -86,6 +86,11 @@ test.describe('the maker\'s hold', () => {
     await ask.click();
     await expect(confirm).toBeVisible();
     await shot(page, 'hold-action', { target: section });
+    // on a phone the warning and the two buttons stay inside the page: it never scrolls sideways
+    const size = page.viewportSize();
+    await page.setViewportSize({ width: 390, height: 800 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
+    await page.setViewportSize(size);
     await section.getByRole('button', { name: H.keep }).click();
     await expect(confirm).toHaveCount(0);
     expect(await chain.sa.heldAt(listingId)).toBe(0n);

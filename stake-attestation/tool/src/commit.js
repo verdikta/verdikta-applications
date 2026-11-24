@@ -29,9 +29,25 @@
 // --restart asks the same, whatever the flag, since a prepared folder names no kind; and it sets the prepared files
 // aside rather than deleting them, for the one case no read can see: a claim someone holds and has not sent yet.
 //
-// What none of this reaches: the logs are read from the block the folder was prepared at, as they always were, so a
-// claim of the folder's hashes that another client sent and a reorganization then mined below that block is not seen.
-// That needs a reorganization deeper than the folder is old, on a chain where two blocks count as deep enough here.
+// The anchor, and what it proves. The logs are read from the block the folder was prepared at (startBlock), and that
+// bound holds only while that block is still on the chain: a reorganization that rolled the chain back under it can
+// mine a claim of the folder's hashes, sent some other way since, in a block below it. So preparation saves an anchor
+// before any key is drawn, in a file of its own beside state.json, which stays what it was: the head (its number is
+// startBlock) and the node's finalized block, each by number and hash. The folder's two hashes do not exist before
+// its keys are drawn. So:
+//
+//   - while the block at startBlock still has the saved hash, every claim of those hashes is in a later block, and
+//     the scan from startBlock is complete;
+//   - when it has another hash, or the chain is shorter, the saved finalized block is held to its hash: a finalized
+//     block is not reorganized, so a scan from it to the head is complete whatever happened above it, and a claim
+//     found there is adopted from its log, as any is;
+//   - when neither can be shown (no anchor, one of another block, no finalized block saved, one that is gone, or a
+//     scan that cannot be read through), the logs prove nothing: a late claim is not signed, and --restart with
+//     --late sets nothing aside (START_UNPROVEN).
+//
+// This is asked where a late claim is about to be paid for, inside the reads of nonceAndClaimAt, and on any run with
+// --late of a prepared folder, before the terms. A commit is signed as it always was, and is never refused for its
+// anchor; --restart without --late reads from the proven bound when there is one, and from startBlock when not.
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { codeReview } from './common.js';
@@ -149,10 +165,78 @@ async function countAt(ctx, address, at) {
   return Number(BigInt(await ctx.rpc(() => ctx.provider.send('eth_getTransactionCount', [address, typeof at === 'number' ? quantity(at) : at]))));
 }
 
-/** A block's number and hash, asked of the node: the latest, or the one at `number`. Null when there is none. */
-async function blockIdAt(ctx, number = null) {
-  const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [number === null ? 'latest' : quantity(number), false]));
-  return block ? { number: Number(BigInt(block.number)), hash: block.hash } : null;
+/** A block's number and hash, asked of the node: the latest, the one at a number, or the one a tag names. Null when there is none. */
+async function blockIdAt(ctx, at = 'latest') {
+  const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [typeof at === 'number' ? quantity(at) : at, false]));
+  return block ? { number: Number(BigInt(block.number)), hash: String(block.hash).toLowerCase() } : null;
+}
+
+/** The folder's anchor: the block it was prepared at and the node's finalized block then (see the top of this file). */
+const ANCHOR_FILE = 'anchor.json';
+const isBlockId = (b) => Number.isSafeInteger(b?.number) && b.number >= 0 && typeof b.hash === 'string' && /^0x[0-9a-f]{64}$/.test(b.hash);
+
+/**
+ * The node's finalized block, or null: a node that names none (it refuses the tag, or answers nothing), or one that
+ * names a block above the head it has just given, which is no bound.
+ */
+async function finalizedBlockOf(ctx, head) {
+  try {
+    const block = await blockIdAt(ctx, 'finalized');
+    return block && block.number <= head.number ? block : null;
+  } catch (err) {
+    if (err.code === 'RPC_UNAVAILABLE' || err.code === 'CONTRACT_REFUSED') return null;
+    throw err;
+  }
+}
+
+/** The anchor as it was saved, or null: none, or one that cannot be read as an anchor. */
+function readAnchor(ws) {
+  const bytes = ws.readOptional(ANCHOR_FILE);
+  if (bytes === null) return null;
+  let anchor;
+  try {
+    anchor = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (anchor?.version !== 1 || !isBlockId(anchor.head) || (anchor.finalized !== null && !isBlockId(anchor.finalized))) return null;
+  return anchor;
+}
+
+/**
+ * The block from which the logs hold every claim of the folder's hashes, as its anchor proves it now: `from`, with
+ * `reorganized` when that is the saved finalized block. Or `unproven`, the reason nothing shows it, in words for the
+ * hunter.
+ */
+async function provenStart(ctx, ws, state) {
+  const anchor = readAnchor(ws);
+  if (!anchor) return { unproven: 'It has no anchor: an earlier version of this tool prepared it, or the file is gone.' };
+  if (anchor.head.number !== state.startBlock) return { unproven: 'Its anchor is of another block than the one it was prepared at.' };
+  if ((await blockIdAt(ctx, state.startBlock))?.hash === anchor.head.hash) return { from: state.startBlock };
+  // another block at that height, or none: the chain was rolled back under the folder
+  if (!anchor.finalized) return { unproven: 'The chain was reorganized below the block it was prepared at, and the node named no finalized block when it was prepared.' };
+  if ((await blockIdAt(ctx, anchor.finalized.number))?.hash !== anchor.finalized.hash) return { unproven: 'The chain was reorganized below the block it was prepared at, and below the finalized block saved with it.' };
+  return { from: anchor.finalized.number, reorganized: true };
+}
+
+/**
+ * The claim of the folder's hashes in the logs up to `upTo`, read from where the anchor proves them complete
+ * (provenStart). Where it proves nothing, or the longer scan from the finalized block cannot be read through, the
+ * logs are read from startBlock as they always were: a claim found is a claim all the same, and with none found
+ * `unproven` says why that is no proof. `from` is where the scan that answered started.
+ */
+async function anchoredClaim(ctx, ws, state, upTo = null) {
+  const start = await provenStart(ctx, ws, state);
+  if (start.reorganized) {
+    try {
+      return { existing: await findCommitted(ctx, state, upTo, start.from), from: start.from, unproven: null };
+    } catch (err) {
+      if (err.code !== 'RPC_UNAVAILABLE') throw err;
+      start.unproven = 'The chain was reorganized below the block it was prepared at, and the logs since the finalized block saved with it could not all be read.';
+    }
+  }
+  const existing = await findCommitted(ctx, state, upTo);
+  return { existing, from: state.startBlock, unproven: existing ? null : start.unproven ?? null };
 }
 
 /**
@@ -164,13 +248,14 @@ async function blockIdAt(ctx, number = null) {
  * is scanned before a resume and before --restart, and on such an RPC neither could go on once the folder was older
  * than the cap. A node that does not answer at all refuses the single block too, and that is the error.
  */
-async function findCommitted(ctx, state, upTo = null) {
+async function findCommitted(ctx, state, upTo = null, start = state.startBlock) {
   const [first, ...indexed] = ctx.topics('Committed', [null, BigInt(state.listingId), state.hunter]);
   const topics = [[first, ctx.topics('LateClaim', [])[0]], ...indexed];
-  // up to the head as it is now, or up to the block a caller has read something else at (nonceAndClaimAt)
+  // up to the head as it is now, or up to the block a caller has read something else at (nonceAndClaimAt); from the
+  // block the folder was prepared at, or from the lower one its anchor proves (anchoredClaim)
   const head = upTo ?? await headNow(ctx);
   let page = Math.max(1, Math.floor(ctx.logPageBlocks));
-  for (let from = state.startBlock; from <= head;) {
+  for (let from = start; from <= head;) {
     const to = Math.min(head, from + page - 1);
     let logs;
     try {
@@ -210,14 +295,15 @@ async function findCommitted(ctx, state, upTo = null) {
  * A transaction sent after the last read is not seen by any read. A caller that signs at `nonce` shuts it out all the
  * same: only one transaction can be mined at a nonce.
  */
-async function nonceAndClaimAt(ctx, state) {
+async function nonceAndClaimAt(ctx, ws, state) {
   const head = await blockIdAt(ctx);
   if (!head) throw fail('RPC_UNAVAILABLE');
   const nonce = await countAt(ctx, state.hunter, head.number);
-  const existing = await findCommitted(ctx, state, head.number);
+  // the logs, from where the folder's anchor proves them complete; `unproven` when it proves nothing
+  const { existing, from, unproven } = await anchoredClaim(ctx, ws, state, head.number);
   const pending = existing ? nonce : await countAt(ctx, state.hunter, 'pending');
   if ((await blockIdAt(ctx, head.number))?.hash !== head.hash) throw fail('RPC_UNAVAILABLE', 'The chain was reorganized while it was read, so nothing was signed.');
-  return { existing, nonce, pending };
+  return { existing, from, unproven, nonce, pending };
 }
 
 /** The state with its kind: `late: true` on a late claim's, and no such key on a commit's, which stays as it was. */
@@ -227,8 +313,14 @@ function withKind(state, late) {
 }
 
 async function prepare(ctx, ws, listing, inputs, hunter, listingId) {
-  const startBlock = await ctx.rpc(() => ctx.provider.getBlockNumber());
+  // The anchor, read and saved before any key is drawn: the head, whose number is startBlock, and the node's
+  // finalized block. No claim of this folder's hashes can be in either, or in any block that was there by now.
+  const head = await blockIdAt(ctx);
+  if (!head) throw fail('RPC_UNAVAILABLE');
+  const finalized = await finalizedBlockOf(ctx, head);
+  const startBlock = head.number;
   ws.keepAside();
+  ws.write(ANCHOR_FILE, Buffer.from(`${JSON.stringify({ version: 1, head, finalized }, null, 2)}\n`));
   const built = buildClaimArchive(inputs);
   ws.write('archive.zip', built);
   await ctx.step('prepare:archive');
@@ -271,7 +363,7 @@ async function prepare(ctx, ws, listing, inputs, hunter, listingId) {
  * then held to the hash the log gave. A claim that is not where its log said is looked for again, and adopted with
  * the id, the block and the transaction it has then; one that is gone is waited for, up to the limit.
  */
-async function adoptLogged(ctx, ws, state, found) {
+async function adoptLogged(ctx, ws, state, found, start = state.startBlock) {
   const until = ctx.now() + ctx.waitMs;
   let seen = found;
   for (;;) {
@@ -284,7 +376,7 @@ async function adoptLogged(ctx, ws, state, found) {
     }
     if (ctx.now() >= until) throw fail('TX_PENDING', `Claim ${(seen ?? found).claimId} is not deep enough yet.`);
     await ctx.sleep(ctx.pollMs ?? 2000);
-    seen = await findCommitted(ctx, state);
+    seen = await findCommitted(ctx, state, null, start);
   }
 }
 
@@ -387,8 +479,10 @@ async function commitPreflight(ctx, listingId, hunter, late = false) {
 async function sendCommit(ctx, ws, state, listingId, late, quoted) {
   // A late claim's nonce and the logs are read at one block (nonceAndClaimAt). Only a late claim asks this: a
   // commit is signed as it always was, at the wallet's next nonce counting what is pending.
-  const at = late ? await nonceAndClaimAt(ctx, state) : { existing: await findCommitted(ctx, state) };
-  if (at.existing) return adoptLogged(ctx, ws, state, at.existing);
+  const at = late ? await nonceAndClaimAt(ctx, ws, state) : { existing: await findCommitted(ctx, state) };
+  if (at.existing) return adoptLogged(ctx, ws, state, at.existing, at.from);
+  // The logs hold no claim of these hashes, and that is proof only from a block the anchor vouches for.
+  if (late && at.unproven) throw fail('START_UNPROVEN', at.unproven);
   // No log of it is not proof for a late claim: one sent some other way and not in those blocks has none there.
   if (late && at.pending > at.nonce) throw fail('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond.');
 
@@ -568,8 +662,12 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
     if (state?.stage === 'prepared') {
       // --restart removes the keys, so it asks more: a claim of these hashes that is not in the blocks read has no
       // log to be found by, and would lose them. A prepared folder names no kind, so this is asked whatever the flag.
-      const at = restart ? await nonceAndClaimAt(ctx, state) : { existing: await findCommitted(ctx, state) };
-      if (at.existing) state = await adoptLogged(ctx, ws, state, at.existing);
+      // A run with --late reads the logs from where the anchor proves them complete; a commit's resume, from
+      // startBlock as it always did. With --late, a folder the anchor cannot vouch for goes no further: no terms for
+      // a late claim that would not be signed, and nothing set aside by --restart.
+      const at = restart ? await nonceAndClaimAt(ctx, ws, state) : late ? await anchoredClaim(ctx, ws, state) : { existing: await findCommitted(ctx, state) };
+      if (at.existing) state = await adoptLogged(ctx, ws, state, at.existing, at.from);
+      else if (late && at.unproven) throw fail('START_UNPROVEN', at.unproven);
       else if (restart && at.pending > at.nonce) throw fail('WALLET_BUSY', 'It may be this folder\'s claim, and --restart would remove the keys it needs.');
     }
     if (state && restart && state.stage !== 'prepared') throw fail('RESTART_REFUSED');

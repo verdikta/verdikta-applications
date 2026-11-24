@@ -1371,7 +1371,7 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   memory".
 - **`commit`** refuses a listing the builder did not sign, or whose on-chain key or terms are not what was signed; says P9's warning
   and the §8.6 diligence text, and the listing's disclosure key as an age recipient beside the bytes32 the chain stores, with the
-  sentence that says they are one key; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age` and `state.json` in
+  sentence that says they are one key; draws fresh keys; and leaves `archive.zip`, `keys.json`, `ciphertext.age`, `anchor.json` and `state.json` in
   `<claim>/.verdikta-claim/` at 0600. **Back that folder up: without its keys a claim cannot be revealed, and the bond is lost.**
   It sends `commit` with the bond and the live fee, and only once that is mined pins the ciphertext and calls `disclose`.
   Claims on a listing reveal in commit order, so the terms it prints before it pays say how many claims on the listing
@@ -1397,11 +1397,27 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   commit's or a late claim's, is adopted first, before the listing, the wallet's balance, the flag or `--restart` can
   refuse the run or remove the keys that claim needs, and the transaction it records is the one that made the claim.
   That is before `--yes` is read too: such a folder is under way, as one with a signed commit is, and any run adopts
-  the claim and discloses it. The logs are read from the block the folder was prepared at, as they always were, so
-  one case is not reached: a claim of the folder's hashes that another client sent and a reorganization then mined
-  below that block. That needs a reorganization deeper than the folder is old.
-  Its depth is measured against a head read after its log, and the log's block is then held to its hash, so a claim a
-  reorganization moved is looked for again and not pinned early. A late claim is signed only when no claim of its
+  the claim and discloses it.
+- **The anchor.** The logs are read from the block the folder was prepared at (`startBlock`), and that bound holds only
+  while that block is still on the chain: a reorganization that rolled the chain back under it can mine a claim of the
+  folder's hashes, sent some other way since, in a block below it. So preparation saves an anchor before any key is
+  drawn, in a file of its own (`.verdikta-claim/anchor.json`; `state.json` is what it was): the head, whose number is
+  `startBlock`, and the node's `finalized` block, each by number and hash (the head's alone where a node names no
+  finalized block). The folder's two hashes do not exist before its keys are drawn. So while the block at
+  `startBlock` still has the saved hash, every claim of those hashes is in a later block and the scan from
+  `startBlock` is complete: one more read, nothing else. When it has another hash, or the chain is shorter, the saved
+  finalized block is held to its hash, and the logs are read from it to the head, in the scan's own pages: a
+  finalized block is not reorganized, so that scan is complete whatever happened above it, and a claim found there is
+  adopted from its log, with its transaction and its depth. When neither can be shown (no anchor, as in a folder an
+  earlier version prepared; an anchor of another block; no finalized block saved; one that is gone; or a scan that
+  cannot be read through), the logs prove nothing, so a late claim is not signed and `--restart --late` sets nothing
+  aside: `START_UNPROVEN`, which says why, that the folder's keys stay where they are, and to prepare the claim in a
+  new folder. This is asked where a late claim is about to be paid for, inside the reads below, and on any run with
+  `--late` of a prepared folder before its terms. A commit is signed as it always was and is never refused for its
+  anchor. `--restart` without `--late` reads from the proven bound when there is one, so it finds a commit below the
+  old height, and from `startBlock` when there is none, as it did.
+- **Reads that decide.** An adopted claim's depth is measured against a head read after its log, and the log's block
+  is then held to its hash, so a claim a reorganization moved is looked for again and not pinned early. A late claim is signed only when no claim of its
   hashes can be on the chain unseen (`nonceAndClaimAt`, `src/commit.js`): the wallet's nonce and the logs are read at
   one block, and the pending count after them. A count above that nonce is a transaction not mined yet, or mined past
   that block, which may be the same late claim: nothing is signed (`WALLET_BUSY`, exit 4), and a run again finds it.
@@ -1410,8 +1426,8 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   read again by its hash, and a run that saw it change signs nothing (`RPC_UNAVAILABLE`): a reorganization between
   them would have the nonce count a claim the logs no longer hold. Each of those reads is asked of the node
   (`provider.send`), never answered from a provider's own memory of an earlier one. `--restart` asks the same, whatever
-  the flag, since a prepared folder names no kind, and it loses nothing: the prepared files, `state.json` with them,
-  are set aside under one stamp (`*.set-aside-…`), for the one case no read can see, a claim someone holds and has not
+  the flag, since a prepared folder names no kind, and it loses nothing: the prepared files, the anchor and `state.json`
+  with them, are set aside under one stamp (`*.set-aside-…`), for the one case no read can see, a claim someone holds and has not
   sent yet. They are copied before any original is removed, `state.json` first, so a `--restart` that stops half way
   leaves either the prepared claim whole or no claim with the whole set aside. A live fee that
   moved between the terms and the signature is said before it is signed, for either kind. And a signed commit whose

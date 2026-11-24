@@ -985,9 +985,8 @@ test('--restart sets the prepared files aside and deletes nothing: a claim of th
   const aside = fs.readdirSync(folder).filter((n) => n.includes('.set-aside-'));
   const stamps = new Set(aside.map((n) => n.split('.set-aside-')[1]));
   assert.equal(stamps.size, 1, aside.join(', '));
-  // the new claim has an anchor of its own, at the block it was prepared at
-  assert.equal(anchorOf(dir).head.number, readJson(statePath(dir)).startBlock);
-  assert.notDeepEqual(anchorOf(dir), JSON.parse(old['anchor.json'].toString('utf8')));
+  // the new claim has an anchor of its own, of the block it was prepared at
+  assert.deepEqual(anchorOf(dir).head, await blockId(readJson(statePath(dir)).startBlock));
   for (const name of prepared) {
     const kept = `${name}.set-aside-${[...stamps][0]}`;
     assert.ok(aside.includes(kept), kept);
@@ -1366,7 +1365,7 @@ test('preparing a claim saves an anchor before any key is drawn: the head and th
   assert.deepEqual(anchorOf(dir), { version: 1, head: await blockId(saved.startBlock), finalized: await blockId(finalizedBlock) });
   assert.equal(fs.statSync(statePath(dir, ANCHOR)).mode & 0o777, 0o600);
   // state.json holds none of it: a late claim's has `late`, and nothing else an ordinary commit's has not
-  assert.deepEqual(Object.keys(saved), ['version', 'stage', 'chainId', 'contract', 'hunter', 'listingId', 'archiveSha256', 'ciphertextSha256', 'disclosureKey', 'startBlock', 'late', 'commitTx', 'claimId', 'ciphertextCid', 'discloseTx', 'told']);
+  assert.deepEqual(Object.keys(saved), ['version', 'stage', 'chainId', 'contract', 'hunter', 'listingId', 'archiveSha256', 'ciphertextSha256', 'disclosureKey', 'startBlock', 'commitTx', 'late', 'claimId', 'ciphertextCid', 'discloseTx', 'told']);
 
   // a node that serves no finalized block: the head's alone, and the commit goes on
   const none = makeClaimDir();
@@ -1474,16 +1473,19 @@ test('--restart --late against a claim of the folder\'s hashes below the old hei
 });
 
 test('where nothing proves the bound, a late claim is not signed and --restart --late sets nothing aside: START_UNPROVEN says why and what to do', async () => {
+  // (a run removes the lock a killed one left: every other file of the folder is what it was)
+  const filesOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => !n.startsWith('lock.')).sort();
   const refused = async (c, why) => {
-    const files = fs.readdirSync(`${c.dir}/.verdikta-claim`).sort();
+    const files = filesOf(c.dir);
     const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
-    for (const restart of [false, true]) {
+    // with --yes, with --restart, and with neither: no terms are said for a late claim that would not be signed
+    for (const [restart, acknowledge] of [[false, true], [true, true], [false, false]]) {
       const m = await mark();
-      const err = await late({ claimDir: c.dir, listingId: c.l.listingId, restart }).catch((e) => e);
-      assert.ok(unproven(err), `${why}, restart ${restart}: ${err.code}: ${err.message}`);
+      const err = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, restart, acknowledge }).catch((e) => e);
+      assert.ok(unproven(err), `${why}, restart ${restart}, --yes ${acknowledge}: ${err.code}: ${err.message}`);
       await assertNothingSent(m, null, why);
       assert.equal(readJson(statePath(c.dir)).commitTx ?? null, null, 'nothing was signed');
-      assert.deepEqual(fs.readdirSync(`${c.dir}/.verdikta-claim`).sort(), files, 'nothing was set aside');
+      assert.deepEqual(filesOf(c.dir), files, 'nothing was set aside');
       assert.equal(fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8'), keys, 'the keys stay where they are');
     }
   };

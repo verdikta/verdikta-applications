@@ -1160,12 +1160,12 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // at that nonce: a transaction that takes it afterwards leaves the signature unusable
   const at = /async function nonceAndClaimAt[\s\S]*?\n\}/.exec(commit)?.[0];
   assert.ok(at, 'tool/src/commit.js: nonceAndClaimAt');
-  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await countAt\(ctx, state\.hunter, head\.number\);\s*const existing = await findCommitted\(ctx, state, head\.number\);\s*const pending = existing \? nonce : await countAt\(ctx, state\.hunter, 'pending'\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
+  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await countAt\(ctx, state\.hunter, head\.number\);[\s\S]*?const \{ existing, from, unproven \} = await anchoredClaim\(ctx, ws, state, head\.number\);\s*const pending = existing \? nonce : await countAt\(ctx, state\.hunter, 'pending'\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
   // each of those reads is the node's own answer (provider.send), never a provider's memory of an earlier one
   for (const method of ['eth_blockNumber', 'eth_getBlockByNumber', 'eth_getTransactionCount', 'eth_getLogs']) assert.ok(commit.includes(`ctx.provider.send('${method}'`), `${method} is asked of the node`);
   assert.doesNotMatch(commit, /ctx\.provider\.getLogs\(|ctx\.provider\.getTransactionCount\(/, 'none of them through a method the provider may answer from memory');
   const send = /async function sendCommit[\s\S]*?\n\}/.exec(commit)[0];
-  assert.match(send, /const at = late \? await nonceAndClaimAt\(ctx, state\) : \{ existing: await findCommitted\(ctx, state\) \};/, 'a late claim asks; a commit looks for its log as it always did');
+  assert.match(send, /const at = late \? await nonceAndClaimAt\(ctx, ws, state\) : \{ existing: await findCommitted\(ctx, state\) \};/, 'a late claim asks; a commit looks for its log as it always did');
   assert.match(send, /if \(late && at\.pending > at\.nonce\) throw fail\('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond\.'\);/);
   assert.match(send, /await ctx\.sign\(\{ data, value: price, gasLimit: [^}]*\.\.\.\(late \? \{ nonce: at\.nonce \} : \{\}\) \}\);/, 'a late claim at the nonce it checked, a commit as it always was');
   assert.equal(new ToolError('WALLET_BUSY').exitCode, 4);
@@ -1180,17 +1180,46 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   const setAside = /setAsidePrepared\(\) \{[\s\S]*?\n {4}\},/.exec(toolSrc('workspace.js'))?.[0];
   assert.ok(setAside, 'tool/src/workspace.js: setAsidePrepared');
   // each file is copied whole under the stamp before any original is removed, and state.json goes first
-  assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'state\.json'\]\) \{\s*const bytes = readOptional\(name\);\s*if \(bytes === null\) continue;\s*writePrivate\(`\$\{name\}\.set-aside-\$\{stamp\}`, bytes\);/);
+  assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'anchor\.json', 'state\.json'\]\) \{\s*const bytes = readOptional\(name\);\s*if \(bytes === null\) continue;\s*writePrivate\(`\$\{name\}\.set-aside-\$\{stamp\}`, bytes\);/);
   assert.match(setAside, /copied\.push\(name\);\s*\}[\s\S]*?fs\.rmSync\(pathOf\('state\.json'\), \{ force: true \}\);\s*fsyncDir\(dir\);\s*for \(const name of copied\) fs\.rmSync\(pathOf\(name\), \{ force: true \}\);/, 'every copy is written before an original is removed, and state.json is removed first');
   assert.match(section(9), /--restart starts over with new keys, and sets the old files aside in the same folder: it deletes nothing/);
 
-  // a claim of the folder's hashes that is on the chain already is found before the acknowledgement is read, and the
-  // scan starts a page below the height the folder was prepared at; so a run without --yes is no dry run there
+  // a claim of the folder's hashes that is on the chain already is found before the acknowledgement is read; so a run
+  // without --yes is no dry run there
   const runBody = /export async function runCommit[\s\S]*$/.exec(commit)[0];
   assert.ok(runBody.indexOf('if (state?.stage === \'prepared\') {') < runBody.indexOf('await readyToCommit('), 'adopted before the terms and --yes');
   // the logs are read from the block the folder was prepared at, as they always were, and state.json is what it was
-  assert.match(commit, /let page = Math\.max\(1, Math\.floor\(ctx\.logPageBlocks\)\);\s*for \(let from = state\.startBlock; from <= head;\) \{/);
+  assert.match(commit, /async function findCommitted\(ctx, state, upTo = null, start = state\.startBlock\) \{/);
+  assert.match(commit, /let page = Math\.max\(1, Math\.floor\(ctx\.logPageBlocks\)\);\s*for \(let from = start; from <= head;\) \{/);
   assert.doesNotMatch(commit, /startBlockHash/);
+
+  // The anchor (a design review of rounds 7 to 10): that bound is proven, not guessed. Preparation saves the head and
+  // the node's finalized block, by number and hash, in a file of its own, before any key is drawn, and state.json
+  // gets none of it
+  const prepare = /async function prepare\([\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(prepare, 'tool/src/commit.js: prepare');
+  assert.match(prepare, /const head = await blockIdAt\(ctx\);[\s\S]*?const finalized = await finalizedBlockOf\(ctx, head\);\s*const startBlock = head\.number;\s*ws\.keepAside\(\);\s*ws\.write\(ANCHOR_FILE, Buffer\.from\(`\$\{JSON\.stringify\(\{ version: 1, head, finalized \}, null, 2\)\}\\n`\)\);/);
+  assert.ok(prepare.indexOf('ws.write(ANCHOR_FILE') < prepare.indexOf('generateDisclosureSecrets()'), 'the anchor is saved before the keys are drawn');
+  assert.match(commit, /const ANCHOR_FILE = 'anchor\.json';/);
+  assert.match(prepare, /disclosureKey,\s*startBlock,\s*\};/, 'state.json ends where it did');
+  // what it proves: the block at startBlock with its saved hash, or else the saved finalized block with its own
+  const proven = /async function provenStart[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(proven, 'tool/src/commit.js: provenStart');
+  assert.match(proven, /if \(!anchor\) return \{ unproven: /);
+  assert.match(proven, /if \(anchor\.head\.number !== state\.startBlock\) return \{ unproven: /);
+  assert.match(proven, /if \(\(await blockIdAt\(ctx, state\.startBlock\)\)\?\.hash === anchor\.head\.hash\) return \{ from: state\.startBlock \};/);
+  assert.match(proven, /if \(!anchor\.finalized\) return \{ unproven: /);
+  assert.match(proven, /if \(\(await blockIdAt\(ctx, anchor\.finalized\.number\)\)\?\.hash !== anchor\.finalized\.hash\) return \{ unproven: [^\n]*\n\s*return \{ from: anchor\.finalized\.number, reorganized: true \};/);
+  // where nothing proves it, a late claim is not signed and --restart --late sets nothing aside; a commit is never asked
+  assert.match(send, /if \(at\.existing\) return adoptLogged\(ctx, ws, state, at\.existing, at\.from\);[\s\S]*?if \(late && at\.unproven\) throw fail\('START_UNPROVEN', at\.unproven\);/);
+  assert.match(commit, /if \(at\.existing\) state = await adoptLogged\(ctx, ws, state, at\.existing, at\.from\);\s*else if \(late && at\.unproven\) throw fail\('START_UNPROVEN', at\.unproven\);\s*else if \(restart && at\.pending > at\.nonce\) throw fail\('WALLET_BUSY'/, 'a prepared folder: adopted, or refused with --late, before the terms and before --restart sets it aside');
+  const raised = [...commit.matchAll(/^.*fail\('START_UNPROVEN'.*$/gm)].map((m) => m[0].trim());
+  assert.deepEqual(raised, ['if (late && at.unproven) throw fail(\'START_UNPROVEN\', at.unproven);', 'else if (late && at.unproven) throw fail(\'START_UNPROVEN\', at.unproven);'], 'START_UNPROVEN is raised in those two places, for --late alone');
+  assert.equal(new ToolError('START_UNPROVEN').exitCode, 1);
+  for (const said of [/Nothing was signed, pinned or set aside\./, /Prepare the claim in a new folder/, /This folder's keys stay where they are, in case its claim was sent some other way\./]) assert.match(ERROR_TEXTS.START_UNPROVEN, said);
+  assert.ok(block.includes('When `commit` prepares a folder it saves an anchor there (anchor.json): the block the folder was prepared at and the node\'s finalized block. If the chain is reorganized below the first, the logs are read from the second, and a claim of the folder\'s hashes found there is adopted, not paid for again.'));
+  assert.ok(block.includes('Where the folder cannot show either (it has no anchor, or the reorganization went below the finalized block too), nothing is signed, and --restart with --late sets nothing aside (START_UNPROVEN): prepare the claim in a new folder, and keep the old one, whose keys stay where they are.'));
+  assert.match(section(9), /`commit` writes `claim\/\.verdikta-claim\/`: archive\.zip, keys\.json, ciphertext\.age, anchor\.json and state\.json, each mode 0600/);
   assert.match(section(4), /A folder that `commit` has prepared and whose two hashes already have a claim on the chain, sent some other way than by this tool, is under way too: any run of `commit` there adopts that claim, pins its ciphertext and sends the disclose, --yes or not/);
   assert.match(toolSrc('usage.js').replace(/\s+/g, ' '), /a claim of the folder's two hashes that is on the chain already, sent some other way, is under way like a signed one: any run adopts it and discloses it, --yes or not/);
 

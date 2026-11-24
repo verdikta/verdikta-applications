@@ -320,6 +320,14 @@ of `commit`. `verdikta-attest commit` files one with --late.
 - It signs nothing while your wallet has a transaction that is not mined yet (WALLET_BUSY, exit
   4): that one may be this late claim, sent some other way, and a second one would pay a second
   bond. Run the same command again once it is mined.
+- It signs only where the folder's logs can be shown to hold every claim of its hashes. When
+  `commit` prepares a folder it saves an anchor there (anchor.json): the block the folder was
+  prepared at and the node's finalized block. If the chain is reorganized below the first, the
+  logs are read from the second, and a claim of the folder's hashes found there is adopted, not
+  paid for again. Where the folder cannot show either (it has no anchor, or the reorganization
+  went below the finalized block too), nothing is signed, and --restart with --late sets nothing
+  aside (START_UNPROVEN): prepare the claim in a new folder, and keep the old one, whose keys
+  stay where they are.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
@@ -622,7 +630,7 @@ why. `check` is the one place you can see it.
 
 ## 9. Keep the claim's local state
 
-`commit` writes `claim/.verdikta-claim/`: archive.zip, keys.json, ciphertext.age and state.json,
+`commit` writes `claim/.verdikta-claim/`: archive.zip, keys.json, ciphertext.age, anchor.json and state.json,
 each mode 0600, in a folder of mode 0700.
 
 - keys.json holds the keys `reveal` publishes, and nothing can make them again. Without them the

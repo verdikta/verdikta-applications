@@ -11,10 +11,11 @@
  *    (bounty 164: every submission failed and the escrow sat until expiry).
  *  - a class NOT in the registry: allowed. Its jury can't be checked here, so
  *    callers get a warning instead of a refusal.
- *  - any class: refused only on a chain fact. When fewer than K distinct arbiters
- *    (the bounty's jury size) are eligible to serve the class at the bounty's fee
- *    limit, ReputationKeeper.selectArbiters reverts (NotEnoughEligible /
- *    NoEligibleArbiters) at every draw, so the bounty could never be evaluated.
+ *  - any class: refused only on a chain fact. When no arbiter is eligible to serve
+ *    the class at the bounty's fee limit, ReputationKeeper.selectArbiters reverts
+ *    (NoEligibleArbiters) at every draw, so the bounty could never be evaluated.
+ *    Fewer than K (the jury's draw size) is a warning: the draw fails
+ *    (NotEnoughEligible, refunded) only while that lasts.
  */
 
 const { ethers } = require('ethers');
@@ -134,9 +135,8 @@ const shortAddr = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
  * Returns { coverage, refusal, warnings }:
  *  - coverage: summary for API responses (coverage.checked=false when the chain
  *    couldn't be read; callers then proceed, as with any infra failure)
- *  - refusal: set when fewer than K arbiters are eligible (or a beacon bounty's beacon
- *    quorum cannot be met)
- *  - warnings: a single operator, priced-out arbiters, and arbiters owned by the creator's own address
+ *  - refusal: set only when no arbiter is eligible (no jury can be drawn at all)
+ *  - warnings: fewer than K eligible (or a beacon bounty's quorum short), a single operator, priced-out arbiters, and arbiters owned by the creator's own address
  */
 async function checkClassCoverage(classId, oracleSettings, { creator, jury = 0 } = {}) {
   const cls = Number(classId);
@@ -185,27 +185,33 @@ async function checkClassCoverage(classId, oracleSettings, { creator, jury = 0 }
     checkedAt: r.checkedAt
   };
 
+  // Refused only when nothing can be drawn at all (no eligible arbiter). Fewer than K, or fewer
+  // than a beacon bounty's quorum, is a warning: the count moves as arbiters freeze, answer, join
+  // and leave, so a creator may post first and wait for coverage (owner decision, 2026-11-24).
   let refusal = null;
-  if (r.eligibleCount < K || r.eligibleCount === 0) {
-    const draws = `this jury draws ${K} distinct arbiters, so every draw would fail (the keeper finds too few eligible; the round fails in the draw phase and the prepay is refunded)`;
+  const warnings = [];
+  if (r.eligibleCount === 0) {
     if (r.totalInClass === 0) {
-      refusal = `No arbiters are registered for class ${cls}, and ${draws}. Arbiter operators register for a ` +
-        'class first; create the bounty once its arbiters are live.';
-    } else if (r.activeInClass > 0 && r.activeInClass >= K && r.eligibleCount < K) {
-      refusal = `Only ${r.eligibleCount} of the ${r.activeInClass} selectable arbiter(s) in class ${cls} are eligible: ` +
-        `the rest charge more than this bounty's max oracle fee (${maxFeeEth} ETH), and ${draws}. ` +
-        'Raise oracleMaxOracleFee or pick another class.';
+      refusal = `No arbiters are registered for class ${cls}, so no jury could ever be drawn. Arbiter operators ` +
+        'register for a class first; create the bounty once its arbiters are live.';
+    } else if (r.activeInClass > 0 && r.pricedOutCount === r.activeInClass) {
+      refusal = `All ${r.activeInClass} selectable arbiter(s) in class ${cls} charge more than this bounty's ` +
+        `max oracle fee (${maxFeeEth} ETH), so none could be drawn. Raise oracleMaxOracleFee or pick another class.`;
     } else {
-      refusal = `Only ${r.activeInClass} of the ${r.totalInClass} arbiter(s) registered for class ${cls} are currently selectable ` +
-        `(not paused, banned, blocked, frozen, exiting or under-staked)${r.eligibleCount < r.activeInClass ? `, ${r.eligibleCount} of them at this bounty's max oracle fee (${maxFeeEth} ETH)` : ''}, and ${draws}. ` +
-        'Try again once more are live, or pick another class.';
+      refusal = `None of the ${r.totalInClass} arbiter(s) registered for class ${cls} is currently selectable ` +
+        `(not paused, banned, blocked, frozen, exiting or under-staked) at this bounty's max oracle fee (${maxFeeEth} ETH), ` +
+        'so no jury could be drawn. Try again once they are back, or pick another class.';
     }
-  } else if (r.beaconsServable === false) {
-    refusal = `This bounty uses beacons: the beacon stage needs ${r.beaconQuorum} selectable arbiter(s) in class ${cls} ` +
-      `(beacons have no fee cap), but only ${r.activeInClass} are, so every draw would fail at the beacon stage.`;
+  } else if (r.eligibleCount < K) {
+    warnings.push(`Only ${r.eligibleCount} eligible arbiter(s) in class ${cls}, and this jury draws ${K} distinct arbiters: ` +
+      'until more are eligible at the time of a request, its draw fails (the round fails in the draw phase and the ' +
+      'prepay is refunded).');
+  }
+  if (!refusal && r.beaconsServable === false) {
+    warnings.push(`This bounty uses beacons: the beacon stage needs ${r.beaconQuorum} selectable arbiter(s) in class ${cls} ` +
+      `(beacons have no fee cap), but only ${r.activeInClass} are, so until more are, its draw fails at the beacon stage (refunded).`);
   }
 
-  const warnings = [];
   if (!refusal) {
     if (r.distinctOwnersEligible === 1) {
       const owner = r.dominantOwner ? ` (${shortAddr(r.dominantOwner)})` : '';

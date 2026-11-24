@@ -188,29 +188,34 @@ describe('checkClassCoverage()', () => {
     expect(r.coverage).toMatchObject({ checked: true, eligibleCount: 0 });
   });
 
-  it('refuses with a fee fix when the fee ceiling leaves fewer than K eligible', async () => {
-    mockEligibility.mockResolvedValue(pool({ eligible: 2, total: 8, active: 8, pricedOut: 6 }));
-    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/charge more than this bounty's max oracle fee.*draws 6 distinct.*Raise oracleMaxOracleFee/);
+  it('refuses with a fee fix when the fee ceiling prices out every selectable arbiter', async () => {
+    mockEligibility.mockResolvedValue(pool({ eligible: 0, total: 8, active: 8, pricedOut: 8 }));
+    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/All 8 selectable arbiter\(s\) in class 717 charge more than this bounty's max oracle fee.*Raise oracleMaxOracleFee/);
   });
 
   it('refuses when registered arbiters are inactive or blocked', async () => {
     mockEligibility.mockResolvedValue(pool({ eligible: 0, total: 3, active: 0 }));
-    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/Only 0 of the 3 arbiter\(s\) registered for class 717 are currently selectable/);
+    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/None of the 3 arbiter\(s\) registered for class 717 is currently selectable/);
   });
 
-  it('v2: refuses below K distinct eligible arbiters, not only at zero (every draw would fail)', async () => {
-    mockEligibility.mockResolvedValue(pool({ eligible: 5, toPoll: 6 }));
+  it('v2: below K distinct eligible arbiters is a warning, not a refusal (the count moves; the creator may wait)', async () => {
+    mockEligibility.mockResolvedValue(pool({ eligible: 2, total: 8, active: 8, pricedOut: 6, toPoll: 6 }));
     const r = await checkClassCoverage(717, settings);
-    expect(r.refusal).toMatch(/this jury draws 6 distinct arbiters, so every draw would fail/);
-    expect(r.refusal).not.toMatch(/No active oracles available|duplicate/);
-    expect(r.coverage).toMatchObject({ eligibleCount: 5, juryDrawSize: 6 });
+    expect(r.refusal).toBeNull();
+    expect(r.warnings.join('\n')).toMatch(/Only 2 eligible arbiter\(s\) in class 717, and this jury draws 6 distinct arbiters/);
+    expect(r.warnings.join('\n')).not.toMatch(/No active oracles available|duplicate/);
+    expect(r.coverage).toMatchObject({ eligibleCount: 2, juryDrawSize: 6 });
     mockEligibility.mockResolvedValue(pool({ eligible: 6, toPoll: 6, owners: [OPERATOR_OWNER, '0x' + '33'.repeat(20)] }));
-    expect((await checkClassCoverage(717, settings)).refusal).toBeNull();
+    const ok = await checkClassCoverage(717, settings);
+    expect(ok.refusal).toBeNull();
+    expect(ok.warnings.join('\n')).not.toMatch(/this jury draws/);
   });
 
-  it('v2: refuses a beacon bounty whose beacon quorum cannot be met', async () => {
+  it('v2: a beacon bounty whose beacon quorum cannot be met is a warning', async () => {
     mockEligibility.mockResolvedValue({ ...pool({ eligible: 8, active: 8 }), beaconQuorum: 10, beaconsServable: false });
-    expect((await checkClassCoverage(717, settings)).refusal).toMatch(/beacon stage needs 10 selectable.*no fee cap/);
+    const r = await checkClassCoverage(717, settings);
+    expect(r.refusal).toBeNull();
+    expect(r.warnings.join('\n')).toMatch(/beacon stage needs 10 selectable.*no fee cap/);
   });
 
   it('warns on a single operator and creator-operated arbiters', async () => {

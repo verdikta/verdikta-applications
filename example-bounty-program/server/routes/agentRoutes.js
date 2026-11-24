@@ -435,11 +435,12 @@ creators then post bounties with classId X.
   serve makes every evaluation fail, and the bounty can't be edited or canceled.
 - Every class must have arbiters: GET /api/classes/:classId/coverage
   [?maxOracleFee=] reads the on-chain registry.
-  /jobs/create (and /rubric/validate) refuse with code CLASS_UNSERVABLE when
-  fewer than K distinct arbiters (the jury's draw size) are eligible at the
-  bounty's fee, because then every draw fails (the keeper finds too few; the
-  round fails in the draw phase, prepay refunded). A single operator, or
-  arbiters owned by the creator's own address are warnings, returned in the
+  /jobs/create (and /rubric/validate) refuse with code CLASS_UNSERVABLE only
+  when no arbiter is eligible at the bounty's fee, because then no jury can
+  ever be drawn. Fewer than K distinct eligible arbiters (the jury's draw
+  size) is a warning: while it lasts every draw fails (the keeper finds too
+  few; the round fails in the draw phase, prepay refunded). A single operator,
+  or arbiters owned by the creator's own address are warnings too, returned in the
   create response's classPolicy and shown to hunters on the bounty page.
 
 ## Validating Without Side Effects
@@ -1603,7 +1604,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/classes/:classId/coverage',
-        description: 'Live arbiter coverage for ANY class from the on-chain registry: { listed, servable (false = fewer than K distinct eligible arbiters, so every draw fails and /jobs/create would refuse; null = could not check), refusal, coverage: { totalInClass, activeInClass, eligibleCount, pricedOutCount, distinctOwnersEligible, oraclesToPoll (K), juryDrawSize }, warnings[] }.',
+        description: 'Live arbiter coverage for ANY class from the on-chain registry: { listed, servable (false = no eligible arbiter, so no jury can be drawn and /jobs/create would refuse; null = could not check; fewer than K eligible is a warning), refusal, coverage: { totalInClass, activeInClass, eligibleCount, pricedOutCount, distinctOwnersEligible, oraclesToPoll (K), juryDrawSize }, warnings[] }.',
         params: ['maxOracleFee (optional; decimal ETH or integer wei; defaults to the API default fee)']
       },
       ...wagerEndpointDocs()

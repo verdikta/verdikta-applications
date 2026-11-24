@@ -488,8 +488,11 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
       const existing = await findCommitted(ctx, state, EITHER_KIND);
       if (existing) state = await adoptLogged(ctx, ws, state, existing);
     }
-    // --restart starts a commit over, never a late claim, signed or not: refused before anything is removed
-    if (late && restart) throw fail('LATE_NEEDS_NEW_FOLDER', !state || state.stage === 'prepared' ? undefined : 'This folder\'s late claim is signed or on the chain: run commit again without --restart to go on with that one.');
+    // --restart starts a commit over, never a late claim, signed or not: refused before anything is removed. A late
+    // run that has just found the folder's hashes on the chain as an ordinary commit holds a commit, and gets a
+    // commit's refusal on the next line.
+    const holdsClaim = Boolean(state) && state.stage !== 'prepared';
+    if (late && restart && !(holdsClaim && state.late !== true)) throw fail('LATE_NEEDS_NEW_FOLDER', holdsClaim ? 'This folder\'s late claim is signed or on the chain: run commit again without --restart to go on with that one.' : undefined);
     if (state && restart && state.stage !== 'prepared') throw fail('RESTART_REFUSED');
     if (state && restart) {
       ws.removePrepared();

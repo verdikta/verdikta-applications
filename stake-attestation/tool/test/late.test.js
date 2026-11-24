@@ -1102,6 +1102,17 @@ test('a prepared late claim whose two hashes already have a claim on the chain: 
     const count = await w.claimCount();
     await (await w.sa.connect(w.hunterWallet).commit(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
     await (await asMaker().hold(l.listingId)).wait();
+    // with --restart: the commit is found and saved first, and the refusal is a commit's, on the first run and on the next
+    const kept = filesOf(dir);
+    for (const run of ['first', 'second']) {
+      const err = await late({ claimDir: dir, listingId: l.listingId, restart: true }).catch((e) => e);
+      assert.equal(err.code, 'RESTART_REFUSED', run);
+      assert.equal(err.message, ERROR_TEXTS.RESTART_REFUSED, `${run}: no word of a late claim`);
+      const now = readJson(statePath(dir));
+      assert.equal(now.stage, 'committed', run);
+      assert.equal(Object.hasOwn(now, 'late'), false, run);
+      assert.equal(filesOf(dir)['keys.json'], kept['keys.json'], run);
+    }
     const said = [];
     const r = await w.hunter({ onNotice: (t) => said.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
     assert.equal(r.stage, 'disclosed');
@@ -1351,7 +1362,8 @@ test('the README\'s hunter section shows the command and says what a late claim 
   // that commit's folder, it would only go on with the commit (R1-F8)
   assert.match(section, /^verdikta-attest commit \.\/late-claim --listing 7 --late --yes\b/m);
   assert.doesNotMatch(section, /^verdikta-attest commit \.\/claim [^\n]*--late/m);
-  assert.match(section, /a late claim takes the place of the `commit` line, from a folder of its\s+own/);
+  assert.match(section, /a late claim takes the place of the `commit` line\. It has a folder and a\s+listing of its own, so `check` before it and every command after it name that folder:/);
+  for (const verb of ['check ', 'status']) assert.match(section, new RegExp(`^verdikta-attest ${verb} \\./late-claim\\b`, 'm'), verb);
   const flat = section.replace(/\s+/g, ' ');
   assert.match(flat, /`commit --late`/);
   assert.match(flat, /`lateClaim`/);

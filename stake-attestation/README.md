@@ -1342,11 +1342,13 @@ verdikta-attest claim  ./claim                     # finalize, settle, withdraw:
 verdikta-attest appeal ./claim --yes               # an INVALID to the dispute panel, for the live dispute fee
 ```
 
-On a listing that takes no commit any more, a late claim takes the place of the `commit` line, from a folder of its
-own (the lines after it are the same):
+On a listing that takes no commit any more, a late claim takes the place of the `commit` line. It has a folder and a
+listing of its own, so `check` before it and every command after it name that folder:
 
 ```bash
+verdikta-attest check  ./late-claim --listing 7               # as for a commit
 verdikta-attest commit ./late-claim --listing 7 --late --yes  # a late claim: bond + prepay, no award; asks for --yes after its terms
+verdikta-attest status ./late-claim                           # then reveal, status --wait and claim as above, each on ./late-claim
 ```
 
 The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), never from an argument.

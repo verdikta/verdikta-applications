@@ -1171,7 +1171,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // --restart never starts a late claim over, signed or not: refused before the one place that removes a prepared
   // folder's files, and before a commit's own refusal, whose text is not true of a late claim
   const runCommit = /export async function runCommit[\s\S]*$/.exec(commit)[0];
-  const refusal = runCommit.indexOf('if (late && restart) throw fail(\'LATE_NEEDS_NEW_FOLDER\'');
+  const refusal = runCommit.indexOf('if (late && restart && !(holdsClaim && state.late !== true)) throw fail(\'LATE_NEEDS_NEW_FOLDER\'');
   assert.ok(refusal >= 0 && refusal < runCommit.indexOf('ws.removePrepared()'), 'refused before anything is removed');
   assert.ok(refusal < runCommit.indexOf('throw fail(\'RESTART_REFUSED\')'));
   assert.equal(commit.split('removePrepared()').length - 1, 1, 'and nothing else removes them');
@@ -1180,7 +1180,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.equal(new ToolError('LATE_INPUTS_CHANGED').exitCode, 1);
   assert.doesNotMatch(ERROR_TEXTS.LATE_INPUTS_CHANGED, /--restart/);
   assert.ok(block.includes('--restart does not start a late claim over, signed or not (LATE_NEEDS_NEW_FOLDER). If its files changed before it was signed, `commit` stops (LATE_INPUTS_CHANGED): restore them, or prepare the changed claim in a new folder (copy finding.json, report.md and the patches there) and keep the old folder as it is.'));
-  assert.match(section(9), /Before that, a change stops `commit` with INPUTS_CHANGED \(--restart starts over with new keys; a late claim is not started over: section 3, "Late claims"\)\./);
+  assert.match(section(9), /Before that, a change stops `commit` with INPUTS_CHANGED \(--restart starts over with new keys\)\. A late claim stops with LATE_INPUTS_CHANGED instead, and is not started over \(section 3, "Late claims"\)\./);
 
   // a resume: a signed one is settled before anything else is asked, and the folder's kind is the run's kind. --late
   // takes over only a folder with nothing signed when the run starts

@@ -21,8 +21,9 @@ const TX = { to: '0x00000000000000000000000000000000000000aa', data: '0x1234' };
  * replaces a block. `call(selector, tx)` answers an eth_call, or throws. `asked` records every request.
  */
 function node(head, blocks, call = () => '0x01') {
-  const state = { head, blocks: { ...blocks }, asked: [], calls: [] };
-  const header = (n) => (state.blocks[n] ? { number: hex(n), hash: state.blocks[n], timestamp: hex(1_800_000_000 + n) } : null);
+  const state = { head, blocks: { ...blocks }, parents: {}, asked: [], calls: [] };
+  // `parents[n]`: the parent hash block n names (a node's header always has one; these tests give it where it matters)
+  const header = (n) => (state.blocks[n] ? { number: hex(n), hash: state.blocks[n], parentHash: state.parents[n], timestamp: hex(1_800_000_000 + n) } : null);
   return {
     state,
     provider: {
@@ -34,6 +35,7 @@ function node(head, blocks, call = () => '0x01') {
         assert.equal(method, 'eth_getBlockByNumber');
         assert.equal(params[1], false);
         state.asked.push(params[0]);
+        if (params[0] !== 'latest' && state.failing?.has(Number(params[0]))) throw new Error('the node could not serve that header');
         return params[0] === 'latest' ? header(state.head) : header(Number(params[0]));
       },
     },
@@ -125,6 +127,30 @@ test('snapshot: two nodes behind one endpoint that do not agree on the block: th
   }
 });
 
+test('snapshot: a refusal that says anything of the block, or nothing of the parameter, is never taken for a node that takes no hash', async () => {
+  // The first call at a hash is refused for the block not being canonical, in words that also say "invalid input".
+  // Asked by number this endpoint would answer, with another chain's hold. It is not asked: the read fails, and the
+  // next read asks by hash again.
+  for (const [code, message] of [
+    [-32000, 'invalid input: block is not canonical'],
+    [-32602, 'invalid params: block 0xa1 is not canonical'],
+    [-32000, 'invalid input'],
+    [-32000, 'unsupported: missing trie node'],
+    [-32000, 'could not parse the response'],
+    [-32603, 'failed to decode'],
+  ]) {
+    const { provider, state } = node(90, { 90: hash('a1') }, (selector) => {
+      if (typeof selector === 'string') return '0x00000000000000000000000000000000000000000000000000000000deadbeef';
+      throw callError(code, message);
+    });
+    await assert.rejects(snapshot(provider, async (at) => at.call(TX)), (err) => err.info.error.message === message, message);
+    assert.deepEqual(state.calls, [pinnedTo(hash('a1'))], `${message}: never asked by number`);
+    state.calls.length = 0;
+    await assert.rejects(snapshot(provider, async (at) => at.call(TX)));
+    assert.deepEqual(state.calls, [pinnedTo(hash('a1'))], `${message}: by hash again at the next read, with nothing remembered`);
+  }
+});
+
 test('snapshot: a node that does not take a block hash is asked by number, and held to the hash before and after', async () => {
   // it refuses the hash as a parameter it cannot read, as nodes and wallets that do not know the form do
   for (const refusal of [[-32602, 'invalid argument 1: json: cannot unmarshal object into Go value of type string'], [-32603, 'blockRef.slice is not a function'], [-32602, 'Invalid params']]) {
@@ -197,14 +223,43 @@ test('snapshot: a node that took a hash once is never asked by number, whatever 
   assert.deepEqual(down.state.calls[0], pinnedTo(hash('a1')));
 });
 
-test('snapshot: a header the node does not give says nothing of that height, and a node without a latest block is a failed read', async () => {
+test('snapshot: a header the node does not give, gives malformed or fails to give says nothing of that height, and the read stands without it', async () => {
   const { provider, state } = node(90, { 90: hash('a1') });
   // height 70: no header now. It is left out, not answered as "another block", so nothing kept there is dropped on it
   assert.deepEqual((await snapshot(provider, async () => 1, { heights: [70] })).hashes, {});
+  // a header whose hash is not 32 bytes of hex is no hash: compared with a receipt's it would read as another block
+  for (const malformed of ['0x', '0x1234', '', `${hash('70')}00`, 'not a hash']) {
+    state.blocks[70] = malformed;
+    assert.deepEqual((await snapshot(provider, async () => 1, { heights: [70] })).hashes, {}, JSON.stringify(malformed));
+  }
+  // a lookup that fails takes nothing from the read of the listing: its value is returned, without that height
   state.blocks[70] = hash('70');
+  state.failing = new Set([70]);
+  const got = await snapshot(provider, async (at) => at.call(TX), { heights: [70] });
+  assert.deepEqual({ value: got.value, block: got.block, hashes: got.hashes }, { value: '0x01', block: 90, hashes: {} });
+  // and the next read asks again: the matching header, when the node gives it
+  state.failing = new Set();
   assert.deepEqual((await snapshot(provider, async () => 1, { heights: [70] })).hashes, { 70: hash('70') });
+  // the block itself is another matter: without its header, or with a malformed one, there is no read
   const empty = node(90, {});
   await assert.rejects(snapshot(empty.provider, async () => 1), /did not answer with its latest block/);
+  const broken = node(90, { 90: '0x' });
+  await assert.rejects(snapshot(broken.provider, async () => 1), /did not answer with its latest block/);
+});
+
+test('snapshot: the hash of the block just below is the block\'s own parent hash, not what a node says of that height', async () => {
+  // the head names its parent; asked by number for that height, another node behind the endpoint would name the
+  // block it has there, on another chain
+  const { provider, state } = node(90, { 89: hash('0f'), 90: hash('a1') });
+  state.parents[90] = hash('B9');
+  const got = await snapshot(provider, async () => 1, { heights: [89, 90] });
+  assert.deepEqual(got.hashes, { 89: hash('b9'), 90: hash('a1') });
+  assert.deepEqual(state.asked, ['latest', hex(90)], 'height 89 was not asked by number');
+  // a head that names no usable parent is asked by number, as for any older height
+  state.parents[90] = '0x';
+  state.asked.length = 0;
+  assert.deepEqual((await snapshot(provider, async () => 1, { heights: [89] })).hashes, { 89: hash('0f') });
+  assert.deepEqual(state.asked, ['latest', hex(89), hex(90)]);
 });
 
 // ---------------------------------------------------------------- the listing's page reads through it, and only through it
@@ -291,12 +346,13 @@ test('the page\'s read of the listing is one snapshot, and one that says both "o
   assert.equal(page.split('readListing(').length - 1, 3, 'its definition, the load and the refresh');
   // a failed read is said as one, and nothing of the listing with it; reading again never takes a read from before
   // the newest block the page was told of
-  const failed = page.slice(page.indexOf('if (loaded.failed) {'), page.indexOf('const l = loaded.listing;'));
+  const failed = page.slice(page.indexOf('const failed = loaded.failed ?? null;'), page.indexOf('const l = current.listing;'));
   assert.match(failed, /const again = \(\) => \(needed\.current > 0 \? refresh\(needed\.current\) : setAttempt\(\(a\) => a \+ 1\)\);/);
-  assert.match(failed, /<p className="error" role="alert" data-testid="listing-unread">\{fill\(F\.readFailed, \{ reason: loaded\.failed \}\)\}<\/p>/);
+  assert.match(failed, /<p className="error" role="alert" data-testid="listing-unread">\{fill\(F\.readFailed, \{ reason: failed \}\)\}<\/p>/);
   assert.match(failed, /<button type="button" data-testid="listing-read-again" onClick=\{again\}>\{F\.retry\}<\/button>/);
-  assert.doesNotMatch(failed, /ListingMore|HoldListing|listing-held|FundListing/, 'no hold, no order, no action');
-  assert.ok(page.indexOf('if (loaded.failed) {') < page.indexOf('const hold = holdView('), 'before the hold is drawn, by a read or by a receipt');
+  // nothing of the listing is shown with it: every part of the listing is in the one element a failed read hides
+  assert.match(page, /<div className="listing-read" hidden=\{failed !== null\} data-testid="listing-read">/);
+  assert.ok(page.indexOf('<div className="listing-read"') < page.indexOf('data-testid="listing-summary"'), 'the summary, and all after it, inside');
   // the contract: a listing on hold takes no commit, whatever else is true of it
   assert.match(read('../../onchain/contracts/StakeAttestation.sol'), /function acceptsCommits\(uint256 listingId\) public view returns \(bool\) \{[\s\S]*?return l\.state == ListingState\.Open\s*&& block\.timestamp < l\.fundedUntil\s*&& l\.escrowWei >= l\.awards\[3\]\s*&& _heldAt\[listingId\] == 0;/);
 });

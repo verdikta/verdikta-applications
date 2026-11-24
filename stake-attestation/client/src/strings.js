@@ -411,6 +411,11 @@ export const STRINGS = {
     replaced:
       'Nothing was sent: on the chain as your wallet reads it now, listing {id} is not the listing this page shows, or ' +
       'there is no such listing. This page reads it again.',
+    // the latest read is of a block at or after a transaction of this page, and the node did not give the header of
+    // the transaction's block: what the receipt said is neither shown nor dropped until a read has it
+    unchecked:
+      'This page could not check the block of a transaction sent from it: the node did not give that block. What ' +
+      'the transaction did is not said here until the page can check it.',
     // one block answered both "on hold" and "takes commits", which the contract never says of one block
     contradictory: 'the chain answered that this listing is on hold and that it takes commits, of one block',
     // A payment or a withdrawal this page saw mined, whose block is not the chain's as the page now reads it. The

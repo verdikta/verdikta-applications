@@ -1715,3 +1715,13 @@ a.button.mono {
     font-size: 1.875rem;
   }
 }
+
+/* A listing's page: every part of the listing, as one. It takes no box of its own, so the parts lay out as the
+   page's own; hidden as a whole while a read of the listing has failed (FundPage.jsx). */
+.listing-read {
+  display: contents;
+}
+
+.listing-read[hidden] {
+  display: none;
+}

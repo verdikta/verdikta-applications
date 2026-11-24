@@ -35,7 +35,9 @@ export class SnapshotError extends Error {
 const quantity = (n) => `0x${n.toString(16)}`;
 /** A block's header by tag or number, with a raw call: ethers shares and caches getBlock() and getBlockNumber(). */
 const header = (provider, tag) => provider.send('eth_getBlockByNumber', [typeof tag === 'number' ? quantity(tag) : tag, false]);
-const hashOf = (block) => (typeof block?.hash === 'string' ? block.hash.toLowerCase() : null);
+/** A block hash as a node gives it, in lower case; null for anything that is not 32 bytes of hex: it is evidence of nothing. */
+const asHash = (value) => (typeof value === 'string' && /^0x[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : null);
+const hashOf = (block) => asHash(block?.hash);
 
 /** Every text of a node's error, nested ones included (a wallet wraps its node's answer). */
 function textsOf(value, depth = 0) {
@@ -44,20 +46,24 @@ function textsOf(value, depth = 0) {
   return Object.values(value).flatMap((v) => textsOf(v, depth + 1));
 }
 /**
- * Whether a node's refusal of a call says it does not have the block of that hash as the chain's: it took the hash,
- * and has no such block.
+ * Whether a node's refusal of a call is about the block of that hash: it took the hash, and does not have that block
+ * as the chain's. Anything a node says of a block being unknown, not found or not canonical is this, whatever else
+ * the message says: it is never taken for a node that does not take a hash.
  */
-const BLOCK_UNKNOWN = /not currently canonical|header (?:for hash )?not found|unknown block|block[^.]{0,90}not found|could not be found|invalid block tag 0x[0-9a-f]{64}/i;
-const saysBlockUnknown = (err) => textsOf([err?.message, err?.info?.error]).some((t) => BLOCK_UNKNOWN.test(t));
+const ABOUT_THE_BLOCK = /canonical|not found|unknown block|could not be found|no such block|missing (?:block|header|trie)|pruned|reorg|invalid block tag 0x[0-9a-f]{64}/i;
+const saysBlockUnknown = (err) => textsOf([err?.message, err?.info?.error]).some((t) => ABOUT_THE_BLOCK.test(t));
 /**
- * Whether a node's refusal of a call is of the block-hash parameter itself: it does not know that form of a block
- * (JSON-RPC's invalid-request, method and params codes, or a node's or a wallet's own words for a parameter it could
- * not read). A node that fails for any other reason (a limit, a timeout) has said nothing about hashes.
+ * Whether a node's refusal of a call is of the block parameter's form itself: it does not know a block given as an
+ * object with a hash. Only what says exactly that counts: JSON-RPC's own code for parameters it could not read
+ * (-32602), or the words nodes and wallets have for it (a value they could not unmarshal into a block number, a
+ * string method called on the object). A refusal that says anything of the block, and every other failure (a limit,
+ * a timeout, an "invalid input" of unknown cause), shows nothing about hashes: it is a failed read, and the next
+ * read asks by hash again.
  */
-const FORM_CODES = new Set([-32700, -32600, -32601, -32602]);
-const FORM_WORDS = /invalid (?:argument|params?|parameters?|block|input|request)|unmarshal|deserializ|pars(?:e|ing)|decod(?:e|ing)|hex string|unsupported|not supported|is not a function|malformed/i;
+const INVALID_PARAMS = -32602;
+const FORM_WORDS = /cannot unmarshal|is not a function|invalid params|invalid argument \d/i;
 const refusesTheForm = (err) => !saysBlockUnknown(err)
-  && (FORM_CODES.has(Number(err?.info?.error?.code)) || textsOf([err?.message, err?.info?.error]).some((t) => FORM_WORDS.test(t)));
+  && (Number(err?.info?.error?.code) === INVALID_PARAMS || textsOf([err?.message, err?.info?.error]).some((t) => FORM_WORDS.test(t)));
 
 /** Whether a provider's node takes a block hash on a call: true or false once known. */
 const takesHash = new WeakMap();
@@ -126,8 +132,14 @@ export async function snapshot(provider, read, { heights = [], tries = SNAPSHOT_
     }
     const hashes = {};
     for (const height of new Set(heights)) {
-      // a header the node does not give says nothing of that height: it is left out, and asked again by the next read
-      const at = height === block ? blockHash : height < block ? hashOf(await header(provider, height)) : null;
+      // The hash this chain has at a height below the block: the block's own parent hash for the one just below it,
+      // and for an older one the header the node gives by number. A header the node does not give, gives without a
+      // 32-byte hash, or fails to give says nothing of that height: it is left out, the listing's read stands
+      // without it, and the next read asks again.
+      let at = null;
+      if (height === block) at = blockHash;
+      else if (height === block - 1 && asHash(head.parentHash)) at = asHash(head.parentHash);
+      else if (height < block) at = hashOf(await header(provider, height).catch(() => null));
       if (at !== null) hashes[height] = at;
     }
     // the block at that number, asked again after the calls: the same hash, and every answer above is that block's

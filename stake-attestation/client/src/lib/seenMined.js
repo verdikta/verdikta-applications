@@ -96,6 +96,16 @@ export function keptBlocks() {
 }
 
 /**
+ * Whether a read has the hash its chain has at each of these blocks that is not above its own. No read has none.
+ * @param {null | { block: number, hashes?: Record<number, string> }} read
+ * @param {number[]} blocks
+ */
+export function hasHashAt(read, blocks) {
+  if (!read) return blocks.length === 0;
+  return blocks.every((height) => height > read.block || typeof read.hashes?.[height] === 'string');
+}
+
+/**
  * What one refresh of the page asks of its reads: the blocks to give the hash at, and whether a read has checked
  * them all. They are the blocks of the receipts the page holds (`registry`) and, at first, that of a receipt handed
  * to this refresh (`told`): its part holds it only from its next render on. From the first read that is held to them
@@ -111,9 +121,24 @@ export function refreshHeights(registry, told) {
     heights,
     /** Whether a read has a hash at each of them that is not above its block. */
     checked(got) {
-      const all = heights().every((height) => height > got.block || typeof got.hashes?.[height] === 'string');
+      const all = hasHashAt(got, heights());
       handed = null;
       return all;
     },
   };
+}
+
+/**
+ * What the page says once the reading of a refresh is over, of the read it then has on display (`shown`: the newest
+ * read it has shown that is of a block, or null).
+ *  - `behind`: the block the page was told of (`from`) when no read of this refresh was taken (`seen`) and the page
+ *    has shown no read of that block or a later one; null otherwise.
+ *  - `unchecked`: a receipt the page holds now (`blocks`: keptBlocks().blocks()) is at a block the read on display
+ *    has no hash for. It is said of what the page holds, not of what the reads were held to: a receipt handed over
+ *    that nothing holds any more is no reason for it, and a receipt that arrived when no read could be taken (they
+ *    failed, or trailed the read on display) is one.
+ * @returns {{ behind: number|null, unchecked: boolean }}
+ */
+export function refreshNotices({ seen, from, shown, blocks }) {
+  return { behind: !seen && from > (shown?.block ?? 0) ? from : null, unchecked: !hasHashAt(shown, blocks) };
 }

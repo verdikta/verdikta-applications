@@ -6,7 +6,7 @@ import { WalletError, chainReader, listingAt, stakeAttestation } from '../chain/
 import { safeguardTerms } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { holdView, readHold } from '../lib/hold.js';
-import { asKept, isKept, keptBlocks, refreshHeights } from '../lib/seenMined.js';
+import { asKept, isKept, keptBlocks, refreshHeights, refreshNotices } from '../lib/seenMined.js';
 import { readFrom } from '../lib/poll.js';
 import { STRINGS, fill } from '../strings.js';
 import { AwardLine, StatePill } from './Awards.jsx';
@@ -106,9 +106,10 @@ export function FundPage({ listingId }) {
   // the newest block this page knows the listing changed in: a transaction it sent, or a read through the wallet that
   // found the listing changed. No read from before it is taken, whichever action asks for the read.
   const needed = useRef(0);
-  // the block of the newest read this page has shown, on load or after: no read of an earlier block is taken after
-  // it, so a node that trails the one that answered before cannot put an earlier state of the listing back
-  const shownAt = useRef(0);
+  // The newest read this page has shown that is of a block, on load or after, a failed one included. No read of an
+  // earlier block is taken after it, so a node that trails the one that answered before cannot put an earlier state
+  // of the listing back; and what the page could not check of its receipts is said of this read.
+  const shownRead = useRef(null);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
@@ -121,7 +122,7 @@ export function FundPage({ listingId }) {
     readListing(listingId, kept.current.blocks())
       .then((got) => {
         if (!live) return;
-        if (Number.isSafeInteger(got.block)) shownAt.current = Math.max(shownAt.current, got.block);
+        if (Number.isSafeInteger(got.block)) shownRead.current = got;
         setLoaded(got);
       })
       .catch((err) => { if (live) setLoaded({ failed: err instanceof WalletError ? fill(STRINGS.wallet[err.code], err.vars) : errorReason(err) }); });
@@ -154,7 +155,7 @@ export function FundPage({ listingId }) {
     // trails, is taken by nothing, and cannot put an older listing back over a later one. A listing this page showed
     // that such a read does not have is said as gone, not only as absent, also when the read before it failed.
     const show = (got) => {
-      shownAt.current = Math.max(shownAt.current, got.block);
+      shownRead.current = got;
       setLoaded(got.missing && lastListing.current !== null ? { ...got, gone: true } : got);
       // the chain as read at or after a hold's block says whether it is there: the receipt no longer stands in
       setHeldHere((seen) => (seen && got.block >= seen.block ? null : seen));
@@ -162,13 +163,14 @@ export function FundPage({ listingId }) {
     // A read that could not check a receipt's block is not the last one: the page reads again, the same bounded
     // number of times, and then says what it could not check.
     // No read is taken from before the block the page was told of, nor from before the newest block it has shown.
-    // Where none was taken, the page says it has not read the block it was told of only if it has shown none that
-    // late, and what it said it could not check stays said.
-    readFrom(() => readListing(listingId, heights()), Math.max(from, shownAt.current), { live: wanted, onRead: show, complete: checked }).then(({ reached, seen }) => {
+    // Once the reading is over the page says what is left (lib/seenMined.js refreshNotices): the block it was told
+    // of, if it has shown no read that late; and that it could not check a transaction's block, if a receipt it
+    // holds is at a block the read on display has no hash for, whether or not a read of this refresh was taken.
+    readFrom(() => readListing(listingId, heights()), Math.max(from, shownRead.current?.block ?? 0), { live: wanted, onRead: show, complete: checked }).then(({ seen }) => {
       if (!wanted()) return;
-      if (reached || seen) setBehind(null);
-      else if (from > shownAt.current) setBehind(from);
-      if (seen) setUnchecked(!reached);
+      const says = refreshNotices({ seen, from, shown: shownRead.current, blocks: kept.current.blocks() });
+      setBehind(says.behind);
+      setUnchecked(says.unchecked);
     });
   }, [listingId]);
   // The listing this page shows, by maker and artifact. On a chain whose blocks were replaced the id can come to name
@@ -228,9 +230,12 @@ export function FundPage({ listingId }) {
   }
   // A read that failed: on load, or after a transaction of this page (a block that answered what the contract never
   // says of one block). Nothing of the listing is shown, nor of what a receipt said of it: no state, no hold, no order.
-  // Reading again never takes a read from before the newest block the page was told of.
+  // Reading again never takes a read from before the newest block the page was told of, nor from before the block
+  // of a read it has shown, one that failed on load included: a read that contradicted itself at one block is not
+  // followed by the listing as a trailing node has it at an earlier one. Only a read that failed with no block at
+  // all (the node did not answer) is made afresh.
   const failed = loaded.failed ?? null;
-  const again = () => (needed.current > 0 ? refresh(needed.current) : setAttempt((a) => a + 1));
+  const again = () => (needed.current > 0 || shownRead.current !== null ? refresh(needed.current) : setAttempt((a) => a + 1));
   const unread = failed !== null && (
     <>
       <p className="error" role="alert" data-testid="listing-unread">{fill(F.readFailed, { reason: failed })}</p>

@@ -1171,6 +1171,90 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed);
   });
 
+  test('a read that contradicts itself on load, then a reader that trails: reading again does not show the earlier block\'s hold (R10-F2)', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await holdOnChain(chain, stack, listingId);
+    // one block after the hold: the reader answers of it that the listing takes commits, and of no other block
+    await chain.provider.send('hardhat_mine', ['0x1']);
+    const head = await chain.provider.send('eth_getBlockByNumber', ['latest', false]);
+    const before = await chain.provider.send('eth_getBlockByNumber', [`0x${(Number(head.number) - 1).toString(16)}`, false]);
+    expect(await chain.sa.heldAt(listingId, { blockTag: Number(before.number) }) > 0n, 'on hold in the block before').toBe(true);
+    const takes = chain.sa.interface.encodeFunctionData('acceptsCommits', [listingId]);
+    const reader = { trails: false, trailed: 0 };
+    const stop = await interceptRpc(page, stack, (p) => {
+      if (isCallWith(takes)(p) && p.params?.[1]?.blockHash === head.hash) return { result: word(1) };
+      if (reader.trails && p.method === 'eth_getBlockByNumber' && p.params?.[0] === 'latest') {
+        reader.trailed += 1;
+        return { result: before };
+      }
+      return undefined;
+    }, { from: 'reader' });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-unread')).toHaveText(fill(F.readFailed, { reason: F.contradictory }));
+    // The reader now trails by a block: there the listing reads on hold, with nothing contradicted. That read is from
+    // before the block the page could not take a read of, so it is not taken: no hold, no "push the fix".
+    reader.trails = true;
+    await page.getByTestId('listing-read-again').click();
+    await expect.poll(() => reader.trailed, { timeout: 30_000 }).toBeGreaterThanOrEqual(4);
+    await expect(page.getByTestId('listing-unread')).toBeVisible();
+    for (const id of ['listing-summary', 'listing-held', 'hold', 'roll-forward']) await expect(page.getByTestId(id)).toHaveCount(0);
+    for (const words of ['push the fix', 'on hold since']) expect(await page.locator('main').innerText()).not.toContain(words);
+    // a read of that block or a later one that the node answers of one block: the listing, on hold
+    await stop();
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('listing-held')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('listing-unread')).toHaveCount(0);
+  });
+
+  test('a receipt that arrives after a later one was read, with the reader unavailable: the page says what it could not check, and reads again (R10-F1)', async ({ page, stack, chain }) => {
+    test.setTimeout(150_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    await expect(renewButton(page, stack)).toBeEnabled();
+    // The wallet's node holds back the receipt of the first transaction the page asks it for, the renewal: to the
+    // page it is not mined yet.
+    const wallet = { held: null, holding: true };
+    await interceptRpc(page, stack, (p) => {
+      if (p.method !== 'eth_getTransactionReceipt') return undefined;
+      wallet.held ??= p.params[0];
+      return wallet.holding && p.params[0] === wallet.held ? { result: null } : undefined;
+    }, { from: 'wallet' });
+    const renewedBefore = (await chain.sa.queryFilter(chain.sa.filters.Renewed(listingId))).length;
+    await renewButton(page, stack).click();
+    await expect.poll(async () => (await chain.sa.queryFilter(chain.sa.filters.Renewed(listingId))).length, { timeout: 30_000 }).toBe(renewedBefore + 1);
+    const [renewed] = (await chain.sa.queryFilter(chain.sa.filters.Renewed(listingId))).slice(-1);
+    expect(wallet.held).toBe(renewed.transactionHash);
+    // a top-up meanwhile, in a later block: its receipt comes at once, and the page reads the listing at its block
+    const panel = page.getByTestId('top-up');
+    await panel.getByTestId('top-up-amount').fill('0.01');
+    await panel.getByRole('button', { name: fill(STRINGS.topUp.button, { eth: '0.01' }) }).click();
+    await expect(panel.getByTestId('topped-up')).toBeVisible({ timeout: 30_000 });
+    const [toppedUp] = (await chain.sa.queryFilter(chain.sa.filters.Funded(listingId))).slice(-1);
+    expect(toppedUp.blockNumber).toBeGreaterThan(renewed.blockNumber);
+    const after = await chain.sa.getListing(listingId);
+    await expect(panel.getByTestId('top-up-escrow')).toHaveText(fill(STRINGS.topUp.escrow, { eth: formatEth(after.escrowWei), top: formatEth(after.awards[3]) }), { timeout: 30_000 });
+    await expect(page.getByTestId('renewed')).toHaveCount(0);
+    // Now the reader does not answer, and the wallet hands over the renewal's receipt, of the earlier block. The read
+    // on display did not ask for that block's hash, and no read can be taken: the page says nothing of the renewal
+    // on the strength of a block it could not check, says that it could not check one, and offers to read again.
+    const stop = await interceptRpc(page, stack, () => ({ error: { code: -32000, message: 'the node is not available' } }), { from: 'reader' });
+    wallet.holding = false;
+    await chain.provider.send('hardhat_mine', ['0x1']);
+    await expect(page.getByTestId('listing-unchecked')).toHaveText(F.unchecked, { timeout: 60_000 });
+    await expect(page.getByTestId('listing-read-again')).toBeVisible();
+    for (const id of ['renewed', 'renew-dropped', 'listing-behind', 'listing-unread']) await expect(page.getByTestId(id)).toHaveCount(0);
+    // the reader answers again: the renewal's block is the chain's, and its line is said, with its transaction
+    await stop();
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('renewed')).toHaveText(fill(STRINGS.renew.done, { tx: renewed.transactionHash, until: at(renewed.args.fundedUntil) }), { timeout: 30_000 });
+    await expect(page.getByTestId('listing-unchecked')).toHaveCount(0);
+    await expect(panel.getByTestId('topped-up')).toContainText(toppedUp.transactionHash);
+  });
+
   test('a hold the chain dates otherwise than the receipt did: one time on the page, the chain\'s, and no transaction named for it', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     await installWallet(page, stack);

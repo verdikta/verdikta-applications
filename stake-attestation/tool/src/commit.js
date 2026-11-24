@@ -165,15 +165,25 @@ async function countAt(ctx, address, at) {
   return Number(BigInt(await ctx.rpc(() => ctx.provider.send('eth_getTransactionCount', [address, typeof at === 'number' ? quantity(at) : at]))));
 }
 
-/** A block's number and hash, asked of the node: the latest, the one at a number, or the one a tag names. Null when there is none. */
+const isBlockId = (b) => Number.isSafeInteger(b?.number) && b.number >= 0 && typeof b.hash === 'string' && /^0x[0-9a-f]{64}$/.test(b.hash);
+
+/**
+ * A block's number and hash, asked of the node: the latest, the one at a number, or the one a tag names. Null when
+ * there is none, and when the answer is not a block with a number and a hash: every caller takes null as no proof.
+ */
 async function blockIdAt(ctx, at = 'latest') {
   const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [typeof at === 'number' ? quantity(at) : at, false]));
-  return block ? { number: Number(BigInt(block.number)), hash: String(block.hash).toLowerCase() } : null;
+  let id = null;
+  try {
+    id = { number: Number(BigInt(block.number)), hash: String(block.hash).toLowerCase() };
+  } catch {
+    return null;
+  }
+  return isBlockId(id) ? id : null;
 }
 
 /** The folder's anchor: the block it was prepared at and the node's finalized block then (see the top of this file). */
 const ANCHOR_FILE = 'anchor.json';
-const isBlockId = (b) => Number.isSafeInteger(b?.number) && b.number >= 0 && typeof b.hash === 'string' && /^0x[0-9a-f]{64}$/.test(b.hash);
 
 /**
  * The node's finalized block, or null: a node that names none (it refuses the tag, or answers nothing), or one that
@@ -200,6 +210,8 @@ function readAnchor(ws) {
     return null;
   }
   if (anchor?.version !== 1 || !isBlockId(anchor.head) || (anchor.finalized !== null && !isBlockId(anchor.finalized))) return null;
+  // a finalized block above the head it was read under is no bound: preparation saves none, so this is not its file
+  if (anchor.finalized && anchor.finalized.number > anchor.head.number) return null;
   return anchor;
 }
 
@@ -270,7 +282,7 @@ async function findCommitted(ctx, state, upTo = null, start = state.startBlock) 
     for (const log of logs) {
       const parsed = ctx.parseLog(log);
       if (CLAIM_MADE.includes(parsed?.name) && parsed.args.archiveHash === state.archiveSha256 && parsed.args.ciphertextSha256 === state.ciphertextSha256) {
-        return { claimId: parsed.args.claimId, blockNumber: Number(BigInt(log.blockNumber)), blockHash: log.blockHash, txHash: log.transactionHash };
+        return { claimId: parsed.args.claimId, blockNumber: Number(BigInt(log.blockNumber)), blockHash: String(log.blockHash).toLowerCase(), txHash: log.transactionHash };
       }
     }
   }

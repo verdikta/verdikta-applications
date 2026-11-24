@@ -1309,6 +1309,22 @@ function finalizedAt(at, over = w.provider) {
   });
 }
 
+/** A provider whose node refuses the logs of any range that starts below block `below()`, as one that keeps no older logs does. */
+function noLogsBelow(below, over = w.provider) {
+  return new Proxy(over, {
+    get(target, prop) {
+      if (prop === 'send') {
+        return async (method, params) => {
+          if (method === 'eth_getLogs' && Number(BigInt(params[0].fromBlock)) < below()) throw Object.assign(new Error('history unavailable'), { code: -32000 });
+          return target.send(method, params);
+        };
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+}
+
 /**
  * A folder prepared and left there (nothing signed), and the chain then rolled back under the block it was prepared
  * at: `gap` blocks under it, and above the block the node named as finalized. `finalized: 'none'`: the node named
@@ -1475,14 +1491,15 @@ test('--restart --late against a claim of the folder\'s hashes below the old hei
 test('where nothing proves the bound, a late claim is not signed and --restart --late sets nothing aside: START_UNPROVEN says why and what to do', async () => {
   // (a run removes the lock a killed one left: every other file of the folder is what it was)
   const filesOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => !n.startsWith('lock.')).sort();
-  const refused = async (c, why) => {
+  const refused = async (c, why, { provider, says } = {}) => {
     const files = filesOf(c.dir);
     const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
     // with --yes, with --restart, and with neither: no terms are said for a late claim that would not be signed
     for (const [restart, acknowledge] of [[false, true], [true, true], [false, false]]) {
       const m = await mark();
-      const err = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, restart, acknowledge }).catch((e) => e);
+      const err = await w.hunter(provider ? { provider } : {}).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, restart, acknowledge }).catch((e) => e);
       assert.ok(unproven(err), `${why}, restart ${restart}, --yes ${acknowledge}: ${err.code}: ${err.message}`);
+      if (says) assert.match(err.message, says, why);
       await assertNothingSent(m, null, why);
       assert.equal(readJson(statePath(c.dir)).commitTx ?? null, null, 'nothing was signed');
       assert.deepEqual(filesOf(c.dir), files, 'nothing was set aside');
@@ -1509,6 +1526,24 @@ test('where nothing proves the bound, a late claim is not signed and --restart -
     assert.deepEqual(anchorOf(c.dir).finalized, c.was);
     await pastStart(c);
     await refused(c, 'the finalized block is gone');
+  }
+  // the finalized block stands, and the node does not give the logs between it and the old height: the scan that
+  // would prove the bound cannot be read through, and the logs above prove nothing
+  {
+    const c = await rolledBackUnder({ claim: false });
+    await pastStart(c);
+    const provider = noLogsBelow(() => c.saved.startBlock);
+    await refused(c, 'the scan cannot be read through', { provider, says: /could not all be read/ });
+    // the same folder through a node that gives them: the scan is complete, and the late claim is signed
+    const count = await w.claimCount();
+    assert.equal((await late({ claimDir: c.dir, listingId: c.l.listingId })).ciphertextSha256, c.saved.ciphertextSha256);
+    assert.equal(await w.claimCount(), count + 1n);
+  }
+  // and where that unread stretch holds the claim, it is still not signed beside it
+  {
+    const c = await rolledBackUnder();
+    await pastStart(c);
+    await refused(c, 'the claim is in the stretch that cannot be read', { provider: noLogsBelow(() => c.saved.startBlock), says: /could not all be read/ });
   }
   // an anchor that does not name the block state.json says the folder was prepared at
   {
@@ -1551,6 +1586,17 @@ test('an ordinary commit is never refused for its anchor: without one it resumes
     await pastStart(c);
     const count = await w.claimCount();
     const r = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, restart: true, acknowledge: true });
+    assert.equal(r.stage, 'disclosed');
+    assert.notEqual(r.ciphertextSha256, c.saved.ciphertextSha256);
+    assert.equal(await w.claimCount(), count + 1n);
+  }
+  // an anchor, a rollback, and a node that does not give the logs below the old height: --restart goes on as it did
+  {
+    const c = await rolledBackUnder({ make: () => w.listing(), lateClaim: false, claim: false });
+    await pastStart(c);
+    const count = await w.claimCount();
+    const provider = noLogsBelow(() => c.saved.startBlock);
+    const r = await w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, restart: true, acknowledge: true });
     assert.equal(r.stage, 'disclosed');
     assert.notEqual(r.ciphertextSha256, c.saved.ciphertextSha256);
     assert.equal(await w.claimCount(), count + 1n);

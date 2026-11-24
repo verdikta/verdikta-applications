@@ -70,9 +70,10 @@ export function FundListing({ listingId, top, maker, artifactHash, onOpened = ()
         return;
       }
       const tx = await stakeAttestation(signer).fund(listingId, due, { value: due + escrowWei });
-      await tx.wait();
+      const receipt = await tx.wait();
       setOpened({ tx: tx.hash, until: null });
-      onOpened();
+      // the block it was mined in: a page that reads the listing again reads from there
+      onOpened(receipt.blockNumber);
       try {
         const l = await stakeAttestation(provider).getListing(listingId);
         setOpened({ tx: tx.hash, until: l.fundedUntil });

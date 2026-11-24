@@ -105,6 +105,23 @@ export async function chainNow(provider) {
   return BigInt(block.timestamp);
 }
 
+/**
+ * The receipt of a transaction once it is mined, also when the wallet sent it again at a higher fee (a "speed up"):
+ * the same call is then mined under another hash, and ethers rejects wait() with TRANSACTION_REPLACED and that
+ * transaction's receipt. That receipt is this call's when the replacement only repriced it and it did not revert.
+ * A replacement that cancelled the transaction or sent something else is not, and rejects as before.
+ * @param {{ wait(): Promise<object> }} tx - a sent transaction
+ * @returns {Promise<object>} the receipt: its `hash` is the mined transaction's
+ */
+export async function minedReceipt(tx) {
+  try {
+    return await tx.wait();
+  } catch (err) {
+    if (err?.code === 'TRANSACTION_REPLACED' && err.reason === 'repriced' && err.cancelled === false && err.receipt?.status === 1) return err.receipt;
+    throw err;
+  }
+}
+
 /** The event `name` in a receipt, parsed with the client's ABI, or null. */
 export function eventOf(contract, receipt, name) {
   for (const log of receipt.logs) {

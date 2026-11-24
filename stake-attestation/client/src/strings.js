@@ -415,6 +415,10 @@ export const STRINGS = {
     // Node P42: the maker's hold (StakeAttestation.hold) is not a state. A listing on hold stays Open or Depleted, so
     // the page says the hold beside the state, with its time, and never "open until" of a listing that takes no claims.
     heldSince: 'On hold since',
+    // after a transaction sent from this page: the site's reader has not reached the block it was mined in
+    behind:
+      'This page has not read the chain as of block {block} yet, where the last transaction sent from it was mined: ' +
+      'what it shows of the listing may be from before that transaction.',
     held:
       'Listing {id} is on hold since {time}: it takes no new claims. Claims committed before the hold run as before, and ' +
       'a finding can still be filed on it as a late claim, which is judged and recorded and carries no award. The hold ' +
@@ -624,6 +628,9 @@ export const STRINGS = {
     yes: 'This listing counts: its builder\'s signature and the project\'s proof check, and the site offers it to hunters.',
     no: 'This site offers no commit on this listing: {reason}',
     unknown: 'This site could not read whether this listing counts: {reason}. It offers no commit until it can.',
+    // a listing that counts and takes no commit as the contract has it (rolled forward, closed, depleted, or its fee
+    // lapsed) is no entry of the feed either
+    notTaking: 'This listing counts, and it takes no commits now, so the site does not offer it to hunters.',
     // node P42: a listing on hold counts and takes no commit, so it is no entry of the feed
     held:
       'This listing counts, and its maker has it on hold: it takes no commit, so the site does not offer it to hunters. ' +
@@ -1060,6 +1067,10 @@ export const STRINGS = {
     sending: 'Sending rollForward()…',
     done: 'Rolled forward to listing {id} (transaction {tx}).',
     changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
+    // node P42: a listing on hold is Open, and the contract would take it as a successor; it takes no commits, for good
+    successorOnHold: 'Nothing was sent: listing {id} is on hold and takes no commits, so this listing is not rolled forward to it. Choose another listing.',
+    // the fixed version is listed and funded after the hold, often in another tab: the panel looks again when asked
+    again: 'Look again for listings to roll to',
   },
   // The maker's hold (node P42; StakeAttestation.hold, node P39), on a listing's own page next to roll forward, where
   // the contract has it. The warning's three statements are each held to the contract's source (test/hold.test.js):
@@ -1085,6 +1096,11 @@ export const STRINGS = {
     done: 'Listing {id} is on hold since {time} (transaction {tx}).',
     changed: 'Nothing was sent: listing {id} changed on-chain since this page read it. It has been read again.',
     since: 'This listing is on hold since {time}.',
+    // a hold this page saw mined, which a later read of the chain does not show (its block was dropped)
+    dropped:
+      'The hold sent from this page (transaction {tx}) is not on the chain as this page now reads it: this listing is ' +
+      'not on hold, and takes claims as before. Do not publish a fix on the strength of it: look the transaction up, ' +
+      'and hold again if it is gone.',
     next:
       'What is left is on this page: roll forward to the fixed version once it is listed and funded, or close, when no ' +
       'claim is pending and no award is owed.',

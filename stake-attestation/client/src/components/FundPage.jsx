@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
 import { safeguardTerms } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { holdView, readHold } from '../lib/hold.js';
+import { readFrom } from '../lib/poll.js';
 import { STRINGS, fill } from '../strings.js';
 import { AwardLine, StatePill } from './Awards.jsx';
 import { Code } from './Copy.jsx';
@@ -19,10 +20,12 @@ const F = STRINGS.fund;
 const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 
 /**
- * The listing and its hold (node P42), read at one block: a hold mined between two reads never pairs a listing with
- * the hold of another moment. A contract deployed before the hold refuses the heldAt call, which readHold answers as
- * "no hold here"; a read that fails any other way rejects with the rest, and the page says it could not be read.
- * @returns {Promise<null | { listing: object, hold: { supported: boolean, heldAt: bigint } }>} null: no such listing
+ * The listing, its hold (node P42) and whether it takes a commit as commit() decides it, read at one block: a hold
+ * mined between two reads never pairs a listing with the hold of another moment. A contract deployed before the hold
+ * refuses the heldAt call, which readHold answers as "no hold here"; a read that fails any other way rejects with the
+ * rest, and the page says it could not be read. `block` is the block all three are of.
+ * @returns {Promise<null | { listing: object, hold: { supported: boolean, heldAt: bigint }, takesCommits: boolean, block: number }>}
+ *          null: no such listing
  */
 async function readListing(listingId) {
   const provider = await chainReader();
@@ -30,9 +33,10 @@ async function readListing(listingId) {
   const id = BigInt(listingId);
   if (id === 0n || id > (await sa.listingCount())) return null;
   // a raw eth_blockNumber: ethers' getBlockNumber() may answer from a cache
-  const blockTag = Number(await provider.send('eth_blockNumber', []));
-  const [listing, hold] = await Promise.all([sa.getListing(id, { blockTag }), readHold(sa, id, { blockTag })]);
-  return { listing, hold };
+  const block = Number(await provider.send('eth_blockNumber', []));
+  const at = { blockTag: block };
+  const [listing, hold, takesCommits] = await Promise.all([sa.getListing(id, at), readHold(sa, id, at), sa.acceptsCommits(id, at)]);
+  return { listing, hold, takesCommits, block };
 }
 
 /**
@@ -42,15 +46,25 @@ async function readListing(listingId) {
  * hold (where the contract has one), roll forward and renew.
  * Until it is closed: close. And for a connected wallet the contract holds something for: withdraw.
  * A listing on hold (node P42) stays Open or Depleted: the page says the hold beside the state, with its time.
+ * After each transaction sent from it the page reads the listing again from the block the transaction was mined in.
  */
 export function FundPage({ listingId }) {
   const headingId = useId();
   const [lookup, setLookup] = useState('');
-  const [loaded, setLoaded] = useState(null); // { listing, hold } | { missing } | { failed }
+  const [loaded, setLoaded] = useState(null); // { listing, hold, takesCommits, block } | { missing } | { failed }
   const [attempt, setAttempt] = useState(0);
   const [openedHere, setOpenedHere] = useState(false);
-  // the time of a hold this page sent and saw mined: { listingId, at }, so a read from before it never undoes it
+  // a hold this page sent and saw mined: { at, block }. It stands only while the page's read is from before that
+  // block (lib/hold.js holdView); a read of that block or later decides, and replaces it.
   const [heldHere, setHeldHere] = useState(null);
+  // the block of a transaction sent from this page that no read has reached: the page says so, and offers to read again
+  const [behind, setBehind] = useState(null);
+  const mounted = useRef(false);
+  const refreshRun = useRef(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   // how many times an action on this page changed the chain: what reads it (the withdrawable amount) reads again
   const [version, setVersion] = useState(0);
 
@@ -64,23 +78,36 @@ export function FundPage({ listingId }) {
     return () => { live = false; };
   }, [listingId, attempt]);
 
-  // After an action on this page: the listing as the chain has it now, read without taking the page down, so
-  // the action's own line (renewed, closed) stays where it was said.
-  const refresh = useCallback(() => {
+  // After an action on this page: the listing as the chain has it once the action is in it, read without taking the
+  // page down, so the action's own line (renewed, closed) stays where it was said. `minBlock` is the block the
+  // action was mined in. The site's reader may trail the wallet's node, and a read from before that block would
+  // show the listing as it was (still on hold after a roll, say): so the page reads until a read reaches the block
+  // (lib/poll.js readFrom), takes only that read, and says plainly when none did, with a way to read again.
+  const refresh = useCallback((minBlock = 0) => {
     setVersion((v) => v + 1);
-    readListing(listingId)
-      .then((read) => {
-        if (!read) return;
-        setOpenedHere(false);
+    refreshRun.current += 1;
+    const run = refreshRun.current;
+    const wanted = () => mounted.current && refreshRun.current === run;
+    readFrom(() => readListing(listingId), minBlock, { live: wanted }).then(({ read, reached }) => {
+      if (!wanted()) return;
+      if (reached) {
         setLoaded(read);
-      })
-      .catch(() => {});
+        setBehind(null);
+        // the chain as read at or after a hold's block says whether it is there: the receipt no longer stands in
+        setHeldHere((seen) => (seen && read.block >= seen.block ? null : seen));
+      } else if (minBlock > 0) setBehind(minBlock);
+    });
   }, [listingId]);
-  /** A hold this page sent was mined at `at` (its Held event): said at once, then the listing is read again. */
-  const onHeld = useCallback((at) => {
-    setHeldHere({ listingId, at });
-    refresh();
-  }, [listingId, refresh]);
+  /** A hold this page sent was mined at `at` (its Held event) in `block`: said at once, then read from that block. */
+  const onHeld = useCallback((at, block) => {
+    setHeldHere({ at, block });
+    refresh(block);
+  }, [refresh]);
+  /** The opening fund() was mined in `block`: its own line stays, and the rest of the page follows the listing. */
+  const onOpened = useCallback((block = 0) => {
+    setOpenedHere(true);
+    refresh(block);
+  }, [refresh]);
 
   const header = (
     <>
@@ -112,7 +139,9 @@ export function FundPage({ listingId }) {
   const l = loaded.listing;
   const state = LISTING_STATES[Number(l.state)];
   // the hold as the chain has it, or as this page saw it mined (lib/hold.js holdView)
-  const hold = holdView(l, loaded.hold, heldHere?.listingId === listingId ? heldHere.at : null);
+  const hold = holdView(l, loaded.hold, heldHere, loaded.block);
+  // a listing this page just opened reads Listed until a read reaches the opening's block
+  const shown = state === 'Listed' && openedHere ? 'Open' : state;
   // errata E8 and E9: the floor and the size list() copied onto this listing, for its whole life
   const terms = safeguardTerms(l);
   return (
@@ -124,7 +153,7 @@ export function FundPage({ listingId }) {
         <dl>
           <dt>{F.maker}</dt><dd><Code value={l.maker} what={F.maker} /></dd>
           {/* the state is the chain's; a listing on hold takes no claims, so its pill is never the green of one that does */}
-          <dt>{F.state}</dt><dd data-testid="listing-state"><StatePill state={hold.held ? null : openedHere ? 'Open' : state} text={F.states[openedHere ? 'Open' : state] ?? state} /></dd>
+          <dt>{F.state}</dt><dd data-testid="listing-state"><StatePill state={hold.held ? null : shown} text={F.states[shown] ?? shown} /></dd>
           {hold.held && <><dt>{F.heldSince}</dt><dd data-testid="listing-held-since">{formatTime(hold.heldAt)}</dd></>}
           <dt>{F.listingCid}</dt><dd><Code value={l.listingCid} what={F.listingCid} /></dd>
           <dt>{F.disclosureKey}</dt><dd><DisclosureKeyForms bytes32={l.disclosureKey} testId="listing-disclosure-key" /></dd>
@@ -139,11 +168,18 @@ export function FundPage({ listingId }) {
           <li data-testid="listing-size">{terms.size.all ? STRINGS.chain.sizeAll : fill(STRINGS.chain.size, { size: formatEth(terms.size.wei) })}</li>
         </ul>
       </section>
-      {state === 'Listed' && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} onOpened={() => setOpenedHere(true)} />}
-      {state === 'Open' && !hold.held && <p className="ok">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
+      {behind !== null && (
+        <>
+          <p className="warning" role="status" data-testid="listing-behind">{fill(F.behind, { block: behind })}</p>
+          <button type="button" className="secondary" data-testid="listing-read-again" onClick={() => refresh(behind)}>{F.retry}</button>
+        </>
+      )}
+      {/* once opened from this page its own line stays, whatever the listing reads as afterwards */}
+      {(state === 'Listed' || openedHere) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} onOpened={onOpened} />}
+      {state === 'Open' && !hold.held && !openedHere && <p className="ok">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
       {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
-      <ListingMore listingId={listingId} listing={l} hold={hold} onHeld={onHeld} onChanged={refresh} />
+      <ListingMore listingId={listingId} listing={l} hold={hold} takesCommits={loaded.takesCommits} onHeld={onHeld} onChanged={refresh} />
       <TopUpEscrow listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
       <RenewListing listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
       <CloseListing listingId={listingId} listing={l} onChanged={refresh} />

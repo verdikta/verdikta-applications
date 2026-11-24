@@ -2,7 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 
 import { LISTING_STATES } from '../chain/abi.js';
-import { chainReader, eventOf, stakeAttestation } from '../chain/wallet.js';
+import { chainReader, minedReceipt, stakeAttestation } from '../chain/wallet.js';
 import { ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { NO_HOLD, holdTerms, readHold } from '../lib/hold.js';
@@ -12,6 +12,20 @@ import { TextField } from './Field.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+/** The Held event of `contract` for the listing in a receipt, or null: another contract's log, or another listing's, is none. */
+function heldEvent(contract, receipt, listingId) {
+  for (const log of receipt.logs) {
+    if (!same(log.address, contract.target)) continue;
+    let event = null;
+    try {
+      event = contract.interface.parseLog(log);
+    } catch {
+      // not an event of the client's ABI
+    }
+    if (event?.name === 'Held' && event.args.listingId === BigInt(listingId)) return event;
+  }
+  return null;
+}
 const stateWords = (l) => STRINGS.fund.states[LISTING_STATES[Number(l.state)]] ?? String(l.state);
 /** The block the wallet's node is at: a raw eth_blockNumber, since ethers' getBlockNumber() may answer from a cache. */
 const blockNow = async (provider) => Number(await provider.send('eth_blockNumber', []));
@@ -88,7 +102,7 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
       if (escrow === null) escrow = (await reader.getListing(BigInt(listingId))).escrowWei;
       setDone({ tx: tx.hash, toOwed, escrow, reopened });
       setAmount('');
-      onChanged();
+      onChanged(receipt.blockNumber);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -193,10 +207,10 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
         return setError(fill(R.feeChanged, { fee: formatEth(due) }));
       }
       const tx = await stakeAttestation(signer).renew(BigInt(listingId), { value: due });
-      await tx.wait();
+      const receipt = await tx.wait();
       const after = await stakeAttestation(provider).getListing(BigInt(listingId));
       setDone({ tx: tx.hash, until: after.fundedUntil });
-      onChanged();
+      onChanged(receipt.blockNumber);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -236,11 +250,16 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
  * action is drawn for the listing's maker only: for the connected wallet when it is the maker's, and for no other
  * wallet and none. The wallet is asked again at the click, since one can change its account without saying so. Just
  * before sending, the listing and its hold are read again at one block through the wallet: a listing that is no longer
- * Open or Depleted, or is on hold already, sends nothing. The receipt's Held event is the hold's time.
+ * Open or Depleted, or is on hold already, sends nothing. The hold is this contract's Held event for this listing in
+ * the receipt, also when the wallet sent the call again at a higher fee and it was mined under another hash
+ * (chain/wallet.js minedReceipt); its time is the event's.
  *
- * `hold` is the listing's hold as the page read it from the chain (lib/hold.js holdView). Against a contract deployed
- * before the hold (`hold.supported` false) nothing is drawn: no section, no action. On a listing that is on hold the
- * section says since when and what is left; a hold ends in a roll forward or a close, and with it the section.
+ * `hold` is the listing's hold as the page states it (lib/hold.js holdView): the chain's, or, while the page's read is
+ * from before the block this page saw its hold mined in, that receipt's. Against a contract deployed before the hold
+ * (`hold.supported` false) nothing is drawn: no section, no action. On a listing that is on hold the section says since
+ * when and what is left; a hold ends in a roll forward or a close, and with it the section. A hold this page saw mined
+ * that a read of that block or later does not show is said in an alert, never as a hold, and the action is offered
+ * again: the maker must not publish a fix on the strength of a hold that is not on the chain.
  */
 export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () => {}, onChanged = () => {} }) {
   const w = useWalletContext();
@@ -278,13 +297,19 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
         return undefined;
       }
       const tx = await stakeAttestation(signer).hold(BigInt(listingId));
-      const receipt = await tx.wait();
-      // the hold's time is its block's (ClaimLogic.hold), as the Held event says it
-      const held = eventOf(reader, receipt, 'Held');
-      const heldAt = held ? held.args.heldAt : BigInt((await provider.getBlock(receipt.blockNumber)).timestamp);
-      setDone({ tx: tx.hash, heldAt });
+      // also when the wallet sent it again at a higher fee: the receipt is then the replacement's, with its own hash
+      const receipt = await minedReceipt(tx);
+      // the hold is this contract's Held event for this listing, and its time the event's (its block's: ClaimLogic.hold)
+      const held = heldEvent(reader, receipt, listingId);
       setAsking(false);
-      onHeld(heldAt);
+      if (!held) {
+        // mined, and no hold of this listing in it: nothing is claimed, and the listing is read from that block
+        setError(fill(H.changed, { id: listingId }));
+        onChanged(receipt.blockNumber);
+        return undefined;
+      }
+      setDone({ tx: receipt.hash, heldAt: held.args.heldAt });
+      onHeld(held.args.heldAt, receipt.blockNumber);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -294,7 +319,7 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
   };
 
   let body;
-  if (done || terms.why === 'held') {
+  if (hold.held) {
     body = (
       <>
         {done
@@ -324,6 +349,8 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
     }
     body = (
       <>
+        {/* a hold this page saw mined, and the chain as read since does not show: said first, and never as a hold */}
+        {done && <p className="error" role="alert" data-testid="hold-dropped">{fill(H.dropped, { tx: done.tx })}</p>}
         <ul className="warning" data-testid="hold-warning">
           <li>{H.warning.stops}</li>
           <li>{H.warning.pending}</li>
@@ -394,7 +421,7 @@ export function CloseListing({ listingId, listing, onChanged = () => {} }) {
         if (event?.name === 'PaymentDeferred' && same(event.args.to, account)) deferred = true;
       }
       setDone({ tx: tx.hash, amount, account, deferred });
-      onChanged();
+      onChanged(receipt.blockNumber);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {

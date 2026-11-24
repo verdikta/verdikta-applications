@@ -55,6 +55,8 @@ export const STAKE_ATTESTATION_ABI = Object.freeze([
   // takes a refused heldAt as "not held"
   'function hold(uint256 listingId)',
   'function heldAt(uint256 listingId) view returns (uint64)',
+  // whether a listing takes a commit now, as commit() decides it: what a listing's page says of the site's offer
+  'function acceptsCommits(uint256 listingId) view returns (bool)',
   // the settlement safeguards' lens views (errata E7-E9; node P18): read, never sent from here
   'function settleableAt(uint256 claimId) view returns (uint256)',
   'function appealDeadline(uint256 claimId) view returns (uint256)',

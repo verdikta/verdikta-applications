@@ -55,21 +55,25 @@ export async function readHold(sa, listingId, overrides = {}) {
 }
 
 /**
- * The hold as the page states it, from getListing's answer and readHold's at the same block. `heldHere` is the time of
- * a hold this page sent and saw mined (the receipt's Held event): the site's reader may be a block behind the wallet's
- * node, and a read from before the hold must not put the action back on the page. A hold has no resume, so that time
- * stands for as long as the listing is Open or Depleted; the chain's own time replaces it once a read has it.
+ * The hold as the page states it, from getListing's answer and readHold's at the same block, `readBlock`.
+ *
+ * `seen` is a hold this page sent and saw mined: its time and the block of its receipt. The site's reader may be a
+ * block behind the wallet's node, and a read from before that block must not put the action back on the page: so
+ * while the read is from before `seen.block`, the hold stands by its receipt. From that block on the read decides,
+ * and it alone: a read at or after the receipt's block that finds no hold means the hold is not on the chain as the
+ * page reads it (a reorganization dropped its block), and the page must stop saying the listing is on hold.
  * @param {object} listing - getListing's answer
  * @param {{ supported: boolean, heldAt: bigint }} read - readHold's answer
- * @param {bigint|null} [heldHere]
+ * @param {{ at: bigint, block: number }|null} [seen]
+ * @param {number|null} [readBlock] - the block both were read at; without one, `seen` never stands in
  * @returns {{ supported: boolean, heldAt: bigint, held: boolean }} heldAt 0 and held false when not on hold
  */
-export function holdView(listing, read, heldHere = null) {
-  const here = heldHere === null ? 0n : BigInt(heldHere);
+export function holdView(listing, read, seen = null, readBlock = null) {
+  const ahead = seen !== null && readBlock !== null && readBlock < seen.block;
   let heldAt = 0n;
   // as the contract's view: a hold ends when the listing is Rolled or Closed
-  if (HOLDABLE.has(stateOf(listing))) heldAt = read.heldAt !== 0n ? read.heldAt : here;
-  return { supported: read.supported || here !== 0n, heldAt, held: heldAt !== 0n };
+  if (HOLDABLE.has(stateOf(listing))) heldAt = read.heldAt !== 0n ? read.heldAt : ahead ? BigInt(seen.at) : 0n;
+  return { supported: read.supported || ahead, heldAt, held: heldAt !== 0n };
 }
 
 /**

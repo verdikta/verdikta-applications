@@ -3,10 +3,31 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { WalletError, verifyChain } from '../src/chain/wallet.js';
+import { WalletError, minedReceipt, verifyChain } from '../src/chain/wallet.js';
 
 test('reads are checked to come from the site\'s chain', async () => {
   const provider = (id) => ({ send: async (m) => { assert.equal(m, 'eth_chainId'); return id; } });
   await verifyChain(provider('0x7a69'), 31337);
   await assert.rejects(verifyChain(provider('0x1'), 31337), (e) => e instanceof WalletError && e.code === 'wrongChain' && e.vars.actual === 1 && e.vars.expected === 31337);
+});
+
+// A wallet can send a pending transaction again at a higher fee. The same call is then mined under another hash, and
+// ethers rejects wait() with TRANSACTION_REPLACED and that transaction's receipt (its `reason`: repriced). The call
+// succeeded: a page that said "the transaction failed" would be wrong, and after a hold it would offer the hold again.
+test('minedReceipt: the receipt, also of the same call sent again at a higher fee; never of a cancellation, another call or a revert', async () => {
+  const receipt = { hash: '0xmined', status: 1, blockNumber: 90, logs: [] };
+  assert.equal(await minedReceipt({ wait: async () => receipt }), receipt);
+  const replaced = (o) => ({ wait: async () => { throw Object.assign(new Error('transaction was replaced'), { code: 'TRANSACTION_REPLACED', ...o }); } });
+  const repriced = { hash: '0xrepriced', status: 1, blockNumber: 91, logs: [] };
+  assert.equal(await minedReceipt(replaced({ reason: 'repriced', cancelled: false, receipt: repriced })), repriced, 'the replacement\'s receipt, with its own hash');
+  // the wallet cancelled it, or sent something else at that nonce: not this call
+  for (const o of [{ reason: 'cancelled', cancelled: true, receipt: repriced }, { reason: 'replaced', cancelled: true, receipt: repriced }]) {
+    await assert.rejects(minedReceipt(replaced(o)), (err) => err.code === 'TRANSACTION_REPLACED', o.reason);
+  }
+  // repriced, and it reverted: no success to report
+  await assert.rejects(minedReceipt(replaced({ reason: 'repriced', cancelled: false, receipt: { ...repriced, status: 0 } })), (err) => err.code === 'TRANSACTION_REPLACED');
+  await assert.rejects(minedReceipt(replaced({ reason: 'repriced', cancelled: false, receipt: null })), (err) => err.code === 'TRANSACTION_REPLACED');
+  // anything else a wait rejects with is passed on as it is
+  const reverted = Object.assign(new Error('execution reverted'), { code: 'CALL_EXCEPTION' });
+  await assert.rejects(minedReceipt({ wait: async () => { throw reverted; } }), (err) => err === reverted);
 });

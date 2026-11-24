@@ -8,7 +8,7 @@
 // what it said. Each step is checked against the chain.
 import { formatEth } from '../src/lib/format.js';
 import { STRINGS, fill } from '../src/strings.js';
-import { answerHeldAt, archiveBytes, disclosure, expect, installWallet, shot, test } from './support/fixtures.js';
+import { answerHeldAt, archiveBytes, disclosure, expect, installWallet, interceptRpc, isHeldAtCall, shot, test } from './support/fixtures.js';
 import { field } from './support/listingForm.js';
 import { wordingProblems } from './support/wording.js';
 
@@ -31,6 +31,11 @@ async function holdOnChain(chain, stack, listingId, from = stack.accounts.maker)
 }
 /** The lines of an element's text as the page has it: one for each block of it, the gaps between blocks left out. */
 const lines = async (locator) => (await locator.innerText()).split('\n').filter(Boolean);
+/** The site's reader held at the block the chain is at now, as a node that trails the wallet's: resolves what lets it go. */
+async function freezeReader(page, stack, chain) {
+  const block = Number(await chain.provider.send('eth_blockNumber', []));
+  return interceptRpc(page, stack, (p) => (p.method === 'eth_blockNumber' ? { result: `0x${block.toString(16)}` } : undefined), { from: 'reader' });
+}
 const api = async (stack, path) => {
   const res = await fetch(`${stack.apiUrl}${path}`);
   return res.ok ? res.json() : null;
@@ -221,6 +226,11 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-held')).toHaveCount(0);
     await expect(page.getByTestId('listing-held-since')).toHaveCount(0);
     await expect(page.getByTestId('hold')).toHaveCount(0);
+    // the hold's end does not turn the offer back on: a rolled listing takes no commit, and the page says so
+    await expect(page.getByTestId('commit-offer')).toContainText(STRINGS.offer.notTaking);
+    await expect(page.getByTestId('commit-offer')).toHaveAttribute('data-offered', 'false');
+    await expect(page.getByTestId('commit-offer')).not.toContainText(STRINGS.offer.yes);
+    await expect(page.getByTestId('listing-behind')).toHaveCount(0);
     // the successor takes commits: it was never on hold
     expect(await chain.sa.acceptsCommits(successor.listingId)).toBe(true);
 
@@ -238,6 +248,167 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-summary')).toContainText(F.states.Closed);
     await expect(page.getByTestId('listing-held')).toHaveCount(0);
     await expect(page.getByTestId('hold')).toHaveCount(0);
+    await expect(page.getByTestId('commit-offer')).toContainText(STRINGS.offer.notTaking);
+    await expect(page.getByTestId('commit-offer')).toHaveAttribute('data-offered', 'false');
+  });
+
+  test('a reader behind the wallet: the hold stands by its receipt, the page says what it has not read, and reading again settles it', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    const section = page.getByTestId('hold');
+    await expect(section.getByRole('button', { name: fill(H.ask, { id: listingId }) })).toBeVisible();
+    // from here the site's reader answers for this block, while the wallet's node goes on
+    const letGo = await freezeReader(page, stack, chain);
+    await section.getByRole('button', { name: fill(H.ask, { id: listingId }) }).click();
+    await section.getByRole('button', { name: fill(H.confirm, { id: listingId }) }).click();
+    await expect(section.getByTestId('held')).toBeVisible({ timeout: 30_000 });
+    const [event] = await chain.sa.queryFilter(chain.sa.filters.Held(listingId));
+    // every read the page has is from before the hold: it does not go back to offering it, and says the hold by its receipt
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(event.args.heldAt));
+    await expect(section.getByRole('button')).toHaveCount(0);
+    // after its reads it says which block it has not reached, and offers to read again
+    await expect(page.getByTestId('listing-behind')).toHaveText(fill(F.behind, { block: event.blockNumber }), { timeout: 30_000 });
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(event.args.heldAt));
+    // the reader catches up: the chain's own answer, and the notice goes
+    await letGo();
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('listing-behind')).toHaveCount(0);
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(event.args.heldAt));
+    await expect(section.getByTestId('held')).toBeVisible();
+  });
+
+  test('a reader behind the wallet after a roll forward: the page says what it has not read, and stops saying on hold once it has', async ({ page, stack, chain }) => {
+    const first = await chain.openListing({ recipient: key.recipient });
+    await holdOnChain(chain, stack, first.listingId);
+    const successor = await chain.openListing({ recipient: key.recipient });
+    await chain.until(async () => ((await api(stack, '/api/feed'))?.listings ?? []).some((l) => l.listingId === String(successor.listingId)), { what: 'the successor in the feed' });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${first.listingId}`);
+    const pick = field(page, RF.pick);
+    await expect(pick).toBeVisible();
+    await pick.selectOption(String(successor.listingId));
+    const letGo = await freezeReader(page, stack, chain);
+    await page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) }).click();
+    await expect(page.getByTestId('rolled')).toBeVisible({ timeout: 30_000 });
+    expect(Number((await chain.sa.getListing(first.listingId)).state)).toBe(3); // Rolled
+    // the page's reads are from before the roll: it says so, by the block, beside what it still shows
+    const [event] = await chain.sa.queryFilter(chain.sa.filters.RolledForward(first.listingId));
+    await expect(page.getByTestId('listing-behind')).toHaveText(fill(F.behind, { block: event.blockNumber }), { timeout: 30_000 });
+    await expect(page.getByTestId('listing-held')).toBeVisible();
+    // once it reads that block: rolled forward, and not on hold
+    await letGo();
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('listing-summary')).toContainText(F.states.Rolled);
+    await expect(page.getByTestId('listing-held')).toHaveCount(0);
+    await expect(page.getByTestId('hold')).toHaveCount(0);
+    await expect(page.getByTestId('listing-behind')).toHaveCount(0);
+    await expect(page.getByTestId('rolled')).toBeVisible();
+  });
+
+  test('a hold that is no longer on the chain when the page reads again: said plainly, never drawn as a hold, and offered again', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    const section = page.getByTestId('hold');
+    const ask = section.getByRole('button', { name: fill(H.ask, { id: listingId }) });
+    await ask.click();
+    await section.getByRole('button', { name: fill(H.confirm, { id: listingId }) }).click();
+    const done = section.getByTestId('held');
+    await expect(done).toBeVisible({ timeout: 30_000 });
+    const tx = /0x[0-9a-f]{64}/.exec(await done.innerText())[0];
+    await expect(page.getByTestId('listing-held')).toBeVisible();
+    // the chain as the site's reader then has it holds no hold of this listing (its block was dropped): the view answers 0
+    await interceptRpc(page, stack, (p) => (isHeldAtCall(p) ? { result: `0x${'0'.repeat(64)}` } : undefined), { from: 'reader' });
+    // the page reads the listing again after its next transaction, a top-up
+    const topUp = page.getByTestId('top-up');
+    await topUp.getByTestId('top-up-amount').fill('0.01');
+    await topUp.getByRole('button', { name: fill(STRINGS.topUp.button, { eth: '0.01' }) }).click();
+    await expect(topUp.getByTestId('topped-up')).toBeVisible({ timeout: 30_000 });
+    // it stops saying on hold, everywhere it said it, and says in an alert that the hold it saw mined is not there
+    await expect(section.getByTestId('hold-dropped')).toHaveText(fill(H.dropped, { tx }));
+    await expect(section.getByTestId('held')).toHaveCount(0);
+    await expect(page.getByTestId('listing-held')).toHaveCount(0);
+    await expect(page.getByTestId('listing-held-since')).toHaveCount(0);
+    await expect(page.getByTestId('commit-offer')).not.toContainText(STRINGS.offer.held);
+    expect(await page.getByTestId('roll-forward').getByTestId('roll-hold-first').innerText()).toBe(RF.hold.first);
+    // and the hold is offered again, with its warning
+    await expect(section.getByTestId('hold-warning')).toBeVisible();
+    await expect(ask).toBeVisible();
+    expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
+  });
+
+  test('roll forward: a successor that went on hold after the picker loaded is refused, and nothing is sent', async ({ page, stack, chain }) => {
+    const first = await chain.openListing({ recipient: key.recipient });
+    const successor = await chain.openListing({ recipient: key.recipient });
+    await chain.until(async () => {
+      const ids = ((await api(stack, '/api/feed'))?.listings ?? []).map((l) => l.listingId);
+      return ids.includes(String(first.listingId)) && ids.includes(String(successor.listingId));
+    }, { what: 'the feed' });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${first.listingId}`);
+    const roll = page.getByTestId('roll-forward');
+    const pick = field(page, RF.pick);
+    await expect(pick).toBeVisible();
+    await pick.selectOption(String(successor.listingId));
+    // elsewhere, the successor's maker holds it: it is still Open, and the contract would take it as a successor
+    await holdOnChain(chain, stack, successor.listingId);
+    await page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) }).click();
+    await expect(roll.getByRole('alert')).toHaveText(fill(RF.successorOnHold, { id: successor.listingId }));
+    const l = await chain.sa.getListing(first.listingId);
+    expect(Number(l.state)).toBe(1); // Open: not rolled
+    expect(l.successor).toBe(0n);
+    expect((await chain.sa.getListing(successor.listingId)).predecessor).toBe(0n);
+    // the panel looked again: the listing on hold is no longer among the successors
+    await expect.poll(async () => (await roll.locator('option').evaluateAll((os) => os.map((o) => o.value))).includes(String(successor.listingId))).toBe(false);
+    await expect(page.getByTestId('rolled')).toHaveCount(0);
+  });
+
+  test('on hold: a fixed version listed after the page was opened is found when the panel looks again', async ({ page, stack, chain }) => {
+    // a repository of its own: until the fixed version is listed, the maker has nothing to roll to
+    const repo = `https://github.com/acme/later-${Date.now().toString(36)}`;
+    const first = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    await holdOnChain(chain, stack, first.listingId);
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${first.listingId}`);
+    const roll = page.getByTestId('roll-forward');
+    await expect(roll).toContainText(RF.none);
+    // the maker's order: with the listing on hold, the fixed version is listed and funded, here from the test's side
+    const successor = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    await chain.until(async () => ((await api(stack, '/api/feed'))?.listings ?? []).some((l) => l.listingId === String(successor.listingId)), { what: 'the fixed version in the feed' });
+    await expect(roll).toContainText(RF.none);
+    await roll.getByRole('button', { name: RF.again }).click();
+    const button = roll.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) });
+    await expect(button).toBeVisible();
+    await button.click();
+    await expect(page.getByTestId('rolled')).toBeVisible({ timeout: 30_000 });
+    expect((await chain.sa.getListing(first.listingId)).successor).toBe(successor.listingId);
+  });
+
+  test('a listing opened from its own page offers the hold without a reload', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient, fund: false });
+    expect(Number((await chain.sa.getListing(listingId)).state)).toBe(0); // Listed
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-summary')).toContainText(F.states.Listed);
+    await expect(page.getByTestId('hold')).toHaveCount(0);
+    await page.getByRole('button', { name: STRINGS.chain.fund }).click();
+    await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
+    // the page follows the listing from the block it opened in: the hold is there, for the wallet that funded it
+    const section = page.getByTestId('hold');
+    const ask = section.getByRole('button', { name: fill(H.ask, { id: listingId }) });
+    await expect(ask).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('roll-forward')).toBeVisible();
+    // the opening's own line stays, and it is the one line that says the listing is open
+    await expect(page.getByTestId('opened')).toBeVisible();
+    await expect(page.getByText(/^Listing \d+ is open until /)).toHaveCount(1);
+    await ask.click();
+    await section.getByRole('button', { name: fill(H.confirm, { id: listingId }) }).click();
+    await expect(section.getByTestId('held')).toBeVisible({ timeout: 30_000 });
+    expect(await chain.sa.heldAt(listingId) > 0n).toBe(true);
+    await expect(page.getByTestId('opened')).toBeVisible();
   });
 
   test('on hold in the lists: the record, and the other listings of its repository on a listing\'s page and in a feed entry; never a feed entry itself', async ({ page, stack, chain }) => {

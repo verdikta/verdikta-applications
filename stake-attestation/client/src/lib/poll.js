@@ -108,3 +108,39 @@ export function withTimeout(promise, ms, what = 'the read') {
   const late = new Promise((_, reject) => { t = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms); });
   return Promise.race([promise, late]).finally(() => clearTimeout(t));
 }
+
+/** After a transaction sent from a page was mined: how many reads of what it changed, and how far apart. */
+export const AFTER_TX_READS = 4;
+export const AFTER_TX_WAIT_MS = 2000;
+
+/**
+ * Reads again after a transaction mined at `minBlock`, until a read is of that block or a later one. The site's
+ * reader may be a block behind the node the wallet sent through: a read from before `minBlock` is from before the
+ * transaction and says nothing of it, so it is never taken for the page's new state. A read that fails, or takes
+ * longer than `readTimeoutMs`, is tried again. After `tries` reads the caller is told it has no read of that block,
+ * and says so on the page.
+ * @template {{ block: number }} T
+ * @param {() => Promise<T|null>} read - one read, with the block it is of
+ * @param {number} minBlock
+ * @param {object} [o]
+ * @param {() => boolean} [o.live] - false once the answer is no longer wanted: no further read starts
+ * @returns {Promise<{ read: T|null, reached: boolean }>} `read`: the read that reached the block; otherwise the
+ *          newest that answered (from before the transaction), or null
+ */
+export async function readFrom(read, minBlock, { tries = AFTER_TX_READS, waitMs = AFTER_TX_WAIT_MS, readTimeoutMs = READ_TIMEOUT_MS, sleep = (ms) => abortableSleep(ms), live = () => true } = {}) {
+  let newest = null;
+  for (let i = 0; i < tries; i += 1) {
+    if (i) await sleep(waitMs);
+    if (!live()) break;
+    try {
+      const got = await withTimeout(Promise.resolve().then(read), readTimeoutMs);
+      if (got) {
+        if (got.block >= minBlock) return { read: got, reached: true };
+        if (!newest || got.block >= newest.block) newest = got;
+      }
+    } catch {
+      // a read that failed is tried again
+    }
+  }
+  return { read: newest, reached: false };
+}

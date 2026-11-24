@@ -109,60 +109,39 @@ export function withTimeout(promise, ms, what = 'the read') {
   return Promise.race([promise, late]).finally(() => clearTimeout(t));
 }
 
-/** After a transaction sent from a page was mined: how many reads of what it changed, and how far apart. */
+/** After a page was told of a block: how many reads of the listing it makes to reach it, and how far apart. */
 export const AFTER_TX_READS = 4;
 export const AFTER_TX_WAIT_MS = 2000;
 
 /**
- * Reads again after a transaction mined at `minBlock`, until a read is of that block or a later one. The site's
- * reader may be a block behind the node the wallet sent through: a read from before `minBlock` is from before the
- * transaction and says nothing of it, so it is never taken for the page's new state. A read that fails, or takes
- * longer than `readTimeoutMs`, is tried again. After `tries` reads the caller is told it has no read of that block,
- * and says so on the page.
- *
- * A read is taken (`onRead`) only here, once it has answered within its time and is of that block or a later one. A
- * read that timed out goes on in the background, and whatever it answers later is taken by nothing: it cannot put an
- * older state back over a later read's. A read that is of the block and is not `complete` (it could not check
- * something it should have) is taken all the same, and the reading goes on, within the same number of tries. Once a
- * read is taken, none of an earlier block is: a node that trails the one that answered before cannot put the state
- * of an earlier block back, nor end the reading with it.
+ * Reads until a read is of `minBlock` or a later block: the floor of a listing's page (lib/pageSays.js). The site's
+ * reader may trail the node a wallet sent through, and a read from before `minBlock` says nothing of what happened
+ * there, so it is never the one returned as reaching it. A read that fails, or takes longer than `readTimeoutMs`, is
+ * tried again; one that timed out goes on in the background, and whatever it answers later is taken by nothing. After
+ * `tries` reads the caller is told that none reached the block, and says so on the page.
  * @template {{ block: number }} T
  * @param {() => Promise<T|null>} read - one read, with the block it is of; "nothing is there" is an answer with its
- *        block like any other, since null says nothing of any block and is tried again. It only reads: what a read
- *        changes on the page is `onRead`'s to do.
+ *        block like any other, since null says nothing of any block and is tried again
  * @param {number} minBlock
  * @param {object} [o]
- * @param {() => boolean} [o.live] - false once the answer is no longer wanted: no further read starts, and none is taken
- * @param {(got: T) => void} [o.onRead] - takes a read of the block or a later one, as each comes
- * @param {(got: T) => boolean} [o.complete] - whether such a read is the last one needed
- * @returns {Promise<{ read: T|null, reached: boolean, seen: boolean }>} `read`: the read that reached the block and
- *          was complete; otherwise the newest that answered, or null. `seen`: a read of the block or later was taken.
+ * @param {() => boolean} [o.live] - false once the answer is no longer wanted: no further read starts
+ * @returns {Promise<{ read: T|null, reached: boolean }>} `read`: the first read of the block or a later one;
+ *          otherwise, with `reached` false, the newest that answered, or null
  */
 export async function readFrom(read, minBlock, {
   tries = AFTER_TX_READS, waitMs = AFTER_TX_WAIT_MS, readTimeoutMs = READ_TIMEOUT_MS, sleep = (ms) => abortableSleep(ms), live = () => true,
-  onRead = () => {}, complete = () => true,
 } = {}) {
   let newest = null;
-  let seen = false;
-  // the block a read has to be of to be taken: the one waited for, then that of the newest read taken
-  let floor = minBlock;
   for (let i = 0; i < tries; i += 1) {
     if (i) await sleep(waitMs);
     if (!live()) break;
     try {
       const got = await withTimeout(Promise.resolve().then(read), readTimeoutMs);
-      if (got) {
-        if (got.block >= floor && live()) {
-          seen = true;
-          floor = got.block;
-          onRead(got);
-          if (complete(got)) return { read: got, reached: true, seen };
-        }
-        if (!newest || got.block >= newest.block) newest = got;
-      }
+      if (got && got.block >= minBlock) return { read: got, reached: true };
+      if (got && (!newest || got.block >= newest.block)) newest = got;
     } catch {
       // a read that failed is tried again
     }
   }
-  return { read: newest, reached: false, seen };
+  return { read: newest, reached: false };
 }

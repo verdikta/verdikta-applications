@@ -76,9 +76,8 @@ let readerChecked = false;
 export async function chainReader() {
   if (!CONFIG.contract || !CONFIG.chainId) throw new WalletError('notConfigured');
   if (!reader) {
-    // The site's read address: a listing's page asks it for every read at a block's hash (chain/snapshot.js), and
-    // only a provider made here is asked that way. Without an address, reads go through the wallet's node, as a
-    // wallet's node is asked: by the block's number.
+    // The site's read address: a snapshot asks it at a block's hash (chain/snapshot.js), and only a provider made
+    // here is asked that way. Without an address, reads go through the wallet's node, by the block's number.
     if (CONFIG.rpcUrl) reader = siteReader(new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId, { staticNetwork: true, pollingInterval: POLL_MS }));
     else if (hasWallet()) {
       reader = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
@@ -94,9 +93,8 @@ export async function chainReader() {
 }
 
 /**
- * StakeAttestation at the configured address, on `runner`: a wallet's signer, to send; a snapshot's runner
- * (chain/snapshot.js), to read at that snapshot's block; or, on the pages that are not a listing's own, a
- * chainReader() or a wallet's provider.
+ * StakeAttestation at the configured address, on `runner`: a chainReader() or a wallet's signer or provider, or a
+ * snapshot's runner (chain/snapshot.js), to read at that snapshot's block.
  */
 export function stakeAttestation(runner) {
   if (!CONFIG.contract) throw new WalletError('notConfigured');
@@ -118,22 +116,30 @@ export async function chainNow(provider) {
  * the same call is then mined under another hash, and ethers rejects wait() with TRANSACTION_REPLACED and that
  * transaction's receipt. That receipt is this call's when the replacement only repriced it and it did not revert.
  * A replacement that cancelled the transaction or sent something else is not, and rejects as before.
+ *
+ * `onMined` is told the block of whatever was mined, before anything else is done with it: the receipt's, the
+ * replacement's, or that of a transaction that reverted. A listing's page then knows that the read it shows is from
+ * before that block (lib/pageSays.js), on every path that sends.
  * @param {{ wait(): Promise<object> }} tx - a sent transaction
+ * @param {(block: number) => void} [onMined]
  * @returns {Promise<object>} the receipt: its `hash` is the mined transaction's
  */
-export async function minedReceipt(tx) {
+export async function minedReceipt(tx, onMined = () => {}) {
+  let receipt;
   try {
-    return await tx.wait();
+    receipt = await tx.wait();
   } catch (err) {
+    if (Number.isSafeInteger(err?.receipt?.blockNumber)) onMined(err.receipt.blockNumber);
     if (err?.code === 'TRANSACTION_REPLACED' && err.reason === 'repriced' && err.cancelled === false && err.receipt?.status === 1) return err.receipt;
     throw err;
   }
+  onMined(receipt.blockNumber);
+  return receipt;
 }
 
 /**
- * The listing as one block has it, or null when the contract has no listing of that id there: one whose block was
- * dropped, read through a node that has dropped it too. getListing reverts for such an id, so the count is asked
- * first, of the same block.
+ * The listing as one block has it, or null when the contract has no listing of that id there. getListing reverts for
+ * such an id, so the count is asked first, of the same block.
  * @param {object} contract - StakeAttestation made on a snapshot's runner (chain/snapshot.js): its calls are that block's
  * @returns {Promise<object|null>}
  */
@@ -142,24 +148,6 @@ export async function listingAt(contract, listingId) {
   if (id === 0n || id > BigInt(await contract.listingCount())) return null;
   return contract.getListing(id);
 }
-
-/** The event `name` of `contract` in a receipt that `is(event)` picks, or null: another contract's log is none. */
-export function contractEvent(contract, receipt, name, is = () => true) {
-  for (const log of receipt.logs) {
-    if (String(log.address).toLowerCase() !== String(contract.target).toLowerCase()) continue;
-    let event = null;
-    try {
-      event = contract.interface.parseLog(log);
-    } catch {
-      // not an event of the client's ABI
-    }
-    if (event?.name === name && is(event)) return event;
-  }
-  return null;
-}
-
-/** The event `name` of `contract` for the listing in a receipt, or null: another contract's log, or another listing's, is none. */
-export const listingEvent = (contract, receipt, name, listingId) => contractEvent(contract, receipt, name, (event) => event.args.listingId === BigInt(listingId));
 
 /** The event `name` in a receipt, parsed with the client's ABI, or null. */
 export function eventOf(contract, receipt, name) {

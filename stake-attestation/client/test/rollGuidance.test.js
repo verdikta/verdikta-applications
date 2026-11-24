@@ -104,7 +104,7 @@ test('the panel renders the three lines once each, after its intro and before th
   for (const k of LINES) assert.equal(panel.split(`RF.fix.${k}`).length, 2, `RF.fix.${k}, once`);
   inOrder(panel, ['<p>{RF.intro}</p>', 'RF.fix.keep', 'RF.fix.noClaim', 'RF.fix.claimPending', '{body}']);
   // node P42: they are what a maker does against a contract with no hold, and they show there and nowhere else
-  const body = panel.slice(panel.indexOf('export function RollForward('), panel.indexOf('/** Whether the site offers a commit'));
+  const body = panel.slice(panel.indexOf('export function RollForward('), panel.indexOf('function CommitOffer('));
   assert.match(body, /\{hold\.supported \? \(\s*<>[\s\S]*?<\/>\s*\) : \(\s*<>\s*<p className="warning" data-testid="roll-fix-keep">\{RF\.fix\.keep\}<\/p>\s*<ul data-testid="roll-fix-order">\s*<li>\{RF\.fix\.noClaim\}<\/li>\s*<li>\{RF\.fix\.claimPending\}<\/li>\s*<\/ul>\s*<\/>\s*\)\}\s*\{body\}/);
   const withHold = /\{hold\.supported \? \(\s*<>([\s\S]*?)<\/>\s*\) : \(/.exec(body)[1];
   assert.doesNotMatch(withHold, /RF\.fix\./, 'none of the three lines against a contract with the hold');
@@ -115,11 +115,11 @@ test('the panel renders the three lines once each, after its intro and before th
 test('the panel shows from the listing\'s state on-chain: a record that is still read, or cannot be, only leaves the picker out', () => {
   const panel = read('../src/components/ListingExtras.jsx');
   // the listing's page renders the panel whatever the record's read came to
-  assert.match(panel, /\n      <RollForward listingId=\{listingId\} listing=\{listing\} record=\{data\} recordReading=\{reading\} hold=\{hold\} read=\{read\} onRecordAgain=\{recordAgain\} onChanged=\{onChanged\} \/>\n/);
+  assert.match(panel, /\n      <RollForward listingId=\{listingId\} listing=\{listing\} record=\{data\} recordReading=\{data !== null && data\.again !== again\} hold=\{hold\} quiet=\{quiet\} onRecordAgain=\{\(\) => setAgain\(\(n\) => n \+ 1\)\} onChanged=\{onChanged\} \/>\n/);
   assert.doesNotMatch(panel, /&& <RollForward /);
   assert.equal(panel.split('<RollForward ').length, 2, 'rendered in one place');
   // inside, only the state decides whether there is a panel, and the record only what the picker's place holds
-  const body = panel.slice(panel.indexOf('export function RollForward('), panel.indexOf('/** Whether the site offers a commit'));
+  const body = panel.slice(panel.indexOf('export function RollForward('), panel.indexOf('function CommitOffer('));
   assert.match(body, /const identity = record && !record\.failed \? record\.identity : null;/);
   assert.match(body, /if \(!ROLLABLE\.has\(state\)\) return null;/);
   assert.match(body, /if \(!record \|\| recordReading\) body = <p className="hint">\{RF\.loading\}<\/p>;\s*else if \(record\.failed\) body = <p className="hint" data-testid="roll-record-failed">\{fill\(RF\.recordFailed, \{ reason: record\.failed \}\)\}<\/p>;/);
@@ -201,7 +201,7 @@ test('hold line 4: or close, once on hold, when no claim is pending and no award
 
 test('with a hold the panel renders its own lines after the intro and before the picker: the first two until the hold, then the line of a listing on hold', () => {
   const panel = read('../src/components/ListingExtras.jsx');
-  const body = panel.slice(panel.indexOf('export function RollForward('), panel.indexOf('/** Whether the site offers a commit'));
+  const body = panel.slice(panel.indexOf('export function RollForward('), panel.indexOf('function CommitOffer('));
   const withHold = /\{hold\.supported \? \(\s*<>([\s\S]*?)<\/>\s*\) : \(/.exec(body)[1];
   assert.match(withHold, /<p className="warning" data-testid="roll-hold-first">\{hold\.held \? fill\(RF\.hold\.held, \{ time: formatTime\(hold\.heldAt\) \}\) : RF\.hold\.first\}<\/p>/);
   assert.match(withHold, /<ul data-testid="roll-hold-order">\s*\{!hold\.held && <li>\{RF\.hold\.order\}<\/li>\}\s*<li>\{RF\.hold\.close\}<\/li>\s*<\/ul>/);

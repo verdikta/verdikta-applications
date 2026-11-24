@@ -7,6 +7,9 @@
 // call is refused: the contract has no such function, so the EVM reverts. That, and only that, reads as "no hold
 // here": the page then offers none and says what it said. A read that fails any other way (the node, the network, a
 // timeout) is a failed read, as any of the page's reads, and never "not on hold".
+//
+// That a listing is on hold is said from this read alone, made with the listing in one snapshot of one block
+// (chain/snapshot.js): never from the receipt of a hold the page sent (lib/pageSays.js).
 import { LISTING_STATES } from '../chain/abi.js';
 
 const stateOf = (l) => LISTING_STATES[Number(l.state)];
@@ -14,7 +17,7 @@ const stateOf = (l) => LISTING_STATES[Number(l.state)];
 const HOLDABLE = new Set(['Open', 'Depleted']);
 
 /** What a contract with no hold answers to: never on hold, and no hold to offer. */
-export const NO_HOLD = Object.freeze({ supported: false, heldAt: 0n });
+export const NO_HOLD = Object.freeze({ supported: false, heldAt: 0n, held: false });
 
 /** Every text a node's error holds: its message, its data when that is text, and those nested in it (a wallet wraps its node's answer). */
 function textsOf(value, depth = 0) {
@@ -38,16 +41,17 @@ export function refusedByContract(err) {
 }
 
 /**
- * The contract's heldAt view for a listing: the time of the hold while the listing is on hold, else 0.
- * @param {{ heldAt: Function }} sa - StakeAttestation on a reader (chain/wallet.js stakeAttestation)
+ * The contract's heldAt view for a listing: the time of the hold while the listing is on hold, else 0. The view
+ * itself answers 0 for a listing that is neither Open nor Depleted: a hold ends when the listing is Rolled or Closed.
+ * @param {{ heldAt: Function }} sa - StakeAttestation on a snapshot's runner, where the listing is read too
  * @param {bigint|string|number} listingId
- * @param {object} [overrides] - the call's overrides: { blockTag }, the block the listing was read at
- * @returns {Promise<{ supported: boolean, heldAt: bigint }>} supported false: a contract with no hold (NO_HOLD).
- *   Rejects when the read failed any other way.
+ * @returns {Promise<{ supported: boolean, heldAt: bigint, held: boolean }>} supported false: a contract with no hold
+ *   (NO_HOLD). Rejects when the read failed any other way.
  */
-export async function readHold(sa, listingId, overrides = {}) {
+export async function readHold(sa, listingId) {
   try {
-    return { supported: true, heldAt: BigInt(await sa.heldAt(BigInt(listingId), overrides)) };
+    const heldAt = BigInt(await sa.heldAt(BigInt(listingId)));
+    return { supported: true, heldAt, held: heldAt !== 0n };
   } catch (err) {
     if (refusedByContract(err)) return NO_HOLD;
     throw err;
@@ -55,32 +59,10 @@ export async function readHold(sa, listingId, overrides = {}) {
 }
 
 /**
- * The hold as the page states it, from getListing's answer and readHold's at the same block, `readBlock`.
- *
- * `seen` is a hold this page sent and saw mined: its time and the block of its receipt. The site's reader may be a
- * block behind the wallet's node, and a read from before that block must not put the action back on the page: so
- * while the read is from before `seen.block`, the hold stands by its receipt. From that block on the read decides,
- * and it alone: a read at or after the receipt's block that finds no hold means the hold is not on the chain as the
- * page reads it (a reorganization dropped its block), and the page must stop saying the listing is on hold.
- * @param {object} listing - getListing's answer
- * @param {{ supported: boolean, heldAt: bigint }} read - readHold's answer
- * @param {{ heldAt: bigint, block: number }|null} [seen] - the hold's kept receipt (lib/seenMined.js), with the Held event's time
- * @param {number|null} [readBlock] - the block both were read at; without one, `seen` never stands in
- * @returns {{ supported: boolean, heldAt: bigint, held: boolean }} heldAt 0 and held false when not on hold
- */
-export function holdView(listing, read, seen = null, readBlock = null) {
-  const ahead = seen !== null && readBlock !== null && readBlock < seen.block;
-  let heldAt = 0n;
-  // as the contract's view: a hold ends when the listing is Rolled or Closed
-  if (HOLDABLE.has(stateOf(listing))) heldAt = read.heldAt !== 0n ? read.heldAt : ahead ? BigInt(seen.heldAt) : 0n;
-  return { supported: read.supported || ahead, heldAt, held: heldAt !== 0n };
-}
-
-/**
  * hold(): the maker's, once, on an Open or a Depleted listing (ClaimLogic.hold: "not rollable", "already held").
  * Neither a pending claim nor an owed award holds it back. The maker is checked where the wallet is known.
  * @param {object} listing - getListing's answer
- * @param {{ supported: boolean, heldAt: bigint }} hold - readHold's answer, or holdView's
+ * @param {{ supported: boolean, heldAt: bigint }} hold - readHold's answer, of the same block
  * @returns {{ can: boolean, why: null|'unsupported'|'state'|'held' }}
  */
 export function holdTerms(listing, hold) {
@@ -89,4 +71,13 @@ export function holdTerms(listing, hold) {
   else if (!HOLDABLE.has(stateOf(listing))) why = 'state';
   else if (hold.heldAt !== 0n) why = 'held';
   return { can: why === null, why };
+}
+
+/**
+ * Whether the listing a wallet's node has under an id (`mine`; null: none) is the one a page shows under it: the same
+ * maker's, of the same artifact. A hold has no way back, so it is sent only for the listing the page showed the maker.
+ */
+export function sameListing(mine, shown) {
+  const lower = (v) => String(v).toLowerCase();
+  return Boolean(mine) && lower(mine.maker) === lower(shown.maker) && lower(mine.artifactHash) === lower(shown.artifactHash);
 }

@@ -4,16 +4,6 @@
 import { LISTING_STATES } from '../chain/abi.js';
 
 /** The paid period one listing fee buys: StakeAttestation.LISTING_PERIOD, 30 days. */
-/**
- * Whether the listing a wallet's node has under an id (`mine`; null: none) is the one a page shows under it: the same
- * maker's, of the same artifact. Listing ids are given in the order list() is mined, so on a chain whose blocks were
- * replaced an id can name another listing, or none; an action confirmed on the page's listing is sent for that one only.
- */
-export function sameListing(mine, shown) {
-  const lower = (v) => String(v).toLowerCase();
-  return Boolean(mine) && lower(mine.maker) === lower(shown.maker) && lower(mine.artifactHash) === lower(shown.artifactHash);
-}
-
 export const LISTING_PERIOD = 30 * 86400;
 
 const stateOf = (l) => LISTING_STATES[Number(l.state)];

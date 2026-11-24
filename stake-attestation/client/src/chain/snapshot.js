@@ -1,12 +1,11 @@
 // One read of the chain is of one block, and a block is its hash, never its number (node P42).
 //
 // A node can replace the block it had at a height while a page is reading. Calls that share only a block number can
-// then answer for two chains between them: the listing of one and the hold of the other. So every contract read of
-// the listing's page goes through `snapshot`, which holds the calls of one read to one block hash. It takes the
-// latest block, hands the read a runner on which every call is made at that block, and takes the answers only when
-// the block at that number still has the hash it had before the calls. Otherwise the read is made again, a small
-// fixed number of times, and then it fails: a page then says the listing could not be read, never what two chains
-// said between them.
+// then answer for two chains between them: the listing of one and the hold of the other. So what a listing's page
+// says of a hold is read through `snapshot`, which holds the calls of one read to one block hash. It takes the latest
+// block, hands the read a runner on which every call is made at that block, and takes the answers only when the block
+// at that number still has the hash it had before the calls. Otherwise the read is made again, a small fixed number
+// of times, and then it fails: a page then says the listing could not be read, never what two chains said between them.
 //
 // How a call names the block comes from where the provider was made, and never from what a node answers:
 //   - the site's read address (chain/wallet.js chainReader): at the block's hash, an EIP-1898 block parameter with
@@ -16,9 +15,6 @@
 //   - a wallet's node: by the block's number. What a wallet does with a block parameter it does not know is its own,
 //     so it is never sent one; its answers are held to the block by the hash before and after alone.
 // The nodes behind one address are taken to agree on the chain, and a node to answer truly for a block hash it names.
-//
-// The snapshot carries its block's number, hash and time, and the hash its chain has at each height the caller names:
-// a receipt the page keeps stands only while its block is that chain's (lib/seenMined.js).
 
 /** How many times a read is made before it fails, when the block it was made at did not keep its hash. */
 export const SNAPSHOT_TRIES = 3;
@@ -43,24 +39,18 @@ export function siteReader(provider) {
 const quantity = (n) => `0x${n.toString(16)}`;
 /** A block's header by tag or number, with a raw call: ethers shares and caches getBlock() and getBlockNumber(). */
 const header = (provider, tag) => provider.send('eth_getBlockByNumber', [typeof tag === 'number' ? quantity(tag) : tag, false]);
-/** A block hash as a node gives it, in lower case; null for anything that is not 32 bytes of hex: it is evidence of nothing. */
-const asHash = (value) => (typeof value === 'string' && /^0x[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : null);
-const hashOf = (block) => asHash(block?.hash);
+/** A block's hash as a node gives it, in lower case; null for anything that is not 32 bytes of hex: it is evidence of nothing. */
+const hashOf = (block) => (typeof block?.hash === 'string' && /^0x[0-9a-f]{64}$/i.test(block.hash) ? block.hash.toLowerCase() : null);
 
 /**
  * @template T
  * @param {{ send(method: string, params: unknown[]): Promise<any> }} provider - the site's reader, or a wallet's provider
  * @param {(at: { call: Function }) => Promise<T>} read - the calls of this read, each made on a contract of `at`
- *        (chain/wallet.js stakeAttestation): such a contract reads at this block and at no other, and can send
- *        nothing. Nothing in a read names a block, and nothing outside one reads.
- * @param {object} [o]
- * @param {number[]} [o.heights] - heights whose hash on this block's chain the caller wants: a kept receipt's block
- * @returns {Promise<{ value: T, block: number, blockHash: string, time: bigint, hashes: Record<number, string> }>}
- *          `hashes` has each height asked for that is not above `block` and whose header the node gave. Rejects with
- *          the read's own error when the read failed on a block that kept its hash, and with SnapshotError when no
- *          try was of one block.
+ *        (chain/wallet.js stakeAttestation): such a contract reads at this block and at no other, and can send nothing
+ * @returns {Promise<{ value: T, block: number, blockHash: string }>} Rejects with the read's own error when the read
+ *          failed on a block that kept its hash, and with SnapshotError when no try was of one block.
  */
-export async function snapshot(provider, read, { heights = [], tries = SNAPSHOT_TRIES } = {}) {
+export async function snapshot(provider, read, { tries = SNAPSHOT_TRIES } = {}) {
   for (let i = 0; i < tries; i += 1) {
     const head = await header(provider, 'latest');
     const blockHash = hashOf(head);
@@ -77,23 +67,11 @@ export async function snapshot(provider, read, { heights = [], tries = SNAPSHOT_
     } catch (err) {
       failure = err ?? new Error('the read failed');
     }
-    const hashes = {};
-    for (const height of new Set(heights)) {
-      // The hash this chain has at a height below the block: the block's own parent hash for the one just below it,
-      // and for an older one the header the node gives by number. A header the node does not give, gives without a
-      // 32-byte hash, or fails to give says nothing of that height: it is left out, the listing's read stands
-      // without it, and the next read asks again.
-      let there = null;
-      if (height === block) there = blockHash;
-      else if (height === block - 1 && asHash(head.parentHash)) there = asHash(head.parentHash);
-      else if (height < block) there = hashOf(await header(provider, height).catch(() => null));
-      if (there !== null) hashes[height] = there;
-    }
     // the block at that number, asked again after the calls: the same hash, and every answer above is that block's
     if (hashOf(await header(provider, block)) === blockHash) {
       // a read that failed while its block was being replaced is read again; one that failed on a block that stood, fails
       if (failure) throw failure;
-      return { value, block, blockHash, time: BigInt(head.timestamp), hashes };
+      return { value, block, blockHash };
     }
   }
   throw new SnapshotError(tries);

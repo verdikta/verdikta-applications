@@ -3,11 +3,11 @@ import { ArrowRight, FileText } from 'lucide-react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { snapshot } from '../chain/snapshot.js';
-import { chainReader, listingAt, minedReceipt, stakeAttestation } from '../chain/wallet.js';
+import { chainReader, minedReceipt, stakeAttestation } from '../chain/wallet.js';
 import { getFeed, getRecord } from '../lib/api.js';
 import { NO_HOLD, readHold } from '../lib/hold.js';
-import { listingQueue, sameListing } from '../lib/listingActions.js';
-import { contradictedAt, kept } from '../lib/seenMined.js';
+import { listingQueue } from '../lib/listingActions.js';
+import { disagreedAt } from '../lib/pageSays.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { otherListingsOfRecord } from '../lib/sameRepository.js';
 import { confirmSuccessor, successorCandidates } from '../lib/successors.js';
@@ -16,7 +16,6 @@ import { siteErrorText } from './Facts.jsx';
 import { SelectField } from './Field.jsx';
 import { HoldListing } from './ListingActions.jsx';
 import { SameRepositorySection } from './SameRepository.jsx';
-import { useSeenMined } from './seenMined.js';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const RF = STRINGS.roll;
@@ -99,36 +98,32 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
  * close when nothing is pending; a listing already on hold says since when and what is left.
  * Against a contract with no hold it is node P38's three lines, as they were: this listing takes
  * commits until it is closed or rolled forward. Either text depends on the chain alone (the
- * listing's state and its hold), so the panel shows for every Open or Depleted listing: `record`
- * (useListingRecord's answer) is null while the site's record is read and { failed } when it
- * cannot be, and only the picker waits for it. A listing on hold rolls forward as any other.
- * Without a `hold` the panel is the one for a contract with none.
+ * listing's state and its hold, as the page read them in one snapshot), so the panel shows for
+ * every Open or Depleted listing: `record` (useListingRecord's answer) is null while the site's
+ * record is read and { failed } when it cannot be, and only the picker waits for it. A listing on
+ * hold rolls forward as any other. Without a `hold` the panel is the one for a contract with none.
  *
  * A successor is never a listing that is itself on hold: such a listing is Open, and the contract
  * would take it, but it takes no commits and a hold has no resume. The picker leaves it out, and
  * the read just before sending refuses it. With a hold, the fixed version is listed and funded
  * after this page was opened, often in another tab, so the panel looks for successors again when
- * asked. `onChanged(seen)`: the listing rolled in that receipt's block, so the page reads it again
- * from there (a hold ends in the roll). A roll the wallet's read refuses hands over that read's block
- * as a contradiction of what the page shows (lib/seenMined.js contradictedAt).
+ * asked. `onChanged`: the block the roll was mined in, or that of a read through the wallet that
+ * has this listing otherwise than the page shows it; the page reads the listing again from there
+ * (a hold ends in the roll). While the page knows its read is behind (`quiet`; lib/pageSays.js),
+ * the panel draws its own error and nothing of what the page read.
  */
-export function RollForward({ listingId, listing, record, recordReading = false, hold = NO_HOLD, read = null, onRecordAgain = () => {}, onChanged = () => {} }) {
+export function RollForward({ listingId, listing, record, recordReading = false, hold = NO_HOLD, quiet = false, onRecordAgain = () => {}, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const state = LISTING_STATES[Number(listing.state)];
   const identity = record && !record.failed ? record.identity : null;
-  const [options, setOptions] = useState(null); // [{ id, commit, artifactHash, escrowWei, openedAt }] | { failed }
-  // how many times the maker asked to look again, or a successor was refused: each looks for successors afresh
+  const [options, setOptions] = useState(null); // [{ id, commit, escrowWei, openedAt }] | { failed }
+  // how many times the maker asked to look again, or a successor was refused for its hold: each looks afresh
   const [again, setAgain] = useState(0);
   const [pick, setPick] = useState('');
   const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null); // { id, tx }
   const [error, setError] = useState(null);
-  // The roll this page saw mined: { id, tx } with its block. It stands by its receipt while the page's read is of a
-  // block before its own (`read`: the snapshot the listing was last read at). From that block on it stands only while
-  // its block is the chain's and the listing's own successor is the listing this roll named. A listing that still
-  // reads Open or Depleted then gets the panel again, with an alert; and a receipt a read contradicted is dropped for
-  // good (lib/seenMined.js), so a listing closed or rolled elsewhere afterwards is never said to be this roll's doing.
-  const [done, setDone, rolledHere] = useSeenMined(read, (d) => BigInt(listing.successor) === BigInt(d.id));
 
   useEffect(() => {
     if (!ROLLABLE.has(state) || !identity) return undefined;
@@ -136,21 +131,14 @@ export function RollForward({ listingId, listing, record, recordReading = false,
     (async () => {
       const feed = await getFeed();
       const candidates = successorCandidates(feed.listings, { listingId, maker: listing.maker, ...identity });
-      const provider = await chainReader();
       // every candidate, and its hold, as one block has them (chain/snapshot.js)
-      const { value: out } = await snapshot(provider, async (at) => {
-        const view = stakeAttestation(at);
+      const { value: out } = await snapshot(await chainReader(), async (at) => {
+        const sa = stakeAttestation(at);
         const found = [];
         for (const e of candidates) {
-          const id = BigInt(e.listingId);
-          // the feed may trail the chain by a block: a listing held since, or no longer there, is not offered
-          const [s, onHold] = await Promise.all([listingAt(view, id), hold.supported ? readHold(view, id) : NO_HOLD]);
-          // The option shows the feed's commit and is sent for the chain's listing: they must be the same version. A
-          // feed that still describes another listing under this id (its blocks were replaced) offers nothing.
-          if (s !== null && same(e.artifactHash, s.artifactHash) && onHold.heldAt === 0n
-            && confirmSuccessor(s, { successorId: id, listingId: BigInt(listingId), account: listing.maker })) {
-            // the artifact as the chain has it under that id: what is rolled to is that version, or nothing is sent
-            found.push({ id: e.listingId, commit: e.artifact.baseCommit, artifactHash: s.artifactHash, escrowWei: e.escrowRemainingWei, openedAt: e.openedAt });
+          const [s, onHold] = await Promise.all([sa.getListing(BigInt(e.listingId)), hold.supported ? readHold(sa, e.listingId) : NO_HOLD]);
+          if (!onHold.held && confirmSuccessor(s, { successorId: BigInt(e.listingId), listingId: BigInt(listingId), account: listing.maker })) {
+            found.push({ id: e.listingId, commit: e.artifact.baseCommit, escrowWei: e.escrowRemainingWei, openedAt: e.openedAt });
           }
         }
         return found;
@@ -167,8 +155,9 @@ export function RollForward({ listingId, listing, record, recordReading = false,
     return () => { live = false; };
   }, [listingId, listing.maker, state, identity, hold.supported, again]);
 
-  if (rolledHere) return <p data-testid="rolled" className="ok">{fill(RF.done, { id: done.id, tx: done.tx })}</p>;
+  if (done) return <p data-testid="rolled" className="ok">{fill(RF.done, { id: done.id, tx: done.tx })}</p>;
   if (!ROLLABLE.has(state)) return null;
+  if (quiet) return error ? <p className="error" role="alert">{error}</p> : null;
 
   const roll = async () => {
     setBusy(true);
@@ -178,40 +167,23 @@ export function RollForward({ listingId, listing, record, recordReading = false,
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       // this listing, the successor and the successor's hold, as one block has them through the wallet
       const { value: [mine, successor, successorHold], block } = await snapshot(provider, (at) => {
-        const view = stakeAttestation(at);
-        return Promise.all([listingAt(view, listingId), listingAt(view, pick), hold.supported ? readHold(view, pick) : NO_HOLD]);
+        const sa = stakeAttestation(at);
+        return Promise.all([sa.getListing(BigInt(listingId)), sa.getListing(BigInt(pick)), hold.supported ? readHold(sa, pick) : NO_HOLD]);
       });
-      // another listing under this page's id, or none: the wallet's chain is not the one this page read
-      if (!sameListing(mine, listing)) {
-        setError(fill(STRINGS.fund.replaced, { id: listingId }));
-        onChanged(contradictedAt(block));
-        return undefined;
-      }
-      // This listing rolled forward or was closed elsewhere since the page read it (another tab): nothing is sent, and
-      // the page reads it from the block the wallet saw that at, so its state, its hold and this panel follow.
-      if (!ROLLABLE.has(LISTING_STATES[Number(mine.state)])) {
-        setError(fill(RF.sourceChanged, { state: STRINGS.fund.states[LISTING_STATES[Number(mine.state)]] ?? String(mine.state) }));
-        onChanged(contradictedAt(block));
-        return undefined;
-      }
-      // the successor too is the version the picker showed, under the id it showed it under
-      const chosen = options.find((o) => o.id === pick);
-      if (successor === null || !chosen || !same(successor.artifactHash, chosen.artifactHash)
-        || !confirmSuccessor(successor, { successorId: BigInt(pick), listingId: BigInt(listingId), account })) {
-        // the successor is no longer one to roll to: the panel looks for successors again
-        setAgain((n) => n + 1);
+      const rollable = ROLLABLE.has(LISTING_STATES[Number(mine.state)]) && same(mine.maker, account);
+      if (!rollable || !confirmSuccessor(successor, { successorId: BigInt(pick), listingId: BigInt(listingId), account })) {
+        // this listing is not as the page shows it (rolled or closed elsewhere): the page reads it again from that block
+        if (!rollable) onChanged(disagreedAt(block));
         return setError(fill(RF.changed, { id: pick }));
       }
       // Open, the maker's, no predecessor: the contract would take it. On hold it takes no commits, and for good.
-      if (successorHold.heldAt !== 0n) {
+      if (successorHold.held) {
         setAgain((n) => n + 1);
         return setError(fill(RF.successorOnHold, { id: pick }));
       }
       const tx = await stakeAttestation(signer).rollForward(BigInt(listingId), BigInt(pick));
-      const receipt = await minedReceipt(tx);
-      const seen = kept(receipt, { id: pick });
-      setDone(seen);
-      onChanged(seen);
+      const receipt = await minedReceipt(tx, onChanged);
+      setDone({ id: pick, tx: receipt.hash });
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -221,8 +193,7 @@ export function RollForward({ listingId, listing, record, recordReading = false,
   };
 
   // Looking again: the successors are found by this listing's identity, which is the site's record's. Where the record
-  // did not have it (the mirror trailed the opening, or its read failed), the record is read again first, and the
-  // successors are looked for once it does (the effect above follows `identity`).
+  // did not have it (the mirror trailed the opening, or its read failed), the record is read again first.
   const lookAgain = () => {
     setError(null);
     if (!identity) return onRecordAgain();
@@ -254,8 +225,6 @@ export function RollForward({ listingId, listing, record, recordReading = false,
     <section className="claim" aria-labelledby={id} data-testid="roll-forward">
       <h3 id={id}>{RF.title}</h3>
       <p>{RF.intro}</p>
-      {/* a roll this page saw mined, and the chain as read since does not show: said first, and the panel is offered again */}
-      {done?.dropped && <p className="error" role="alert" data-testid="roll-dropped">{fill(RF.dropped, { tx: done.tx })}</p>}
       {hold.supported ? (
         <>
           <p className="warning" data-testid="roll-hold-first">{hold.held ? fill(RF.hold.held, { time: formatTime(hold.heldAt) }) : RF.hold.first}</p>
@@ -285,22 +254,19 @@ export function RollForward({ listingId, listing, record, recordReading = false,
 }
 
 /**
- * Whether the site offers a commit on this listing: only one that counts and takes a commit as the contract has it
- * (`takesCommits`: acceptsCommits at the block the listing was read at). A listing its maker has on hold (node P42)
- * takes none and is no entry of the feed, and neither is one that rolled forward, closed, is depleted or whose fee
- * has lapsed: of those the page says so, and never that the site offers them.
+ * Whether the site offers a commit on this listing: only one that counts, and never one its maker has on hold (node
+ * P42), which takes no commit and is no entry of the feed. `held` is the page's read of the hold; while the page
+ * knows that read is behind (`quiet`), the section says nothing.
  */
-function CommitOffer({ data, held = false, takesCommits = true }) {
+function CommitOffer({ data, held = false, quiet = false }) {
   const id = useId();
   const O = STRINGS.offer;
-  if (!data) return null;
-  let text = O.yes;
-  if (held) text = O.held;
-  else if (!takesCommits) text = O.notTaking;
+  if (!data || quiet) return null;
+  let text = held ? O.held : O.yes;
   if (data.failed) text = fill(O.unknown, { reason: data.failed });
   else if (!data.counted) text = fill(O.no, { reason: data.why ?? STRINGS.notCounted.none });
   return (
-    <section className="claim" aria-labelledby={id} data-testid="commit-offer" data-offered={String(Boolean(data.counted) && !held && takesCommits)}>
+    <section className="claim" aria-labelledby={id} data-testid="commit-offer" data-offered={String(Boolean(data.counted) && !held)}>
       <h3 id={id}>{O.title}</h3>
       <p>{text}</p>
     </section>
@@ -310,30 +276,28 @@ function CommitOffer({ data, held = false, takesCommits = true }) {
 /**
  * The parts of a listing's page that follow its opening: its claims, its record, the other listings
  * of its repository (node P35), the maker's hold (node P42) and, next to it, roll forward. A listing
- * that has not opened has no record yet. `hold`: the listing's hold as the page read it from the chain
- * (lib/hold.js holdView), and `takesCommits`: whether it takes a commit, at the same block; `onHeld`,
- * `onChanged`: a hold, or a roll, this page sent was mined.
+ * that has not opened has no record yet. `hold`: the listing's hold as the page read it, in the
+ * snapshot it read the listing in; `quiet`: the page knows that read is behind (lib/pageSays.js);
+ * `onChanged`: what a hold or a roll tells the page.
  */
-export function ListingMore({ listingId, listing, hold = NO_HOLD, takesCommits = true, read = null, onHeld = () => {}, onChanged = () => {} }) {
+export function ListingMore({ listingId, listing, hold = NO_HOLD, quiet = false, onChanged = () => {} }) {
   const state = LISTING_STATES[Number(listing.state)];
   const opened = state !== 'Listed';
   // how many times the record was asked for again (the roll forward panel's "look again"), and whether that read is out
   const [again, setAgain] = useState(0);
   const data = useListingRecord(listingId, listing.artifactHash, opened, again);
-  const reading = data !== null && data.again !== again;
-  const recordAgain = () => setAgain((n) => n + 1);
   if (!opened) return null;
   return (
     <>
       <div className="pair">
-        <CommitOffer data={data} held={hold.held} takesCommits={takesCommits} />
+        <CommitOffer data={data} held={hold.held} quiet={quiet} />
         <ListingClaims artifactHash={listing.artifactHash} data={data} listing={listing} />
       </div>
       <SameRepositorySection data={data} />
       {/* the hold is the chain's alone, as roll forward's lines are: neither waits for the site's record */}
-      <HoldListing listingId={listingId} listing={listing} hold={hold} read={read} onHeld={onHeld} onChanged={onChanged} />
+      <HoldListing listingId={listingId} listing={listing} hold={hold} quiet={quiet} onChanged={onChanged} />
       {/* whatever the record's read came to: what the panel says before a fix is the chain's, and only its picker is the record's */}
-      <RollForward listingId={listingId} listing={listing} record={data} recordReading={reading} hold={hold} read={read} onRecordAgain={recordAgain} onChanged={onChanged} />
+      <RollForward listingId={listingId} listing={listing} record={data} recordReading={data !== null && data.again !== again} hold={hold} quiet={quiet} onRecordAgain={() => setAgain((n) => n + 1)} onChanged={onChanged} />
     </>
   );
 }

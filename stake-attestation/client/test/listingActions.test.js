@@ -140,11 +140,9 @@ test('a listing on hold: a renewal and a top-up are taken as before, and neither
   assert.match(T.depletedHeld, /it stays on hold/);
   assert.doesNotMatch(T.depletedHeld, /reopens/);
   assert.match(T.depletedHeld, /\{eth\}/);
-  for (const k of ['reopensHeld', 'reopenedHeld']) {
-    assert.match(T[k], /state/, k);
-    assert.match(T[k], /it stays on hold and takes no new claims\.$/, k);
-    assert.doesNotMatch(T[k], /reopens|open again\.$/, k);
-  }
+  assert.match(T.reopensHeld, /state/);
+  assert.match(T.reopensHeld, /it stays on hold and takes no new claims\.$/);
+  assert.doesNotMatch(T.reopensHeld, /reopens|open again\.$/);
   assert.match(R.lapsed, /takes no new claims until it is renewed/, 'said of a listing that is not on hold');
   assert.equal(R.lapsedHeld, 'The paid period ended at {time}.');
   assert.match(R.held, /^This listing is on hold: it takes no new claims, renewed or not\./);
@@ -153,12 +151,14 @@ test('a listing on hold: a renewal and a top-up are taken as before, and neither
   const actions = fs.readFileSync(new URL('../src/components/ListingActions.jsx', import.meta.url), 'utf8');
   assert.match(actions, /fill\(held \? T\.depletedHeld : T\.depleted, \{ eth: formatEth\(terms\.toReopenWei\) \}\)/);
   assert.match(actions, /\{effect\.reopens \? ` \$\{held \? T\.reopensHeld : T\.reopens\}` : ''\}/);
-  // said of the listing as last read: on hold, in the hold's words; and not at all once it reads rolled forward or closed
-  assert.match(actions, /\{done\.reopened && terms\.state === 'Open' \? ` \$\{held \? T\.reopenedHeld : T\.reopened\}` : ''\}/);
+  // The top-up's line for its own transaction is the site's as it was, by its receipt: "open again" is the state the
+  // Reopened event reports. That the listing is on hold is the page's read's to say, beside it (test/pageSays.test.js).
+  assert.match(actions, /\{done\.reopened \? ` \$\{T\.reopened\}` : ''\}/);
   assert.match(actions, /fill\(terms\.lapsed \? \(held \? R\.lapsedHeld : R\.lapsed\) : R\.until, \{ time: formatTime\(terms\.fundedUntil\) \}\)/);
-  assert.match(actions, /\{terms\.can && held && <p className="hint" data-testid="renew-held">\{R\.held\}<\/p>\}/);
-  // the page hands both the hold as it read it
+  assert.match(actions, /\{shown && held && <p className="hint" data-testid="renew-held">\{R\.held\}<\/p>\}/);
+  // the page hands both the hold as its read has it, and whether it may say anything of that read now
   const page = fs.readFileSync(new URL('../src/components/FundPage.jsx', import.meta.url), 'utf8');
-  assert.match(page, /<TopUpEscrow listingId=\{listingId\} listing=\{l\} held=\{hold\.held\} read=\{read\} onChanged=\{refresh\} \/>/);
-  assert.match(page, /<RenewListing listingId=\{listingId\} listing=\{l\} held=\{hold\.held\} read=\{read\} onChanged=\{refresh\} \/>/);
+  assert.match(page, /const \{ hold \} = loaded;\s*const quiet = says\.off;/);
+  assert.match(page, /<TopUpEscrow listingId=\{listingId\} listing=\{l\} held=\{hold\.held\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);
+  assert.match(page, /<RenewListing listingId=\{listingId\} listing=\{l\} held=\{hold\.held\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);
 });

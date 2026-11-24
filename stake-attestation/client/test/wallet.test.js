@@ -32,6 +32,31 @@ test('minedReceipt: the receipt, also of the same call sent again at a higher fe
   await assert.rejects(minedReceipt({ wait: async () => { throw reverted; } }), (err) => err === reverted);
 });
 
+// Node P42: a listing's page knows its read is behind after each transaction it sends and sees mined, on every path
+// that sends. So whatever was mined, its block is handed over first: the receipt's, a replacement's of any kind, and
+// that of a transaction that reverted. Only a wait that rejects with no receipt at all (never mined) tells nothing.
+test('minedReceipt: the block of whatever was mined is told first, on every path: mined, sent again, replaced, cancelled, reverted', async () => {
+  const told = [];
+  const onMined = (block) => told.push(block);
+  const replaced = (o) => ({ wait: async () => { throw Object.assign(new Error('transaction was replaced'), { code: 'TRANSACTION_REPLACED', ...o }); } });
+  const receipt = (blockNumber, status = 1) => ({ hash: '0xmined', status, blockNumber, logs: [] });
+  assert.equal((await minedReceipt({ wait: async () => receipt(90) }, onMined)).blockNumber, 90);
+  assert.equal((await minedReceipt(replaced({ reason: 'repriced', cancelled: false, receipt: receipt(91) }), onMined)).blockNumber, 91);
+  await assert.rejects(minedReceipt(replaced({ reason: 'cancelled', cancelled: true, receipt: receipt(92) }), onMined));
+  await assert.rejects(minedReceipt(replaced({ reason: 'replaced', cancelled: true, receipt: receipt(93) }), onMined));
+  await assert.rejects(minedReceipt(replaced({ reason: 'repriced', cancelled: false, receipt: receipt(94, 0) }), onMined));
+  await assert.rejects(minedReceipt({ wait: async () => { throw Object.assign(new Error('execution reverted'), { code: 'CALL_EXCEPTION', receipt: receipt(95, 0) }); } }, onMined));
+  assert.deepEqual(told, [90, 91, 92, 93, 94, 95]);
+  // never mined: the wallet dropped it, or the wait itself failed
+  await assert.rejects(minedReceipt({ wait: async () => { throw new Error('timeout'); } }, onMined));
+  await assert.rejects(minedReceipt(replaced({ reason: 'repriced', cancelled: false, receipt: null }), onMined));
+  assert.equal(told.length, 6);
+  // it is told before the caller has the receipt: nothing the caller does next can keep the page from knowing
+  const order = [];
+  await minedReceipt({ wait: async () => receipt(96) }, () => order.push('told')).then(() => order.push('returned'));
+  assert.deepEqual(order, ['told', 'returned']);
+});
+
 test('listingAt: the listing of a snapshot\'s contract, or null when it has none of that id, and never a getListing the contract would revert', async () => {
   const asked = [];
   // a contract made on a snapshot's runner: its calls are that block's, and take no block of their own

@@ -1542,134 +1542,88 @@ goes in a URL.
   once, it does not touch pending claims, it cannot be undone), that a finding can still be filed
   as a late claim with no award, and the action, drawn for the connected wallet when it is the
   listing's maker's and for no other: two steps before the wallet's own, as close has; the wallet
-  asked again at the click; the listing and its hold read again at one block through the wallet;
-  then `hold`, and this contract's `Held` event for this listing in the receipt for the time (the
-  receipt also of the same call sent again at a higher fee, `minedReceipt`). From then on the page
-  says the listing is on hold, with the time, beside its state (which stays Open or Depleted, and is
-  no longer drawn as taking claims), and in every sentence it has about taking claims: no "open
-  until", a commit offer that says the site does not offer it, a renewal and a top-up that do not
-  make it take claims again. Roll forward stays offered, and close by its own terms. The queue
-  line counts the late claims a listing on hold takes with the claims from before the hold.
-  A successor is never a listing that is itself on hold: it is Open, and the contract would take it,
-  but it takes no commits and a hold has no resume, so the picker leaves it out and the read before
-  sending refuses it. The fixed version is listed after the hold, often in another tab, so the panel
-  looks for successors again when asked; where the site's record did not have this listing yet (its
-  mirror trailed the opening) or could not be read, looking again reads the record first.
-  **A block is its hash, never its number.** Two rules hold it, and nothing on this page goes
-  around them. *One read is of one block* (`snapshot` in `client/src/chain/snapshot.js`): every
-  contract read of the page (the count, the listing, its hold and `acceptsCommits`; each read
-  through the wallet just before something is sent; the roll panel's read of its successors; the
-  fees and what the contract holds for the wallet) takes the latest block and makes its calls at
-  that block, on a contract made for that snapshot and for nothing else. How the block is named
-  is fixed by where the provider was made, and never learned from what a node answers. The
-  site's read address (`VITE_SA_RPC_URL`) is asked at the block's hash (an EIP-1898 block
-  parameter, `{blockHash, requireCanonical: true}`): a node that does not have that block as the
-  chain's refuses the call, any refusal is a failed read, and nothing is read by number in its
-  place. A wallet's node is asked at the block's number, and is never sent the hash form. Either
-  way the answers are taken only when the block at that number still has the hash it had before
-  the calls; otherwise the read is made again, three times at most, and then it is a failed read
-  ("The listing could not be read", with Read again). A read that says both "on hold" and "takes
-  commits" is a failed read of its block, never guidance: after a transaction of the page too,
-  where it hides the listing as a whole, with what a receipt said of it, until a read can be
-  taken; the parts of the page keep their receipts meanwhile, and are held against that read. *A
-  receipt the page keeps carries its block's hash* (`kept` in `client/src/lib/seenMined.js`): the
-  opening, a top-up, a renewal, the hold, a roll forward, a close and a withdrawal each say their
-  line only while their receipt stands. It stands while the page's read is of a block before its
-  own; from a read of that block or a later one, only if the chain that read is of has that hash
-  at that height (each read carries the hash at the block of every receipt the page still holds;
-  one that a later receipt replaced, or that was dropped, is asked for no more) and
-  the read shows what the transaction did (a hold of that very time, a listing that opened, the
-  successor it named, a closed listing); and once a read said otherwise it is dropped for good:
-  what the listing becomes later, by another transaction or by the same one mined again in
-  another block, is said as the chain's state, never with that receipt's hash or figures. The
-  hash at a receipt's block is the read block's own parent hash for the block just below it, and
-  for an older one the header the node gives by number. A header the node does not give, gives
-  without a 32-byte hash or fails to give drops nothing and takes nothing from the read of the
-  listing: the receipt waits for a read that has it, the page reads again a bounded number of
-  times, and then says what it could not check, with Read again. The page does not go after a
-  transaction that was included again, and of a payment whose block was replaced it says that,
-  and that the transaction may have been mined again, never that it is gone. What a receipt's
-  line says is the receipt's own event: until when a listing opened or was renewed, what an
-  escrow held, what a withdrawal paid. `test/snapshot.test.js` fails when a contract read of
-  these components is made outside a snapshot, and `test/hold.test.js` when a receipt is kept
-  without its block's hash.
-  **The page reads; it does not watch.** It reads on load, after each of its own transactions
-  until it has read their block, and when asked. A block replaced after its latest read is seen
-  at its next read, not before; what another tab or another sender did is caught by the read
-  before sending and by the contract's own checks; a node is taken to answer truly for the block
-  it names; and the nodes behind one address are taken to agree on the chain. What the page
-  holds all the same, where a read address is configured (`VITE_SA_RPC_URL`): a hold's state and
-  its next step, as the page shows them, come from one read tied to one block's hash, and a node
-  without that block refuses the read. The one case left there is an address that is a pool,
-  with a reorganization under way and nodes that do not yet agree: the header of an older block,
-  asked by number, can then come from a node on another chain than the one the calls were made
-  on, so the page may keep the line of one of its own transactions, hash and amount, though its
-  block was replaced. Nothing is sent on the strength of such a line, and the page does not walk
-  a block's ancestry. A wallet's node is asked by the block's number, so none of that is held
-  for it: the read just before something is sent, and every read of the page where no read
-  address is configured, are tied to their block only by its hash read before and after the
-  calls, and for the rest stand on the assumption alone, that the nodes behind the wallet's
-  address agree on the chain. A site that wants what it shows of a hold tied to a block's hash
-  configures the read address. The
-  design's order for the maker is "once the hold is mined, push the fix": a hold whose block is
-  replaced after the maker acted on it is not something a page can undo, and the page says it at
-  its next read. What the page does hold: it says "on hold" and "push the fix" only from one
-  snapshot, of one block hash, that shows the hold on the maker and artifact the page shows and
-  `acceptsCommits` false; and it says a transaction's hash or figures only while that
-  transaction's block is the chain's.
-  **What the page saw mined, against what it reads.** The site's reader can trail the node the
-  wallet sent through. After each transaction sent from the page it reads the listing again until
-  a read is of the block the transaction was mined in (`readFrom` in `client/src/lib/poll.js`), takes
-  no earlier read for the new state, and says so, with a way to read again, when none reached it.
-  The page keeps the newest block it was told of, from a receipt or from a read through the wallet
-  that found the listing changed (an action that then sends nothing hands over that read's block),
-  and no later read of the page is taken from before it: a refused renewal cannot bring back the
-  listing as it was before a roll the page is still waiting to read. Nor is a read taken from
-  before the newest block the page has shown, in the same refresh or through Read again: a node
-  that trails the one that answered before cannot put an earlier state of the listing back. A
-  listing that a read through the wallet has contradicted (the wallet's node has another listing
-  or none under the id, or the listing in a state in which the action cannot be taken), with no
-  read taken since, is not shown: it is off the page as after a read that failed, with the alert
-  and Read again, until a read is taken, whether or not the page had read that height. What the
-  page says of what is on it (whether the listing is shown, the block it has not read, that it
-  could not check a transaction's block) is decided in one place, `pageSays` in
-  `client/src/lib/seenMined.js`, from what the page has when it is drawn: the read on display,
-  the newest block it was told of, the receipts its parts hold at that moment, and whether a
-  refresh is still reading (nothing new is said until it is over). `client/test/hold.test.js`
-  holds it to a table of cases. A hold that is not there
-  (its block was dropped) is said in an alert, never drawn as a hold, and offered again; a
-  listing that is not there either is said as gone, with nothing of the hold left on the page;
-  and a hold the chain dates otherwise than the receipt did is said by the chain's time
-  everywhere, without the transaction. A `hold()` that was mined with no `Held` event of this
-  listing in its receipt is named by its transaction and claims no hold. An opening, a roll
-  forward or a close that a read does not show is the state the page shows, an alert names the
-  transaction while the action can still be taken, and the action is offered again; a payment
-  or a withdrawal whose block is not the chain's is said in an alert with its transaction.
-  **Every action is sent for the listing the page shows.** Listing ids are given in the
-  order `list()` is mined, so on a chain whose blocks were replaced an id can name another
-  listing of the maker's, or none. Just before sending, each action (top-up, renew, hold, close,
-  roll forward) reads the listing through the wallet at one block, the count first
-  (`listingAt` in `client/src/chain/wallet.js`): another artifact or another maker under the id,
-  or no such listing, sends nothing and reads the page again from that block
-  (`sameListing` in `client/src/lib/listingActions.js`); a roll's successor is held to the
-  artifact the picker showed, and the picker offers a listing only when the feed's entry and the
-  chain have the same artifact under its id. When a read finds another listing under the page's
-  id, every part of the page starts afresh for it: the record, the successors found, each
-  action's line and the hold or opening the page saw mined were the first listing's; a hold or
-  an opening whose receipt arrives after that sets nothing for the listing now shown.
-  **A transaction that is mined is never reported as failed.** Every transaction of the page
-  takes its receipt through `minedReceipt`, so a call the wallet sent again at a higher fee is
-  reported under the hash it was mined under and the page reads from its block. An opening's, a
-  renewal's and a top-up's lines are the receipt's own events (`Opened`, `Renewed`, `Funded`),
-  with no read between the receipt and the line: a read that fails after a mined payment cannot
-  invite a second one. A
-  roll that the wallet's read refuses because this listing rolled or closed elsewhere has the
-  page read it from that block.
-  The commit offer follows the contract's `acceptsCommits`, read with the listing: a listing that
-  rolled forward or closed is never said to be offered. A listing opened from its own page is
-  followed the same way, so its claims, the hold and the rest are there without a reload; the
-  opening's line then keeps its transaction and says only that this page opened the listing, and
-  "open until" is said, as on any visit, of the listing and its hold as last read.
+  asked again at the click; the listing and its hold read again at one block through the wallet
+  (another listing under the id or none, or a listing that can no longer be held, sends nothing);
+  then `hold`. The section reports that transaction as the page's other actions report theirs, by
+  the hash it was mined under, and that line says nothing of what the listing is. Once the page has
+  read the hold, it says the listing is on hold, with the time, beside its state (which stays Open
+  or Depleted, and is no longer drawn as taking claims), and in every sentence it has about taking
+  claims: no "open until", a commit offer that says the site does not offer it, a renewal and a
+  top-up that do not make it take claims again. Roll forward stays offered, and close by its own
+  terms. The queue line counts the late claims a listing on hold takes with the claims from before
+  the hold. A successor is never a listing that is itself on hold: it is Open, and the contract
+  would take it, but it takes no commits and a hold has no resume, so the picker leaves it out and
+  the read before sending refuses it. The fixed version is listed after the hold, often in another
+  tab, so the panel looks for successors again when asked; where the site's record did not have
+  this listing yet (its mirror trailed the opening) or could not be read, looking again reads the
+  record first.
+  **What the page says, and from what** (owner decision, 2026-11-24; `client/src/lib/pageSays.js`).
+  Three parts. *Only a read says what the listing is.* That it is on hold, since when, and what
+  its maker may do because of it (push the fix, the order of steps, roll forward, close) are shown
+  from a read that is one snapshot of one block, and from nothing else: no receipt of a transaction
+  the page sent stands in for a read, not the hold's and not the opening's. *Off the page at once,
+  back only from a read.* Each transaction the page sends and sees mined (every action, on every
+  path that sends: a call the wallet sent again at a higher fee, a replacement, a revert), and
+  each read through the wallet that refuses an action because it has the listing otherwise than
+  the page shows it, tells the page that the read it shows is behind. From that instant, before
+  any new read answers, the page shows nothing that says the listing is on hold or what its maker
+  may do because of it, and nothing that shows it as taking claims: its state, "open until", the
+  commit offer, the hold's section, the roll-forward panel and the forms of top-up, renew and
+  close are off. Each action's line for its own transaction, and its own error, stay. The page
+  then reads the listing again until a read is of that block or a later one (`readFrom` in
+  `client/src/lib/poll.js`), and everything comes back from that read alone. While it reads it
+  says so; when none of its reads reached the block it says which block it has not read, with
+  "Read again", and stays as it is. A read that fails on load is the page's failed-read state
+  ("The listing could not be read", with Read again). *Never backward.* No read of an earlier
+  block is taken after a later one was shown, or after the page was told of a later one: a node
+  that trails the one that answered before cannot put an earlier state of the listing back. One
+  pure function, `pageSays`, decides all of it from one record the page keeps (the read on
+  display, the newest block it was told of, whether it knows that read is behind, whether it is
+  reading), and `pageAfter` moves that record on for each thing that happens; the components
+  decide none of it. `client/test/pageSays.test.js` holds the function to a table with a row for
+  each case, runs every short history of a page against the three parts, and holds the
+  components to it. A refusal by the wallet's read that arrives once the page shows another
+  listing under the id sets the floor and takes nothing of the listing now shown off the page.
+  Against a contract with no hold there is no line of a hold to take off, and nothing is: the
+  page reads again from the block and says which block it has not read, and shows the listing it
+  read meanwhile, as the site did before.
+  **The page's own transactions** are shown as the site has always shown them: the transaction,
+  and what its receipt said (a close's refund, a top-up's amounts, a renewal's date, a
+  withdrawal's amount, the opening). Such a line stays through the page's reads; it is not
+  checked against a later read and not taken back. How those lines hold up when the site's
+  reader trails the wallet, a second tab acts or a block is replaced is separate work
+  (verdikta-applications issue 240), with a design first.
+  **One read is one block, and a block is its hash, never its number** (`snapshot` in
+  `client/src/chain/snapshot.js`). Every read of a hold goes through it, with the listing the
+  hold is of: the page's read (the count, the listing and `heldAt`), the hold's read through the
+  wallet just before sending, the roll panel's read of its successors, and the roll's read just
+  before sending. It takes the latest block and makes its calls at that block, on a contract made
+  for that snapshot and for nothing else. How the block is named is fixed by where the provider
+  was made, and never learned from what a node answers. The site's read address
+  (`VITE_SA_RPC_URL`) is asked at the block's hash (an EIP-1898 block parameter, `{blockHash,
+  requireCanonical: true}`): a node that does not have that block as the chain's refuses the
+  call, any refusal is a failed read, and nothing is read by number in its place. A wallet's node
+  is asked at the block's number, and is never sent the hash form. Either way the answers are
+  taken only when the block at that number still has the hash it had before the calls; otherwise
+  the read is made again, three times at most, and then it is a failed read.
+  `test/snapshot.test.js` runs it against nodes whose blocks are replaced under it, and fails
+  when a hold is read outside a snapshot.
+  **The page reads; it does not watch.** It reads on load, after each of its own transactions and
+  each refusal by the wallet's read, until it has read that block, and when asked. A block
+  replaced after its latest read is seen at its next read, not before; what another tab or
+  another sender did is caught by the read before sending and by the contract's own checks; a
+  node is taken to answer truly for the block it names; and the nodes behind one address are
+  taken to agree on the chain (owner decision, 2026-11-24). What the page holds all the same,
+  where a read address is configured (`VITE_SA_RPC_URL`): a hold's state and its next step, as the
+  page shows them, come from one read tied to one block's hash, and a node without that block
+  refuses the read. A wallet's node is asked by the block's number, so none of that is held for
+  it: the read just before something is sent, and every read of the page where no read address
+  is configured, are tied to their block only by its hash read before and after the calls, and
+  for the rest stand on the assumption alone, that the nodes behind the wallet's address agree on
+  the chain. A site that wants what it shows of a hold tied to a block's hash configures the read
+  address. The case that is left: a hold whose block is replaced after the page read it, and
+  after the maker acted on it. The design's order for the maker is "once the hold is mined, push
+  the fix", and a page cannot undo a push; it says what the chain has at its next read.
   **How the page knows.** It reads `heldAt(listingId)` in the snapshot it reads the listing in. A
   call the contract refuses means a contract from before the hold: the page then draws no hold
   section, and the roll-forward panel says what it said before the hold existed, character for
@@ -1683,7 +1637,8 @@ goes in a URL.
   in the contract's source and refuses any wording that would call a roll harmless after a public
   push; `test/hold.test.js` holds the warning's three statements to the source, one by one, and
   the reader to that rule against the answers nodes give; `e2e/hold.spec.js` runs the page
-  through the wallet, and against a node that refuses the call.
+  through the wallet, with a reader that trails the wallet's node, and against a node that
+  refuses the call.
   The same page carries the rest of a listing's life, each read again through the wallet before it
   is sent (`client/src/components/ListingActions.jsx`; the rules, held to the contract's source,
   in `client/src/lib/listingActions.js`):
@@ -1709,8 +1664,8 @@ goes in a URL.
     amount, and `withdraw`. Listing fees reach the fee recipient this way, as does any payment the
     contract could not send directly (`_payOrCredit` forwards 120,000 gas, which a contract wallet
     may exceed). A wallet that is held nothing is shown nothing.
-  The page reads the listing again after each without taking itself down, so what was done stays
-  said.
+  The page reads the listing again after each without taking itself down, from the block the
+  transaction was mined in, so what was done stays said.
 - **Every listing page** (the feed, the record, a listing's own page) warns who reads a proof
   first and that the code may exist elsewhere (`shared/src/listingWarning.js`, which the hunter
   tool repeats). A listing's own page says whether the site offers a commit on it.
@@ -1809,13 +1764,13 @@ goes in a URL.
 `VITE_SA_RPC_URL` (reads; without it, reads go through the wallet) and `VITE_IPFS_GATEWAY` (one
 gateway origin or several, comma-separated; the record page links to the first).
 The read address has to take a block's hash on `eth_call` (EIP-1898, `{blockHash,
-requireCanonical: true}`), as Base's public endpoints do: a listing's page makes every call of
-one read at that read's block hash, and a refusal is a failed read of the page, with no
-fallback to the block's number. The nodes behind the address are taken to agree on the chain;
-what the page holds where they do not, and the one case left, are under "The page reads; it
-does not watch" above. Without a read address the page's reads go through the visitor's wallet,
-by block number, and what they show of a hold is not tied to a block's hash: it stands on the
-nodes behind the wallet's address agreeing on the chain.
+requireCanonical: true}`), as Base's public endpoints do: a listing's page reads the listing and
+its hold at one block's hash, and a refusal is a failed read of the page, with no fallback to
+the block's number. The nodes behind the address are taken to agree on the chain; what the page
+holds all the same, and the case that is left, are under "The page reads; it does not watch"
+above. Without a read address the page's reads go through the visitor's wallet, by block number,
+and what they show of a hold is not tied to a block's hash: it stands on the nodes behind the
+wallet's address agreeing on the chain.
 The API is same-origin under `/api`; `vite` and `vite preview` proxy it to `SA_API_URL`
 (default `http://127.0.0.1:5009`).
 

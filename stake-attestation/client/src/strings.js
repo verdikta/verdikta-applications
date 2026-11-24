@@ -385,13 +385,6 @@ export const STRINGS = {
     funding: 'Sending fund()…',
     opened: 'Listing {id} is open until {until} (transaction {tx}).',
     openedNoTime: 'Listing {id} is open (transaction {tx}). Its page shows until when.',
-    // on the listing's own page, once the page has read the listing with the opening in it: what the listing is now
-    // (open until when, on hold, rolled forward, closed) is said from that read, and this line keeps the transaction
-    openedHere: 'This page opened listing {id} (transaction {tx}).',
-    // an opening this page saw mined, which a read of its block or later does not show (its block was dropped)
-    openingDropped:
-      'The opening sent from this page (transaction {tx}) is not on the chain as this page now reads it: listing {id} ' +
-      'is listed and not funded. Look the transaction up, and fund the listing again if it is gone.',
     fundLater: 'If you leave this page before funding, fund the listing from its own page:',
     fundPage: 'Listing {id}',
     // tester bounty 400, the maker review (C4): once it is open, where the listing is managed
@@ -407,32 +400,6 @@ export const STRINGS = {
     load: 'Load the listing',
     loading: 'Reading the listing…',
     notFound: 'There is no listing {id}.',
-    // just before an action is sent, the wallet's node has another listing under this id, or none (its blocks were replaced)
-    replaced:
-      'Nothing was sent: on the chain as your wallet reads it now, listing {id} is not the listing this page shows, or ' +
-      'there is no such listing. This page reads it again.',
-    // the latest read is of a block at or after a transaction of this page, and the node did not give the header of
-    // the transaction's block: what the receipt said is neither shown nor dropped until a read has it
-    unchecked:
-      'This page could not check the block of a transaction sent from it: the node did not give that block. What ' +
-      'the transaction did is not said here until the page can check it.',
-    // one block answered both "on hold" and "takes commits", which the contract never says of one block
-    contradictory: 'the chain answered that this listing is on hold and that it takes commits, of one block',
-    // a read through the wallet, just before an action, has the listing otherwise than the page shows it (another
-    // listing or none under the id, or a state in which the action cannot be taken), and no read has been taken since
-    contradicted:
-      'the chain as your wallet reads it has listing {id} otherwise than this page showed it, or has no such listing; ' +
-      'nothing was sent, and this page has taken no read of the chain since',
-    // A payment or a withdrawal this page saw mined, whose block is not the chain's as the page now reads it. The
-    // page does not know whether the transaction was mined again in another block, and does not say that it was not.
-    txDropped:
-      'The block this page saw transaction {tx} mined in is not on the chain as this page now reads it. The ' +
-      'transaction may have been mined again in another block: look it up before sending it again.',
-    // the page showed the listing, and a read of a later block has none (the block it was created in was dropped)
-    gone:
-      'Listing {id} was on this page a moment ago and is not on the chain as this page now reads it. Nothing sent ' +
-      'from this page for it stands, a hold included: do not publish a fix on the strength of it. Look the ' +
-      'transactions up before sending anything again.',
     readFailed: 'The listing could not be read: {reason}',
     retry: 'Read again',
     summary: 'Listing {id}',
@@ -448,11 +415,13 @@ export const STRINGS = {
     // Node P42: the maker's hold (StakeAttestation.hold) is not a state. A listing on hold stays Open or Depleted, so
     // the page says the hold beside the state, with its time, and never "open until" of a listing that takes no claims.
     heldSince: 'On hold since',
-    // after a transaction sent from this page, or a read through the wallet that found the listing changed: the
-    // site's reader has not reached that block
+    // After a transaction sent from this page, or a read through the wallet that has the listing otherwise than this
+    // page shows it: the page knows its read is from before that block (lib/pageSays.js). `reading` while it reads for
+    // the block; `behind`, with "Read again", once its reads are over and none was of that block or a later one.
+    reading: 'Reading the listing again…',
     behind:
-      'This page has not read the chain as of block {block} yet, which the wallet\'s node has reached: what it shows ' +
-      'of the listing may be from before the last change sent or seen through the wallet.',
+      'This page has not read the chain at block {block} or later since a change there was sent or seen through the ' +
+      'wallet: what it shows of the listing may be from before that change.',
     held:
       'Listing {id} is on hold since {time}: it takes no new claims. Claims committed before the hold run as before, and ' +
       'a finding can still be filed on it as a late claim, which is judged and recorded and carries no award. The hold ' +
@@ -662,9 +631,6 @@ export const STRINGS = {
     yes: 'This listing counts: its builder\'s signature and the project\'s proof check, and the site offers it to hunters.',
     no: 'This site offers no commit on this listing: {reason}',
     unknown: 'This site could not read whether this listing counts: {reason}. It offers no commit until it can.',
-    // a listing that counts and takes no commit as the contract has it (rolled forward, closed, depleted, or its fee
-    // lapsed) is no entry of the feed either
-    notTaking: 'This listing counts, and it takes no commits now, so the site does not offer it to hunters.',
     // node P42: a listing on hold counts and takes no commit, so it is no entry of the feed
     held:
       'This listing counts, and its maker has it on hold: it takes no commit, so the site does not offer it to hunters. ' +
@@ -1100,13 +1066,7 @@ export const STRINGS = {
     button: 'Roll forward to listing {id}',
     sending: 'Sending rollForward()…',
     done: 'Rolled forward to listing {id} (transaction {tx}).',
-    // a roll this page saw mined, which a read of its block or later does not show (its block was dropped)
-    dropped:
-      'The roll forward sent from this page (transaction {tx}) is not on the chain as this page now reads it: this ' +
-      'listing has not rolled forward. Look the transaction up, and roll forward again if it is gone.',
     changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
-    // the read before sending found this listing itself no longer Open or Depleted (rolled or closed elsewhere)
-    sourceChanged: 'Nothing was sent: this listing can no longer roll forward (it is {state}). It has been read again.',
     // node P42: a listing on hold is Open, and the contract would take it as a successor; it takes no commits, for good
     successorOnHold: 'Nothing was sent: listing {id} is on hold and takes no commits, so this listing is not rolled forward to it. Choose another listing.',
     // the fixed version is listed and funded after the hold, often in another tab: the panel looks again when asked
@@ -1133,18 +1093,15 @@ export const STRINGS = {
     confirm: 'Hold listing {id} now: no new claims once it is mined',
     keep: 'Do not hold',
     sending: 'Sending hold()…',
-    done: 'Listing {id} is on hold since {time} (transaction {tx}).',
-    changed: 'Nothing was sent: listing {id} changed on-chain since this page read it. It has been read again.',
-    // mined, and the receipt holds no Held event of this contract for this listing: no hold is claimed
-    notConfirmed:
-      'Transaction {tx} was mined, and its receipt does not show a hold of listing {id}: this page does not say the ' +
-      'listing is on hold on the strength of it. It reads the listing again from that block; look the transaction up ' +
-      'before sending another.',
+    // This page's own hold(), once it is mined: the transaction, as the page's other actions report theirs. It does
+    // not say what the listing is now: that is said from the page's read of the chain alone (lib/pageSays.js).
+    mined:
+      'The hold() call for listing {id} was mined (transaction {tx}). What the listing is now is said on this page ' +
+      'only from its own read of the chain.',
+    changed:
+      'Nothing was sent: on the chain as your wallet reads it now, listing {id} is not as this page showed it. This ' +
+      'page reads it again.',
     since: 'This listing is on hold since {time}.',
-    // a hold this page saw mined, which a later read of the chain does not show (its block was dropped)
-    dropped:
-      'The hold sent from this page (transaction {tx}) is not on the chain as this page now reads it: this listing is ' +
-      'not on hold. Do not publish a fix on the strength of it: look the transaction up, and hold again if it is gone.',
     next:
       'What is left is on this page: roll forward to the fixed version once it is listed and funded, or close, when no ' +
       'claim is pending and no award is owed.',
@@ -1179,11 +1136,8 @@ export const STRINGS = {
     buttonNoAmount: 'Top up',
     sending: 'Sending fund()…',
     done: 'Topped up (transaction {tx}). The escrow now holds {eth} ETH.',
-    // mined, and the receipt did not say what the escrow holds: the line above, from the page's read, does
-    doneNoEscrow: 'Topped up (transaction {tx}).',
     doneOwed: 'Topped up (transaction {tx}). {owed} ETH went to hunters who were owed it, and the escrow now holds {eth} ETH.',
     reopened: 'The listing is open again.',
-    reopenedHeld: 'The listing\'s state is open again; it stays on hold and takes no new claims.',
     changed: 'Nothing was sent: listing {id} can no longer be topped up (it is {state}). It has been read again.',
   },
   renew: {
@@ -1202,8 +1156,6 @@ export const STRINGS = {
     button: 'Renew for 30 days, paying {fee} ETH',
     sending: 'Sending renew()…',
     done: 'Renewed (transaction {tx}). The listing fee is paid until {until}.',
-    // mined, and the receipt did not say until when: the line above, from the page's read, does
-    doneNoTime: 'Renewed (transaction {tx}).',
     feeChanged: 'Nothing was sent: the listing fee is now {fee} ETH. The figure above is updated; renew again to pay it.',
     changed: 'Nothing was sent: listing {id} can no longer be renewed (it is {state}). It has been read again.',
   },
@@ -1222,10 +1174,6 @@ export const STRINGS = {
     keep: 'Keep it open',
     sending: 'Sending close()…',
     done: 'Listing {id} is closed (transaction {tx}). {eth} ETH of escrow went back to {account}.',
-    // a close this page saw mined, which a read of its block or later does not show (its block was dropped)
-    dropped:
-      'The close sent from this page (transaction {tx}) is not on the chain as this page now reads it: listing {id} is ' +
-      'not closed. Look the transaction up, and close again if it is gone.',
     doneDeferred:
       'Listing {id} is closed (transaction {tx}). The contract could not send the {eth} ETH of escrow to {account}, ' +
       'so it holds the amount for that wallet: withdraw it below.',
@@ -1241,8 +1189,6 @@ export const STRINGS = {
     button: 'Withdraw {eth} ETH',
     sending: 'Sending withdraw()…',
     done: 'Withdrawn (transaction {tx}): {eth} ETH to {account}.',
-    // mined, and the receipt did not say how much: the transaction is named, without a figure
-    doneNoAmount: 'Withdrawn (transaction {tx}) to {account}.',
     changed: 'Nothing was sent: the contract holds nothing for {account} now.',
   },
   dispute: {

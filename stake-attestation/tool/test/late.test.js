@@ -1364,7 +1364,47 @@ async function pastStart({ saved, was }) {
 }
 
 const unproven = (e) => e.code === 'START_UNPROVEN' && e.exitCode === 1
-  && /Nothing was signed, pinned or set aside\./.test(e.message) && /in a new folder/.test(e.message) && /keys stay where they are/.test(e.message);
+  && /Nothing was signed, sent, pinned or set aside/.test(e.message) && /keys stay where they are/.test(e.message);
+// What to do differs with the reason (R11-F3). Where the folder cannot show its bound at all, a new folder is the way
+// on, and the text says first what that can cost: a claim of these hashes sent some other way would be paid for again.
+const NEW_FOLDER = /would pay a second bond.*prepare the claim in a new folder/s;
+// Where only a node's answer is missing, the same folder through a node that gives it is, and a new folder is not.
+const OTHER_RPC = /Run the same command again through an RPC that serves the logs from block \d+/;
+
+/**
+ * A late claim signed and saved and never sent (the run stopped at commit:signed), and the chain then rolled back under
+ * the block its folder was prepared at, above the finalized block it saved. `unrelated`: a transaction of the wallet
+ * was mined before the late claim was signed, so the saved bytes have the nonce after it, and the rollback takes that
+ * transaction out. `claim`: the folder's two hashes, sent by another client, are mined in the new fork's first block,
+ * at the nonce the rollback left free: the saved one's, or with `unrelated` the one below it.
+ */
+async function signedThenRolledBack({ unrelated = false, claim = true, finalized = 'below', gap = 3 } = {}) {
+  const l = await rolled();
+  const dir = makeClaimDir();
+  const finalizedBlock = await w.provider.getBlockNumber();
+  await w.mine(2);
+  const snapshot = await w.rpc('evm_snapshot');
+  if (unrelated) await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n })).wait();
+  await w.mine(gap);
+  const provider = finalizedAt(() => (finalized === 'none' ? null : finalizedBlock));
+  const crash = (step) => { if (step === 'commit:signed') throw new Error('crash'); };
+  await w.hunter({ provider, onStep: crash }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch(() => {});
+  const saved = readJson(statePath(dir));
+  assert.equal(saved.stage, 'commit-signed');
+  assert.equal(saved.late, true);
+  const was = await blockId(saved.startBlock);
+  await w.rpc('evm_revert', [snapshot]);
+  let other = null;
+  if (claim) {
+    other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    assert.ok(other.blockNumber < saved.startBlock, 'the claim is below the block the folder was prepared at');
+    assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), saved.commitTx.nonce + (unrelated ? 0 : 1), 'the claim took the nonce the rollback left free');
+  } else {
+    await (await w.signers[8].sendTransaction({ to: w.signers[8].address, value: 0n })).wait();
+  }
+  assert.equal(await w.provider.getTransactionReceipt(saved.commitTx.hash), null, 'the saved late claim was never sent');
+  return { l, dir, saved, other, finalizedBlock, was };
+}
 
 test('preparing a claim saves an anchor before any key is drawn: the head and the finalized block, by number and hash, in a file of its own', async () => {
   const l = await rolled();
@@ -1452,6 +1492,152 @@ test('the chain rolled back under a prepared folder, above the finalized block i
     assert.equal(await w.claimCount(), count);
     assert.deepEqual(readJson(statePath(c.dir)).commitTx, { hash: c.other.hash });
   }
+  // and with no flag at all (R11-F1): a claim that exists is adopted before the flag is read, wherever the anchor
+  // proves the logs hold it. Without it this run read from the old height and refused the listing (LATE_CLAIMS_ONLY).
+  {
+    const c = await rolledBackUnder();
+    await pastStart(c);
+    const count = await w.claimCount();
+    const heldNow = await w.provider.getBalance(w.address);
+    const cli = await runCli(w, ['commit', c.dir, '--listing', String(c.l.listingId)]);
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /^Late claim \d+ on listing \d+: disclosed\.$/m);
+    assert.equal(await w.claimCount(), count, 'no second claim');
+    assert.equal(await w.provider.getBalance(w.address), heldNow, 'no second bond');
+    assert.deepEqual(readJson(statePath(c.dir)).commitTx, { hash: c.other.hash });
+  }
+});
+
+test('a late claim signed, saved and not sent, and the same hashes then mined below the old height by another transaction: the saved bytes are not sent beside it', async () => {
+  const adopted = async (c, run) => {
+    const count = await w.claimCount();
+    const heldNow = await w.provider.getBalance(w.address);
+    const nonce = await w.provider.getTransactionCount(w.hunterWallet.address);
+    const r = await run();
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.claimId, count, 'the claim that was there');
+    assert.equal(r.commitTx, c.other.hash, 'with the transaction that made it');
+    assert.equal(await w.claimCount(), count, 'no second claim');
+    assert.equal(await w.provider.getBalance(w.address), heldNow, 'no second bond');
+    assert.equal(await w.provider.getTransactionReceipt(c.saved.commitTx.hash), null, 'the saved bytes were never sent');
+    assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), nonce + 1, 'one transaction: the disclosure');
+  };
+  // at a lower nonce (R11-F2): the saved bytes' own nonce is the wallet's next one, so they could be mined too
+  {
+    const c = await signedThenRolledBack({ unrelated: true });
+    await pastStart(c);
+    await adopted(c, () => late({ claimDir: c.dir, listingId: c.l.listingId }));
+  }
+  // the same with the head still below the old height
+  {
+    const c = await signedThenRolledBack({ unrelated: true });
+    assert.ok(await w.provider.getBlockNumber() < c.saved.startBlock);
+    await adopted(c, () => late({ claimDir: c.dir, listingId: c.l.listingId }));
+  }
+  // at the saved bytes' own nonce: they are gone, and the claim that took their nonce is found from the anchor's
+  // bound whatever flag the run has (without --late this run read from the old height, found none, and refused)
+  {
+    const c = await signedThenRolledBack();
+    await pastStart(c);
+    await adopted(c, () => w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId }));
+  }
+  {
+    const c = await signedThenRolledBack();
+    await pastStart(c);
+    await adopted(c, () => late({ claimDir: c.dir, listingId: c.l.listingId }));
+  }
+});
+
+test('saved late-claim bytes are sent again only on the proof they were signed on: not where the bound is unproven, and not behind an earlier transaction that is not mined', async () => {
+  const notSent = async (c, code, says) => {
+    const m = await mark();
+    const err = await late({ claimDir: c.dir, listingId: c.l.listingId }).catch((e) => e);
+    assert.equal(err.code, code, err.message);
+    for (const re of says) assert.match(err.message, re);
+    await assertNothingSent(m, null, code);
+    assert.deepEqual(readJson(statePath(c.dir)), c.saved, 'the folder is as it was: the signed bytes are still saved');
+    assert.equal(await w.provider.getTransactionReceipt(c.saved.commitTx.hash), null);
+    return err;
+  };
+  // the claim is below the old height, and the folder saved no finalized block to read from: nothing shows it
+  {
+    const c = await signedThenRolledBack({ unrelated: true, finalized: 'none' });
+    await pastStart(c);
+    const err = await notSent(c, 'START_UNPROVEN', [/Nothing was signed, sent, pinned or set aside/, /was not sent again/, NEW_FOLDER]);
+    assert.ok(unproven(err));
+    assert.ok(err.message.includes(c.saved.commitTx.hash), 'the saved transaction is named: if an earlier run sent it, it can still be mined');
+  }
+  // the rollback took out the transaction before the saved one, and nothing has its nonce yet: what takes it may be
+  // this claim, sent some other way
+  {
+    const c = await signedThenRolledBack({ unrelated: true, claim: false });
+    await pastStart(c);
+    assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), c.saved.commitTx.nonce - 1);
+    const err = await notSent(c, 'WALLET_BUSY', [/Nothing was sent/]);
+    assert.equal(err.exitCode, 4);
+    // once that nonce is used by something that is no claim, the scan from the finalized block is complete, and the
+    // saved bytes go out: the claim they make is the folder's one claim
+    await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n })).wait();
+    const count = await w.claimCount();
+    const r = await late({ claimDir: c.dir, listingId: c.l.listingId });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.commitTx, c.saved.commitTx.hash, 'the saved bytes');
+    assert.equal(await w.claimCount(), count + 1n);
+  }
+});
+
+test('--restart sets nothing aside before the new claim may go out: a refusal, or a run without --yes, leaves the prepared folder whole (R8-F1)', async () => {
+  const filesOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => !n.startsWith('lock.')).sort();
+  const whole = async (c, run, code) => {
+    const files = filesOf(c.dir);
+    const state = fs.readFileSync(statePath(c.dir), 'utf8');
+    const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
+    const m = await mark();
+    const err = await run().catch((e) => e);
+    assert.equal(err.code, code, err.message);
+    await assertNothingSent(m, null, code);
+    assert.deepEqual(filesOf(c.dir), files, `${code}: nothing was set aside`);
+    assert.equal(fs.readFileSync(statePath(c.dir), 'utf8'), state, `${code}: the prepared claim is the active one`);
+    assert.equal(fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8'), keys, `${code}: with its keys`);
+  };
+  // A late claim of the folder's hashes is paid for, below the old height, in logs this node does not give. --restart
+  // without --late cannot be refused for the anchor, and the listing takes no commit: that refusal comes first now.
+  {
+    const c = await rolledBackUnder();
+    await pastStart(c);
+    const provider = noLogsBelow(() => c.saved.startBlock);
+    await whole(c, () => w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, restart: true, acknowledge: true }), 'LATE_CLAIMS_ONLY');
+    // the refusal names --late: on this folder, through this node, that is refused too, and says which node to use
+    await whole(c, () => w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, acknowledge: true }), 'START_UNPROVEN');
+    // and through a node that gives the logs, the claim that was paid for is the one disclosed
+    const count = await w.claimCount();
+    const r = await late({ claimDir: c.dir, listingId: c.l.listingId });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.commitTx, c.other.hash);
+    assert.equal(await w.claimCount(), count, 'no second claim');
+  }
+  // a folder with no anchor, the same listing: the same order
+  {
+    const c = await rolledBackUnder({ claim: false });
+    fs.rmSync(statePath(c.dir, ANCHOR));
+    await pastStart(c);
+    await whole(c, () => w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, restart: true, acknowledge: true }), 'LATE_CLAIMS_ONLY');
+  }
+  // an ordinary listing, and --restart without --yes: the terms are said, and the folder is whole until --yes
+  {
+    const l = await w.listing();
+    const dir = makeClaimDir();
+    const crash = (step) => { if (step === 'prepare:saved') throw new Error('crash'); };
+    await w.hunter({ onStep: crash }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }).catch(() => {});
+    const saved = readJson(statePath(dir));
+    assert.equal(saved.stage, 'prepared');
+    await whole({ dir }, () => w.hunter().commit({ claimDir: dir, listingId: l.listingId, restart: true }), 'NEEDS_ACKNOWLEDGEMENT');
+    // with --yes it starts over: the old files set aside, new keys
+    const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true });
+    assert.equal(r.stage, 'disclosed');
+    assert.notEqual(r.ciphertextSha256, saved.ciphertextSha256);
+    assert.ok(filesOf(dir).some((n) => n.startsWith('keys.json.set-aside-')), 'the old keys are set aside');
+  }
 });
 
 test('the same rollback with no claim of the hashes on the chain: the scan from the finalized block is complete, so the late claim is signed', async () => {
@@ -1491,7 +1677,7 @@ test('--restart --late against a claim of the folder\'s hashes below the old hei
 test('where nothing proves the bound, a late claim is not signed and --restart --late sets nothing aside: START_UNPROVEN says why and what to do', async () => {
   // (a run removes the lock a killed one left: every other file of the folder is what it was)
   const filesOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => !n.startsWith('lock.')).sort();
-  const refused = async (c, why, { provider, says } = {}) => {
+  const refused = async (c, why, { provider, says, not } = {}) => {
     const files = filesOf(c.dir);
     const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
     // with --yes, with --restart, and with neither: no terms are said for a late claim that would not be signed
@@ -1500,6 +1686,7 @@ test('where nothing proves the bound, a late claim is not signed and --restart -
       const err = await w.hunter(provider ? { provider } : {}).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, restart, acknowledge }).catch((e) => e);
       assert.ok(unproven(err), `${why}, restart ${restart}, --yes ${acknowledge}: ${err.code}: ${err.message}`);
       if (says) assert.match(err.message, says, why);
+      if (not) assert.doesNotMatch(err.message, not, why);
       await assertNothingSent(m, null, why);
       assert.equal(readJson(statePath(c.dir)).commitTx ?? null, null, 'nothing was signed');
       assert.deepEqual(filesOf(c.dir), files, 'nothing was set aside');
@@ -1511,21 +1698,21 @@ test('where nothing proves the bound, a late claim is not signed and --restart -
     const c = await rolledBackUnder({ claim: false });
     fs.rmSync(statePath(c.dir, ANCHOR));
     await pastStart(c);
-    await refused(c, 'no anchor');
+    await refused(c, 'no anchor', { says: NEW_FOLDER });
   }
   // the node named no finalized block when the folder was prepared, and the chain was rolled back under it
   {
     const c = await rolledBackUnder({ claim: false, finalized: 'none' });
     assert.equal(anchorOf(c.dir).finalized, null);
     await pastStart(c);
-    await refused(c, 'no finalized block saved');
+    await refused(c, 'no finalized block saved', { says: NEW_FOLDER });
   }
   // the rollback went under the finalized block the folder saved (the test chain names its head as finalized)
   {
     const c = await rolledBackUnder({ claim: false, finalized: 'head' });
     assert.deepEqual(anchorOf(c.dir).finalized, c.was);
     await pastStart(c);
-    await refused(c, 'the finalized block is gone');
+    await refused(c, 'the finalized block is gone', { says: NEW_FOLDER });
   }
   // the finalized block stands, and the node does not give the logs between it and the old height: the scan that
   // would prove the bound cannot be read through, and the logs above prove nothing
@@ -1533,7 +1720,7 @@ test('where nothing proves the bound, a late claim is not signed and --restart -
     const c = await rolledBackUnder({ claim: false });
     await pastStart(c);
     const provider = noLogsBelow(() => c.saved.startBlock);
-    await refused(c, 'the scan cannot be read through', { provider, says: /could not all be read/ });
+    await refused(c, 'the scan cannot be read through', { provider, says: OTHER_RPC, not: /prepare the claim in a new folder/ });
     // the same folder through a node that gives them: the scan is complete, and the late claim is signed
     const count = await w.claimCount();
     assert.equal((await late({ claimDir: c.dir, listingId: c.l.listingId })).ciphertextSha256, c.saved.ciphertextSha256);
@@ -1543,7 +1730,7 @@ test('where nothing proves the bound, a late claim is not signed and --restart -
   {
     const c = await rolledBackUnder();
     await pastStart(c);
-    await refused(c, 'the claim is in the stretch that cannot be read', { provider: noLogsBelow(() => c.saved.startBlock), says: /could not all be read/ });
+    await refused(c, 'the claim is in the stretch that cannot be read', { provider: noLogsBelow(() => c.saved.startBlock), says: OTHER_RPC, not: /prepare the claim in a new folder/ });
   }
   // an anchor that does not name the block state.json says the folder was prepared at
   {
@@ -1552,7 +1739,7 @@ test('where nothing proves the bound, a late claim is not signed and --restart -
     assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
     const anchor = anchorOf(dir);
     fs.writeFileSync(statePath(dir, ANCHOR), `${JSON.stringify({ ...anchor, head: { ...anchor.head, number: anchor.head.number - 1 } }, null, 2)}\n`, { mode: 0o600 });
-    await refused({ l, dir }, 'another head');
+    await refused({ l, dir }, 'another head', { says: NEW_FOLDER });
   }
   // and a folder with no anchor is refused with nothing reorganized under it too: it cannot show that
   {
@@ -1560,7 +1747,7 @@ test('where nothing proves the bound, a late claim is not signed and --restart -
     const dir = makeClaimDir();
     assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
     fs.rmSync(statePath(dir, ANCHOR));
-    await refused({ l, dir }, 'no anchor, no rollback');
+    await refused({ l, dir }, 'no anchor, no rollback', { says: NEW_FOLDER });
     // a new folder with the same claim files is the way on
     const fresh = makeClaimDir();
     assert.equal((await late({ claimDir: fresh, listingId: l.listingId })).stage, 'disclosed');

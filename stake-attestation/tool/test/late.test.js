@@ -630,6 +630,29 @@ test('a late claim whose files changed is told to use a new folder, and nothing 
     assert.doesNotMatch(err.message, /--restart/, 'no word of --restart, which never starts a late claim over');
   }
   await assertNothingSent(m, null, 'changed files');
+  // an edit that leaves a file the arbiters would refuse, or takes one away, is said the same way: the texts that say
+  // to fix a file in place are no way on for a prepared late claim (R4-F2)
+  for (const [name, spoil] of [
+    ['report.md emptied', (d) => fs.writeFileSync(`${d}/report.md`, '')],
+    ['poc.patch removed', (d) => fs.rmSync(`${d}/poc.patch`)],
+    ['finding.json no longer JSON', (d) => fs.writeFileSync(`${d}/finding.json`, '{')],
+    ['poc.patch no longer a patch', (d) => fs.writeFileSync(`${d}/poc.patch`, 'not a patch\n')],
+  ]) {
+    const p = await preparedLate();
+    const kept = filesOf(p.dir);
+    spoil(p.dir);
+    for (const lateFlag of [true, false]) {
+      const err = await w.hunter().commit({ claimDir: p.dir, listingId: p.l.listingId, late: lateFlag, acknowledge: true }).catch((e) => e);
+      assert.equal(err.code, 'LATE_INPUTS_CHANGED', `${name}, late ${lateFlag}: ${err.message}`);
+      assert.equal(err.message, ERROR_TEXTS.LATE_INPUTS_CHANGED, name);
+    }
+    assert.deepEqual(filesOf(p.dir), kept, `${name}: the prepared files are as they were`);
+  }
+  await assertNothingSent(m, null, 'spoiled files');
+  // a late claim with nothing prepared yet is checked as any claim is: there is nothing to restore
+  const fresh = await rolled();
+  const bad = makeClaimDir({ report: '' });
+  await assert.rejects(late({ claimDir: bad, listingId: fresh.listingId }), (e) => e.code === 'REPORT_INVALID');
   // an ordinary commit's refusal is the one it was, code and text
   assert.equal(ERROR_TEXTS.INPUTS_CHANGED, 'The claim files changed since this commit was prepared, and nothing has been signed. Restore them, or pass --restart to draw new keys for the new files.');
   const o = await w.listing();
@@ -639,6 +662,10 @@ test('a late claim whose files changed is told to use a new folder, and nothing 
   const oerr = await w.hunter().commit({ claimDir: odir, listingId: o.listingId, acknowledge: true }).catch((e) => e);
   assert.equal(oerr.code, 'INPUTS_CHANGED');
   assert.equal(oerr.message, ERROR_TEXTS.INPUTS_CHANGED);
+  // and in the order it was: a prepared commit whose report is emptied is told the report is invalid, first
+  fs.writeFileSync(`${odir}/report.md`, '');
+  const first = await w.hunter().commit({ claimDir: odir, listingId: o.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(first.code, 'REPORT_INVALID');
 });
 
 // ------------------------------------------------------------------------------------------- the price it signs
@@ -686,6 +713,63 @@ test('the price a late claim signs is the price its notice quoted: a price that 
       if (step === 'prepare:saved') await (await w.aggregator.setFeeMultiplier(4n)).wait();
     };
     await assert.rejects(w.hunter({ onStep: down }).commit({ claimDir: makeClaimDir(), listingId: l2.listingId, late: true, acknowledge: true }), (e) => e.code === 'LATE_PRICE_CHANGED');
+  } finally {
+    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+  }
+});
+
+test('a price that rises after it was read again, and is met at the gas estimate, is still said as the new price, and nothing is signed', async () => {
+  try {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    const m = await mark();
+    const quoted = await w.sa.commitPrice(l.listingId);
+    const selector = iface.getFunction('lateClaim').selector;
+    let raised = false;
+    const steps = [];
+    // the fee moves between the price read as it signs and the estimate: the contract refuses the quoted value
+    const provider = new Proxy(w.provider, {
+      get(target, prop) {
+        if (prop === 'estimateGas') {
+          return async (tx, ...rest) => {
+            if (!raised && String(tx?.data ?? '').startsWith(selector)) {
+              raised = true;
+              await (await w.aggregator.setFeeMultiplier(5n)).wait();
+            }
+            return target.estimateGas(tx, ...rest);
+          };
+        }
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const err = await w.hunter({ provider, onStep: (s) => steps.push(s) }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
+    assert.equal(raised, true, 'the estimate was reached');
+    const price = await w.sa.commitPrice(l.listingId);
+    assert.ok(price > quoted);
+    assert.equal(err.code, 'LATE_PRICE_CHANGED', err.message);
+    assert.ok(err.message.includes(`It is ${eth(price)} now, not ${eth(quoted)}.`), err.message);
+    assert.ok(!steps.includes('commit:signed'), 'nothing was signed');
+    assert.equal(readJson(statePath(dir)).commitTx ?? null, null);
+    assert.equal(await w.claimCount(), m.claims);
+    assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), m.nonce);
+    // any other refusal at the estimate is passed on as the contract's, as before
+    const l2 = await rolled();
+    const other = new Proxy(w.provider, {
+      get(target, prop) {
+        if (prop === 'estimateGas') {
+          return async (tx, ...rest) => {
+            if (String(tx?.data ?? '').startsWith(selector)) throw new Error('execution reverted: bad budget');
+            return target.estimateGas(tx, ...rest);
+          };
+        }
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const refused = await w.hunter({ provider: other }).commit({ claimDir: makeClaimDir(), listingId: l2.listingId, late: true, acknowledge: true }).catch((e) => e);
+    assert.equal(refused.code, 'CONTRACT_REFUSED');
+    assert.match(refused.message, /bad budget/);
   } finally {
     await (await w.aggregator.setFeeMultiplier(3n)).wait();
   }

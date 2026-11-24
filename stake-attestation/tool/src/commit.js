@@ -18,14 +18,15 @@
 //
 // A claim with the folder's two hashes that is already on the chain, sent some other way, is adopted before anything
 // else is asked of a prepared folder: before the listing, the wallet's balance or --restart can refuse the run or
-// remove the keys that claim needs. Its depth is read from the chain again before it is adopted, so one a
-// reorganization moved is never pinned early.
+// remove the keys that claim needs. Its depth is measured once its log is read, against a head read after it, and
+// the log's block is then held to its hash, so one a reorganization moved is looked for again and never pinned early.
 //
-// A late claim is signed at the wallet's next nonce as mined, read before the logs are, and not at all while the
-// wallet has a transaction pending. A transaction of this wallet mined before that read is in the blocks the log scan
-// covers, so a claim it made is found; one not mined by then has that nonce or a later one, and at that nonce only
-// one of the two can ever be mined: the other is found gone, and the claim adopted. --restart is held back while the
-// wallet has a transaction pending too, whatever the flag: a prepared folder names no kind, and the keys go with it.
+// A late claim is signed only when no claim of its hashes can be on the chain unseen (nonceAndClaimAt): the wallet's
+// nonce and the logs are read at one block, and the pending count after them. A transaction of this wallet mined by
+// that block is in the logs read, so a claim it made is found. One mined or sent later raises the pending count above
+// that nonce, and nothing is signed (WALLET_BUSY). And the late claim is signed at that nonce, so a transaction that
+// takes it afterwards leaves the signature unusable: it is found gone, and the claim adopted. --restart asks the same
+// before the keys are removed, whatever the flag: a prepared folder names no kind.
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { codeReview } from './common.js';
@@ -131,21 +132,48 @@ const CLAIM_MADE = Object.freeze(['Committed', 'LateClaim']);
  * A Committed or a LateClaim log of this hunter, listing and these two hashes, since the block the folder was prepared
  * at. Either kind is a claim on these hashes that has its bond: one filter, the two events' topics in its first place.
  */
-async function findCommitted(ctx, state) {
+async function findCommitted(ctx, state, upTo = null) {
   const [first, ...indexed] = ctx.topics('Committed', [null, BigInt(state.listingId), state.hunter]);
   const topics = [[first, ctx.topics('LateClaim', [])[0]], ...indexed];
-  const head = await ctx.rpc(() => ctx.provider.getBlockNumber());
+  // up to the head as it is now, or up to the block a caller has read something else at (nonceAndClaimAt)
+  const head = upTo ?? await ctx.rpc(() => ctx.provider.getBlockNumber());
   for (let from = state.startBlock; from <= head; from += ctx.logPageBlocks) {
     const to = Math.min(head, from + ctx.logPageBlocks - 1);
     const logs = await ctx.rpc(() => ctx.provider.getLogs({ address: ctx.contract, topics, fromBlock: from, toBlock: to }));
     for (const log of logs) {
       const parsed = ctx.parseLog(log);
       if (CLAIM_MADE.includes(parsed?.name) && parsed.args.archiveHash === state.archiveSha256 && parsed.args.ciphertextSha256 === state.ciphertextSha256) {
-        return { claimId: parsed.args.claimId, blockNumber: log.blockNumber, txHash: log.transactionHash };
+        return { claimId: parsed.args.claimId, blockNumber: log.blockNumber, blockHash: log.blockHash, txHash: log.transactionHash };
       }
     }
   }
   return null;
+}
+
+/** The head, asked of the node each time: a provider's own short memory of it is not used where an order of reads matters. */
+async function headNow(ctx) {
+  return Number(BigInt(await ctx.rpc(() => ctx.provider.send('eth_blockNumber', []))));
+}
+
+/**
+ * Whether a claim of the folder's two hashes may be on the chain, or on its way there, unseen. Three reads, in this
+ * order: the wallet's nonce at one block; the logs up to that same block; the wallet's pending count, after them.
+ *
+ *   - `existing`: the claim, when the logs hold one.
+ *   - `nonce`: the wallet's next nonce as mined at that block. With no claim in the logs, no transaction below it
+ *     made one: they are all in the blocks read.
+ *   - `pending` above `nonce`: a transaction of this wallet is not mined yet, or was mined after that block, and it
+ *     may be the claim. The caller holds back (WALLET_BUSY): a run again finds it once it is mined.
+ *
+ * A transaction sent after the last read is not seen by any read. A caller that signs at `nonce` shuts it out all the
+ * same: only one transaction can be mined at a nonce.
+ */
+async function nonceAndClaimAt(ctx, state) {
+  const head = await headNow(ctx);
+  const nonce = await ctx.rpc(() => ctx.provider.getTransactionCount(state.hunter, head));
+  const existing = await findCommitted(ctx, state, head);
+  const pending = existing ? nonce : await ctx.rpc(() => ctx.provider.getTransactionCount(state.hunter, 'pending'));
+  return { existing, nonce, pending };
 }
 
 /** The state with its kind: `late: true` on a late claim's, and no such key on a commit's, which stays as it was. */
@@ -193,23 +221,26 @@ async function prepare(ctx, ws, listing, inputs, hunter, listingId) {
 }
 
 /**
- * A commit that went out some other way counts once it is as deep as one of ours must be. Its depth is the chain's
- * now, not the first read's: a reorganization can move its transaction to a later block, or take it out, after its log
- * was read. So once the block first seen looks deep enough, the head is read and then the log again, and the claim is
- * adopted from that second read, with the id, the block and the transaction it has then.
+ * A commit that went out some other way counts once it is as deep as one of ours must be. A reorganization can move
+ * its transaction to another block, or take it out, after its log was read, so a log is never taken at its word for
+ * longer than one look: the head is read after the log, as waitMined reads it after a receipt, and the log's block is
+ * then held to the hash the log gave. A claim that is not where its log said is looked for again, and adopted with
+ * the id, the block and the transaction it has then; one that is gone is waited for, up to the limit.
  */
 async function adoptLogged(ctx, ws, state, found) {
   const until = ctx.now() + ctx.waitMs;
   let seen = found;
   for (;;) {
-    const head = await ctx.rpc(() => ctx.provider.getBlockNumber());
-    if (head - seen.blockNumber + 1 >= ctx.confirmations) {
-      const now = await findCommitted(ctx, state);
-      if (now && head - now.blockNumber + 1 >= ctx.confirmations) return adoptClaim(ctx, ws, state, now.claimId, now.txHash);
-      if (now) seen = now; // moved: wait for the block it is in now; gone: wait for it to come back, up to the limit
+    if (seen) {
+      const head = await headNow(ctx);
+      if (head - seen.blockNumber + 1 >= ctx.confirmations) {
+        const block = await ctx.rpc(() => ctx.provider.getBlock(seen.blockNumber));
+        if (block?.hash === seen.blockHash) return adoptClaim(ctx, ws, state, seen.claimId, seen.txHash);
+      }
     }
-    if (ctx.now() >= until) throw fail('TX_PENDING', `Claim ${seen.claimId} is not deep enough yet.`);
+    if (ctx.now() >= until) throw fail('TX_PENDING', `Claim ${(seen ?? found).claimId} is not deep enough yet.`);
     await ctx.sleep(ctx.pollMs ?? 2000);
+    seen = await findCommitted(ctx, state);
   }
 }
 
@@ -305,27 +336,17 @@ async function commitPreflight(ctx, listingId, hunter, late = false) {
   return price;
 }
 
-/** The wallet's next nonce as mined, and counting what is pending: they differ while a transaction of it is not mined yet. */
-async function walletNonces(ctx, hunter) {
-  const [latest, pending] = await Promise.all([
-    ctx.rpc(() => ctx.provider.getTransactionCount(hunter, 'latest')),
-    ctx.rpc(() => ctx.provider.getTransactionCount(hunter, 'pending')),
-  ]);
-  return { latest, pending };
-}
-
 /**
  * Signs and sends the commit, or with `late` the late claim: never twice, and only with everything on disk.
  * @param {bigint} quoted the price this run's notice named: a live price that differs is said before it is signed
  */
 async function sendCommit(ctx, ws, state, listingId, late, quoted) {
-  // A late claim's nonce is read before the logs are (see the top of this file). Only a late claim asks this: a
+  // A late claim's nonce and the logs are read at one block (nonceAndClaimAt). Only a late claim asks this: a
   // commit is signed as it always was, at the wallet's next nonce counting what is pending.
-  const nonces = late ? await walletNonces(ctx, state.hunter) : null;
-  const existing = await findCommitted(ctx, state);
-  if (existing) return adoptLogged(ctx, ws, state, existing);
-  // No log of it is not proof for a late claim: one sent some other way and not mined yet has none.
-  if (nonces && nonces.pending > nonces.latest) throw fail('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond.');
+  const at = late ? await nonceAndClaimAt(ctx, state) : { existing: await findCommitted(ctx, state) };
+  if (at.existing) return adoptLogged(ctx, ws, state, at.existing);
+  // No log of it is not proof for a late claim: one sent some other way and not in those blocks has none there.
+  if (late && at.pending > at.nonce) throw fail('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond.');
 
   readProvenFiles(ctx, ws, state);
   const price = await commitPreflight(ctx, listingId, state.hunter, late); // read just before signing: the live fee
@@ -341,7 +362,7 @@ async function sendCommit(ctx, ws, state, listingId, late, quoted) {
     if (err.code === 'CONTRACT_REFUSED' && err.detail === 'not accepting late claims') throw fail('NO_LATE_CLAIMS', `Listing ${listingId}.`);
     throw err;
   }
-  const rec = await ctx.sign({ data, value: price, gasLimit: (estimate * 5n) / 4n + 10000n, ...(nonces ? { nonce: nonces.latest } : {}) });
+  const rec = await ctx.sign({ data, value: price, gasLimit: (estimate * 5n) / 4n + 10000n, ...(late ? { nonce: at.nonce } : {}) });
   // The files are private and on disk, and these bytes are saved, with their kind, before any of it can leave.
   const next = { ...withKind(state, late), stage: 'commit-signed', commitTx: rec };
   ws.saveState(next);
@@ -501,15 +522,14 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
     // first: the claim has its bond, so nothing may refuse the run (the listing, the wallet's balance, the flag) or
     // remove its keys (--restart) before it is found and disclosed.
     if (state?.stage === 'prepared') {
-      const existing = await findCommitted(ctx, state);
-      if (existing) state = await adoptLogged(ctx, ws, state, existing);
+      // --restart removes the keys, so it asks more: a claim of these hashes that is not in the blocks read has no
+      // log to be found by, and would lose them. A prepared folder names no kind, so this is asked whatever the flag.
+      const at = restart ? await nonceAndClaimAt(ctx, state) : { existing: await findCommitted(ctx, state) };
+      if (at.existing) state = await adoptLogged(ctx, ws, state, at.existing);
+      else if (restart && at.pending > at.nonce) throw fail('WALLET_BUSY', 'It may be this folder\'s claim, and --restart would remove the keys it needs.');
     }
     if (state && restart && state.stage !== 'prepared') throw fail('RESTART_REFUSED');
     if (state && restart) {
-      // The keys go with this, and a claim of these hashes that is sent and not mined yet has no log to be found by:
-      // it would lose them. A prepared folder names no kind, so this is asked whatever the flag.
-      const nonces = await walletNonces(ctx, hunter);
-      if (nonces.pending > nonces.latest) throw fail('WALLET_BUSY', 'It may be this folder\'s claim, and --restart would remove the keys it needs.');
       ws.removePrepared();
       state = null;
     }

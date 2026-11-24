@@ -1156,11 +1156,15 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
 
   // a late claim is not signed while the wallet has a transaction pending, which may be the same claim sent some
   // other way with no log to find yet; a commit is signed as it always was
-  // and it is signed at the nonce read before the logs were, so one mined in between leaves this signature unusable
+  // The wallet's nonce and the logs are read at one block, the pending count after them, and the late claim is signed
+  // at that nonce: a transaction that takes it afterwards leaves the signature unusable
+  const at = /async function nonceAndClaimAt[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(at, 'tool/src/commit.js: nonceAndClaimAt');
+  assert.match(at, /const head = await headNow\(ctx\);\s*const nonce = await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionCount\(state\.hunter, head\)\);\s*const existing = await findCommitted\(ctx, state, head\);\s*const pending = existing \? nonce : await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionCount\(state\.hunter, 'pending'\)\);/, 'the nonce and the logs at one block, then the pending count');
   const send = /async function sendCommit[\s\S]*?\n\}/.exec(commit)[0];
-  assert.match(send, /const nonces = late \? await walletNonces\(ctx, state\.hunter\) : null;\s*const existing = await findCommitted\(ctx, state\);/, 'the nonce is read before the logs');
-  assert.match(send, /if \(nonces && nonces\.pending > nonces\.latest\) throw fail\('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond\.'\);/);
-  assert.match(send, /await ctx\.sign\(\{ data, value: price, gasLimit: [^}]*\.\.\.\(nonces \? \{ nonce: nonces\.latest \} : \{\}\) \}\);/, 'a late claim at the nonce it checked, a commit as it always was');
+  assert.match(send, /const at = late \? await nonceAndClaimAt\(ctx, state\) : \{ existing: await findCommitted\(ctx, state\) \};/, 'a late claim asks; a commit looks for its log as it always did');
+  assert.match(send, /if \(late && at\.pending > at\.nonce\) throw fail\('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond\.'\);/);
+  assert.match(send, /await ctx\.sign\(\{ data, value: price, gasLimit: [^}]*\.\.\.\(late \? \{ nonce: at\.nonce \} : \{\}\) \}\);/, 'a late claim at the nonce it checked, a commit as it always was');
   assert.equal(new ToolError('WALLET_BUSY').exitCode, 4);
   assert.ok(block.includes('It signs nothing while your wallet has a transaction that is not mined yet (WALLET_BUSY, exit 4): that one may be this late claim, sent some other way, and a second one would pay a second bond.'));
   // the amount printed is the amount sent: a fee that moved since the terms is said before the signature

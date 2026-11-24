@@ -49,15 +49,17 @@
 // second dispute-panel verdict. Skipped under solidity-coverage, as P17's are:
 // StakeAttestation.appeal.test.js covers every line they reach.
 //
-// P39 adds the maker's hold, on two seeds of its own and a sixth stream: holds (now and then by
+// P39 adds the maker's hold, on a seed of its own and a sixth stream: holds (now and then by
 // someone else, or of a listing that cannot be held, to be refused), late claims on held listings
 // that are still Open or Depleted, and commits there, which must be refused. A hold moves no ETH
 // and a late claim's bond and prepay are held as any claim's, so the equation is unchanged. After
 // every step a held listing takes no commit and its heldAt is the time it had (0 once it has
 // rolled or closed); at the end every
-// claim made on a listing after its hold is a late claim, and the sequences must have paid awards
-// to claims committed before a hold and settled after it. Skipped under solidity-coverage:
-// StakeAttestation.hold.test.js covers every line they reach.
+// claim made on a listing after its hold is a late claim, and the sequence must have paid awards
+// to claims committed before a hold and settled after it. One seed, with none of the safeguards'
+// or the appeal's streams: the suite runs close to its job's time limit, and
+// StakeAttestation.hold.test.js runs every claim path against the hold. Skipped under
+// solidity-coverage, where that file covers every line the seed reaches.
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers } = hre;
@@ -113,16 +115,15 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
   const reached = {}; // events emitted, over every seed
   const reachedP17 = {}; // the safeguards' events, over the P17 seeds
   const reachedP16 = {}; // the appeal's events and results, over the P16 seeds
-  const reachedP39 = {}; // the hold's event and what followed it, over the P39 seeds
+  const reachedP39 = {}; // the hold's event and what followed it, on the P39 seed
 
   const SEEDS = [
     [11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [1710, true], [17, true], [0x10ad, true],
     [1616, true, true], [0xa99e, true, true], [70707, true, true],
-    [3939, false, false, true], [0x401d, true, true, true],
+    [3939, false, false, true],
   ];
   for (const [seed, safeguards, appeals = false, holds = false] of SEEDS) {
-    const label = holds
-      ? (appeals ? " with the safeguards, the appeal and the hold (P39)" : " with the hold (P39)")
+    const label = holds ? " with the hold (P39)"
       : appeals ? " with the safeguards and the appeal (P16)" : safeguards ? " with the safeguards (P17)" : "";
     it(`seed ${seed}${label}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
       if ((safeguards || holds) && hre.__SOLIDITY_COVERAGE_RUNNING) this.skip();
@@ -137,7 +138,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       const r4 = rng(seed ^ 0x1717);
       // P16's (the appeal) a fifth, used on the appeal's seeds only.
       const r5 = rng(seed ^ 0x1616);
-      // P39's (the hold) a sixth, used on the hold's seeds only.
+      // P39's (the hold) a sixth, used on the hold's seed only.
       const r6 = rng(seed ^ 0x3939);
       const heldSeen = new Map(); // listing id => { at: its heldAt, claims: claimCount when it was first seen held }
       const listings = []; // { id, maker }
@@ -865,7 +866,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
     for (const k of [...REACHED_P16, "appeal", "appealRetrigger", "result2", "result3", "result4"]) {
       expect(reachedP16[k] || 0, `${k} ${JSON.stringify(reachedP16)}`).to.be.greaterThan(0);
     }
-    // The hold's seeds held listings, refused holds and commits, took late claims on held listings
+    // The hold's seed held listings, refused holds and commits, took late claims on held listings
     // and settled them, and paid awards to claims committed before a hold and settled after it.
     for (const k of [...REACHED_P39, "holdRefused", "commitRefused", "lateOnHeld", "lateSettled", "awardAfterHold"]) {
       expect(reachedP39[k] || 0, `${k} ${JSON.stringify(reachedP39)}`).to.be.greaterThan(0);

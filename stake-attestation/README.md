@@ -1411,11 +1411,21 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   adopted from its log, with its transaction and its depth. When neither can be shown (no anchor, as in a folder an
   earlier version prepared; an anchor of another block; no finalized block saved; one that is gone; or a scan that
   cannot be read through), the logs prove nothing, so a late claim is not signed and `--restart --late` sets nothing
-  aside: `START_UNPROVEN`, which says why, that the folder's keys stay where they are, and to prepare the claim in a
-  new folder. This is asked where a late claim is about to be paid for, inside the reads below, and on any run with
-  `--late` of a prepared folder before its terms. A commit is signed as it always was and is never refused for its
-  anchor. `--restart` without `--late` reads from the proven bound when there is one, so it finds a commit below the
-  old height, and from `startBlock` when there is none, as it did.
+  aside: `START_UNPROVEN`, which says why, that nothing was signed, sent, pinned or set aside, that the folder's keys
+  stay where they are, and what to do. That differs with the reason. Where a node did not give the logs, the same
+  folder can still show its bound through an RPC that serves them from the block the text names, and a new folder is
+  not the way on: the claim may be in the logs that were not read. Where the folder itself cannot show it, the way on
+  is a new folder, which is new hashes, so the text says first to look for a claim of the old ones among the wallet's
+  transactions: a claim from a new folder would pay a second bond beside it. This is asked where a late claim is
+  about to be paid for: inside the reads below before one is signed, on any run with `--late` of a prepared folder
+  before its terms, and before saved late-claim bytes are sent again on a resume (a reorganization since they were
+  signed can have mined the same hashes in another transaction, of a lower nonce, and left theirs free: then that
+  claim is adopted and the saved bytes are not sent; behind an earlier transaction that is not mined they wait,
+  `WALLET_BUSY`). And wherever a folder's claim is looked for, the logs are read from the bound the anchor proves,
+  whatever the flag and the kind: on any resume of a prepared folder, and when a saved transaction's nonce is gone.
+  A commit is signed as it always was, and no run without `--late` is refused for its anchor: `--restart` without
+  `--late` reads from the proven bound when there is one, so it finds a commit below the old height, and from
+  `startBlock` when there is none, as it did.
 - **Reads that decide.** An adopted claim's depth is measured against a head read after its log, and the log's block
   is then held to its hash, so a claim a reorganization moved is looked for again and not pinned early. A late claim is signed only when no claim of its
   hashes can be on the chain unseen (`nonceAndClaimAt`, `src/commit.js`): the wallet's nonce and the logs are read at
@@ -1429,7 +1439,10 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   the flag, since a prepared folder names no kind, and it loses nothing: the prepared files, the anchor and `state.json`
   with them, are set aside under one stamp (`*.set-aside-…`), for the one case no read can see, a claim someone holds and has not
   sent yet. They are copied before any original is removed, `state.json` first, so a `--restart` that stops half way
-  leaves either the prepared claim whole or no claim with the whole set aside. A live fee that
+  leaves either the prepared claim whole or no claim with the whole set aside. And it sets them aside only once the
+  new claim may go out: after the listing, the wallet's balance and `--yes` have had their say, so a run that is
+  refused (a listing that takes no commit, or none of this kind) or that only prints the terms leaves the prepared
+  folder whole, the active one, with its keys. A live fee that
   moved between the terms and the signature is said before it is signed, for either kind. And a signed commit whose
   nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was
   pinned, and a run again signs anew.

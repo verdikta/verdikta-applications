@@ -324,10 +324,15 @@ of `commit`. `verdikta-attest commit` files one with --late.
   `commit` prepares a folder it saves an anchor there (anchor.json): the block the folder was
   prepared at and the node's finalized block. If the chain is reorganized below the first, the
   logs are read from the second, and a claim of the folder's hashes found there is adopted, not
-  paid for again. Where the folder cannot show either (it has no anchor, or the reorganization
-  went below the finalized block too), nothing is signed, and --restart with --late sets nothing
-  aside (START_UNPROVEN): prepare the claim in a new folder, and keep the old one, whose keys
-  stay where they are.
+  paid for again. The same is asked before a late claim that was signed and saved is sent
+  again. Where the folder cannot show either, nothing is signed or sent, and --restart with
+  --late sets nothing aside (START_UNPROVEN). Its text says what to do, by the reason. If the
+  node did not give the logs, run the same command again through an RPC that serves them from
+  the block the text names: do not start a new folder, the claim may be in the logs that were
+  not read. If the folder has no anchor, or the reorganization went below the finalized block
+  too, a new folder is the way on, and it is new hashes: if you sent this folder's hashes some
+  other way, find that claim among your wallet's transactions first, since a claim from a new
+  folder would pay a second bond. Keep the old folder either way: its keys stay where they are.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
@@ -643,7 +648,8 @@ each mode 0600, in a folder of mode 0700.
 - Once the commit is sent, the claim is the archive.zip saved there: editing the folder's files
   changes nothing that is revealed. Before that, a change stops `commit` with INPUTS_CHANGED
   (--restart starts over with new keys, and sets the old files aside in the same folder: it
-  deletes nothing).
+  deletes nothing, and it sets nothing aside before the new claim may go out, so a run that is
+  refused, or that has no --yes, leaves the folder as it was).
 - Do not run two copies of the tool on one folder (FOLDER_BUSY).
 
 ## 10. The full reference

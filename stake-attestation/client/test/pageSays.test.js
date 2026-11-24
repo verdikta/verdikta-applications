@@ -198,7 +198,7 @@ test('every action tells the page: the block its transaction was mined in, on ev
   // read's block, never as a bare number (which would say a transaction was mined)
   assert.equal(actions.split('onChanged(disagreedAt(blockTag));').length - 1, 3, 'top-up, renew, close');
   assert.equal(actions.split('onChanged(disagreedAt(block));').length - 1, 1, 'hold');
-  assert.equal(extras.split('if (!rollable) onChanged(disagreedAt(block));').length - 1, 1, 'roll forward, when it is this listing that changed');
+  assert.equal(extras.split('onChanged(disagreedAt(block));').length - 1, 1, 'roll forward, when it is this listing that changed');
   for (const source of [actions, extras]) assert.doesNotMatch(source, /onChanged\(\)|onChanged\(block(?:Tag)?\)/);
 });
 
@@ -222,7 +222,10 @@ test('while the page knows its read is behind, a section draws its own transacti
   assert.match(close, /if \(terms\.why === 'closed' && !done\) return null;\s*if \(quiet && !done && !error\) return null;/);
   assert.match(close, /if \(done\) \{[\s\S]*?\} else if \(quiet\) \{\s*body = null;\s*\} else if \(terms\.why === 'pending'\) \{/);
   const extras = component('ListingExtras.jsx');
-  assert.match(extras, /if \(done\) return <p data-testid="rolled" className="ok">\{fill\(RF\.done, \{ id: done\.id, tx: done\.tx \}\)\}<\/p>;\s*if \(!ROLLABLE\.has\(state\)\) return null;\s*if \(quiet\) return error \? <p className="error" role="alert">\{error\}<\/p> : null;/);
+  assert.match(extras, /if \(done\) return <p data-testid="rolled" className="ok">\{fill\(RF\.done, \{ id: done\.id, tx: done\.tx \}\)\}<\/p>;\s*if \(!ROLLABLE\.has\(state\)\) return null;\s*if \(quiet\) return refusal \? <p className="error" role="alert">\{refusal\}<\/p> : null;/);
+  // the roll panel's other errors name a successor (one of them, that it is on hold): they are not drawn then
+  assert.match(extras, /if \(!rollable\) \{\s*(?:\/\/[^\n]*\n\s*)?onChanged\(disagreedAt\(block\)\);\s*return setRefusal\(fill\(RF\.changed, \{ id: pick \}\)\);\s*\}/);
+  assert.equal(extras.split('setRefusal(fill(').length - 1, 1, 'set by that refusal alone');
   assert.match(extras, /if \(!data \|\| quiet\) return null;/);
   assert.match(extras, /<CommitOffer data=\{data\} held=\{hold\.held\} quiet=\{quiet\} \/>/);
   assert.match(extras, /<HoldListing listingId=\{listingId\} listing=\{listing\} hold=\{hold\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);

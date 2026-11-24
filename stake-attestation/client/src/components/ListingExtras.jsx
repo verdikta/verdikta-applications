@@ -110,7 +110,7 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
  * asked. `onChanged`: the block the roll was mined in, or that of a read through the wallet that
  * has this listing otherwise than the page shows it; the page reads the listing again from there
  * (a hold ends in the roll). While the page knows its read is behind (`quiet`; lib/pageSays.js),
- * the panel draws its own error and nothing of what the page read.
+ * the panel draws that refusal, if it was this panel's, and nothing of what the page read.
  */
 export function RollForward({ listingId, listing, record, recordReading = false, hold = NO_HOLD, quiet = false, onRecordAgain = () => {}, onChanged = () => {} }) {
   const w = useWalletContext();
@@ -124,6 +124,8 @@ export function RollForward({ listingId, listing, record, recordReading = false,
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null); // { id, tx }
   const [error, setError] = useState(null);
+  // the refusal that told the page this listing is not as it shows it: the one error drawn while the page knows that
+  const [refusal, setRefusal] = useState(null);
 
   useEffect(() => {
     if (!ROLLABLE.has(state) || !identity) return undefined;
@@ -157,11 +159,12 @@ export function RollForward({ listingId, listing, record, recordReading = false,
 
   if (done) return <p data-testid="rolled" className="ok">{fill(RF.done, { id: done.id, tx: done.tx })}</p>;
   if (!ROLLABLE.has(state)) return null;
-  if (quiet) return error ? <p className="error" role="alert">{error}</p> : null;
+  if (quiet) return refusal ? <p className="error" role="alert">{refusal}</p> : null;
 
   const roll = async () => {
     setBusy(true);
     setError(null);
+    setRefusal(null);
     try {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
@@ -171,11 +174,12 @@ export function RollForward({ listingId, listing, record, recordReading = false,
         return Promise.all([sa.getListing(BigInt(listingId)), sa.getListing(BigInt(pick)), hold.supported ? readHold(sa, pick) : NO_HOLD]);
       });
       const rollable = ROLLABLE.has(LISTING_STATES[Number(mine.state)]) && same(mine.maker, account);
-      if (!rollable || !confirmSuccessor(successor, { successorId: BigInt(pick), listingId: BigInt(listingId), account })) {
+      if (!rollable) {
         // this listing is not as the page shows it (rolled or closed elsewhere): the page reads it again from that block
-        if (!rollable) onChanged(disagreedAt(block));
-        return setError(fill(RF.changed, { id: pick }));
+        onChanged(disagreedAt(block));
+        return setRefusal(fill(RF.changed, { id: pick }));
       }
+      if (!confirmSuccessor(successor, { successorId: BigInt(pick), listingId: BigInt(listingId), account })) return setError(fill(RF.changed, { id: pick }));
       // Open, the maker's, no predecessor: the contract would take it. On hold it takes no commits, and for good.
       if (successorHold.held) {
         setAgain((n) => n + 1);
@@ -196,6 +200,7 @@ export function RollForward({ listingId, listing, record, recordReading = false,
   // did not have it (the mirror trailed the opening, or its read failed), the record is read again first.
   const lookAgain = () => {
     setError(null);
+    setRefusal(null);
     if (!identity) return onRecordAgain();
     setOptions(null);
     return setAgain((n) => n + 1);
@@ -248,7 +253,7 @@ export function RollForward({ listingId, listing, record, recordReading = false,
       {hold.supported && record && !recordReading && (!identity || options !== null) && (
         <button type="button" className="secondary" data-testid="roll-look-again" onClick={lookAgain} disabled={busy}>{RF.again}</button>
       )}
-      {error && <p className="error" role="alert">{error}</p>}
+      {(error ?? refusal) && <p className="error" role="alert">{error ?? refusal}</p>}
     </section>
   );
 }

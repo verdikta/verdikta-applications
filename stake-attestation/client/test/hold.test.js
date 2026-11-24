@@ -411,7 +411,7 @@ test('a successor is never a listing on hold: the picker leaves it out, the read
   assert.match(panel, /\{hold\.supported && record && !recordReading && \(!identity \|\| options !== null\) && \(\s*<button type="button" className="secondary" data-testid="roll-look-again" onClick=\{lookAgain\}/);
   // a record that did not have this listing yet (the site's mirror trailed its opening), or whose read failed, is
   // read again first; the successors are then looked for by the identity it brings
-  assert.match(panel, /const lookAgain = \(\) => \{\s*setError\(null\);\s*if \(!identity\) return onRecordAgain\(\);\s*setOptions\(null\);\s*return setAgain\(\(n\) => n \+ 1\);\s*\};/);
+  assert.match(panel, /const lookAgain = \(\) => \{\s*setError\(null\);\s*setRefusal\(null\);\s*if \(!identity\) return onRecordAgain\(\);\s*setOptions\(null\);\s*return setAgain\(\(n\) => n \+ 1\);\s*\};/);
   assert.match(extras, /export function useListingRecord\(listingId, artifactHash, opened, again = 0\) \{/);
   assert.match(extras, /\}, \[listingId, artifactHash, opened, again\]\);/);
   assert.match(panel, /\}, \[listingId, listing\.maker, state, identity, hold\.supported, again\]\);/);

@@ -62,11 +62,20 @@ async function withNode(answer, run) {
   }
 }
 
-// What nodes say of a call to a function the contract does not have (no fallback: the EVM reverts with no data).
+// What nodes say of a call to a function the contract does not have. StakeAttestation hands a selector it does not
+// implement to its lens, whose own fallback reverts with Error("unknown function"): that is what a contract deployed
+// before the hold answers for heldAt, and what the first two shapes carry. The others are a contract with no fallback
+// at all (the EVM reverts with no data) and the ways nodes and wallets word a revert.
+const UNKNOWN_FUNCTION = new Interface(['error Error(string)']).encodeErrorResult('Error', ['unknown function']);
+const LOCAL_UNKNOWN_FUNCTION = "Error: VM Exception while processing transaction: reverted with reason string 'unknown function'";
 const NO_SUCH_FUNCTION = "Error: Transaction reverted: function selector was not recognized and there's no fallback function";
 const REFUSALS = Object.freeze({
-  // the local development node, as it answered when this was written (the Playwright stack's)
-  'a development node': { code: -32603, message: NO_SUCH_FUNCTION, data: { message: NO_SUCH_FUNCTION, data: '0x' } },
+  // the deployed contract that has no hold, asked over a public node (measured 2026-11-24): the lens's revert, as data
+  'the deployed contract with no hold, over a public node': { code: 3, message: 'execution reverted: unknown function', data: UNKNOWN_FUNCTION },
+  // the same refusal as the local development node words it (the Playwright stack's, measured)
+  'the same refusal on the local development node': { code: -32603, message: LOCAL_UNKNOWN_FUNCTION, data: { message: LOCAL_UNKNOWN_FUNCTION, data: UNKNOWN_FUNCTION } },
+  // a contract with no fallback, on the local development node
+  'a development node, no fallback': { code: -32603, message: NO_SUCH_FUNCTION, data: { message: NO_SUCH_FUNCTION, data: '0x' } },
   'a node that returns the empty revert data': { code: 3, message: 'execution reverted', data: '0x' },
   'a node that returns no data for an empty revert': { code: -32000, message: 'execution reverted' },
   'a wallet that wraps its node\'s answer': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: -32000, message: 'execution reverted' } },
@@ -115,6 +124,11 @@ test('readHold: a call the contract refuses means a contract with no hold, whate
       assert.deepEqual(await readHold(sa, 7n, { blockTag: 41 }), { supported: false, heldAt: 0n }, name);
     });
   }
+  // why a contract from before the hold refuses: a selector StakeAttestation does not implement goes to the lens, whose
+  // fallback reverts with these words
+  assert.match(SOURCE, /fallback\(\) external \{\s*\(bool ok, bytes memory ret\) = address\(this\)\.staticcall\(\s*abi\.encodeWithSelector\(this\.lensDelegate\.selector, msg\.data\)/);
+  assert.match(LENS, /fallback\(\) external \{[^}]*revert\("unknown function"\);/);
+  assert.equal(new Interface(['error Error(string)']).decodeErrorResult('Error', UNKNOWN_FUNCTION)[0], 'unknown function');
   assert.deepEqual(NO_HOLD, { supported: false, heldAt: 0n });
   assert.ok(Object.isFrozen(NO_HOLD));
 });

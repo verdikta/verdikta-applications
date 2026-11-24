@@ -124,14 +124,17 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
   }, { rpcUrl: stack.rpcUrl, chainId: stack.chainId, account });
 }
 
-// What the local node answers for a call to a function the contract does not have (measured on the stack's node).
-const NO_SUCH_FUNCTION = "Error: Transaction reverted: function selector was not recognized and there's no fallback function";
-export const REFUSED_CALL = Object.freeze({ code: -32603, message: NO_SUCH_FUNCTION, data: { message: NO_SUCH_FUNCTION, data: '0x' } });
+// What the local node answers for a call to a function StakeAttestation does not have (measured on the stack's node, with
+// a selector the contract lacks): the contract hands it to its lens, whose fallback reverts with Error("unknown function").
+// A StakeAttestation deployed before the hold answers heldAt this way.
+const UNKNOWN_FUNCTION = "Error: VM Exception while processing transaction: reverted with reason string 'unknown function'";
+const UNKNOWN_FUNCTION_DATA = new Interface(['error Error(string)']).encodeErrorResult('Error', ['unknown function']);
+export const REFUSED_CALL = Object.freeze({ code: -32603, message: UNKNOWN_FUNCTION, data: { message: UNKNOWN_FUNCTION, data: UNKNOWN_FUNCTION_DATA } });
 
 /**
  * Node P42: this page's calls of the contract's heldAt view, answered with `error` and never sent to the node. With
- * the default, the page talks to a contract deployed before the hold: the node refuses a call to a function the
- * contract does not have. With another JSON-RPC error, the read fails as a node's own failure would. Both of the
+ * the default, the page talks to a contract deployed before the hold: the node answers with the revert of a function
+ * the contract does not have. With another JSON-RPC error, the read fails as a node's own failure would. Both of the
  * page's ways to the node are covered, since both are a fetch of the node's URL: the site's reader and the test
  * wallet. Every other call, alone or in the same batch, reaches the node as it is. Returns { calls }: how many
  * heldAt calls were answered here.

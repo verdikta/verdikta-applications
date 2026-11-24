@@ -6,6 +6,7 @@ import { BrowserProvider, Contract, JsonRpcProvider } from 'ethers';
 
 import { CONFIG } from '../config.js';
 import { STAKE_ATTESTATION_ABI } from './abi.js';
+import { siteReader } from './snapshot.js';
 
 const POLL_MS = 1000;
 
@@ -75,7 +76,10 @@ let readerChecked = false;
 export async function chainReader() {
   if (!CONFIG.contract || !CONFIG.chainId) throw new WalletError('notConfigured');
   if (!reader) {
-    if (CONFIG.rpcUrl) reader = new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId, { staticNetwork: true, pollingInterval: POLL_MS });
+    // The site's read address: a listing's page asks it for every read at a block's hash (chain/snapshot.js), and
+    // only a provider made here is asked that way. Without an address, reads go through the wallet's node, as a
+    // wallet's node is asked: by the block's number.
+    if (CONFIG.rpcUrl) reader = siteReader(new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId, { staticNetwork: true, pollingInterval: POLL_MS }));
     else if (hasWallet()) {
       reader = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
       // a provider is bound to its network: after a chain change, make a new one

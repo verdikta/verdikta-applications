@@ -1560,14 +1560,14 @@ goes in a URL.
   contract read of the page (the count, the listing, its hold and `acceptsCommits`; each read
   through the wallet just before something is sent; the roll panel's read of its successors; the
   fees and what the contract holds for the wallet) takes the latest block and makes its calls at
-  that block's hash (an EIP-1898 block parameter, with `requireCanonical`), on a contract made
-  for that snapshot and for nothing else: a node that does not have that block as the chain's
-  refuses the call, and the read fails. A node that does not take a block hash on a call (it
-  refuses the parameter's form, in JSON-RPC's own code or words for that, and answers by number)
-  is asked by the block's number instead; a refusal that says anything of the block, and every
-  other failure, is a failed read, with nothing read by number in its place. Either way the
-  answers are taken only when the block at that number still has the hash it had before the
-  calls; otherwise the read is made again, three times at most, and then it is a failed read
+  that block, on a contract made for that snapshot and for nothing else. How the block is named
+  is fixed by where the provider was made, and never learned from what a node answers. The
+  site's read address (`VITE_SA_RPC_URL`) is asked at the block's hash (an EIP-1898 block
+  parameter, `{blockHash, requireCanonical: true}`): a node that does not have that block as the
+  chain's refuses the call, any refusal is a failed read, and nothing is read by number in its
+  place. A wallet's node is asked at the block's number, and is never sent the hash form. Either
+  way the answers are taken only when the block at that number still has the hash it had before
+  the calls; otherwise the read is made again, three times at most, and then it is a failed read
   ("The listing could not be read", with Read again). A read that says both "on hold" and "takes
   commits" is a failed read of its block, never guidance: after a transaction of the page too,
   where it hides the listing as a whole, with what a receipt said of it, until a read can be
@@ -1595,11 +1595,15 @@ goes in a URL.
   **The page reads; it does not watch.** It reads on load, after each of its own transactions
   until it has read their block, and when asked. A block replaced after its latest read is seen
   at its next read, not before; what another tab or another sender did is caught by the read
-  before sending and by the contract's own checks; and a node is taken to answer truly for a
-  block hash it names (one that does not take a hash on a call, for the block it named at a
-  number), and an endpoint to be one node: where it is several that do not agree, a call at a
-  block hash is refused by those that do not have the block, but the header of an older block,
-  asked by number, is taken as that chain's, and the page does not walk a block's ancestry. The
+  before sending and by the contract's own checks; a node is taken to answer truly for the block
+  it names; and the nodes behind one address are taken to agree on the chain. What the page
+  holds all the same: a hold's state and its next step come from one read tied to one block's
+  hash, and a node without that block refuses the read. The one case left is an address that is
+  a pool, with a reorganization under way and nodes that do not yet agree: the header of an
+  older block, asked by number, can then come from a node on another chain than the one the
+  calls were made on, so the page may keep the line of one of its own transactions, hash and
+  amount, though its block was replaced. Nothing is sent on the strength of such a line, and
+  the page does not walk a block's ancestry. The
   design's order for the maker is "once the hold is mined, push the fix": a hold whose block is
   replaced after the maker acted on it is not something a page can undo, and the page says it at
   its next read. What the page does hold: it says "on hold" and "push the fix" only from one
@@ -1785,6 +1789,12 @@ goes in a URL.
 **Config** is Vite's build environment: `VITE_SA_CHAIN_ID`, `VITE_SA_CONTRACT`,
 `VITE_SA_RPC_URL` (reads; without it, reads go through the wallet) and `VITE_IPFS_GATEWAY` (one
 gateway origin or several, comma-separated; the record page links to the first).
+The read address has to take a block's hash on `eth_call` (EIP-1898, `{blockHash,
+requireCanonical: true}`), as Base's public endpoints do: a listing's page makes every call of
+one read at that read's block hash, and a refusal is a failed read of the page, with no
+fallback to the block's number. The nodes behind the address are taken to agree on the chain;
+what the page holds where they do not, and the one case left, are under "The page reads; it
+does not watch" above.
 The API is same-origin under `/api`; `vite` and `vite preview` proxy it to `SA_API_URL`
 (default `http://127.0.0.1:5009`).
 

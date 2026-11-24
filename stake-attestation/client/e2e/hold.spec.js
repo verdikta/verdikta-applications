@@ -977,12 +977,14 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-held')).toBeVisible();
   });
 
-  test('a node that does not take a block hash on a call is asked by number, and the page reads as before', async ({ page, stack, chain }) => {
+  test('a read address that does not take a block hash on a call: a failed read every time, and it is never asked by number', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     await holdOnChain(chain, stack, listingId);
     await installWallet(page, stack);
+    // The site's read address has to take a block's hash on a call (deploy/client.env). One that does not is a
+    // misconfiguration, and the page does not work around it: it never learns from the refusal to ask another way.
     const asked = { byHash: 0, byNumber: 0 };
-    await interceptRpc(page, stack, (p) => {
+    const stop = await interceptRpc(page, stack, (p) => {
       if (p.method !== 'eth_call') return undefined;
       if (typeof p.params[1] === 'string') {
         asked.byNumber += 1;
@@ -992,14 +994,44 @@ test.describe('the maker\'s hold', () => {
       return { error: { code: -32602, message: 'invalid argument 1: cannot unmarshal object into Go value of type string' } };
     }, { from: 'reader' });
     await page.goto(`/#/fund/${listingId}`);
-    await expect(page.getByTestId('listing-held')).toBeVisible();
-    await expect(page.getByTestId('roll-forward')).toBeVisible();
-    // it was asked by hash until it had shown it does not take one, and by number from then on
-    expect(asked.byNumber).toBeGreaterThan(0);
-    const byHash = asked.byHash;
+    await expect(page.getByTestId('listing-unread')).toBeVisible();
+    for (const id of ['listing-summary', 'listing-held', 'hold', 'roll-forward']) await expect(page.getByTestId(id)).toHaveCount(0);
+    // asked again, it is asked the same way: by the block's hash
+    const first = asked.byHash;
+    expect(first).toBeGreaterThan(0);
+    await page.getByTestId('listing-read-again').click();
+    await expect.poll(() => asked.byHash).toBeGreaterThan(first);
+    await expect(page.getByTestId('listing-unread')).toBeVisible();
     await page.reload();
+    await expect(page.getByTestId('listing-unread')).toBeVisible();
+    for (const id of ['listing-summary', 'listing-held', 'hold', 'roll-forward']) await expect(page.getByTestId(id)).toHaveCount(0);
+    expect(asked.byNumber, 'no call of the read address names its block by number').toBe(0);
+    // an address that takes the hash: the same page reads
+    await stop();
+    await page.getByTestId('listing-read-again').click();
     await expect(page.getByTestId('listing-held')).toBeVisible();
-    expect(asked.byHash - byHash).toBeLessThanOrEqual(1);
+  });
+
+  test('through a hold sent from the page: the read address is asked by the block\'s hash, and the wallet\'s node by its number alone', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    const calls = { reader: [], wallet: [] };
+    await interceptRpc(page, stack, (p) => { if (p.method === 'eth_call') calls.reader.push(p.params[1]); return undefined; }, { from: 'reader' });
+    await interceptRpc(page, stack, (p) => { if (p.method === 'eth_call') calls.wallet.push(p.params[1]); return undefined; }, { from: 'wallet' });
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    const section = page.getByTestId('hold');
+    await section.getByRole('button', { name: fill(H.ask, { id: listingId }) }).click();
+    await section.getByRole('button', { name: fill(H.confirm, { id: listingId }) }).click();
+    await expect(section.getByTestId('held')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('listing-held-since')).toBeVisible();
+    // the wallet's node read the listing before the hold was sent (the page checks it is the listing shown), and
+    // every one of those calls named its block by number: a wallet's node is never sent the hash form
+    expect(calls.wallet.length).toBeGreaterThan(0);
+    for (const block of calls.wallet) expect(block, 'a call through the wallet').toEqual(expect.stringMatching(/^0x[0-9a-f]+$/));
+    // and every call of the read address, before the hold and after it, named its block by hash
+    expect(calls.reader.length).toBeGreaterThan(0);
+    for (const block of calls.reader) expect(block, 'a call of the read address').toEqual({ blockHash: expect.stringMatching(/^0x[0-9a-f]{64}$/), requireCanonical: true });
   });
 
   test('a hold the chain dates otherwise than the receipt did: one time on the page, the chain\'s, and no transaction named for it', async ({ page, stack, chain }) => {

@@ -1,13 +1,14 @@
 // Node P42: on the listing's page a block is its hash, never its number. `snapshot` (src/chain/snapshot.js) holds the
-// calls of one read to one block hash, and every contract read of the listing's page goes through it. The first half
-// of this file runs the function against nodes whose blocks are replaced under it, that do not agree among
-// themselves, or that do not take a block hash; the second holds the page's components to it, so that a read added
-// later without it fails here.
+// calls of one read to one block hash, and every contract read of the listing's page goes through it. How it asks
+// comes from where the provider was made, never from what a node answers: the site's read address at the block's
+// hash, a wallet's node by the block's number. The first half of this file runs the function against nodes whose
+// blocks are replaced under it, that do not agree among themselves, or that refuse the hash; the second holds the
+// page's components to it, so that a read added later without it fails here.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-import { SNAPSHOT_TRIES, SnapshotError, snapshot } from '../src/chain/snapshot.js';
+import { SNAPSHOT_TRIES, SnapshotError, siteReader, snapshot } from '../src/chain/snapshot.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const hash = (byte) => `0x${byte.repeat(32)}`;
@@ -42,9 +43,17 @@ function node(head, blocks, call = () => '0x01') {
   };
 }
 const pinnedTo = (blockHash) => ({ blockHash, requireCanonical: true });
+/** A node behind the site's read address: its provider is made for that address (chain/wallet.js chainReader). */
+function site(head, blocks, call) {
+  const made = node(head, blocks, call);
+  siteReader(made.provider);
+  return made;
+}
+/** A wallet's node: a provider like any other, made for no address of the site's. */
+const wallet = node;
 
-test('snapshot: every call is made at the latest block\'s hash, and taken when that block still has it after them', async () => {
-  const { provider, state } = node(90, { 88: hash('88'), 89: hash('89'), 90: hash('AB') });
+test('snapshot, the site\'s read address: every call is made at the latest block\'s hash, and taken when that block still has it after them', async () => {
+  const { provider, state } = site(90, { 88: hash('88'), 89: hash('89'), 90: hash('AB') });
   const got = await snapshot(provider, async (at) => [await at.call(TX), await at.call({ ...TX, from: '0x00000000000000000000000000000000000000bb' })], { heights: [89, 90, 91, 89] });
   assert.deepEqual(got, { value: ['0x01', '0x01'], block: 90, blockHash: hash('ab'), time: 1_800_000_090n, hashes: { 89: hash('89'), 90: hash('ab') } });
   // each call names the block by its hash, and asks the node to refuse it if that block is not the chain's
@@ -57,43 +66,46 @@ test('snapshot: every call is made at the latest block\'s hash, and taken when t
 });
 
 test('snapshot: a block replaced at the same height between the reads is never one read; it is read again', async () => {
-  const { provider, state } = node(90, { 89: hash('89'), 90: hash('a1') });
-  let tries = 0;
-  const got = await snapshot(provider, async (at) => {
-    tries += 1;
-    await at.call(TX);
-    // the node replaces block 90 while the first try's calls are in flight: some of them answered for the old block
-    if (tries === 1) {
-      state.blocks[90] = hash('b2');
-      state.blocks[89] = hash('77');
-      return { listing: 'of the new block', hold: 'of the old one' };
-    }
-    return { listing: 'of the new block', hold: 'of the new block' };
-  }, { heights: [89] });
-  assert.equal(tries, 2);
-  assert.deepEqual(got.value, { listing: 'of the new block', hold: 'of the new block' });
-  assert.equal(got.blockHash, hash('b2'));
-  assert.deepEqual(got.hashes, { 89: hash('77') }, 'and the hashes it carries are that chain\'s, not what the discarded try saw');
-  assert.deepEqual(state.calls, [pinnedTo(hash('a1')), pinnedTo(hash('b2'))]);
+  for (const made of [site, wallet]) {
+    const { provider, state } = made(90, { 89: hash('89'), 90: hash('a1') });
+    let tries = 0;
+    const got = await snapshot(provider, async (at) => {
+      tries += 1;
+      await at.call(TX);
+      // the node replaces block 90 while the first try's calls are in flight: some of them answered for the old block
+      if (tries === 1) {
+        state.blocks[90] = hash('b2');
+        state.blocks[89] = hash('77');
+        return { listing: 'of the new block', hold: 'of the old one' };
+      }
+      return { listing: 'of the new block', hold: 'of the new block' };
+    }, { heights: [89] });
+    assert.equal(tries, 2);
+    assert.deepEqual(got.value, { listing: 'of the new block', hold: 'of the new block' });
+    assert.equal(got.blockHash, hash('b2'));
+    assert.deepEqual(got.hashes, { 89: hash('77') }, 'and the hashes it carries are that chain\'s, not what the discarded try saw');
+  }
 });
 
 test('snapshot: after a small fixed number of tries it fails, and nothing of any try is returned', async () => {
-  const { provider, state } = node(90, { 90: hash('00') });
-  let tries = 0;
-  await assert.rejects(
-    snapshot(provider, async () => {
-      tries += 1;
-      state.blocks[90] = hash(String(tries).padStart(2, '0'));
-      return 'two chains between them';
-    }),
-    (err) => err instanceof SnapshotError && err.code === 'SNAPSHOT_MOVED' && /the chain changed while it was read/.test(err.message),
-  );
-  assert.equal(tries, SNAPSHOT_TRIES);
+  for (const made of [site, wallet]) {
+    const { provider, state } = made(90, { 90: hash('00') });
+    let tries = 0;
+    await assert.rejects(
+      snapshot(provider, async () => {
+        tries += 1;
+        state.blocks[90] = hash(String(tries).padStart(2, '0'));
+        return 'two chains between them';
+      }),
+      (err) => err instanceof SnapshotError && err.code === 'SNAPSHOT_MOVED' && /the chain changed while it was read/.test(err.message),
+    );
+    assert.equal(tries, SNAPSHOT_TRIES);
+  }
   assert.ok(SNAPSHOT_TRIES >= 2 && SNAPSHOT_TRIES <= 5, 'a small fixed number');
 });
 
 test('snapshot: a read that failed while its block was replaced is read again; one that failed on a block that stood, fails', async () => {
-  const moving = node(90, { 90: hash('a1') });
+  const moving = site(90, { 90: hash('a1') });
   let tries = 0;
   const got = await snapshot(moving.provider, async () => {
     tries += 1;
@@ -106,18 +118,18 @@ test('snapshot: a read that failed while its block was replaced is read again; o
   assert.equal(got.value, 'read');
   assert.equal(tries, 2);
 
-  const standing = node(90, { 90: hash('a1') });
+  const standing = site(90, { 90: hash('a1') });
   let calls = 0;
   await assert.rejects(snapshot(standing.provider, async () => { calls += 1; throw new Error('rate limit'); }), /rate limit/);
   assert.equal(calls, 1, 'not tried again: the block did not move, the read failed');
 });
 
-test('snapshot: two nodes behind one endpoint that do not agree on the block: the calls are refused, and nothing of the other chain is read', async () => {
-  // The headers come from a node on one chain, with the same hash before and after. The calls reach a node on
-  // another chain at that height, which answers truthfully too: it does not have that block. Asked by number it
-  // would have answered, with its own chain's hold; asked by hash it refuses, and the read fails.
-  for (const refusal of ['header not found', 'hash 0xa1a1 is not currently canonical', 'Unknown block', 'block 0xa1 not found', `Received invalid block tag ${hash('a1')}. Latest block number is 90`]) {
-    const { provider, state } = node(90, { 90: hash('a1') }, (selector) => {
+test('snapshot, the site\'s read address: a node that does not have the block refuses the call, and nothing of another chain is read', async () => {
+  // The headers come from a node on one chain, with the same hash before and after. The calls reach a node that does
+  // not have that block (the nodes behind one address are taken to agree; where they do not, this is what happens).
+  // Asked by number it would have answered, with its own chain's hold; asked by hash it refuses, and the read fails.
+  for (const refusal of ['header not found', 'hash 0xa1a1 is not currently canonical', 'Unknown block', 'invalid input: block is not canonical', 'requested block is unavailable']) {
+    const { provider, state } = site(90, { 90: hash('a1') }, (selector) => {
       if (typeof selector === 'string') return '0x00000000000000000000000000000000000000000000000000000000deadbeef'; // the other chain's hold
       throw callError(-32000, refusal);
     });
@@ -127,104 +139,90 @@ test('snapshot: two nodes behind one endpoint that do not agree on the block: th
   }
 });
 
-test('snapshot: a refusal that says anything of the block, or nothing of the parameter, is never taken for a node that takes no hash', async () => {
-  // The first call at a hash is refused for the block not being canonical, in words that also say "invalid input".
-  // Asked by number this endpoint would answer, with another chain's hold. It is not asked: the read fails, and the
-  // next read asks by hash again.
+test('snapshot, the site\'s read address: one that refuses the hash form is a failed read, never asked by number, and nothing is learned from its answer', async () => {
+  // The address has to take a block's hash on a call (the deploy notes say so). One that does not, whatever words it
+  // has for it, gives a failed read every time: the page does not read an error's wording, and has no other way to ask.
   for (const [code, message] of [
-    [-32000, 'invalid input: block is not canonical'],
-    [-32602, 'invalid params: block 0xa1 is not canonical'],
-    [-32000, 'invalid input'],
-    [-32000, 'unsupported: missing trie node'],
-    [-32000, 'could not parse the response'],
-    [-32603, 'failed to decode'],
+    [-32602, 'invalid argument 1: json: cannot unmarshal object into Go value of type string'],
+    [-32602, 'Invalid params'],
+    [-32602, 'requested block is unavailable'],
+    [-32602, 'cannot unmarshal object {"blockHash":"0xa1","requireCanonical":true} into a block number'],
+    [-32603, 'blockRef.slice is not a function'],
+    [-32005, 'rate limit exceeded'],
   ]) {
-    const { provider, state } = node(90, { 90: hash('a1') }, (selector) => {
-      if (typeof selector === 'string') return '0x00000000000000000000000000000000000000000000000000000000deadbeef';
+    const { provider, state } = site(90, { 90: hash('a1') }, (selector) => {
+      if (typeof selector === 'string') return '0x02'; // it would answer by number
       throw callError(code, message);
     });
-    await assert.rejects(snapshot(provider, async (at) => at.call(TX)), (err) => err.info.error.message === message, message);
-    assert.deepEqual(state.calls, [pinnedTo(hash('a1'))], `${message}: never asked by number`);
-    state.calls.length = 0;
-    await assert.rejects(snapshot(provider, async (at) => at.call(TX)));
-    assert.deepEqual(state.calls, [pinnedTo(hash('a1'))], `${message}: by hash again at the next read, with nothing remembered`);
+    for (let read = 0; read < 3; read += 1) {
+      state.calls.length = 0;
+      await assert.rejects(snapshot(provider, async (at) => at.call(TX)), (err) => err.info.error.message === message, message);
+      assert.deepEqual(state.calls, [pinnedTo(hash('a1'))], `${message}, read ${read + 1}: by hash, once, and never by number`);
+    }
   }
 });
 
-test('snapshot: a node that does not take a block hash is asked by number, and held to the hash before and after', async () => {
-  // it refuses the hash as a parameter it cannot read, as nodes and wallets that do not know the form do
-  for (const refusal of [[-32602, 'invalid argument 1: json: cannot unmarshal object into Go value of type string'], [-32603, 'blockRef.slice is not a function'], [-32602, 'Invalid params']]) {
-    const { provider, state } = node(90, { 90: hash('a1') }, (selector) => {
-      if (typeof selector !== 'string') throw callError(...refusal);
-      return '0x02';
-    });
-    const first = await snapshot(provider, async (at) => at.call(TX));
-    assert.deepEqual({ value: first.value, block: first.block, blockHash: first.blockHash }, { value: '0x02', block: 90, blockHash: hash('a1') });
-    assert.deepEqual(state.calls, [pinnedTo(hash('a1')), hex(90)], 'by hash first, then by the number of that block');
-    // known from then on: the next read of that node asks by number at once
-    state.calls.length = 0;
-    await snapshot(provider, async (at) => at.call(TX));
-    assert.deepEqual(state.calls, [hex(90)]);
-    // and by number the hash before and after is all that binds it: a block replaced between them is read again
-    let tries = 0;
-    const again = await snapshot(provider, async (at) => {
+test('snapshot, a wallet\'s node: every call is made by the block\'s number, never at a hash, and held to the hash before and after', async () => {
+  const { provider, state } = wallet(90, { 89: hash('89'), 90: hash('a1') });
+  const got = await snapshot(provider, async (at) => [await at.call(TX), await at.call(TX)], { heights: [89] });
+  assert.deepEqual(got, { value: ['0x01', '0x01'], block: 90, blockHash: hash('a1'), time: 1_800_000_090n, hashes: { 89: hash('89') } });
+  // a wallet's node is never sent the hash form: what a wallet does with a block parameter it does not know is its own
+  assert.deepEqual(state.calls, [hex(90), hex(90)]);
+  assert.ok(state.calls.every((selector) => typeof selector === 'string'), 'no blockHash selector');
+  assert.deepEqual(state.asked, ['latest', hex(89), hex(90)]);
+  // the hash at that number changed between the two header reads: the answers are not one block's, and are not taken
+  const moved = wallet(90, { 90: hash('a1') });
+  let tries = 0;
+  await assert.rejects(
+    snapshot(moved.provider, async (at) => {
       tries += 1;
-      if (tries === 1) state.blocks[90] = hash('b2');
-      return at.call(TX);
-    });
-    assert.equal(tries, 2);
-    assert.equal(again.blockHash, hash('b2'));
-  }
+      const answer = await at.call(TX);
+      moved.state.blocks[90] = hash(String(tries).padStart(2, '0'));
+      return answer;
+    }),
+    (err) => err instanceof SnapshotError,
+  );
+  assert.equal(tries, SNAPSHOT_TRIES);
+  assert.ok(moved.state.calls.every((selector) => typeof selector === 'string'));
+  // and a wallet's node that fails a call is a failed read: it is not asked another way either
+  const failing = wallet(90, { 90: hash('a1') }, () => { throw callError(-32603, 'Internal error'); });
+  await assert.rejects(snapshot(failing.provider, async (at) => at.call(TX)), (err) => err.info.error.message === 'Internal error');
+  assert.deepEqual(failing.state.calls, [hex(90)]);
 });
 
-test('snapshot: a node that took a hash once is never asked by number, whatever fails later; and a failure that settles nothing settles nothing', async () => {
-  // it answered a call at a hash: it takes one. A later call that fails for another reason is a failed read.
-  let fail = false;
-  const { provider, state } = node(90, { 90: hash('a1') }, () => {
-    if (fail) throw callError(429, 'Too Many Requests');
-    return '0x01';
-  });
-  await snapshot(provider, async (at) => at.call(TX));
-  fail = true;
-  state.calls.length = 0;
-  await assert.rejects(snapshot(provider, async (at) => at.call(TX)), (err) => err.info.error.message === 'Too Many Requests');
-  assert.deepEqual(state.calls, [pinnedTo(hash('a1'))]);
-  // a contract's revert is an answer of that block too: the node ran the call at the hash
-  const reverting = node(90, { 90: hash('a1') }, (selector) => {
-    if (typeof selector === 'string') return '0x02';
-    throw callError(3, 'execution reverted', '0x');
-  });
-  const got = await snapshot(reverting.provider, async (at) => at.call(TX).catch((err) => `refused: ${err.info.error.message}`));
-  assert.equal(got.value, 'refused: execution reverted');
-  assert.deepEqual(reverting.state.calls, [pinnedTo(hash('a1'))], 'not asked again by number');
-  // A node that fails a call at a hash for a reason that says nothing of hashes (a limit, a timeout) has not shown
-  // that it does not take one: the read fails, nothing is read by number in its place, even though this node would
-  // have answered by number, and the next read asks by hash again.
-  for (const [code, message] of [[-32005, 'rate limit exceeded'], [429, 'Too Many Requests'], [-32000, 'execution timeout'], [-32603, 'Internal error']]) {
-    let limited = true;
-    const busy = node(90, { 90: hash('a1') }, (selector) => {
-      if (typeof selector !== 'string' && limited) throw callError(code, message);
-      return '0x05';
-    });
-    await assert.rejects(snapshot(busy.provider, async (at) => at.call(TX)), (err) => err.info.error.message === message, message);
-    assert.deepEqual(busy.state.calls, [pinnedTo(hash('a1'))], `${message}: never asked by number`);
-    limited = false;
-    busy.state.calls.length = 0;
-    assert.equal((await snapshot(busy.provider, async (at) => at.call(TX))).value, '0x05');
-    assert.deepEqual(busy.state.calls, [pinnedTo(hash('a1'))], 'and by hash again at the next read');
+test('snapshot: how a provider is asked is where it was made, and no answer changes it', async () => {
+  // the same node, behind a provider made for the site's address and behind one that is a wallet's
+  const calls = [];
+  const answer = (selector) => { calls.push(selector); return '0x01'; };
+  const asSite = site(90, { 90: hash('a1') }, answer);
+  const asWallet = wallet(90, { 90: hash('a1') }, answer);
+  for (let i = 0; i < 2; i += 1) {
+    await snapshot(asSite.provider, async (at) => at.call(TX));
+    await snapshot(asWallet.provider, async (at) => at.call(TX));
   }
-  // a node that refuses the form and does not answer by number either has shown nothing: the read fails, and the
-  // next one asks by hash again
-  const down = node(90, { 90: hash('a1') }, (selector) => { throw callError(typeof selector === 'string' ? -32005 : -32602, 'invalid params or busy'); });
-  await assert.rejects(snapshot(down.provider, async (at) => at.call(TX)));
-  assert.deepEqual(down.state.calls, [pinnedTo(hash('a1')), hex(90)]);
-  down.state.calls.length = 0;
-  await assert.rejects(snapshot(down.provider, async (at) => at.call(TX)));
-  assert.deepEqual(down.state.calls[0], pinnedTo(hash('a1')));
+  assert.deepEqual(calls, [pinnedTo(hash('a1')), hex(90), pinnedTo(hash('a1')), hex(90)]);
+  // the module reads no error's wording, and keeps nothing it learned from a node
+  const lib = read('../src/chain/snapshot.js');
+  for (const gone of ['takesHash', 'FORM_WORDS', 'ABOUT_THE_BLOCK', 'INVALID_PARAMS', 'refusesTheForm', 'saysBlockUnknown', 'refusedByContract', 'textsOf', 'callsAt']) {
+    assert.equal(lib.includes(gone), false, `${gone} is gone from snapshot.js`);
+  }
+  const code = lib.replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /\berr\??\.[a-zA-Z]|\.info\b|\.message\b|\.shortMessage\b/, 'no field of an error is read');
+  assert.equal(code.split('.test(').length - 1, 1, 'the one text matched is a block hash\'s 32 bytes of hex');
+  assert.match(code, /\/\^0x\[0-9a-f\]\{64\}\$\/i\.test\(value\)/);
+  assert.match(lib, /const SITE_READERS = new WeakSet\(\);/);
+  assert.match(lib, /export function siteReader\(provider\) \{\s*SITE_READERS\.add\(provider\);\s*return provider;\s*\}/);
+  assert.match(lib, /const selector = SITE_READERS\.has\(provider\) \? \{ blockHash, requireCanonical: true \} : quantity\(block\);/);
+  // the one provider made for the site's address is marked where it is made; a wallet's provider never is
+  const made = read('../src/chain/wallet.js');
+  assert.match(made, /if \(CONFIG\.rpcUrl\) reader = siteReader\(new JsonRpcProvider\(CONFIG\.rpcUrl, CONFIG\.chainId, \{ staticNetwork: true, pollingInterval: POLL_MS \}\)\);/);
+  assert.equal(made.split('siteReader(').length - 1, 1, 'marked in one place');
+  assert.equal(made.split('new BrowserProvider(').length - 1, 3, 'the wallet\'s providers: made plain');
+  assert.doesNotMatch(made, /siteReader\(new BrowserProvider/);
 });
 
 test('snapshot: a header the node does not give, gives malformed or fails to give says nothing of that height, and the read stands without it', async () => {
-  const { provider, state } = node(90, { 90: hash('a1') });
+  const { provider, state } = site(90, { 90: hash('a1') });
   // height 70: no header now. It is left out, not answered as "another block", so nothing kept there is dropped on it
   assert.deepEqual((await snapshot(provider, async () => 1, { heights: [70] })).hashes, {});
   // a header whose hash is not 32 bytes of hex is no hash: compared with a receipt's it would read as another block
@@ -250,7 +248,7 @@ test('snapshot: a header the node does not give, gives malformed or fails to giv
 test('snapshot: the hash of the block just below is the block\'s own parent hash, not what a node says of that height', async () => {
   // the head names its parent; asked by number for that height, another node behind the endpoint would name the
   // block it has there, on another chain
-  const { provider, state } = node(90, { 89: hash('0f'), 90: hash('a1') });
+  const { provider, state } = site(90, { 89: hash('0f'), 90: hash('a1') });
   state.parents[90] = hash('B9');
   const got = await snapshot(provider, async () => 1, { heights: [89, 90] });
   assert.deepEqual(got.hashes, { 89: hash('b9'), 90: hash('a1') });
@@ -327,9 +325,8 @@ test('every contract read of the listing\'s page is made on a snapshot\'s contra
   // the snapshot itself: the head, the calls at its hash, the same height's hash after them, a fixed number of tries
   const lib = read('../src/chain/snapshot.js');
   assert.match(lib, /const head = await header\(provider, 'latest'\);/);
-  assert.match(lib, /got = await callsAt\(provider, read, \{ blockHash, requireCanonical: true \}\);/);
-  assert.match(lib, /const result = await provider\.send\('eth_call', \[\{ to: tx\.to, data: tx\.data \?\? '0x', \.\.\.\(tx\.from \? \{ from: tx\.from \} : \{\}\) \}, selector\]\);/);
-  assert.match(lib, /if \(hashOf\(await header\(provider, block\)\) === blockHash\) \{[\s\S]*?if \(got\.failure\) throw got\.failure;\s*return \{ value: got\.value, block, blockHash, time: BigInt\(head\.timestamp\), hashes \};\s*\}/);
+  assert.match(lib, /call: \(tx\) => provider\.send\('eth_call', \[\{ to: tx\.to, data: tx\.data \?\? '0x', \.\.\.\(tx\.from \? \{ from: tx\.from \} : \{\}\) \}, selector\]\),/);
+  assert.match(lib, /if \(hashOf\(await header\(provider, block\)\) === blockHash\) \{[\s\S]*?if \(failure\) throw failure;\s*return \{ value, block, blockHash, time: BigInt\(head\.timestamp\), hashes \};\s*\}/);
   assert.match(lib, /throw new SnapshotError\(tries\);/);
 });
 

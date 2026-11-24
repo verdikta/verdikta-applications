@@ -13,7 +13,8 @@
     "clean": "hardhat clean",
     "node": "hardhat node",
     "compile:offline": "hardhat compile --config hardhat.local.cjs",
-    "test:offline": "hardhat test --config hardhat.local.cjs"
+    "test:offline": "hardhat test --config hardhat.local.cjs",
+    "test:integration": "node integration/prepare.js && hardhat --config integration/hardhat.config.js test"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.0",

@@ -1464,11 +1464,14 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   only of what its block holds: one that is not this transaction's, or names a block that does not hold it, is acted
   on by no run, and the signed bytes stay. That goes for a revert the wait itself brings back too: a revert reopens
   the folder, so it is believed only as the chain bears it out now, and once the revert the chain has is as deep as a
-  commit must be. And no receipt is not yet another transaction: a commit that reverted used its nonce too. So which
-  transaction used the nonce is read from the chain itself, in the block where the wallet's count passed it. If it is
-  the saved commit, the run is to be made again for its receipt; if the node does not show it (it keeps no count that
-  far back), nothing is said to be for good; and the text of `COMMIT_REPLACED` names the transaction that did. Logs
-  that a node did not give are no proof that no other transaction made
+  commit must be: against a head read after the receipt, with the receipt's block then held to its hash once more.
+  And no receipt is not yet another transaction: a commit that reverted used its nonce too. So what used the nonce
+  is read from the chain itself, in the block where the wallet's count passed it: if the saved commit were mined, it
+  would be there. If it is, the run is to be made again for its receipt. If the block is whole and does not hold it,
+  something else used the nonce, and the text of `COMMIT_REPLACED` names the wallet's transaction with that nonce,
+  or says that the block has none (an authorization sent by another account uses a nonce too). If the node does not
+  show it (it keeps no count that far back, or gives a block with an entry that has no hash), nothing is said to be
+  for good. Logs that a node did not give are no proof that no other transaction made
   the claim, so then the run is to be made again through an RPC that serves them. An anchor that can never show its
   bound is no reason to run again: the saved commit can never be mined, so the folder signs nothing more, and the
   look for a claim of its own two hashes is the hunter's with the rest. And a run whose wait ended after it saw the

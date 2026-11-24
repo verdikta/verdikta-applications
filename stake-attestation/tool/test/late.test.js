@@ -709,12 +709,15 @@ test('a late claim sent some other way and not mined yet: nothing is signed whil
       assert.match(err.message, /second bond/);
       assert.match(err.message, /Nothing was sent\./);
     }
-    // nor are its keys removed: --restart is refused the same way
+    // nor are its keys removed: --restart is refused the same way, with --late or without it, since a prepared
+    // folder names no kind and the claim that is not mined yet has no log to be found by
     const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
-    const restart = await late({ claimDir: dir, listingId: l.listingId, restart: true }).catch((e) => e);
-    assert.equal(restart.code, 'WALLET_BUSY');
-    assert.match(restart.message, /--restart would remove the keys it needs/);
-    assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys);
+    for (const flag of [true, false]) {
+      const restart = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: flag, restart: true, acknowledge: true }).catch((e) => e);
+      assert.equal(restart.code, 'WALLET_BUSY', `--restart, late ${flag}`);
+      assert.match(restart.message, /--restart would remove the keys it needs/);
+      assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys, `--restart, late ${flag}: the keys stay`);
+    }
     const now = readJson(statePath(dir));
     assert.equal(now.stage, 'prepared');
     assert.equal(now.commitTx ?? null, null, 'nothing was signed');
@@ -727,6 +730,84 @@ test('a late claim sent some other way and not mined yet: nothing is signed whil
   assert.equal(r.stage, 'disclosed');
   assert.equal(r.commitTx, other.hash);
   assert.equal(await w.claimCount(), count + 1n, 'one claim, one bond');
+});
+
+// Round 2: the same claim may be mined in the moment between the log scan and the signature. A late claim is signed at
+// the nonce read before the scan, so that signature can no longer be mined, and the claim on the chain is adopted.
+test('a late claim sent some other way and mined between the log scan and the signature: the signature is at a used nonce, and that claim is adopted', async () => {
+  const l = await rolled();
+  const dir = makeClaimDir();
+  const count = await w.claimCount();
+  const price = await w.sa.commitPrice(l.listingId);
+  const heldBefore = await w.provider.getBalance(w.address);
+  let other = null;
+  const racing = new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'getLogs') {
+        return async (filter) => {
+          const logs = await target.getLogs(filter);
+          // right after the first scan that found nothing: the same two hashes, from the same wallet, mined at once
+          if (!other && fs.existsSync(statePath(dir))) {
+            const saved = readJson(statePath(dir));
+            other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price })).wait();
+          }
+          return logs;
+        };
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  const r = await w.hunter({ provider: racing }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
+  assert.ok(other, 'the other one went out during the run');
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(await w.claimCount(), count + 1n, 'one claim');
+  assert.equal(await w.provider.getBalance(w.address), heldBefore + price, 'one bond and one prepay');
+  assert.equal(r.claimId, count + 1n);
+  assert.equal(r.commitTx, other.hash, 'the claim on the chain is the one that was sent the other way');
+  assert.equal((await w.sa.getListing(l.listingId)).lateClaims, 1n);
+});
+
+// Round 2: an adopted claim is as deep as the chain has it when it is adopted, not as its log said at first.
+test('a claim found by its log and then moved to a later block by a reorganization is not pinned until it is deep enough where it is now', async () => {
+  const l = await rolled();
+  const dir = makeClaimDir();
+  assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+  const saved = readJson(statePath(dir));
+  const price = await w.sa.commitPrice(l.listingId);
+  const send = async () => (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price })).wait();
+  const snapshot = await w.rpc('evm_snapshot');
+  const first = await send();
+  const uploads = w.ipfs.uploads.length;
+  let moved = null;
+  let depthWhenAdopted = null;
+  const hunter = w.hunter({
+    confirmations: 2,
+    sleep: async () => {
+      if (depthWhenAdopted !== null) return;
+      assert.equal(w.ipfs.uploads.length, uploads, 'no pin while it waits');
+      if (moved) {
+        await w.mine();
+        return;
+      }
+      // the reorganization: the claim's block is gone, an empty one stands at its height, the claim is in the next
+      await w.rpc('evm_revert', [snapshot]);
+      await w.mine();
+      moved = await send();
+    },
+    onStep: async (step) => {
+      if (step !== 'commit:saved') return;
+      const receipt = await w.provider.getTransactionReceipt(readJson(statePath(dir)).commitTx.hash);
+      depthWhenAdopted = (await w.provider.getBlockNumber()) - receipt.blockNumber + 1;
+      assert.equal(w.ipfs.uploads.length, uploads, 'nothing pinned before it is adopted');
+    },
+  });
+  const r = await hunter.commit({ claimDir: dir, listingId: l.listingId, late: true });
+  assert.equal(r.stage, 'disclosed');
+  assert.ok(moved, 'the claim was moved');
+  assert.equal(moved.blockNumber, first.blockNumber + 1, 'to the block after the one its log first named');
+  assert.equal(r.commitTx, moved.hash);
+  assert.ok(depthWhenAdopted >= 2, `adopted at depth ${depthWhenAdopted}, where it is now`);
 });
 
 test('an ordinary commit is signed as it always was while another transaction of the wallet is pending', async () => {

@@ -27,7 +27,7 @@ export const DILIGENCE = Object.freeze([
 export const LATE_CLAIM_WARNINGS = Object.freeze([
   'A late claim pays no award, whatever class the arbiters give it: it is judged and recorded on the record, under "later".',
   'The bond is forfeited on INVALID, as on any claim: it goes to the maker, unless the INVALID is narrow. On any other outcome it comes back, with no award.',
-  'The prepay is spent on the evaluation whatever the verdict: what a round does not spend comes back when the round is finalized or, if the refund fails then, when anyone calls recoverLeftoverEth on the wallet of that round.',
+  'The prepay is spent on the evaluation whatever the verdict: what a round does not spend comes back when the round is finalized or, if the refund fails then, when anyone calls recoverLeftoverEth(wallet) on the contract, with the wallet of that round.',
 ]);
 
 /** What commit, status and claim say of a claim that is a late one (getClaim's `late`). */

@@ -1396,8 +1396,12 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
 - **A claim that went out some other way.** A prepared folder whose two hashes already have a claim on the chain, a
   commit's or a late claim's, is adopted first, before the listing, the wallet's balance, the flag or `--restart` can
   refuse the run or remove the keys that claim needs, and the transaction it records is the one that made the claim.
-  A late claim is not signed while the wallet has a transaction that is not mined yet (`WALLET_BUSY`, exit 4): that
-  one may be the same late claim, and it has no log to find. A commit is signed as it always was. A live fee that
+  Its depth is read from the chain again before it is adopted, so a claim a reorganization moved to a later block is
+  not pinned early. A late claim is not signed while the wallet has a transaction that is not mined yet (`WALLET_BUSY`,
+  exit 4): that one may be the same late claim, and it has no log to find. It is signed at the wallet's next nonce as
+  mined, read before the logs are, so the same claim mined in between leaves that signature at a used nonce, and the
+  claim on the chain is adopted. A commit is signed as it always was. `--restart` is held back while the wallet has a
+  transaction pending, whatever the flag: a prepared folder names no kind, and the keys go with it. A live fee that
   moved between the terms and the signature is said before it is signed, for either kind. And a signed commit whose
   nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was
   pinned, and a run again signs anew.

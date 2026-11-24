@@ -1000,7 +1000,9 @@ test('bounty 400: tamper flags and integrity checks are common\'s, each kind sai
   // the feed: what `listings` holds, and the labels the server computes
   const feed = read('server', 'src', 'site', 'feed.js');
   assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\| BigInt\(onchain\.escrowWei\) < BigInt\(onchain\.awards\[3\]\)\) continue;/);
-  assert.match(section(2), /every listing that takes claims now: open, its paid period not ended, its escrow at least its CRITICAL award/);
+  assert.match(feed, /const candidates = \[\.\.\.projection\.listings\.values\(\)\]\.filter\(\(l\) => l\.opened && !l\.rolled && !l\.closed && l\.heldAt === null\);/, 'and a held listing is no candidate');
+  // what an entry takes is commits: one that takes late claims only (Rolled, Closed, held) is never one (node P43)
+  assert.match(section(2), /every listing that takes commits now: open, not held by its maker, its paid period not ended, its escrow at least its CRITICAL award\. A listing that takes late claims only is not here \(section 3, "Late claims"\)/);
   const labels = read('server', 'src', 'record', 'labels.js');
   for (const key of ['stake', 'invited', 'lapsed', 'live']) {
     assert.match(labels, new RegExp(`\\n {4}${key}[:,]`), `listingLabels returns ${key}`);
@@ -1112,7 +1114,8 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.match(logic, /try EvaluationWallet\(payable\(wallet\)\)\.refundLeftoverEth\{gas: ClaimRules\.INLINE_REFUND_GAS_LIMIT\}\(\)[\s\S]*?\} catch \{\s*emit StakeAttestation\.RefundDeferred\(claimId, wallet\);\s*\}/);
   assert.match(host, /Retry the recovery of a wallet's unspent prepay and pay it to the wallet's funder\s+\/\/\/\s+\(walletInfo: the hunter for a claim round or an appeal, the maker for a dispute\)\. Anyone may\s+\/\/\/\s+call\./);
   assert.deepEqual(ABI.find((f) => f.name === 'recoverLeftoverEth').inputs.map((i) => `${i.type} ${i.name}`), ['address wallet']);
-  assert.match(warnings[2], /comes back when the round is finalized or, if the refund fails then, when anyone calls recoverLeftoverEth on the wallet of that round\.$/);
+  assert.match(warnings[2], /comes back when the round is finalized or, if the refund fails then, when anyone calls recoverLeftoverEth\(wallet\) on the contract, with the wallet of that round\.$/);
+  assert.match(host, /function recoverLeftoverEth\(address wallet\) external nonReentrant \{/, 'the entry point is the contract\'s, and takes the round\'s wallet');
   assert.match(section(1), /A late claim, on a listing that takes no commit any more \(section 3, "Late claims"\), pays no award in any outcome/);
 
   // the command: the flag is the parser's and commit's, a first run is a dry run as a commit's is, and the later verbs
@@ -1153,8 +1156,11 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
 
   // a late claim is not signed while the wallet has a transaction pending, which may be the same claim sent some
   // other way with no log to find yet; a commit is signed as it always was
-  assert.match(commit, /if \(late\) await noPendingOfWallet\(ctx, state\.hunter, 'A late claim signed now could be a second one, for a second bond\.'\);/);
-  assert.match(/async function noPendingOfWallet[\s\S]*?\n\}/.exec(commit)[0], /if \(pending > latest\) throw fail\('WALLET_BUSY'/);
+  // and it is signed at the nonce read before the logs were, so one mined in between leaves this signature unusable
+  const send = /async function sendCommit[\s\S]*?\n\}/.exec(commit)[0];
+  assert.match(send, /const nonces = late \? await walletNonces\(ctx, state\.hunter\) : null;\s*const existing = await findCommitted\(ctx, state\);/, 'the nonce is read before the logs');
+  assert.match(send, /if \(nonces && nonces\.pending > nonces\.latest\) throw fail\('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond\.'\);/);
+  assert.match(send, /await ctx\.sign\(\{ data, value: price, gasLimit: [^}]*\.\.\.\(nonces \? \{ nonce: nonces\.latest \} : \{\}\) \}\);/, 'a late claim at the nonce it checked, a commit as it always was');
   assert.equal(new ToolError('WALLET_BUSY').exitCode, 4);
   assert.ok(block.includes('It signs nothing while your wallet has a transaction that is not mined yet (WALLET_BUSY, exit 4): that one may be this late claim, sent some other way, and a second one would pay a second bond.'));
   // the amount printed is the amount sent: a fee that moved since the terms is said before the signature

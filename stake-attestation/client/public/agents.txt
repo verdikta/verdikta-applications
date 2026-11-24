@@ -91,8 +91,9 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
 - GET https://verifiers.verdikta.org/api/status
     chainId, contract     the chain and the StakeAttestation address the site indexes
 - GET https://verifiers.verdikta.org/api/feed
-    listings              every listing that takes claims now: open, its paid period not ended,
-                          its escrow at least its CRITICAL award
+    listings              every listing that takes commits now: open, not held by its maker, its
+                          paid period not ended, its escrow at least its CRITICAL award. A listing
+                          that takes late claims only is not here (section 3, "Late claims")
     notCounted            listings the site does not offer, each with its reason: do not claim there
     fresh                 false when the site's index is behind the chain
   Each entry of `listings`:
@@ -306,7 +307,7 @@ of `commit`. `verdikta-attest commit` files one with --late.
   goes to the maker, unless the INVALID is narrow. On any other outcome it comes back, with no
   award. The prepay is spent on the evaluation whatever the verdict: what a round does not spend
   comes back when the round is finalized or, if the refund fails then, when anyone calls
-  recoverLeftoverEth on the wallet of that round.
+  recoverLeftoverEth(wallet) on the contract, with the wallet of that round.
 - Everything else is a claim's: steps 2 to 8 above, with the listing's own windows. It is open to
   every wallet, invited listing or not. It reveals in commit order with the listing's other
   claims: behind every claim still open there, the stake's own and earlier late claims, and

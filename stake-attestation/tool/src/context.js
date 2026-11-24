@@ -146,10 +146,14 @@ export function makeContext(options = {}) {
     return ctx.provider.estimateGas({ from, to: ctx.contract, data, value });
   });
 
-  /** Signs a call: the record to save before it is sent. The signed bytes stay on this machine until then. */
-  ctx.sign = async ({ data, value = 0n, gasLimit }) => {
+  /**
+   * Signs a call: the record to save before it is sent. The signed bytes stay on this machine until then. The nonce
+   * is the wallet's next one counting what is pending, unless the caller names the one it has checked (`nonce`: a late
+   * claim, commit.js).
+   */
+  ctx.sign = async ({ data, value = 0n, gasLimit, nonce: checked }) => {
     const from = await ctx.hunterAddress();
-    const nonce = await ctx.rpc(() => ctx.provider.getTransactionCount(from, 'pending'));
+    const nonce = checked ?? await ctx.rpc(() => ctx.provider.getTransactionCount(from, 'pending'));
     const fee = await ctx.feeCap();
     let raw;
     try {

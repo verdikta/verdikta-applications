@@ -970,16 +970,17 @@ test('a reorganization between the nonce and the logs: the block they were read 
 // Round 4: no read can see a claim that someone holds signed and has not sent yet. So --restart deletes nothing: the
 // prepared files are set aside, and a claim of the old hashes that turns up later still has its keys on this disk.
 test('--restart sets the prepared files aside and deletes nothing: a claim of the old hashes sent afterwards can still be disclosed from them', async () => {
-  const l = await rolled();
+  // (a commit's folder: --restart does not start a late claim over, see LATE_NEEDS_NEW_FOLDER below)
+  const l = await w.listing();
   const dir = makeClaimDir();
   const count = await w.claimCount();
-  assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+  assert.equal((await child(dir, l.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
   const folder = `${dir}/.verdikta-claim`;
   const old = { state: readJson(statePath(dir)) };
   const prepared = ['archive.zip', 'keys.json', 'ciphertext.age', 'anchor.json', 'state.json'];
   for (const name of prepared) old[name] = fs.readFileSync(statePath(dir, name));
-  // --restart: new keys, a late claim of the new hashes, and every old file still there under one stamp
-  const r = await late({ claimDir: dir, listingId: l.listingId, restart: true });
+  // --restart: new keys, a commit of the new hashes, and every old file still there under one stamp
+  const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true });
   assert.equal(r.stage, 'disclosed');
   assert.notEqual(r.ciphertextSha256, old.state.ciphertextSha256, 'new keys, so another ciphertext');
   const aside = fs.readdirSync(folder).filter((n) => n.includes('.set-aside-'));
@@ -994,7 +995,7 @@ test('--restart sets the prepared files aside and deletes nothing: a claim of th
     assert.equal(fs.statSync(statePath(dir, kept)).mode & 0o777, 0o600, kept);
   }
   // the old hashes' claim, held by another client and sent only now: its keys were not destroyed, and they open it
-  await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, old.state.archiveSha256, old.state.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+  await (await w.sa.connect(w.hunterWallet).commit(l.listingId, old.state.archiveSha256, old.state.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
   assert.equal(await w.claimCount(), count + 2n);
   const claim = await w.sa.getClaim(count + 2n);
   const keys = JSON.parse(old['keys.json'].toString('utf8'));
@@ -1006,14 +1007,16 @@ test('--restart sets the prepared files aside and deletes nothing: a claim of th
 test('--restart stopped half way: while copying, the prepared claim is whole and can still be adopted; after the state is gone, the whole set stands under one stamp', async () => {
   const names = ['archive.zip', 'keys.json', 'ciphertext.age', 'anchor.json', 'state.json'];
   const prepared = async () => {
-    const l = await rolled();
+    const l = await w.listing();
     const dir = makeClaimDir();
-    assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+    assert.equal((await child(dir, l.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
     const old = { state: readJson(statePath(dir)) };
     for (const name of names) old[name] = fs.readFileSync(statePath(dir, name));
     return { l, dir, old };
   };
   const asideOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => n.includes('.set-aside-'));
+  // (a commit's folder, as above)
+  const commit = (o) => w.hunter().commit({ acknowledge: true, ...o });
 
   // stopped while the copies are written: the second one fails
   {
@@ -1025,14 +1028,14 @@ test('--restart stopped half way: while copying, the prepared claim is whole and
       return real(from, to);
     };
     try {
-      await assert.rejects(late({ claimDir: dir, listingId: l.listingId, restart: true }), (e) => e.code === 'FILE_ERROR');
+      await assert.rejects(commit({ claimDir: dir, listingId: l.listingId, restart: true }), (e) => e.code === 'FILE_ERROR');
     } finally {
       fs.renameSync = real;
     }
     for (const name of names) assert.ok(fs.readFileSync(statePath(dir, name)).equals(old[name]), `${name} is where it was`);
     // the old hashes' claim is mined meanwhile: the folder still holds everything it needs, and it is adopted
-    await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, old.state.archiveSha256, old.state.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
-    const r = await late({ claimDir: dir, listingId: l.listingId });
+    await (await w.sa.connect(w.hunterWallet).commit(l.listingId, old.state.archiveSha256, old.state.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    const r = await commit({ claimDir: dir, listingId: l.listingId });
     assert.equal(r.stage, 'disclosed');
     assert.equal(r.ciphertextSha256, old.state.ciphertextSha256, 'the claim of the old hashes, disclosed with its own files');
     assert.equal(await w.claimCount(), count + 1n);
@@ -1046,7 +1049,7 @@ test('--restart stopped half way: while copying, the prepared claim is whole and
       return real(target, options);
     };
     try {
-      await assert.rejects(late({ claimDir: dir, listingId: l.listingId, restart: true }));
+      await assert.rejects(commit({ claimDir: dir, listingId: l.listingId, restart: true }));
     } finally {
       fs.rmSync = real;
     }
@@ -1055,7 +1058,7 @@ test('--restart stopped half way: while copying, the prepared claim is whole and
     assert.equal(stamps.size, 1, 'one stamp');
     for (const name of names) assert.ok(fs.readFileSync(statePath(dir, `${name}.set-aside-${[...stamps][0]}`)).equals(old[name]), `${name}: the whole set, byte for byte`);
     // a run again starts over, and the set under that stamp is still whole
-    const r = await late({ claimDir: dir, listingId: l.listingId });
+    const r = await commit({ claimDir: dir, listingId: l.listingId });
     assert.equal(r.stage, 'disclosed');
     assert.notEqual(r.ciphertextSha256, old.state.ciphertextSha256);
     for (const name of names) assert.ok(fs.readFileSync(statePath(dir, `${name}.set-aside-${[...stamps][0]}`)).equals(old[name]), `${name} after the run`);
@@ -1614,62 +1617,144 @@ test('the claim that makes saved late-claim bytes unneeded is gone again before 
   assert.deepEqual(readJson(statePath(c.dir)), c.saved);
 });
 
-test('--restart looks for the old claim again once the new one may go out, and the new late claim is signed at the nonce that look read or not at all (R12-F1)', async () => {
+test('--restart looks for the old claim again once the new one may go out: one mined while it read the listing and its price is adopted, and its files stay the active ones (R12-F1)', async () => {
   const filesOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => !n.startsWith('lock.')).sort();
-  const prepared = async () => {
-    const l = await rolled();
-    const dir = makeClaimDir();
-    const crash = (step) => { if (step === 'prepare:saved') throw new Error('crash'); };
-    await w.hunter({ onStep: crash }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch(() => {});
-    const saved = readJson(statePath(dir));
-    assert.equal(saved.stage, 'prepared');
-    const sendOld = async () => (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
-    return { l, dir, saved, sendOld };
-  };
-  // The old hashes are mined while --restart reads the listing and its price, after its first look for them: the look
-  // just before the files are set aside finds the claim, so they stay the active ones and the claim is disclosed.
-  {
-    const c = await prepared();
-    const files = filesOf(c.dir);
-    const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
-    const count = await w.claimCount();
-    const heldNow = await w.provider.getBalance(w.address);
-    let other = null;
-    const priceRead = (tx) => String(tx?.data ?? '').startsWith(iface.getFunction('commitPrice').selector);
-    const provider = injecting('call', async () => { other = await c.sendOld(); }, priceRead);
-    const err = await w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, restart: true, acknowledge: true }).catch((e) => e);
-    assert.ok(other, 'the old claim was mined during the preflight');
-    assert.equal(err.code, 'RESTART_REFUSED', `${err.code}: ${err.message}`);
-    assert.deepEqual(filesOf(c.dir), files, 'nothing was set aside');
-    assert.equal(fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8'), keys, 'the old keys are the active ones');
-    assert.equal(await w.claimCount(), count + 1n, 'the one claim: no second one');
-    assert.equal(await w.provider.getBalance(w.address) - heldNow, await w.sa.commitPrice(c.l.listingId), 'one bond');
-    assert.deepEqual(readJson(statePath(c.dir)).commitTx, { hash: other.hash });
-    const r = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId });
-    assert.equal(r.stage, 'disclosed');
-    assert.equal(r.ciphertextSha256, c.saved.ciphertextSha256, 'the claim disclosed is the old one');
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const crash = (step) => { if (step === 'prepare:saved') throw new Error('crash'); };
+  await w.hunter({ onStep: crash }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }).catch(() => {});
+  const saved = readJson(statePath(dir));
+  assert.equal(saved.stage, 'prepared');
+  const files = filesOf(dir);
+  const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
+  const count = await w.claimCount();
+  const heldNow = await w.provider.getBalance(w.address);
+  // the old hashes are mined on the preflight's price read, after --restart's first look for them
+  let other = null;
+  const priceRead = (tx) => String(tx?.data ?? '').startsWith(iface.getFunction('commitPrice').selector);
+  const provider = injecting('call', async () => {
+    other = await (await w.sa.connect(w.hunterWallet).commit(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+  }, priceRead);
+  const err = await w.hunter({ provider }).commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true }).catch((e) => e);
+  assert.ok(other, 'the old claim was mined during the preflight');
+  assert.equal(err.code, 'RESTART_REFUSED', `${err.code}: ${err.message}`);
+  assert.deepEqual(filesOf(dir), files, 'nothing was set aside');
+  assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys, 'the old keys are the active ones');
+  assert.equal(await w.claimCount(), count + 1n, 'the one claim: no second one');
+  assert.equal(await w.provider.getBalance(w.address) - heldNow, await w.sa.commitPrice(l.listingId), 'one bond');
+  assert.deepEqual(readJson(statePath(dir)).commitTx, { hash: other.hash });
+  const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId });
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(r.ciphertextSha256, saved.ciphertextSha256, 'the claim disclosed is the old one');
+});
+
+// Round 13 (R12-F1 again, R13-F1). A folder that set a claim's files aside does not know them any more: what protects
+// the old claim while the new one is signed (the nonce --restart read, the block it read it at) is gone when the run
+// ends, and a reorganization can change which claim a nonce made. So a late claim is signed only in a folder that
+// never set a claim's files aside, and --restart does not start one over: LATE_NEEDS_NEW_FOLDER. A new folder leaves
+// the old one whole, and any run of the old one still finds and discloses its claim.
+const needsNewFolder = (e) => e.code === 'LATE_NEEDS_NEW_FOLDER' && e.exitCode === 1
+  && /Nothing was signed, sent, pinned or set aside\./.test(e.message) && /in a new folder/.test(e.message);
+
+test('--restart does not start a late claim over: the folder stays whole, a new folder files the late claim, and the old one still discloses a claim of its hashes', async () => {
+  const filesOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => !n.startsWith('lock.')).sort();
+  const l = await rolled();
+  const dir = makeClaimDir();
+  assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+  const saved = readJson(statePath(dir));
+  const state = fs.readFileSync(statePath(dir), 'utf8');
+  const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
+  // (a run removes the lock the killed one left)
+  await late({ claimDir: dir, listingId: l.listingId, acknowledge: false }).catch(() => {});
+  const files = filesOf(dir);
+  for (const acknowledge of [true, false]) {
+    const m = await mark();
+    const err = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: true, restart: true, acknowledge }).catch((e) => e);
+    assert.ok(needsNewFolder(err), `--yes ${acknowledge}: ${err.code}: ${err.message}`);
+    await assertNothingSent(m, null, `--yes ${acknowledge}`);
+    assert.deepEqual(filesOf(dir), files, 'nothing was set aside');
+    assert.equal(fs.readFileSync(statePath(dir), 'utf8'), state, 'the prepared claim is the active one');
+    assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys, 'with its keys');
   }
-  // The old hashes are mined after that look, while the new claim is prepared: the new late claim would go out at the
-  // nonce the look read, and that nonce is used now, so none is signed. The text names the files that were set aside.
+  // by the CLI too
+  const cli = await runCli(w, ['commit', dir, '--listing', String(l.listingId), '--late', '--restart', '--yes']);
+  assert.equal(cli.code, 1);
+  assert.match(cli.stderr, /LATE_NEEDS_NEW_FOLDER/);
+  // the way on: the changed claim in a new folder
+  const count = await w.claimCount();
+  const fresh = makeClaimDir();
+  const r = await late({ claimDir: fresh, listingId: l.listingId });
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(await w.claimCount(), count + 1n);
+  // and the old folder is still a working one: a claim of its hashes, sent some other way afterwards, is found by any
+  // run there and disclosed with the keys that never moved
+  const other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+  const old = await w.hunter().commit({ claimDir: dir, listingId: l.listingId });
+  assert.equal(old.stage, 'disclosed');
+  assert.equal(old.commitTx, other.hash);
+  assert.equal(old.ciphertextSha256, saved.ciphertextSha256);
+});
+
+test('a late claim is not signed in a folder that has set a claim\'s files aside: the old claim, mined after a --restart that stopped, is not followed by a second bond', async () => {
+  const filesOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => !n.startsWith('lock.')).sort();
+  // A commit's folder, prepared; --restart sets its files aside, prepares the new claim and stops there (R12-F1: a
+  // process stop at prepare:saved). The folder now holds the new claim, prepared, and knows nothing of the old one.
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  assert.equal((await child(dir, l.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
+  const old = readJson(statePath(dir));
+  let prepares = 0;
+  const stop = (step) => { if (step === 'prepare:saved' && ++prepares === 1) throw new Error('stopped'); };
+  await w.hunter({ onStep: stop }).commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true }).catch(() => {});
+  const now = readJson(statePath(dir));
+  assert.equal(now.stage, 'prepared');
+  assert.notEqual(now.ciphertextSha256, old.ciphertextSha256, 'the new claim, prepared');
+  const aside = filesOf(dir).find((n) => n.startsWith('state.json.set-aside-'));
+  assert.equal(readJson(statePath(dir, aside)).ciphertextSha256, old.ciphertextSha256, 'the old one, set aside');
+  // The maker holds the listing: it takes late claims only. The old hashes are then mined, sent by another client.
+  await (await asMaker().hold(l.listingId)).wait();
+  const price = await w.sa.commitPrice(l.listingId);
+  await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, old.archiveSha256, old.ciphertextSha256, { value: price })).wait();
+  const count = await w.claimCount();
+  const heldNow = await w.provider.getBalance(w.address);
+  // a normal retry, as a late claim: with --yes, without it, and with --restart
+  const files = filesOf(dir);
+  for (const [restart, acknowledge] of [[false, true], [false, false], [true, true]]) {
+    const m = await mark();
+    const err = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: true, restart, acknowledge }).catch((e) => e);
+    assert.ok(needsNewFolder(err), `restart ${restart}, --yes ${acknowledge}: ${err.code}: ${err.message}`);
+    assert.ok(err.message.includes(aside.slice('state.json'.length)), 'it names the files that were set aside');
+    await assertNothingSent(m, null, `restart ${restart}, --yes ${acknowledge}`);
+    assert.deepEqual(filesOf(dir), files, 'the folder is as it was');
+    assert.equal(readJson(statePath(dir)).commitTx ?? null, null, 'nothing was signed');
+  }
+  assert.equal(await w.claimCount(), count, 'the old claim alone');
+  assert.equal(await w.provider.getBalance(w.address), heldNow, 'one bond');
+  // a folder with files set aside and no claim of its own (the same --restart stopped before the new one was
+  // prepared): no keys are drawn for a late claim there
+  const bareAfterRestart = async () => {
+    const l2 = await w.listing();
+    const bare = makeClaimDir();
+    assert.equal((await child(bare, l2.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
+    const stopEarly = (step) => { if (step === 'prepare:archive') throw new Error('stopped'); };
+    await w.hunter({ onStep: stopEarly }).commit({ claimDir: bare, listingId: l2.listingId, restart: true, acknowledge: true }).catch(() => {});
+    assert.equal(fs.existsSync(statePath(bare)), false, 'no claim of its own');
+    assert.ok(filesOf(bare).some((n) => n.startsWith('state.json.set-aside-')));
+    return { l2, bare };
+  };
   {
-    const c = await prepared();
-    const count = await w.claimCount();
-    const nonce = await w.provider.getTransactionCount(w.hunterWallet.address);
-    let other = null;
-    const onStep = async (step) => { if (step === 'prepare:saved') other = await c.sendOld(); };
-    const err = await w.hunter({ onStep }).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, restart: true, acknowledge: true }).catch((e) => e);
-    assert.ok(other, 'the old claim was mined after the files were set aside');
-    assert.equal(err.code, 'COMMIT_REPLACED', `${err.code}: ${err.message}`);
-    assert.match(err.message, /\.set-aside-\d+-[0-9a-f]{4}/, 'it names the files that were set aside');
-    assert.equal(await w.claimCount(), count + 1n, 'the old claim alone: none was signed beside it');
-    assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), nonce + 1, 'one transaction, the other client\'s');
-    const now = readJson(statePath(c.dir));
-    assert.equal(now.stage, 'prepared');
-    assert.equal(now.commitTx ?? null, null, 'nothing was signed for the new files');
-    assert.notEqual(now.ciphertextSha256, c.saved.ciphertextSha256);
-    const aside = filesOf(c.dir).find((n) => n.startsWith('state.json.set-aside-'));
-    assert.equal(readJson(statePath(c.dir, aside)).ciphertextSha256, c.saved.ciphertextSha256, 'the old claim\'s files are whole, under one stamp');
-    assert.ok(err.message.includes(aside.slice('state.json'.length)), 'and that stamp is the one named');
+    const { l2, bare } = await bareAfterRestart();
+    await (await asMaker().hold(l2.listingId)).wait();
+    const m = await mark();
+    const err = await late({ claimDir: bare, listingId: l2.listingId }).catch((e) => e);
+    assert.ok(needsNewFolder(err), `${err.code}: ${err.message}`);
+    await assertNothingSent(m, bare, 'a bare folder');
+    assert.equal(fs.existsSync(statePath(bare)), false);
+  }
+  // a commit in such a folder is signed as it always was
+  {
+    const { l2, bare } = await bareAfterRestart();
+    assert.equal((await w.hunter().commit({ claimDir: bare, listingId: l2.listingId, acknowledge: true })).stage, 'disclosed');
   }
 });
 

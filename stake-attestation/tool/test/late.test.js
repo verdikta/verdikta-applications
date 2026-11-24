@@ -976,7 +976,8 @@ test('--restart sets the prepared files aside and deletes nothing: a claim of th
   assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
   const folder = `${dir}/.verdikta-claim`;
   const old = { state: readJson(statePath(dir)) };
-  for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) old[name] = fs.readFileSync(statePath(dir, name));
+  const prepared = ['archive.zip', 'keys.json', 'ciphertext.age', 'anchor.json', 'state.json'];
+  for (const name of prepared) old[name] = fs.readFileSync(statePath(dir, name));
   // --restart: new keys, a late claim of the new hashes, and every old file still there under one stamp
   const r = await late({ claimDir: dir, listingId: l.listingId, restart: true });
   assert.equal(r.stage, 'disclosed');
@@ -984,7 +985,10 @@ test('--restart sets the prepared files aside and deletes nothing: a claim of th
   const aside = fs.readdirSync(folder).filter((n) => n.includes('.set-aside-'));
   const stamps = new Set(aside.map((n) => n.split('.set-aside-')[1]));
   assert.equal(stamps.size, 1, aside.join(', '));
-  for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) {
+  // the new claim has an anchor of its own, at the block it was prepared at
+  assert.equal(anchorOf(dir).head.number, readJson(statePath(dir)).startBlock);
+  assert.notDeepEqual(anchorOf(dir), JSON.parse(old['anchor.json'].toString('utf8')));
+  for (const name of prepared) {
     const kept = `${name}.set-aside-${[...stamps][0]}`;
     assert.ok(aside.includes(kept), kept);
     assert.ok(fs.readFileSync(statePath(dir, kept)).equals(old[name]), `${name}: byte for byte`);
@@ -1001,7 +1005,7 @@ test('--restart sets the prepared files aside and deletes nothing: a claim of th
 // Round 5: a --restart that stops half way. The four files are copied before any original is removed, and state.json
 // is removed first, so the folder is either the prepared claim it was, whole, or no claim with the whole set aside.
 test('--restart stopped half way: while copying, the prepared claim is whole and can still be adopted; after the state is gone, the whole set stands under one stamp', async () => {
-  const names = ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json'];
+  const names = ['archive.zip', 'keys.json', 'ciphertext.age', 'anchor.json', 'state.json'];
   const prepared = async () => {
     const l = await rolled();
     const dir = makeClaimDir();
@@ -1272,6 +1276,316 @@ test('a saved late claim that may not have gone out is not sent if the keys it n
   const err = await late({ claimDir: dir, listingId: l.listingId }).catch((e) => e);
   assert.equal(err.code, 'FILE_MISSING');
   assert.equal(await w.claimCount(), count, 'it did not pay');
+});
+
+// ------------------------------------------------------------------------------------------------- the anchor
+
+// A design review settled rounds 7 to 10 (R7-F1, R8-F1): a claim of a folder's hashes that a reorganization mined below
+// the block the folder was prepared at. The bound of the log scan is proven, not guessed. At preparation, before any
+// key is drawn, the folder saves an anchor in a file of its own: the head and the node's finalized block, each by
+// number and hash. The folder's hashes do not exist before its keys do, so while the block at startBlock still has the
+// saved hash, every claim of them is above it; and when it has another, a scan from the saved finalized block, held to
+// its hash, is complete whatever happened above it. Where neither can be shown, a late claim is not signed.
+const ANCHOR = 'anchor.json';
+const anchorOf = (dir) => readJson(statePath(dir, ANCHOR));
+const blockId = async (n) => {
+  const b = await w.provider.getBlock(n);
+  return { number: b.number, hash: b.hash };
+};
+
+/** A provider that names `at()` as the node's finalized block (the test chain names its own head); null: it names none. */
+function finalizedAt(at, over = w.provider) {
+  return new Proxy(over, {
+    get(target, prop) {
+      if (prop === 'send') {
+        return async (method, params) => {
+          if (method !== 'eth_getBlockByNumber' || params[0] !== 'finalized') return target.send(method, params);
+          if (at() === null) throw Object.assign(new Error('invalid block tag: finalized'), { code: -32602 });
+          return target.send(method, [`0x${at().toString(16)}`, params[1]]);
+        };
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+}
+
+/**
+ * A folder prepared and left there (nothing signed), and the chain then rolled back under the block it was prepared
+ * at: `gap` blocks under it, and above the block the node named as finalized. `finalized: 'none'`: the node named
+ * none; 'head': it named its head, as the test chain does, so the rollback goes under that block too. With `claim`,
+ * the same two hashes, sent by another client, are mined in the new fork's first block, below the old height; without
+ * it a transaction of another wallet is, so that the fork is another one.
+ */
+async function rolledBackUnder({ make = rolled, lateClaim = true, claim = true, finalized = 'below', gap = 3 } = {}) {
+  const l = await make();
+  const dir = makeClaimDir();
+  const finalizedBlock = await w.provider.getBlockNumber();
+  await w.mine(2);
+  const snapshot = await w.rpc('evm_snapshot');
+  await w.mine(gap);
+  const provider = finalized === 'head' ? w.provider : finalizedAt(() => (finalized === 'none' ? null : finalizedBlock));
+  const crash = (step) => { if (step === 'prepare:saved') throw new Error('crash'); };
+  await w.hunter({ provider, onStep: crash }).commit({ claimDir: dir, listingId: l.listingId, late: lateClaim, acknowledge: true }).catch(() => {});
+  const saved = readJson(statePath(dir));
+  assert.equal(saved.stage, 'prepared');
+  const was = await blockId(saved.startBlock);
+  await w.rpc('evm_revert', [snapshot]);
+  let other = null;
+  if (claim) {
+    const price = await w.sa.commitPrice(l.listingId);
+    other = await (await w.sa.connect(w.hunterWallet)[lateClaim ? 'lateClaim' : 'commit'](l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price })).wait();
+    assert.ok(other.blockNumber < saved.startBlock, 'the claim is below the block the folder was prepared at');
+  } else {
+    await (await w.signers[8].sendTransaction({ to: w.signers[8].address, value: 0n })).wait();
+  }
+  return { l, dir, saved, other, finalizedBlock, was };
+}
+
+/** Mines until the chain is past the height the folder was prepared at, where another block now stands. */
+async function pastStart({ saved, was }) {
+  while (await w.provider.getBlockNumber() <= saved.startBlock) await w.mine();
+  assert.notEqual((await blockId(saved.startBlock)).hash, was.hash, 'that height holds another block');
+}
+
+const unproven = (e) => e.code === 'START_UNPROVEN' && e.exitCode === 1
+  && /Nothing was signed, pinned or set aside\./.test(e.message) && /in a new folder/.test(e.message) && /keys stay where they are/.test(e.message);
+
+test('preparing a claim saves an anchor before any key is drawn: the head and the finalized block, by number and hash, in a file of its own', async () => {
+  const l = await rolled();
+  const dir = makeClaimDir();
+  await w.mine(4);
+  const finalizedBlock = (await w.provider.getBlockNumber()) - 3;
+  let whenArchived = null;
+  const onStep = (step) => {
+    if (step === 'prepare:archive') whenArchived = { anchor: fs.existsSync(statePath(dir, ANCHOR)), keys: fs.existsSync(statePath(dir, 'keys.json')) };
+  };
+  await w.hunter({ provider: finalizedAt(() => finalizedBlock), onStep }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
+  assert.deepEqual(whenArchived, { anchor: true, keys: false }, 'the anchor is on the disk before the keys exist');
+  const saved = readJson(statePath(dir));
+  assert.deepEqual(anchorOf(dir), { version: 1, head: await blockId(saved.startBlock), finalized: await blockId(finalizedBlock) });
+  assert.equal(fs.statSync(statePath(dir, ANCHOR)).mode & 0o777, 0o600);
+  // state.json holds none of it: a late claim's has `late`, and nothing else an ordinary commit's has not
+  assert.deepEqual(Object.keys(saved), ['version', 'stage', 'chainId', 'contract', 'hunter', 'listingId', 'archiveSha256', 'ciphertextSha256', 'disclosureKey', 'startBlock', 'late', 'commitTx', 'claimId', 'ciphertextCid', 'discloseTx', 'told']);
+
+  // a node that serves no finalized block: the head's alone, and the commit goes on
+  const none = makeClaimDir();
+  const r = await w.hunter({ provider: finalizedAt(() => null) }).commit({ claimDir: none, listingId: l.listingId, late: true, acknowledge: true });
+  assert.equal(r.stage, 'disclosed');
+  assert.deepEqual(anchorOf(none), { version: 1, head: await blockId(readJson(statePath(none)).startBlock), finalized: null });
+
+  // an ordinary commit's folder gets one too, on the test chain's own answer (its head)
+  const open = await w.listing();
+  const ordinary = makeClaimDir();
+  await w.hunter().commit({ claimDir: ordinary, listingId: open.listingId, acknowledge: true });
+  const start = await blockId(readJson(statePath(ordinary)).startBlock);
+  assert.deepEqual(anchorOf(ordinary), { version: 1, head: start, finalized: start });
+});
+
+test('the chain rolled back under a prepared folder, above the finalized block it saved: the logs are read from that block, and a claim of its hashes below the old height is adopted with its own transaction', async () => {
+  const adopted = async (c, run) => {
+    const count = await w.claimCount();
+    const heldNow = await w.provider.getBalance(w.address);
+    const r = await run();
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.claimId, count, 'the claim that was there');
+    assert.equal(r.commitTx, c.other.hash, 'with the transaction that made it');
+    assert.deepEqual(readJson(statePath(c.dir)).commitTx, { hash: c.other.hash });
+    assert.equal(await w.claimCount(), count, 'no second claim');
+    assert.equal(await w.provider.getBalance(w.address), heldNow, 'no second bond');
+  };
+  // the chain past the old height again (R7-F1)
+  {
+    const c = await rolledBackUnder();
+    assert.deepEqual(anchorOf(c.dir), { version: 1, head: c.was, finalized: await blockId(c.finalizedBlock) });
+    await pastStart(c);
+    await adopted(c, () => late({ claimDir: c.dir, listingId: c.l.listingId }));
+  }
+  // the head still below the height the folder was prepared at (R8-F2)
+  {
+    const c = await rolledBackUnder();
+    assert.ok(await w.provider.getBlockNumber() < c.saved.startBlock, 'the chain is shorter than it was');
+    await adopted(c, () => late({ claimDir: c.dir, listingId: c.l.listingId }));
+  }
+  // the claim more than one page of logs below the old height (R8-F1)
+  {
+    const c = await rolledBackUnder({ gap: 10 });
+    assert.ok(c.saved.startBlock - c.other.blockNumber > 3);
+    await pastStart(c);
+    await adopted(c, () => w.hunter({ logPageBlocks: 3 }).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, acknowledge: true }));
+  }
+  // through an RPC that takes three blocks of logs at a time (R8-F3)
+  {
+    const c = await rolledBackUnder({ gap: 10 });
+    await pastStart(c);
+    w.logLimits.maxBlocks = 3;
+    try {
+      await adopted(c, () => late({ claimDir: c.dir, listingId: c.l.listingId }));
+    } finally {
+      w.logLimits.maxBlocks = null;
+      w.logLimits.calls.length = 0;
+    }
+  }
+  // and without --yes: it is read before anything is asked
+  {
+    const c = await rolledBackUnder();
+    await pastStart(c);
+    const count = await w.claimCount();
+    const cli = await runCli(w, ['commit', c.dir, '--listing', String(c.l.listingId), '--late']);
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /^Late claim \d+ on listing \d+: disclosed\.$/m);
+    assert.equal(await w.claimCount(), count);
+    assert.deepEqual(readJson(statePath(c.dir)).commitTx, { hash: c.other.hash });
+  }
+});
+
+test('the same rollback with no claim of the hashes on the chain: the scan from the finalized block is complete, so the late claim is signed', async () => {
+  const c = await rolledBackUnder({ claim: false });
+  await pastStart(c);
+  const count = await w.claimCount();
+  const r = await late({ claimDir: c.dir, listingId: c.l.listingId });
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(r.ciphertextSha256, c.saved.ciphertextSha256, 'the prepared hashes');
+  assert.equal(await w.claimCount(), count + 1n);
+  assert.deepEqual(await eventsOf(r.commitTx), ['LateClaim']);
+});
+
+test('--restart --late against a claim of the folder\'s hashes below the old height: RESTART_REFUSED with the keys in place and nothing paid, while it is open and once it has expired', async () => {
+  for (const expired of [false, true]) {
+    const c = await rolledBackUnder();
+    await pastStart(c);
+    const claimId = await w.claimCount();
+    if (expired) {
+      await w.increase(await w.sa.DISCLOSE_WINDOW());
+      await (await w.sa.expire(claimId)).wait();
+      assert.equal(Number((await w.sa.getClaim(claimId)).state), 6, 'Expired: no queue of open claims holds it, the logs do');
+    }
+    const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
+    const m = await mark();
+    const err = await late({ claimDir: c.dir, listingId: c.l.listingId, restart: true }).catch((e) => e);
+    assert.equal(err.code, 'RESTART_REFUSED', `expired ${expired}: ${err.message}`);
+    assert.equal(fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8'), keys, 'the active keys');
+    assert.deepEqual(fs.readdirSync(`${c.dir}/.verdikta-claim`).filter((n) => n.includes('.set-aside-')), [], 'nothing was set aside');
+    await assertNothingSent(m, null, `expired ${expired}`);
+    const now = readJson(statePath(c.dir));
+    assert.equal(now.claimId, String(claimId));
+    assert.deepEqual(now.commitTx, { hash: c.other.hash });
+  }
+});
+
+test('where nothing proves the bound, a late claim is not signed and --restart --late sets nothing aside: START_UNPROVEN says why and what to do', async () => {
+  const refused = async (c, why) => {
+    const files = fs.readdirSync(`${c.dir}/.verdikta-claim`).sort();
+    const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
+    for (const restart of [false, true]) {
+      const m = await mark();
+      const err = await late({ claimDir: c.dir, listingId: c.l.listingId, restart }).catch((e) => e);
+      assert.ok(unproven(err), `${why}, restart ${restart}: ${err.code}: ${err.message}`);
+      await assertNothingSent(m, null, why);
+      assert.equal(readJson(statePath(c.dir)).commitTx ?? null, null, 'nothing was signed');
+      assert.deepEqual(fs.readdirSync(`${c.dir}/.verdikta-claim`).sort(), files, 'nothing was set aside');
+      assert.equal(fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8'), keys, 'the keys stay where they are');
+    }
+  };
+  // a folder with no anchor (one an earlier version prepared), and a real rollback under it
+  {
+    const c = await rolledBackUnder({ claim: false });
+    fs.rmSync(statePath(c.dir, ANCHOR));
+    await pastStart(c);
+    await refused(c, 'no anchor');
+  }
+  // the node named no finalized block when the folder was prepared, and the chain was rolled back under it
+  {
+    const c = await rolledBackUnder({ claim: false, finalized: 'none' });
+    assert.equal(anchorOf(c.dir).finalized, null);
+    await pastStart(c);
+    await refused(c, 'no finalized block saved');
+  }
+  // the rollback went under the finalized block the folder saved (the test chain names its head as finalized)
+  {
+    const c = await rolledBackUnder({ claim: false, finalized: 'head' });
+    assert.deepEqual(anchorOf(c.dir).finalized, c.was);
+    await pastStart(c);
+    await refused(c, 'the finalized block is gone');
+  }
+  // an anchor that does not name the block state.json says the folder was prepared at
+  {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+    const anchor = anchorOf(dir);
+    fs.writeFileSync(statePath(dir, ANCHOR), `${JSON.stringify({ ...anchor, head: { ...anchor.head, number: anchor.head.number - 1 } }, null, 2)}\n`, { mode: 0o600 });
+    await refused({ l, dir }, 'another head');
+  }
+  // and a folder with no anchor is refused with nothing reorganized under it too: it cannot show that
+  {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+    fs.rmSync(statePath(dir, ANCHOR));
+    await refused({ l, dir }, 'no anchor, no rollback');
+    // a new folder with the same claim files is the way on
+    const fresh = makeClaimDir();
+    assert.equal((await late({ claimDir: fresh, listingId: l.listingId })).stage, 'disclosed');
+  }
+});
+
+test('an ordinary commit is never refused for its anchor: without one it resumes and restarts as it did, and with one --restart finds a commit below the old height', async () => {
+  // no anchor, the chain rolled back under the folder: a resume signs, as it always did
+  {
+    const c = await rolledBackUnder({ make: () => w.listing(), lateClaim: false, claim: false });
+    fs.rmSync(statePath(c.dir, ANCHOR));
+    await pastStart(c);
+    const count = await w.claimCount();
+    const r = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.ciphertextSha256, c.saved.ciphertextSha256);
+    assert.equal(await w.claimCount(), count + 1n);
+  }
+  // no anchor, and --restart: new keys, as it always did
+  {
+    const c = await rolledBackUnder({ make: () => w.listing(), lateClaim: false, claim: false });
+    fs.rmSync(statePath(c.dir, ANCHOR));
+    await pastStart(c);
+    const count = await w.claimCount();
+    const r = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, restart: true, acknowledge: true });
+    assert.equal(r.stage, 'disclosed');
+    assert.notEqual(r.ciphertextSha256, c.saved.ciphertextSha256);
+    assert.equal(await w.claimCount(), count + 1n);
+  }
+  // an anchor that proves the bound, and the folder's own commit below the old height: --restart is refused, the keys stay
+  {
+    const c = await rolledBackUnder({ make: () => w.listing(), lateClaim: false });
+    await pastStart(c);
+    const count = await w.claimCount();
+    const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
+    await assert.rejects(w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, restart: true, acknowledge: true }), (e) => e.code === 'RESTART_REFUSED');
+    assert.equal(fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8'), keys);
+    assert.equal(await w.claimCount(), count);
+    assert.deepEqual(readJson(statePath(c.dir)).commitTx, { hash: c.other.hash });
+  }
+});
+
+test('an ordinary commit on a fresh folder, through an RPC that takes three blocks of logs: its log requests are what they were, one range from the block it was prepared at', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  await w.mine(6);
+  w.logLimits.maxBlocks = 3;
+  w.logLimits.calls.length = 0;
+  try {
+    const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+    assert.equal(r.stage, 'disclosed');
+    const saved = readJson(statePath(dir));
+    const asked = w.logLimits.calls.filter((c) => c.fromBlock !== undefined);
+    assert.equal(asked.length, 1, 'one request for logs');
+    assert.equal(asked[0].refused, false);
+    assert.equal(asked[0].fromBlock, saved.startBlock);
+    assert.ok(asked[0].blocks <= 3);
+    assert.deepEqual(Object.keys(saved), ['version', 'stage', 'chainId', 'contract', 'hunter', 'listingId', 'archiveSha256', 'ciphertextSha256', 'disclosureKey', 'startBlock', 'commitTx', 'claimId', 'ciphertextCid', 'discloseTx', 'told']);
+  } finally {
+    w.logLimits.maxBlocks = null;
+    w.logLimits.calls.length = 0;
+  }
 });
 
 // --------------------------------------------------------------------------------------- a contract with no hold

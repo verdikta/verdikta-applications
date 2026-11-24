@@ -56,6 +56,12 @@ AGGREGATOR_ADDRESS_BASE_SEPOLIA=0x…   AGGREGATOR_FROM_BLOCK_BASE_SEPOLIA=…  
 AGGREGATOR_ADDRESS_BASE=0x…           AGGREGATOR_FROM_BLOCK_BASE=…           KEEPER_FROM_BLOCK_BASE=…
 ```
 
+One aggregator per network serves every jury size: each request carries its
+own jury (K, M, N, P and the round timeout), so the site has no per-jury
+aggregator list and no jury config. The Contracts and Analytics pages show the
+owner's bounds instead (`maxJury()`, `maxTimeout()`, `tPlus()`), and each
+round's jury is read with `getJury(aggId)`.
+
 The keeper address is read from `aggregator.keeper()`. `KEEPER_FROM_BLOCK` must
 be at or before the keeper's deployment: the keeper is deployed (and arbiters
 may register) before the aggregator.
@@ -80,7 +86,8 @@ may register) before the aggregator.
   tooltips and notes).
 - **Rounds** (`server/utils/roundModel.js`). Agg-history and the oracle-health
   scan use `getRoundInfo`, `getSlot` and the v2 events, judged against the
-  aggregator's `M` and `N`. A failed round is charged to the drawn slots that
+  round's own `M` and `N` (`getJury(aggId)`, cached: a round's jury is fixed at
+  request). A failed round is charged to the drawn slots that
   never committed (commit-phase failure with fewer than M commits) or the
   promoted slots that never revealed (reveal-phase failure). No blame is charged
   for rounds no arbiter committed to (likely malformed), rounds that were never

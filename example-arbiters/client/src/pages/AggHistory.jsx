@@ -117,7 +117,7 @@ function AggHistory() {
   }
 
   const {
-    contractParams, roundInfo, requestEvent, slots = [], fulfillment, outcome, outcomeKind, analysis,
+    contractParams = {}, roundInfo, requestEvent, slots = [], fulfillment, outcome, outcomeKind, analysis,
     timeline = [], blame = [], money, beaconArbiters, settlement, points,
   } = data;
 
@@ -221,7 +221,11 @@ function AggHistory() {
               <span className="req-actual-label">Cluster (P)</span>
               <span className="req-actual-value">{contractParams.P}</span>
             </div>
-            <div className="req-actual-detail">The aggregator&rsquo;s current settings; a round keeps the ones it was requested with.</div>
+            <div className="req-actual-row">
+              <span className="req-actual-label">Round timeout (from the draw)</span>
+              <span className="req-actual-value">{contractParams.timeout != null ? `${contractParams.timeout}s` : '—'}</span>
+            </div>
+            <div className="req-actual-detail">This round&rsquo;s own jury, sent with its request (getJury). With fewer than K eligible arbiters, the jury repeats arbiters.</div>
           </div>
         </div>
 

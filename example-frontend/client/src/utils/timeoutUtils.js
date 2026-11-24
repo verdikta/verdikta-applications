@@ -19,6 +19,10 @@ import { id as keccakId } from 'ethers';
  *                     reward; a second drawJury draws once the beacon quorum is in (the
  *                     30 s priority then runs from the quorum), or ends the round if the
  *                     quorum was missed (prepay to the treasury).
+ * The jury (K drawn, M promoted, N counted, P clustered, and the timeout) is the request's
+ * own: getJury(aggId) returns it (readJury below). The round's deadline is its timeout
+ * after the draw.
+ *
  *   phase 3 commit    the arbiters commit. The window closes by itself at M+ commits;
  *                     otherwise closeCommits(aggId) closes it after T+ with >= M commits.
  *   phase 4 closing   promote(aggId) from the close block + 2. The caller earns 1 x fee.
@@ -114,6 +118,7 @@ export function stepGasLimit(estimate) {
 
 const AGGREGATOR_ERRORS = [
   'BadInput',
+  'BadJury',
   'InsufficientPayment',
   'BadSelectionCount',
   'UnknownRequest',
@@ -196,6 +201,18 @@ export function parseRoundInfo(info) {
 
 export async function readRound(readContract, aggId) {
   return parseRoundInfo(await readContract.getRoundInfo(aggId));
+}
+
+/** getJury() as plain numbers, or null for an unknown round (all zero). */
+export function parseJury(j) {
+  if (!j) return null;
+  const jury = { K: Number(j[0]), M: Number(j[1]), N: Number(j[2]), P: Number(j[3]), timeout: Number(j[4]) };
+  return jury.K > 0 ? jury : null;
+}
+
+/** The jury the round was requested with: { K, M, N, P, timeout }, or null. */
+export async function readJury(readContract, aggId) {
+  return parseJury(await readContract.getJury(aggId));
 }
 
 /** checkForResult() must never end the wait by throwing: a failed read is "no result yet". */
@@ -334,7 +351,7 @@ export const STEP_PROMPTS = {
  * @param {boolean}  [p.withBeacons]     the request asked for beacons (only changes the prompt)
  * @param {Function} p.getHead           async () => ({ number, timestamp }) of the latest block
  * @param {Function} p.checkForResult    async () => true once a result exists and is shown
- * @param {Function} [p.onRound]         (round, head) after every read
+ * @param {Function} [p.onRound]         (round, head) after every read; round.jury is getJury(aggId) (null until read)
  * @param {Function} [p.onStep]          ({ step, txHash, rewardWei }) after every mined call
  * @param {Function} [p.setTransactionStatus]
  */
@@ -363,12 +380,18 @@ export async function driveRound({
   let lastReceipt = null; // the last call the user sent, for the refund lookup
   let stuck = null; // { key, since }: a dry run that keeps failing in the same phase
   let beaconSince = null;
-  let quorumM = null; // M(): the commits closeCommits needs
-  try {
-    quorumM = Number(await readContract.M());
-  } catch {
-    quorumM = null;
-  }
+  // The round's own jury (getJury): M is the commits closeCommits needs. Read again on
+  // a later poll if the first read fails.
+  let jury = null;
+  const loadJury = async () => {
+    if (jury) return;
+    try {
+      jury = await readJury(readContract, aggId);
+    } catch {
+      jury = null;
+    }
+  };
+  await loadJury();
 
   const stalled = (step, reason, error, extra = {}) => ({
     status: 'stalled',
@@ -433,6 +456,8 @@ export async function driveRound({
     try {
       [round, head] = await Promise.all([readRound(readContract, aggId), getHead()]);
       readFailures = 0;
+      await loadJury();
+      round.jury = jury;
     } catch (error) {
       readFailures += 1;
       if (readFailures >= MAX_READ_FAILURES) return stalled(null, 'check-failed', error);
@@ -518,7 +543,7 @@ export async function driveRound({
         if (round.deadline > 0 && head.timestamp > round.deadline) {
           // With M commits the window should have been closed: settling now sends the
           // unspent prepay to the treasury, so the page does not spend the user's gas on it.
-          if (quorumM !== null && round.commits >= quorumM) return { status: 'expired', round, reason: 'close-missed' };
+          if (jury && round.commits >= jury.M) return { status: 'expired', round, reason: 'close-missed' };
           const out = await runStep('settle');
           if (out) return out;
           break;

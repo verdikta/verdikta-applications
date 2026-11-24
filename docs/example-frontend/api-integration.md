@@ -39,6 +39,7 @@ const tx = await contract.requestAIEvaluationWithApproval(
   maxFeeBasedScalingFactor,
   selectedContractClass,
   withBeacons,           // beacon stage before the draw
+  jury,                  // { K, M, N, P, timeout }: the jury this request asks for
   { value: ethValue, gasLimit: 4500000 } // ethValue: the ETH prepayment, see "ETH Payment" below
 );
 const receipt = await tx.wait();
@@ -47,7 +48,9 @@ const aggId = receipt.logs
   .find((e) => e?.name === 'RequestAIEvaluation').args.aggRequestId;
 ```
 
-The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `minFee` = 0, `estimatedBaseCost` = 1% of `maxFee`, `maxFeeBasedScalingFactor` = 10, class 128 and `withBeacons` = false by default (`client/src/App.js`).
+The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `minFee` = 0, `estimatedBaseCost` = 1% of `maxFee`, `maxFeeBasedScalingFactor` = 10 and class 128 (`client/src/App.js`). The jury and `withBeacons` come from the **Arbiter jury size** setting on the Jury Selection page (`client/src/utils/juryPresets.js`): Small `{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }` without beacons by default; Medium 8/5/4/3, 300 s; Large 21/16/13/10, 300 s; Jumbo 50/38/27/17, 600 s with beacons.
+
+One aggregator serves every jury size. It refuses a request with `BadJury` unless K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, P ≥ 2 (unless N = 1), K ≤ `maxJury()` and the keeper's shortlist (60), and `tPlus()` < timeout ≤ `maxTimeout()`. With fewer than K eligible arbiters the draw repeats arbiters; only a class with none eligible fails the draw (refunded).
 
 #### Moving the Round On
 A v2 request only prepays the round. The requester then moves it from phase to phase; the Run Query page does this with the user's wallet (`client/src/utils/timeoutUtils.js`, `driveRound()`), dry-running each call with `estimateGas` from the user's address and sending only a call that will succeed:
@@ -66,13 +69,14 @@ await contract.settle(aggId);
 ```
 
 #### Key Contract Methods
-- `requestAIEvaluationWithApproval()`: Submit evaluation request (9 arguments, `payable`)
-- `maxTotalFee(maxFee, minFee, withBeacons)`: Worst-case fee in ETH (wei) that must be prepaid with a request
+- `requestAIEvaluationWithApproval()`: Submit evaluation request (10 arguments, the last the jury `(K, M, N, P, timeout)`; `payable`)
+- `maxTotalFee(maxFee, minFee, withBeacons, K, P)`: Worst-case fee in ETH (wei) that must be prepaid with a request for that jury
 - `drawJury()`, `closeCommits()`, `promote()`: Move a round on (anyone may call them)
 - `settle()`: Fail a round that passed its deadline without a result, and refund it
 - `getRoundInfo()`: The round's phase (1 draw, 2 beacons, 3 commit, 4 closing, 5 reveal, 6 final, 7 settled, 8 failed, 9 cancelled), blocks, escrow, deadline, commit window end, commits and request time
 - `getEvaluation()`: Retrieve evaluation results, valid from phase 6
-- `K()`, `M()`, `N()`, `P()`, `tPlus()`, `responseTimeoutSeconds()`, `maxOracleFee()`: Round size, commit window, deadline after the draw, fee ceiling (v2 has no `getContractConfig()`)
+- `getJury(aggId)`: The jury a round was requested with, `(K, M, N, P, timeout)`; the deadline is its timeout after the draw. The aggregator has no `K()`…`P()` or round timeout of its own
+- `maxJury()`, `maxTimeout()`, `tPlus()`, `maxOracleFee()`: The owner's bounds on a request's jury (largest K, longest timeout, the commit window every timeout must exceed) and the fee ceiling (v2 has no `getContractConfig()`)
 - `ethOwed()`: ETH credit an address holds in the aggregator (refunds and rewards)
 - `withdrawEth()`: Send the caller's credit back to the caller
 
@@ -83,8 +87,8 @@ There is no token approval. `requestAIEvaluationWithApproval()` keeps its histor
 #### Prepayment and Credit
 ```javascript
 // Worst-case fee for this request, and the credit already held
-const required = await contract.maxTotalFee(maxFee, minFee, withBeacons);
-// = max(fee, minFee) x (K + B x P [+ beacon quorum]) + fee x (2 + 1); 0.0018 ETH with the defaults
+const required = await contract.maxTotalFee(maxFee, minFee, withBeacons, jury.K, jury.P);
+// = max(fee, minFee) x (K + B x P [+ beacon quorum]) + fee x (2 + 1); 0.0018 ETH with the defaults (Small jury)
 const credit = await contract.ethOwed(walletAddress);
 const ethValue = required > credit ? required - credit : 0n;  // sent as the transaction's value; credit covers the rest
 
@@ -96,7 +100,7 @@ await contract.withdrawEth();
 - **Gas Fees**: Paid by user in ETH for the request and for each call that moves the round on
 - **Evaluation Fees**: Paid by the user in ETH, out of the prepayment. Each of the K drawn arbiters is credited its fee (at least the floor), and each arbiter in the winning cluster B times its fee on top; the rest of the prepayment is credited back to the user in the aggregator, except for a round that had enough commits but was not closed or promoted in time, a missed beacon quorum, or a cancelled round, where it goes to the treasury
 - **Rewards**: The draw reward (2 × the fee ceiling) and the promote reward (1 × the fee ceiling) are credited to whoever makes those calls; with the Run Query page that is the user
-- **Fee Calculation**: Set by the fees of the drawn arbiters, not by query complexity or jury size
+- **Fee Calculation**: Set by the fees of the drawn arbiters and the jury size (K arbiters paid, P bonuses), not by query complexity
 
 ## AI Provider APIs
 

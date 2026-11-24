@@ -5,9 +5,23 @@ The Jury Selection page allows you to configure the AI models that will evaluate
 ## Overview
 
 This page displays your query's possible outcomes and lets you configure:
+- **Arbiter jury size** - How many arbiters the aggregator draws for each request, and the round timeout
 - **Number of iterations** - How many times the evaluation process runs
 - **Jury composition** - Which AI models participate and their roles
 - **Model parameters** - Runs per model and relative weights
+
+## Arbiter Jury Size
+
+Every request carries its own jury, the four numbers K/M/N/P and a timeout: K arbiters are drawn, M of those that commit are promoted to reveal, the first N reveals are counted, and the result is the average of the tightest cluster of P. The timeout is how long the round may run after the draw. One aggregator serves every size; the setting is kept in your browser.
+
+| Setting | K / M / N / P | Timeout | Beacons |
+|---|---|---|---|
+| Small (default) | 6 / 5 / 4 / 3 | 300 s | off |
+| Medium | 8 / 5 / 4 / 3 | 300 s | off |
+| Large | 21 / 16 / 13 / 10 | 300 s | off |
+| Jumbo | 50 / 38 / 27 / 17 | 600 s | on |
+
+These are the bounty program's class presets. A bigger jury is harder to sway but costs more: the prepayment is max(fee, floor) × (K + 3 × P [+ 2 beacons]) plus the draw and promote rewards, and the draw uses more gas. Jumbo also runs a beacon stage before the draw (one more `drawJury` from your wallet). If fewer than K arbiters are eligible, the jury repeats arbiters; only a class with none fails the draw. The aggregator refuses a jury above its `maxJury()` or `maxTimeout()` with `BadJury`.
 
 ## Number of Iterations
 

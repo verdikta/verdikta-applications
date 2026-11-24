@@ -7,6 +7,7 @@ import {
   revertName,
   isUserRejection,
   parseRoundInfo,
+  parseJury,
   PHASE,
   MAX_READ_FAILURES,
 } from './timeoutUtils';
@@ -61,6 +62,9 @@ function makeChain({
   revealAfter = 20,
   K = 6,
   M = 5,
+  N = 4,
+  P = 3,
+  timeout = 300,
   startPhase = PHASE.DRAW,
   startTime = 0,
   wallet = 'approve',
@@ -91,7 +95,7 @@ function makeChain({
     c.phase = PHASE.COMMIT;
     c.drawnAt = ts();
     c.windowEnd = ts() + 155;
-    c.deadline = ts() + 300;
+    c.deadline = ts() + timeout;
   };
 
   // the arbiters, between blocks
@@ -186,7 +190,8 @@ function makeChain({
         c.deadline, c.windowEnd, c.commits, c.requestTime,
       ];
     }),
-    M: async () => BigInt(M),
+    // the round's own jury (the aggregator has no K()..P() or round timeout of its own)
+    getJury: jest.fn(async () => [K, M, N, P, timeout].map(BigInt)),
     filters: { RequesterRefunded: (id) => ({ id }) },
     queryFilter: jest.fn(async () => c.refundEvents),
   };
@@ -286,6 +291,8 @@ describe('driving a round with the user wallet', () => {
     // every phase was shown on the way
     const phases = onRound.mock.calls.map(([round]) => round.phase);
     expect(phases).toEqual(expect.arrayContaining([PHASE.DRAW, PHASE.COMMIT, PHASE.CLOSING, PHASE.REVEAL, PHASE.FINAL]));
+    // and every read carries the round's jury
+    expect(onRound.mock.calls[0][0].jury).toEqual({ K: 6, M: 5, N: 4, P: 3, timeout: 300 });
   });
 
   test('each call is dry-run from the user address and sent with the estimate plus half', async () => {
@@ -450,6 +457,20 @@ describe('rounds that end without a refund to the user', () => {
     expect(c.sent).toHaveLength(0);
   });
 
+  test("the commit quorum is the round's own M, read with getJury", async () => {
+    // a Large round (M = 16): 5 commits are short of it, so after the deadline the wallet settles
+    const c = makeChain({ K: 21, M: 16, N: 13, P: 10, startPhase: PHASE.COMMIT, startTime: 400_000 });
+    c.drawnAt = T0 + 10;
+    c.commits = 5;
+    c.windowEnd = T0 + 165;
+    c.deadline = T0 + 310;
+    c.tick = () => {};
+    const result = await drive(c).promise;
+    expect(result.status).not.toBe('expired');
+    expect(c.sent.map((x) => x.fn)).toContain('settle');
+    expect(c.read.getJury).toHaveBeenCalledWith(AGG_ID);
+  });
+
   test('a round never drawn for a day cannot be drawn', async () => {
     const c = makeChain({ startTime: (86400 + 60) * 1000 });
     const result = await drive(c).promise;
@@ -494,6 +515,11 @@ describe('helpers', () => {
     expect(isUserRejection(rejectedError())).toBe(true);
     expect(isUserRejection({ code: 4001 })).toBe(true);
     expect(isUserRejection(new Error('nonce too low'))).toBe(false);
+  });
+
+  test('parseJury turns getJury into numbers, and an unknown round (all zero) into null', () => {
+    expect(parseJury([50n, 38n, 27n, 17n, 600n])).toEqual({ K: 50, M: 38, N: 27, P: 17, timeout: 600 });
+    expect(parseJury([0n, 0n, 0n, 0n, 0n])).toBeNull();
   });
 
   test('parseRoundInfo turns getRoundInfo into numbers and bigints', () => {

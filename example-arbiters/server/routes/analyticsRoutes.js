@@ -20,9 +20,10 @@ const { normalizeNetwork } = require('../config');
 const { classMap } = require('@verdikta/common');
 
 /**
- * Arbiter availability per class (ClassID), with the selectable count against
- * the aggregator's K and the keeper's scansAll(cls), enriched with class names
- * from classMap.
+ * Arbiter availability per class (ClassID): the selectable count (the jury
+ * size is per request; a draw short of K repeats arbiters and fails only with
+ * none selectable), the aggregator's maxJury and the keeper's scansAll(cls),
+ * enriched with class names from classMap.
  */
 async function getArbiterAnalytics(network) {
   const verdiktaService = getVerdiktaService(network);
@@ -49,7 +50,7 @@ async function getArbiterAnalytics(network) {
     return {
       byClass: enrichedByClass,
       totalOracles: arbiterData.totalOracles,
-      K: arbiterData.K, // the aggregator's jury size, for the per-ClassID selectable / K column
+      maxJury: arbiterData.maxJury, // the largest K a request may ask for (each request sets its own)
       verdiktaConnected: true,
       timestamp: arbiterData.timestamp
     };

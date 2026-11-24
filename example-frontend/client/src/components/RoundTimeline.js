@@ -6,7 +6,8 @@ import { PHASE } from '../utils/timeoutUtils';
 /**
  * The phases of a v2 aggregator round, the one it is in, and the wallet transactions this
  * page sent for it. `info` is the Run Query round state: { aggId, withBeacons, round,
- * deadlineMs, steps, explorerUrl }. `round` is getRoundInfo() as parseRoundInfo() returns it.
+ * deadlineMs, steps, explorerUrl }. `round` is getRoundInfo() as parseRoundInfo() returns it,
+ * plus `jury` from getJury(aggId) (see driveRound).
  */
 
 const ROWS = [
@@ -68,6 +69,13 @@ function RoundTimeline({ info, nowMs = Date.now() }) {
       <div style={{ marginBottom: '6px' }}>
         <strong>Round</strong> <code style={{ fontSize: '12px', wordBreak: 'break-all' }}>{info.aggId}</code>
       </div>
+      {round.jury ? (
+        // the round's own jury, from getJury(aggId): it is the request's, not the aggregator's
+        <div data-testid="round-jury" style={{ marginBottom: '6px', color: '#444' }}>
+          Jury: {round.jury.K} drawn, {round.jury.M} promoted to reveal, {round.jury.N} counted,
+          {' '}{round.jury.P} clustered; round timeout {round.jury.timeout} s from the draw
+        </div>
+      ) : null}
       <ol style={{ margin: '0 0 6px 18px', padding: 0 }}>
         {rows.map((row) => {
           const done = !terminalFail && current > row.phase;
@@ -83,7 +91,9 @@ function RoundTimeline({ info, nowMs = Date.now() }) {
               {row.label}
               {row.note ? <span style={{ fontWeight: 'normal', color: '#777' }}> — {row.note}</span> : null}
               {active && row.phase === PHASE.COMMIT ? (
-                <span style={{ fontWeight: 'normal' }}> ({round.commits} committed)</span>
+                <span style={{ fontWeight: 'normal' }}>
+                  {' '}({round.commits} committed{round.jury ? `, ${round.jury.M} needed` : ''})
+                </span>
               ) : null}
             </li>
           );

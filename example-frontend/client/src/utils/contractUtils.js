@@ -58,8 +58,14 @@ export const CHAIN_PARAMS = {
 // ABI of the v2 ReputationAggregator (verdikta-dispatcher, reputationBasedAggregator;
 // MIGRATION.md there lists the changes from v1). Arbiters are paid in ETH.
 //
-// A request escrows maxTotalFee(maxFee, minFee, withBeacons) from msg.value, and the
-// caller's ethOwed credit covers any shortfall; excess value goes to credit. The jury
+// One aggregator serves every jury size: each request carries its own jury,
+// Jury {K, M, N, P, timeout} (K drawn, M promoted, N counted, P clustered, the round
+// timeout in seconds from the draw), and getJury(aggId) returns a round's. The owner
+// bounds requests with maxJury() and maxTimeout() (and tPlus(), which every timeout
+// must exceed); a request outside them reverts BadJury. See utils/juryPresets.js.
+//
+// A request escrows maxTotalFee(maxFee, minFee, withBeacons, K, P) from msg.value, and
+// the caller's ethOwed credit covers any shortfall; excess value goes to credit. The jury
 // is NOT drawn by the request: the requester (here, the user's wallet) moves the round
 // on with drawJury() and promote(); see utils/timeoutUtils.js. Unspent prepay, draw
 // and promote rewards are credited to ethOwed and withdrawn with withdrawEth().
@@ -68,8 +74,8 @@ export const CHAIN_PARAMS = {
 // 7 settled, 8 failed, 9 cancelled. aggId = bytes32(roundId), sequential from 1.
 export const CONTRACT_ABI = [
   // request and fees
-  'function requestAIEvaluationWithApproval(string[] cids, string addendumText, uint256 alpha, uint256 maxFee, uint256 minFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 requestedClass, bool withBeacons) payable returns (bytes32 aggId)',
-  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) view returns (uint256)',
+  'function requestAIEvaluationWithApproval(string[] cids, string addendumText, uint256 alpha, uint256 maxFee, uint256 minFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 requestedClass, bool withBeacons, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury) payable returns (bytes32 aggId)',
+  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P) view returns (uint256)',
   'function maxOracleFee() view returns (uint256)',
   'function ethOwed(address) view returns (uint256)',
   'function withdrawEth()',
@@ -83,13 +89,12 @@ export const CONTRACT_ABI = [
   'function getRoundInfo(bytes32 aggId) view returns (uint8 phase, uint256 requestBlock, bytes32 sealedHash, uint256 closeBlock, uint256 received, uint256 baseFees, uint256 bonuses, uint256 rewards, uint256 deadline, uint256 windowEnd, uint256 commits, uint256 requestTime)',
   'function getEvaluation(bytes32 aggId) view returns (uint256[] aggregated, string justifications, bool valid)',
   'function isFailed(bytes32 aggId) view returns (bool)',
-  'function responseTimeoutSeconds() view returns (uint40)',
+  'function getJury(bytes32 aggId) view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout)',
+  // the owner's bounds on a request's jury
+  'function maxJury() view returns (uint8)',
+  'function maxTimeout() view returns (uint40)',
   'function tPlus() view returns (uint40)',
   'function revealWindow() view returns (uint40)',
-  'function K() view returns (uint8)',
-  'function M() view returns (uint8)',
-  'function N() view returns (uint8)',
-  'function P() view returns (uint8)',
   // events
   'event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)',
   'event RequestFunded(bytes32 indexed aggRequestId, address indexed requester, uint256 fromCredit, uint256 fromValue)',
@@ -105,6 +110,7 @@ export const CONTRACT_ABI = [
   'event EthWithdrawn(address indexed payee, uint256 amount)',
   // errors
   'error BadInput()',
+  'error BadJury()', // AggregatorLib.checkJury: the request's jury is outside the rules or limits
   'error KeeperNotSet()',
   'error InsufficientPayment()',
   'error BadSelectionCount()',
@@ -225,6 +231,6 @@ export function makeRpcProvider(networkKey = DEFAULT_NET_KEY) {
 // migration. It gated requests on the aggregator's LINK balance, but the ETH-funded
 // ReputationAggregator holds no LINK for routine operation (arbiters are paid in ETH
 // from the requester's escrowed msg.value). The relevant pre-flight check now is the
-// requester's own ETH balance vs. maxTotalFee(maxFee, minFee, withBeacons), done inline
+// requester's own ETH balance vs. maxTotalFee(maxFee, minFee, withBeacons, K, P), done inline
 // in RunQuery.
 

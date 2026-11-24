@@ -19,6 +19,10 @@ import { driveRound, describeError } from '../utils/timeoutUtils';
 import TimeoutNotice from '../components/TimeoutNotice';
 import RoundTimeline from '../components/RoundTimeline';
 import { ContractDebugger } from '../utils/contractDebugger';
+import { DEFAULT_JURY_PRESET_KEY, juryPresetByKey, formatJury } from '../utils/juryPresets';
+
+// The jury a request asks for when App passes none: Small, 6/5/4/3, 300 s.
+const DEFAULT_JURY = juryPresetByKey(DEFAULT_JURY_PRESET_KEY).jury;
 
 // Default query package CID for example/testing
 const DEFAULT_QUERY_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
@@ -94,11 +98,13 @@ function clearPendingRound() {
 }
 
 /** The worst-case prepay before the contract's own maxTotalFee() has been read. */
-function estimateMaxTotalFee(maxFee = 0n, minFee = 0n, withBeacons = false) {
-  // v2 defaults: K = 6, bonus multiplier B = 3, P = 3, beacon quorum 2, draw reward 2 fees,
-  // promote reward 1 fee: max(fee, floor) x (K + B x P [+ 2]) + fee x (2 + 1).
+export function estimateMaxTotalFee(maxFee = 0n, minFee = 0n, withBeacons = false, jury = DEFAULT_JURY) {
+  // v2 defaults: bonus multiplier B = 3, beacon quorum 2, draw reward 2 fees, promote
+  // reward 1 fee; K and P are the request's jury:
+  // max(fee, floor) x (K + B x P [+ 2]) + fee x (2 + 1).
   const juror = minFee > maxFee ? minFee : maxFee;
-  return juror * (15n + (withBeacons ? 2n : 0n)) + maxFee * 3n;
+  const slots = BigInt(jury.K) + 3n * BigInt(jury.P) + (withBeacons ? 2n : 0n);
+  return juror * slots + maxFee * 3n;
 }
 
 /**
@@ -144,7 +150,7 @@ async function loadEvaluationIfReady(
  * Compute the ETH (wei) the caller must attach to a request, given the contract's
  * worst-case requirement and the caller's existing on-chain ethOwed credit.
  *
- * The v2 aggregator escrows exactly maxTotalFee(maxFee, minFee, withBeacons): msg.value
+ * The v2 aggregator escrows exactly maxTotalFee(maxFee, minFee, withBeacons, K, P): msg.value
  * first, and the caller's ethOwed credit covers any shortfall (excess value goes back to
  * credit). Attaching value = max(0, required - credit) therefore uses the credit up first
  * and never overpays.
@@ -153,11 +159,12 @@ async function loadEvaluationIfReady(
  * @param {bigint} maxFee       - per-arbiter fee ceiling (ETH wei) passed to the request
  * @param {bigint} minFee       - fee floor (ETH wei, 0 = none) passed to the request
  * @param {boolean} withBeacons - the request's beacon flag
+ * @param {object} jury         - the request's jury { K, M, N, P, timeout }
  * @param {string} owner        - the requester address (msg.sender)
  * @returns {Promise<{required: bigint, credit: bigint, value: bigint}>}
  */
-async function computeEthFunding(readContract, maxFee, minFee, withBeacons, owner) {
-  const required = await readContract.maxTotalFee(maxFee, minFee, withBeacons); // worst case, ETH wei
+async function computeEthFunding(readContract, maxFee, minFee, withBeacons, jury, owner) {
+  const required = await readContract.maxTotalFee(maxFee, minFee, withBeacons, jury.K, jury.P); // worst case, ETH wei
   let credit = 0n;
   try {
     credit = await readContract.ethOwed(owner);
@@ -214,6 +221,8 @@ function RunQuery({
   estimatedBaseCost,
   maxFeeBasedScalingFactor,
   withBeacons = false,
+  // The request's jury { K, M, N, P, timeout } (App's jury setting; default Small)
+  jury = DEFAULT_JURY,
   selectedClassId,
   selectedNetwork,
 }) {
@@ -277,11 +286,15 @@ function RunQuery({
   const [ethCredit, setEthCredit] = useState(0n);
   const [withdrawing, setWithdrawing] = useState(false);
   // Worst-case prepay shown in the banner. Starts from the v2 formula with the default
-  // round sizes (estimateMaxTotalFee) and is refined to the contract's exact
-  // maxTotalFee(maxFee, minFee, withBeacons) below.
+  // jury (estimateMaxTotalFee) and is refined to the contract's exact
+  // maxTotalFee(maxFee, minFee, withBeacons, K, P) below.
   const [maxTotalFeeEstimate, setMaxTotalFeeEstimate] = useState(() =>
-    estimateMaxTotalFee(maxFee || 0n, minFee || 0n, withBeacons)
+    estimateMaxTotalFee(maxFee || 0n, minFee || 0n, withBeacons, jury)
   );
+  // A new jury setting: start again from the formula until the contract is read.
+  useEffect(() => {
+    setMaxTotalFeeEstimate(estimateMaxTotalFee(maxFee || 0n, minFee || 0n, withBeacons, jury));
+  }, [maxFee, minFee, withBeacons, jury]);
 
   const refreshEthCredit = useCallback(async () => {
     if (!isConnected || !walletAddress || !contractAddress) {
@@ -299,7 +312,7 @@ function RunQuery({
       const readContract = new ethers.Contract(contractAddress, CONTRACT_ABI, roProvider);
       const [owed, worstCase] = await Promise.all([
         readContract.ethOwed(walletAddress),
-        readContract.maxTotalFee(maxFee, minFee, withBeacons).catch(() => null),
+        readContract.maxTotalFee(maxFee, minFee, withBeacons, jury.K, jury.P).catch(() => null),
       ]);
       setEthCredit(owed);
       if (worstCase != null) setMaxTotalFeeEstimate(worstCase);
@@ -307,7 +320,7 @@ function RunQuery({
       console.warn('Could not read ETH prepay credit:', err?.message || err);
       setEthCredit(0n);
     }
-  }, [isConnected, walletAddress, contractAddress, selectedNetwork, maxFee, minFee, withBeacons]);
+  }, [isConnected, walletAddress, contractAddress, selectedNetwork, maxFee, minFee, withBeacons, jury]);
 
   useEffect(() => {
     refreshEthCredit();
@@ -378,7 +391,8 @@ const debugContractIssues = async () => {
       estimatedBaseCost || parseUnits("0.000001", 18), // Use actual estimatedBaseCost (ETH)
       maxFeeBasedScalingFactor || 10, // Use actual scaling factor
       selectedClassId || 128,
-      withBeacons
+      withBeacons,
+      jury
     );
     
     console.log('📋 Full Debug Report:', report);
@@ -644,7 +658,7 @@ const handleRunQuery = async () => {
       }
 
     // 4) Compute the ETH to attach (msg.value). Worst-case prepay is
-    //    maxTotalFee(maxFee, minFee, withBeacons); existing ethOwed credit covers what the
+    //    maxTotalFee(maxFee, minFee, withBeacons, K, P); existing ethOwed credit covers what the
     //    value does not, and unspent ETH comes back as ethOwed credit when the round ends.
     let ethValue;
     try {
@@ -653,7 +667,7 @@ const handleRunQuery = async () => {
         throw new Error('Wallet address is not available for funding calculation');
       }
 
-      const { required, credit, value } = await computeEthFunding(readContract, maxFee, minFee, withBeacons, walletAddress);
+      const { required, credit, value } = await computeEthFunding(readContract, maxFee, minFee, withBeacons, jury, walletAddress);
       ethValue = value;
       console.log(
         `ETH funding — required: ${ethers.formatEther(required)} ETH, ` +
@@ -741,6 +755,8 @@ const handleRunQuery = async () => {
         maxFeeBasedScalingFactor,
         selectedClassId === undefined ? 128 : selectedClassId,
         withBeacons, // beacon stage before the draw
+        // the jury (K drawn, M promoted, N counted, P clustered, timeout in s from the draw)
+        { K: jury.K, M: jury.M, N: jury.N, P: jury.P, timeout: jury.timeout },
         {
           value: ethValue, // ETH prepay (msg.value); credit covers the rest, unspent part comes back as credit
           // The request escrows (~0.2 million gas) and settles up to two due rounds of other
@@ -827,6 +843,12 @@ Each query prepays the worst-case arbiter fees in ETH (refunded if unused). Plea
 The estimated base cost must be below the fee ceiling (after clamping to the aggregator's maxOracleFee), alpha at most 1000, the scaling factor between 1 and 65535, and the query 1 to 10 CIDs of at most 100 characters with an addendum of at most 1000.`;
         setTransactionStatus(`Error: ${decoded || 'BadInput'}`);
         alert(errorMessage);
+      } else if (msg.includes('BadJury')) {
+        const errorMessage = `The aggregator refused the jury ${formatJury(jury)} (BadJury).
+
+A jury needs K >= M >= N >= P >= 1, N at most 40, P at least 2 (unless N = 1), K within the aggregator's maxJury() and the keeper's shortlist, and a timeout above tPlus() and at most maxTimeout(). Pick another jury size on the Jury Selection page.`;
+        setTransactionStatus(`Error: ${decoded || 'BadJury'}`);
+        alert(errorMessage);
       } else if (msg.includes('KeeperNotSet') || msg.toLowerCase().includes('paused')) {
         setTransactionStatus(`Error: ${decoded || msg}`);
         alert('The aggregator is not accepting requests right now (paused, or not configured). Try again later or contact the administrator.');
@@ -875,7 +897,8 @@ The estimated base cost must be below the fee ceiling (after clamping to the agg
         }}>
           <div>
             💧 Queries are paid in <strong>ETH</strong>. Each run prepays the worst-case arbiter
-            fees (about <strong>{ethers.formatEther(maxTotalFeeEstimate)} ETH</strong>); any unused
+            fees for its jury (<span data-testid="request-jury">K/M/N/P {formatJury(jury)}</span>:
+            about <strong>{ethers.formatEther(maxTotalFeeEstimate)} ETH</strong>); any unused
             amount is returned as on-chain <em>prepay credit</em> that is automatically applied to
             your next query.
           </div>

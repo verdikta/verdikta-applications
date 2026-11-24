@@ -235,13 +235,19 @@ const ScanFailedBanner = ({ hData }) => (
   </div>
 );
 
+/** The juries seen in the window, as "; seen: K/M/N/P/timeout s × rounds, …". */
+const juriesText = (juries) =>
+  Array.isArray(juries) && juries.length
+    ? `; seen in this window: ${juries.map((j) => `K/M/N/P ${j.K}/${j.M}/${j.N}/${j.P}, ${j.timeout} s × ${j.rounds}`).join('; ')}`
+    : '';
+
 const RELIABILITY_HEAD = (hData) => (
   <>
     <th className="tooltip-header" title="Times this arbiter was drawn into a jury and sent the commit request (and slots skipped at the draw)">Drawn</th>
     <th className="tooltip-header" title="Commits received, and commits ÷ times drawn">Commits</th>
     <th className="tooltip-header" title="Times one of its commits was promoted (asked to reveal). Each round promotes M of the commits at random.">Promoted</th>
     <th className="tooltip-header" title="Reveals received, and reveals ÷ times promoted. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
-    <th className="tooltip-header" title={`Failed rounds charged here. A round needs ${hData?.requirements?.M ?? 'M'} commits, then ${hData?.requirements?.N ?? 'N'} reveals from the promoted commits. When a round fails with fewer than M commits, every slot that didn't commit is charged, including slots skipped at the draw; when it fails in the reveal phase, every promoted slot that didn't reveal is. Rounds where no arbiter committed are counted as likely malformed requests and not listed here, although the keeper still docks every drawn arbiter its no-commit penalty. Rounds that never got going are not charged at all: no jury drawable, beacon quorum missed, or M commits that were never closed or promoted.`}>Blameworthy</th>
+    <th className="tooltip-header" title={`Failed rounds charged here. A round needs M commits, then N reveals from the promoted commits (each request sets its own jury${juriesText(hData?.requirements?.juries)}). When a round fails with fewer than M commits, every slot that didn't commit is charged, including slots skipped at the draw; when it fails in the reveal phase, every promoted slot that didn't reveal is. Rounds where no arbiter committed are counted as likely malformed requests and not listed here, although the keeper still docks every drawn arbiter its no-commit penalty. Rounds that never got going are not charged at all: no jury drawable, beacon quorum missed, or M commits that were never closed or promoted.`}>Blameworthy</th>
   </>
 );
 
@@ -1196,9 +1202,7 @@ function Analytics() {
 
       {/* Arbiter Availability Section */}
       <section className="analytics-section">
-        <h2 title={data?.system?.aggregatorConfig
-          ? `Each request draws a jury of ${data?.system?.aggregatorConfig.K} distinct selectable arbiters (no duplicates: the draw fails if fewer are eligible). ${data?.system?.aggregatorConfig.M} must commit, ${data?.system?.aggregatorConfig.M} commits are promoted to reveal, and ${data?.system?.aggregatorConfig.N} reveals finalize the result.`
-          : 'Arbiters per owner, by status'}><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
+        <h2 title={`Each request sets its own jury: K arbiters drawn${data?.system?.aggregatorConfig?.maxJury ? ` (at most ${data.system.aggregatorConfig.maxJury})` : ''}, M must commit and are promoted to reveal, and N reveals finalize the result. With fewer than K selectable arbiters the jury repeats arbiters; a draw fails only when none is selectable.`}><Users size={20} className="inline-icon" /> Arbiter Availability</h2>
         {!data?.arbiters?.verdiktaConnected && (
           <div className="info-banner">
             <AlertTriangle size={16} />
@@ -1243,7 +1247,7 @@ function Analytics() {
                   <tr>
                     <th className="tooltip-header" title="The model class an arbiter registered for (arbiterClasses); a request names one">ClassID</th>
                     <th>Arbiters</th>
-                    <th className="tooltip-header" title={`Arbiters a draw can pick now (active, new or at risk) against the jury size K = ${data.arbiters.K ?? '?'}. With fewer selectable than K, every draw for the class fails.`}>Selectable / K</th>
+                    <th className="tooltip-header" title={`Arbiters a draw can pick now (active, new or at risk). The jury size K is per request (at most ${data.arbiters.maxJury ?? 'maxJury'}): a jury larger than this count repeats arbiters (slot k holds pick k mod m), so it is less independent; a draw fails (pool shortage, refunded) only when none is selectable.`}>Selectable</th>
                     {STATUS_ORDER.map(({ key, label }) => (
                       <th key={key} className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS[label]}>{label}</th>
                     ))}
@@ -1261,9 +1265,11 @@ function Analytics() {
                         <td>{c.total}</td>
                         <td
                           style={{ color: c.short ? COLORS.blocked : COLORS.active, fontWeight: 600 }}
-                          title={c.short ? `Fewer selectable arbiters than K: draws for class ${c.classId} fail (pool shortage)` : undefined}
+                          title={c.short
+                            ? `No selectable arbiters: draws for class ${c.classId} fail (pool shortage)`
+                            : `A jury of more than ${c.selectable} repeats arbiters for class ${c.classId}`}
                         >
-                          {c.selectable} / {c.K ?? '?'}{c.short ? ' · draws fail' : ''}
+                          {c.selectable}{c.short ? ' · draws fail' : ''}
                         </td>
                         {STATUS_ORDER.map(({ key }) => (
                           <td key={key} style={{ color: COLORS[key], fontWeight: 600 }}>{c[key] ?? 0}</td>
@@ -1598,33 +1604,21 @@ function Analytics() {
                   <span className="health-title">Aggregator Configuration</span>
                 </div>
                 <div className="health-details config-grid">
-                  <div className="config-item">
-                    <span className="config-label">Jury (K)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.K}</span>
+                  <div className="config-item" title="Each request carries its own jury (K, M, N, P) and round timeout">
+                    <span className="config-label">Jury</span>
+                    <span className="config-value">Per request</span>
                   </div>
-                  <div className="config-item">
-                    <span className="config-label">Commits needed / promoted (M)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.M}</span>
+                  <div className="config-item" title="maxJury(): the largest K a request may ask for (also capped by the keeper's shortlist)">
+                    <span className="config-label">Max jury (K)</span>
+                    <span className="config-value">{data.system.aggregatorConfig.maxJury ?? '—'}</span>
                   </div>
-                  <div className="config-item">
-                    <span className="config-label">Early close (M+)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.mPlus}</span>
-                  </div>
-                  <div className="config-item">
-                    <span className="config-label">Reveals to finalize (N)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.N}</span>
-                  </div>
-                  <div className="config-item">
-                    <span className="config-label">Cluster (P)</span>
-                    <span className="config-value">{data.system.aggregatorConfig.P}</span>
+                  <div className="config-item" title="maxTimeout(): the longest round timeout a request may ask for (from the draw)">
+                    <span className="config-label">Max round timeout</span>
+                    <span className="config-value">{data.system.aggregatorConfig.maxTimeout ?? '—'}s</span>
                   </div>
                   <div className="config-item">
                     <span className="config-label">Bonus Multiplier</span>
                     <span className="config-value">{data.system.aggregatorConfig.bonusMultiplier}x</span>
-                  </div>
-                  <div className="config-item">
-                    <span className="config-label">Round timeout</span>
-                    <span className="config-value">{data.system.aggregatorConfig.responseTimeoutSeconds}s</span>
                   </div>
                   <div className="config-item">
                     <span className="config-label">Commit window (T+)</span>

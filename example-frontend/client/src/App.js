@@ -12,6 +12,7 @@ import { createClient } from './services/verdiktaClient';
 import { fetchContracts } from './utils/contractManagementService';
 import { modelProviderService } from './services/modelProviderService';
 import { getNetworkConfig } from './utils/contractUtils';
+import { DEFAULT_JURY_PRESET_KEY, juryPresetByKey } from './utils/juryPresets';
 import {
   selectInjectedProvider,
   refreshDiscovery,
@@ -119,6 +120,19 @@ function App() {
   // Outcomes state
   const [outcomeLabels, setOutcomeLabels] = useState(['True', 'False']);
   
+  // Arbiter jury setting: the jury (K/M/N/P/timeout) and beacon flag every request carries.
+  // The v2 aggregator has no jury size of its own. Default Small, 6/5/4/3, 300 s.
+  const [juryPresetKey, setJuryPresetKey] = useState(() => {
+    const saved = localStorage.getItem('juryPreset');
+    return juryPresetByKey(saved || DEFAULT_JURY_PRESET_KEY).key;
+  });
+  const handleJuryPresetChange = (key) => {
+    const preset = juryPresetByKey(key);
+    setJuryPresetKey(preset.key);
+    localStorage.setItem('juryPreset', preset.key);
+  };
+  const juryPreset = juryPresetByKey(juryPresetKey);
+
   // Jury Selection state
   const [iterations, setIterations] = useState(1);
   const [juryNodes, setJuryNodes] = useState([{
@@ -200,9 +214,10 @@ function App() {
   // Max per-arbiter fee, in ETH (arbiters are paid in ETH, not LINK). A typical arbiter
   // fee is ~0.0001 ETH; the aggregator's maxOracleFee ceiling (0.0004 ETH) clamps anything
   // higher, so this sits safely under it. The v2 aggregator's worst-case prepay is
-  //   maxTotalFee(maxFee, minFee, withBeacons)
+  //   maxTotalFee(maxFee, minFee, withBeacons, K, P)
   //     = max(eff, minFee) * (K + B*P [+ beacon quorum]) + eff * (draw 2 + promote 1)
-  // with eff = min(maxFee, maxOracleFee). With K = 6, B = 3, P = 3 and no floor or beacons:
+  // with eff = min(maxFee, maxOracleFee) and K, P the request's jury. With the Small jury
+  // (K = 6, P = 3), B = 3 and no floor or beacons:
   // 0.0001 * 15 + 0.0001 * 3 = 0.0018 ETH. The draw and promote rewards (3 fees) come back
   // to the user's prepay credit when the page's wallet makes those calls (the draw reward
   // only within 30 s of the request).
@@ -212,10 +227,12 @@ function App() {
   const BASE_FEE_PCT = 1; // 1%
   const ESTIMATED_BASE_COST = MAX_FEE * BigInt(BASE_FEE_PCT) / 100n; // Using native BigInt arithmetic
   const MAX_FEE_SCALING_FACTOR = 10;
-  // Beacon stage before the draw (v2). Off: one drawJury call draws the jury. On: the
-  // first drawJury starts the beacon stage and a second draws, and the quorum's beacons
-  // are paid too.
-  const WITH_BEACONS = false;
+  // Beacon stage before the draw (v2), from the jury setting (on for Jumbo). Off: one
+  // drawJury call draws the jury. On: the first drawJury starts the beacon stage and a
+  // second draws, and the quorum's beacons are paid too.
+  const WITH_BEACONS = juryPreset.withBeacons;
+  // The request's jury: K drawn, M promoted, N counted, P clustered, timeout (s from the draw)
+  const JURY = juryPreset.jury;
 
   // Handle network change
   const handleNetworkChange = async (newNetwork) => {
@@ -742,6 +759,8 @@ function App() {
       onClassSelect={handleClassSelect}
       overrideClassInfo={overrideClassInfo}
       staticConfigMode={STATIC_CONFIG_MODE}
+      juryPresetKey={juryPresetKey}
+      onJuryPresetChange={handleJuryPresetChange}
     />
   );
 
@@ -819,6 +838,7 @@ function App() {
             estimatedBaseCost={ESTIMATED_BASE_COST}
             maxFeeBasedScalingFactor={MAX_FEE_SCALING_FACTOR}
             withBeacons={WITH_BEACONS}
+            jury={JURY}
             selectedClassId={selectedClassId}
             selectedNetwork={selectedNetwork}
           />

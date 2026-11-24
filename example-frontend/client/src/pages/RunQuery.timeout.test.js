@@ -35,6 +35,7 @@ function resetChain() {
     wallet: () => undefined, // (fn) => an Error to throw instead of sending
     sent: [], // { fn, args, overrides, signer }
     maxTotalFeeArgs: null,
+    jury: null, // the jury the request carried, returned by getJury
   });
 }
 const MOCK_B0 = 5000;
@@ -102,12 +103,16 @@ jest.mock('ethers', () => {
         }
       };
 
-      this.maxTotalFee = async (maxFee, minFee, withBeacons) => {
-        c.maxTotalFeeArgs = [maxFee, minFee, withBeacons];
+      this.maxTotalFee = async (maxFee, minFee, withBeacons, K, P) => {
+        c.maxTotalFeeArgs = [maxFee, minFee, withBeacons, K, P];
         return maxFee * 18n;
       };
       this.ethOwed = async () => c.ethOwed;
-      this.M = async () => 5n;
+      // the round's own jury; zero for an unknown round, like the contract
+      this.getJury = async () => {
+        const j = c.jury || { K: 0, M: 0, N: 0, P: 0, timeout: 0 };
+        return [j.K, j.M, j.N, j.P, j.timeout].map(BigInt);
+      };
       this.getEvaluation = async () => c.evaluation;
       this.getRoundInfo = async () => {
         mockTick();
@@ -119,6 +124,7 @@ jest.mock('ethers', () => {
         requireSigner();
         const overrides = args.pop();
         c.sent.push({ fn: 'requestAIEvaluationWithApproval', args, overrides, signer: runner });
+        c.jury = { ...args[9] };
         return {
           wait: async () => {
             c.phase = 1;
@@ -218,7 +224,7 @@ jest.mock('../services/modelProviderService', () => ({
 
 const spies = {};
 
-function Harness({ network = 'base', withBeacons = false, minFee = 0n }) {
+function Harness({ network = 'base', withBeacons = false, minFee = 0n, jury }) {
   const [transactionStatus, setTransactionStatus] = React.useState('');
   const [loadingResults, setLoadingResults] = React.useState(false);
   const [roundInfo, setRoundInfo] = React.useState(null);
@@ -264,6 +270,7 @@ function Harness({ network = 'base', withBeacons = false, minFee = 0n }) {
       estimatedBaseCost={1000000000000n}
       maxFeeBasedScalingFactor={10}
       withBeacons={withBeacons}
+      jury={jury}
       selectedClassId={128}
       selectedNetwork={network}
     />
@@ -323,19 +330,41 @@ afterEach(() => {
 
 /* ---------- tests ---------- */
 
-test('the request has the 9 v2 arguments and attaches the 3-argument quote', async () => {
+test('the request has the 10 v2 arguments, the default Small jury, and attaches the 5-argument quote', async () => {
   await startQuery({ minFee: 0n, withBeacons: false });
 
   const request = mockChain.sent[0];
   expect(request.fn).toBe('requestAIEvaluationWithApproval');
-  expect(request.args).toHaveLength(9);
-  const [cids, addendum, alpha, maxFee, minFee, baseCost, scaling, cls, withBeacons] = request.args;
+  expect(request.args).toHaveLength(10);
+  const [cids, addendum, alpha, maxFee, minFee, baseCost, scaling, cls, withBeacons, jury] = request.args;
   expect(cids).toEqual(['QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH']);
   expect(addendum).toBe('');
   expect([alpha, maxFee, minFee, baseCost, scaling, cls, withBeacons]).toEqual([500, MOCK_MAX_FEE, 0n, 1000000000000n, 10, 128, false]);
-  expect(mockChain.maxTotalFeeArgs).toEqual([MOCK_MAX_FEE, 0n, false]);
+  expect(jury).toEqual({ K: 6, M: 5, N: 4, P: 3, timeout: 300 });
+  expect(mockChain.maxTotalFeeArgs).toEqual([MOCK_MAX_FEE, 0n, false, 6, 3]);
   expect(request.overrides.value).toBe(MOCK_MAX_FEE * 18n);
   expect(request.signer.isSigner).toBe(true);
+  // the ABI encodes the jury as the tuple (uint8, uint8, uint8, uint8, uint40)
+  const { Interface } = jest.requireActual('ethers');
+  const { CONTRACT_ABI } = jest.requireActual('../utils/contractUtils');
+  const iface = new Interface(CONTRACT_ABI);
+  const data = iface.encodeFunctionData('requestAIEvaluationWithApproval', request.args);
+  expect(iface.decodeFunctionData('requestAIEvaluationWithApproval', data)[9].toObject()).toEqual({ K: 6n, M: 5n, N: 4n, P: 3n, timeout: 300n });
+});
+
+test('the jury setting goes with the request and its quote (Jumbo, with beacons)', async () => {
+  const jumbo = { K: 50, M: 38, N: 27, P: 17, timeout: 600 };
+  render(<Harness jury={jumbo} withBeacons />);
+  await act(flush);
+  // the banner's quote before the contract is read uses the jury: 0.0001 x (50 + 3 x 17 + 2) + 0.0001 x 3
+  expect(screen.getByTestId('request-jury')).toHaveTextContent('50/38/27/17, 600 s');
+  fireEvent.click(screen.getByRole('button', { name: 'Run Query' }));
+  await advance(2);
+
+  const request = mockChain.sent[0];
+  expect(request.args[8]).toBe(true);
+  expect(request.args[9]).toEqual(jumbo);
+  expect(mockChain.maxTotalFeeArgs).toEqual([MOCK_MAX_FEE, 0n, true, 50, 17]);
 });
 
 test('the page tells the user which wallet transactions follow and who earns what', async () => {
@@ -347,8 +376,9 @@ test('the page tells the user which wallet transactions follow and who earns wha
   expect(steps).toHaveTextContent('promote');
   expect(steps).toHaveTextContent('1 × the per-arbiter fee');
   expect(steps).toHaveTextContent('closeCommits');
-  // the banner's default quote is the v2 formula: 0.0001 x (6 + 3 x 3) + 0.0001 x 3
+  // the banner's default quote is the v2 formula for the Small jury: 0.0001 x (6 + 3 x 3) + 0.0001 x 3
   expect(screen.getByText(/Queries are paid in/)).toHaveTextContent('0.0018 ETH');
+  expect(screen.getByTestId('request-jury')).toHaveTextContent('6/5/4/3, 300 s');
 });
 
 test('the wallet draws at B+2 and promotes at C+2, the timeline follows, and the result opens', async () => {
@@ -365,7 +395,9 @@ test('the wallet draws at B+2 and promotes at C+2, the timeline follows, and the
   await advance(25);
   const timeline = screen.getByTestId('round-timeline');
   expect(timeline).toHaveTextContent(MOCK_AGG_ID);
-  expect(timeline).toHaveTextContent(/committed\)/);
+  expect(timeline).toHaveTextContent(/committed, 5 needed\)/);
+  // the round's jury, read with getJury(aggId)
+  expect(screen.getByTestId('round-jury')).toHaveTextContent('6 drawn, 5 promoted to reveal, 4 counted, 3 clustered; round timeout 300 s');
   expect(screen.getByTestId('round-deadline')).toHaveTextContent(/Round deadline in \d+ s/);
   expect(screen.getByRole('link', { name: 'drawJury' })).toHaveAttribute('href', `https://basescan.org/tx/${MOCK_TX_HASH}`);
   expect(runButton().textContent).toMatch(/\(\d+s\)/);
@@ -438,7 +470,7 @@ test('too few commits: the wallet settles after the deadline and the refund is s
 
 test('after a reload the page offers to resume a round it was driving', async () => {
   // A round this browser started, already drawn and waiting for promotion.
-  Object.assign(mockChain, { phase: 4, minedAt: Date.now() - 200_000, closeBlock: MOCK_B0 + 90, deadline: MOCK_T0 + 400, revealAfter: 10 });
+  Object.assign(mockChain, { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, phase: 4, minedAt: Date.now() - 200_000, closeBlock: MOCK_B0 + 90, deadline: MOCK_T0 + 400, revealAfter: 10 });
   window.localStorage.setItem(
     PENDING_ROUND_KEY,
     JSON.stringify({ aggId: MOCK_AGG_ID, contractAddress: AGGREGATOR, networkKey: 'base', withBeacons: false, account: MOCK_WALLET })
@@ -452,7 +484,10 @@ test('after a reload the page offers to resume a round it was driving', async ()
   expect(mockChain.sent).toHaveLength(0); // nothing is sent without the user asking
 
   fireEvent.click(screen.getByRole('button', { name: 'Resume the round' }));
-  await advance(20);
+  await advance(1);
+  // the jury shown is the round's (getJury), not the page's current setting (Small)
+  expect(screen.getByTestId('round-jury')).toHaveTextContent('8 drawn');
+  await advance(19);
 
   expect(sentFns()).toEqual(['promote']);
   expect(spies.setCurrentPage).toHaveBeenCalledWith('RESULTS');

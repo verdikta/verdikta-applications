@@ -105,12 +105,12 @@ const AGGREGATOR_ABI = [
   // ETH pull-payment ledger: arbiter owners' base fees and bonuses, anyone's draw /
   // promote rewards and beacon payments, and requesters' refunds. Claimed via withdrawEth().
   "function ethOwed(address) view returns (uint256)",
-  "function K() view returns (uint8)",
-  "function M() view returns (uint8)",
-  "function N() view returns (uint8)",
-  "function P() view returns (uint8)",
+  // No K/M/N/P or timeout getters: the jury goes with each request (item 15),
+  // bounded by the owner's limits, and getJury(aggId) returns a round's own.
+  "function maxJury() view returns (uint8)",
+  "function maxTimeout() view returns (uint40)",
+  "function getJury(bytes32 aggId) view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout)",
   "function bonusMultiplier() view returns (uint8)",
-  "function responseTimeoutSeconds() view returns (uint40)",
   "function tPlus() view returns (uint40)",
   "function revealWindow() view returns (uint40)",
   "function maxOracleFee() view returns (uint256)",
@@ -255,6 +255,22 @@ function toAggId(id) {
   return null;
 }
 
+/**
+ * The juries a set of rounds asked for, most used first:
+ * [{ K, M, N, P, timeout, rounds }]. Rounds without a jury are skipped.
+ */
+function juryTally(rounds) {
+  const byKey = new Map();
+  for (const r of rounds) {
+    const j = r.jury;
+    if (!j) continue;
+    const k = `${j.K}/${j.M}/${j.N}/${j.P}/${j.timeout}`;
+    if (!byKey.has(k)) byKey.set(k, { K: j.K, M: j.M, N: j.N, P: j.P, timeout: j.timeout, rounds: 0 });
+    byKey.get(k).rounds++;
+  }
+  return [...byKey.values()].sort((a, b) => b.rounds - a.rounds || a.K - b.K);
+}
+
 /** Round number of a sequential v2 aggId (aggId = bytes32(roundId)). */
 const roundNumber = (aggId) => Number(BigInt(aggId));
 
@@ -298,6 +314,7 @@ class VerdiktaService {
     this._registryScan = null;          // { toBlock, events: [] } — keeper logs scanned so far
     this._registryPromise = null;       // in-flight incremental scan (shared)
     this._statusCtx = null;             // { value, ts } — keeper/aggregator config status derivation needs
+    this._juryCache = new Map();        // aggIdLower → the round's jury (fixed at request)
     this._slotCache = new Map();        // aggIdLower → slots (only for settled/cancelled rounds: final)
     this._blockSeconds = null;          // { value, ts }
     this._ownerMap = {};                // { operatorLower: { owner, ts } }
@@ -379,21 +396,19 @@ class VerdiktaService {
   }
 
   /**
-   * Aggregator configuration (v2 getters). K arbiters are drawn per round; the
-   * commit phase closes at M+ = M + ceil((K − M) / 2) commits (or after T+ with
-   * at least M); M commits are promoted; the N-th reveal finalizes; the P closest
-   * reveals form the cluster and earn the bonus.
+   * Aggregator configuration (v2 getters). One aggregator serves every jury
+   * size: each request carries its own jury (K drawn, M promoted, N counted, P
+   * clustered, and the round timeout from the draw; see getJury), so the config
+   * holds only the owner's bounds on it: K <= maxJury (and the keeper's
+   * shortlist), T+ < timeout <= maxTimeout.
    */
   async getAggregatorConfig() {
     const agg = this._agg();
     try {
-      const [K, M, N, P, bonusMultiplier, responseTimeoutSeconds, maxOracleFee] = await Promise.all([
-        withRetry(() => agg.K()),
-        withRetry(() => agg.M()),
-        withRetry(() => agg.N()),
-        withRetry(() => agg.P()),
+      const [maxJury, maxTimeout, bonusMultiplier, maxOracleFee] = await Promise.all([
+        withRetry(() => agg.maxJury()),
+        withRetry(() => agg.maxTimeout()),
         withRetry(() => agg.bonusMultiplier()),
-        withRetry(() => agg.responseTimeoutSeconds()),
         withRetry(() => agg.maxOracleFee()),
       ]);
       // The rest is read tolerantly: a missing getter yields null, not a failed page.
@@ -416,15 +431,10 @@ class VerdiktaService {
         str(() => agg.beacons()),
         withRetry(() => agg.paused()).then(Boolean).catch(() => null),
       ]);
-      const k = Number(K), m = Number(M);
       return {
-        K: k,
-        M: m,
-        N: Number(N),
-        P: Number(P),
-        mPlus: mPlus(k, m),
+        maxJury: Number(maxJury),
+        maxTimeout: Number(maxTimeout),
         bonusMultiplier: Number(bonusMultiplier),
-        responseTimeoutSeconds: Number(responseTimeoutSeconds),
         tPlus,
         revealWindow,
         maxOracleFee: ethers.formatEther(maxOracleFee),
@@ -664,18 +674,21 @@ class VerdiktaService {
   /**
    * Arbiter availability per class (model ClassID, e.g. 128): status tallies
    * (see arbiterStatus.STATUSES), average scores, distinct operators and the
-   * per-arbiter list, plus the selectable count against the aggregator's K:
-   * with fewer selectable arbiters than K, every draw for the class fails.
+   * per-arbiter list, plus the selectable count. The jury size is per request
+   * (K <= the aggregator's maxJury), so there is no single K to compare with: a
+   * draw with fewer than K selectable arbiters fills the jury with repeats (slot
+   * k holds pick k mod m), and only a class with none selectable fails every
+   * draw (`short`). `maxJury` is returned for reference.
    * `scansAll` is the keeper's scansAll(cls): false means a draw walks only part
    * of the class list, so a beacon round whose draw then fails pays the
    * treasury, not the requester.
    */
   async getArbiterAvailabilityByClass() {
     try {
-      const [oracles, keeper, K] = await Promise.all([
+      const [oracles, keeper, maxJury] = await Promise.all([
         this.getAllOracles(),
         this.getReputationKeeper(),
-        withRetry(() => this._agg().K()).then(Number).catch(() => null),
+        withRetry(() => this._agg().maxJury()).then(Number).catch(() => null),
       ]);
       const byClass = {};
 
@@ -727,8 +740,7 @@ class VerdiktaService {
         }
         cls.operators = cls.operatorAddresses.size;
         cls.operatorList = Array.from(cls.operatorAddresses);
-        cls.K = K;
-        cls.short = K != null && cls.selectable < K;
+        cls.short = cls.selectable === 0;
         delete cls.qualityScores;
         delete cls.timelinessScores;
         delete cls.operatorAddresses;
@@ -740,7 +752,7 @@ class VerdiktaService {
 
       return {
         byClass,
-        K,
+        maxJury,
         totalOracles: oracles.filter(o => !o.error).length,
         timestamp: Date.now()
       };
@@ -1179,7 +1191,24 @@ class VerdiktaService {
     return senderByJob;
   }
 
-  // --- Round slots ----------------------------------------------------------
+  // --- Round jury and slots ------------------------------------------------
+
+  /**
+   * The jury a round was requested with: getJury(aggId) → { K, M, N, P,
+   * timeout, mPlus }, or null for an unknown round (K = 0). It is fixed at
+   * request, so it is cached.
+   */
+  async _getJury(aggId) {
+    const ck = String(aggId).toLowerCase();
+    if (this._juryCache.has(ck)) return this._juryCache.get(ck);
+    const j = await withRetry(() => this._agg().getJury(aggId));
+    const K = Number(j.K);
+    const jury = K === 0 ? null : {
+      K, M: Number(j.M), N: Number(j.N), P: Number(j.P), timeout: Number(j.timeout), mPlus: mPlus(K, Number(j.M)),
+    };
+    if (jury) this._juryCache.set(ck, jury);
+    return jury;
+  }
 
   /**
    * getSlot(aggId, i) for i < K, stopping at the first empty slot (an undrawn
@@ -1236,12 +1265,9 @@ class VerdiktaService {
     const iface = new ethers.Interface(AGG_EVENT_ABI);
     const topic0Or = [HEALTH_EVENTS.map((n) => iface.getEvent(n).topicHash)];
 
-    const [latest, blockSec, K, M, N, treasury] = await Promise.all([
+    const [latest, blockSec, treasury] = await Promise.all([
       withRetry(() => provider.getBlockNumber()),
       this.getBlockSeconds(),
-      withRetry(() => agg.K()).then(Number),
-      withRetry(() => agg.M()).then(Number),
-      withRetry(() => agg.N()).then(Number),
       // RequesterRefunded to this address is prepay kept by the treasury, not a refund
       withRetry(() => agg.treasury()).then((a) => String(a).toLowerCase()).catch(() => null),
     ]);
@@ -1334,13 +1360,17 @@ class VerdiktaService {
       }
     }
 
-    // Only rounds requested inside the window are judged (the success basis);
-    // their slots come from getSlot (cached once final).
+    // Only rounds requested inside the window are judged (the success basis).
+    // Each round has its own jury (getJury, fixed at request); the slots come
+    // from getSlot (cached once final).
     const judged = Object.values(rounds).filter((r) => r.requestBlock != null);
     let slotReadErrors = 0;
-    await mapWithConcurrency(judged.filter((r) => r.drawBlock != null), 4, async (r) => {
+    await mapWithConcurrency(judged, 4, async (r) => {
       try {
-        r.slots = await this._readSlots(r.aggId, K, { final: r.settled || r.cancelled });
+        r.jury = await this._getJury(r.aggId);
+        if (r.drawBlock != null && r.jury) {
+          r.slots = await this._readSlots(r.aggId, r.jury.K, { final: r.settled || r.cancelled });
+        }
       } catch (err) {
         slotReadErrors++;
         r.slots = null;
@@ -1413,6 +1443,9 @@ class VerdiktaService {
     };
 
     for (const r of judged) {
+      // A round whose jury could not be read is left out (counted in slotReadErrors,
+      // so the result is flagged partial): without M and N it cannot be judged.
+      if (!r.jury) continue;
       const o = dayOff(r.requestBlock);
       tally.requests++;
       if (inDays(o)) daily[o].requests++;
@@ -1420,7 +1453,7 @@ class VerdiktaService {
       const toTreasury = r.refunds.filter((x) => treasury && x.to === treasury);
       const refundTo = toTreasury.length ? 'treasury' : r.refunds.length ? 'requester' : null;
       const d = describeRound({
-        phase: phaseOf(r), failedPhase: r.failedPhase, M, N, fulfilled: r.fulfilled, refundTo,
+        phase: phaseOf(r), failedPhase: r.failedPhase, M: r.jury?.M, N: r.jury?.N, fulfilled: r.fulfilled, refundTo,
         slots: slots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: r.reveals[s.index]?.late, skipReason: r.skips[s.index] })),
       });
       const bucket = {
@@ -1707,7 +1740,8 @@ class VerdiktaService {
       fromBlock: Math.max(floor, 0),
       toBlock: latest,
       blockSeconds: Math.round(blockSec * 1000) / 1000,
-      requirements: { K, M, N },
+      // The juries the judged rounds asked for (per request), most used first.
+      requirements: { juries: juryTally(judged) },
       points: await this._getStatusCtx().then((c) => c.points).catch(() => DEFAULT_POINTS),
       scannedChunks,
       totalChunks: ranges.length,
@@ -1767,7 +1801,7 @@ class VerdiktaService {
 
   /**
    * Full blow-by-blow of a single round (aggId), for the agg-history drill-down:
-   * the requirements (K/M/N/P, current aggregator config), the round's on-chain
+   * the round's own jury (K/M/N/P and timeout, from getJury), its on-chain
    * state (getRoundInfo), every slot (getSlot: who, fee, what it did, and the
    * keeper outcome settlement reports for it), the request CIDs, the event
    * timeline, the money (base fees, bonuses, and the rewards split into draw,
@@ -1791,11 +1825,11 @@ class VerdiktaService {
     if (!aggId) throw new Error(`Not a round id: ${aggIdIn}`);
     const round = roundNumber(aggId);
 
-    // 1. Requirements (the aggregator's current config; a round keeps the values
-    //    it was requested with, which only differ if the owner changed them since).
-    const [K, M, N, P] = await withRetry(() => Promise.all([agg.K(), agg.M(), agg.N(), agg.P()]))
-      .then((v) => v.map(Number));
-    const contractParams = { K, M, N, P, mPlus: mPlus(K, M) };
+    // 1. Requirements: the jury this round was requested with (getJury; zero
+    //    for an unknown round, which step 2 reports as not found).
+    const jury = await this._getJury(aggId);
+    const { K = 0, M = 0, N = 0 } = jury || {};
+    const contractParams = jury;
     const [treasury, beaconsAddr] = await Promise.all([
       withRetry(() => agg.treasury()).then(String).catch(() => null),
       withRetry(() => agg.beacons()).then(String).catch(() => null),
@@ -2295,4 +2329,5 @@ module.exports = {
   VerdiktaService,
   NotConfiguredError,
   toAggId,
+  juryTally,
 };

@@ -3,7 +3,7 @@
 The Run Query page is where you execute your AI jury evaluation. You can choose from three different methods to run your query, each suited to different use cases and workflows.
 
 !!! note "Checked against the code"
-    Revised on 2026-11-23 for the v2 aggregator, against `example-frontend/client/src/pages/RunQuery.js` and `utils/timeoutUtils.js` in this repository and the v2 `ReputationAggregator` source (verdikta-dispatcher, `reputationBasedAggregator/contracts/ReputationAggregator.sol`). The v2 aggregator is not deployed yet, so no address is given here. A query is paid in ETH, in the transaction that submits it; there is no LINK step. Your wallet then sends the transactions that move the round on.
+    Revised on 2026-11-24 for the v2 aggregator (one aggregator, the jury sent with each request), against `example-frontend/client/src/pages/RunQuery.js` and `utils/timeoutUtils.js` in this repository and the v2 `ReputationAggregator` source (verdikta-dispatcher, `reputationBasedAggregator/contracts/ReputationAggregator.sol`). The v2 aggregator is not deployed yet, so no address is given here. A query is paid in ETH, in the transaction that submits it; there is no LINK step. Your wallet then sends the transactions that move the round on.
 
 ## Execution Methods
 
@@ -97,7 +97,7 @@ The aggregator is Verdikta's v2 `ReputationAggregator`. In v2 the query transact
 - **Wallet Connected**: MetaMask must be connected
 - **Network**: The wallet is switched to the network selected in the header, Base or Base Sepolia
 - **Aggregator**: A v2 aggregator address must be selected. The v1 aggregators do not work with this page (see [Contract Management](contract-management.md))
-- **ETH**: Your wallet needs ETH for the evaluation prepayment (0.0018 ETH with the application's settings, see [Cost Considerations](#cost-considerations)) and for the gas of each transaction. No LINK is needed
+- **ETH**: Your wallet needs ETH for the evaluation prepayment (0.0018 ETH with the application's settings and the Small jury, see [Cost Considerations](#cost-considerations)) and for the gas of each transaction. No LINK is needed
 
 ### Transaction Steps
 
@@ -107,16 +107,17 @@ The aggregator is Verdikta's v2 `ReputationAggregator`. In v2 the query transact
 
 #### 2. ETH Prepayment
 - There is no approval transaction: the fee is ETH sent with the query itself
-- The page reads the worst-case fee from the aggregator, `maxTotalFee(maxFee, minFee, withBeacons)`, and any prepay credit you already hold there (`ethOwed()`), and attaches the difference. The aggregator takes the attached ETH first and covers any shortfall from your credit
+- The page reads the worst-case fee for the request's jury from the aggregator, `maxTotalFee(maxFee, minFee, withBeacons, K, P)`, and any prepay credit you already hold there (`ethOwed()`), and attaches the difference. The aggregator takes the attached ETH first and covers any shortfall from your credit
 - If your wallet holds less than that amount, the page stops with an "Insufficient ETH" message before anything is sent
 
 #### 3. Query Request (wallet transaction 1)
-- `requestAIEvaluationWithApproval(cids, addendum, alpha, maxFee, minFee, estimatedBaseCost, scaling, class, withBeacons)` submits your query and carries the prepayment. The application sends a fee floor (`minFee`) of 0 and no beacons (`MIN_FEE` and `WITH_BEACONS` in `client/src/App.js`)
+- `requestAIEvaluationWithApproval(cids, addendum, alpha, maxFee, minFee, estimatedBaseCost, scaling, class, withBeacons, jury)` submits your query and carries the prepayment. The application sends a fee floor (`minFee`) of 0 (`MIN_FEE` in `client/src/App.js`). The jury `(K, M, N, P, timeout)` and the beacon flag are the **Arbiter jury size** chosen on the Jury Selection page: Small 6/5/4/3, 300 s by default, Medium 8/5/4/3, 300 s, Large 21/16/13/10, 300 s, or Jumbo 50/38/27/17, 600 s with beacons. The banner on this page shows the jury and its worst-case fee
+- A jury the aggregator does not accept (outside its rules, or above its `maxJury()` or `maxTimeout()`) makes the request revert with `BadJury`, and the page says so
 - The page sets a gas limit of 4,500,000 for this transaction. The request itself uses about 0.2 million gas; it may also settle up to two earlier rounds that are due
 - The page reads the round's ID (`aggRequestId`) from the `RequestAIEvaluation` event. Round IDs count up from 1
 
 #### 4. Driving the Round
-From here the page reads the round's phase (`getRoundInfo()`) every few seconds and shows it in a **phase timeline**: the phases, the one the round is in, the commits received, the time left to the round's deadline, and the transactions your wallet sent, with any reward they earned.
+From here the page reads the round's phase (`getRoundInfo()`) every few seconds and shows it in a **phase timeline**: the round's own jury (read with `getJury(aggId)`, so a resumed round shows the jury it was requested with), the phases, the one the round is in, the commits received, the time left to the round's deadline, and the transactions your wallet sent, with any reward they earned.
 
 Before each transaction the page checks, without a transaction (a dry run from your address), that the call will succeed, and your wallet is asked to confirm only a call that will. The gas limit is the network's estimate plus 50%.
 
@@ -132,11 +133,11 @@ Before each transaction the page checks, without a transaction (a dry run from y
 Rewards and refunds are credited to your prepay credit, not sent to your wallet. Measured on the aggregator's test network, `drawJury` uses about 2.3 to 2.9 million gas (it sends the requests to the drawn arbiters), `promote` about 0.75 million and `settle` about 0.25 million.
 
 #### 5. If the Round Misses Its Deadline
-The deadline is `responseTimeoutSeconds()` after the draw (300 seconds by default), extended when needed so that promoted arbiters always get time to reveal. The page shows it as a countdown. If the round has not finished by then:
+The deadline is the round's timeout after the draw (`getJury(aggId)`; 300 seconds for Small, Medium and Large, 600 for Jumbo), extended when needed so that promoted arbiters always get time to reveal. The page shows it as a countdown. If the round has not finished by then:
 
 - **Too few commits, or too few reveals**: the page asks your wallet to send `settle(aggId)`. It fails the round and credits the unspent part of the prepayment to your prepay credit. The page then shows **"No result: the round failed."**, with a link to the transaction and the amount that came back
 - **Enough commits, but the commit phase was not closed, or it closed and was not promoted**: the round fails and the unspent prepayment goes to the **treasury**, not back to you (a refund here would let a requester re-roll a jury it did not like). Settling it would return nothing to you, so the page does not ask your wallet to; it shows **"No result: the round can no longer finish."**
-- A round whose jury cannot be drawn (fewer eligible arbiters than needed) fails at the draw, and the prepayment is credited back to you
+- A round whose jury cannot be drawn (no eligible arbiter at all) fails at the draw, and the prepayment is credited back to you. With some, but fewer than K, eligible arbiters the jury repeats arbiters instead
 
 #### 6. If You Decline a Transaction or Leave the Page
 - **If you decline** one of these transactions, or it cannot be sent, the page stops and shows **"The round is waiting for ..."** (the jury draw, the commits to be promoted, ...). It says why nothing was sent, what the call does and who earns what, the round ID and the aggregator's address, and offers a button such as **"Draw the jury (wallet transaction)"** that picks the round up where it is. You can also make the call from any other wallet or tool: anyone may
@@ -206,7 +207,7 @@ Common errors and solutions:
 
 ### How the Prepayment Works
 - The application sets a fee ceiling of 0.0001 ETH per arbiter (`MAX_FEE` in `client/src/App.js`), clamped by the aggregator to its `maxOracleFee()`, and no fee floor (`MIN_FEE = 0`)
-- The aggregator's worst case is `maxTotalFee(maxFee, minFee, withBeacons)` = max(fee, floor) × (K + B × P [+ beacon quorum]) + fee × (2 + 1), where K arbiters are drawn, P are paid a bonus of B times their fee, and 2 and 1 are the draw and promote rewards. With K = 6, B = 3, P = 3 that is 0.0001 × 15 + 0.0001 × 3 = 0.0018 ETH. The banner at the top of the page shows the amount the contract returns
+- The aggregator's worst case is `maxTotalFee(maxFee, minFee, withBeacons, K, P)` = max(fee, floor) × (K + B × P [+ beacon quorum]) + fee × (2 + 1), where K arbiters are drawn and P are paid a bonus of B times their fee (the request's jury), and 2 and 1 are the draw and promote rewards. With the Small jury (K = 6, P = 3) and B = 3 that is 0.0001 × 15 + 0.0001 × 3 = 0.0018 ETH; with Jumbo (K = 50, P = 17, beacons) 0.0001 × 103 + 0.0001 × 3 = 0.0106 ETH. The banner at the top of the page shows the amount the contract returns
 - The round then costs what the drawn arbiters charge: each of the K arbiters drawn is credited its own fee (at least the floor), and each arbiter whose revealed answer is in the winning cluster gets B times its fee on top
 - The rest of the prepayment is returned as **prepay credit** held in the aggregator, when the round finalizes or is settled, except in the cases listed in [If the Round Misses Its Deadline](#5-if-the-round-misses-its-deadline) and [If You Decline a Transaction or Leave the Page](#6-if-you-decline-a-transaction-or-leave-the-page), where it goes to the treasury. Credit is applied automatically to your next query, and the **"Withdraw credit"** button on this page sends it back to your wallet
 

@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ethers } = require('ethers');
-const { VerdiktaService, toAggId } = require('../utils/verdiktaService');
+const { VerdiktaService, toAggId, juryTally } = require('../utils/verdiktaService');
 
 const AGG = '0x00000000000000000000000000000000000000a1';
 const KEEPER = '0x00000000000000000000000000000000000000b2';
@@ -50,4 +50,29 @@ test("_settleKeeperEvents keeps only this round's keeper events from a multi-rou
   assert.deepEqual(out[key(1).toLowerCase()], { scored: true, quality: 500, timeliness: 100 });
   assert.deepEqual(out[key(2).toLowerCase()], { scored: false, skippedFrozen: true });
   assert.deepEqual(out[key(3).toLowerCase()], { blockedUntil: 999, offenses: 2, scored: true, quality: 640, timeliness: 500 });
+});
+
+test('_getJury reads a round\'s own jury, caches it, and returns null for an unknown round', async () => {
+  const svc = new VerdiktaService('http://127.0.0.1:1', AGG);
+  const juries = { [id(5).toLowerCase()]: [21n, 16n, 13n, 10n, 300n] };
+  let calls = 0;
+  svc._agg = () => ({
+    getJury: async (aggId) => {
+      calls++;
+      const [K, M, N, P, timeout] = juries[String(aggId).toLowerCase()] || [0n, 0n, 0n, 0n, 0n];
+      return { K, M, N, P, timeout };
+    },
+  });
+  const j = await svc._getJury(id(5));
+  assert.deepEqual(j, { K: 21, M: 16, N: 13, P: 10, timeout: 300, mPlus: 19 });
+  await svc._getJury(id(5));
+  assert.equal(calls, 1);
+  assert.equal(await svc._getJury(id(6)), null);
+});
+
+test('juryTally groups rounds by their jury, most used first', () => {
+  const small = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
+  const jumbo = { K: 50, M: 38, N: 27, P: 17, timeout: 600 };
+  const out = juryTally([{ jury: jumbo }, { jury: small }, { jury: { ...small } }, { jury: null }]);
+  assert.deepEqual(out, [{ ...small, rounds: 2 }, { ...jumbo, rounds: 1 }]);
 });

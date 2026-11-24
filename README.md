@@ -47,7 +47,7 @@ A complete React-based web application that provides a user-friendly interface f
 
 **Key Features:**
 - 📝 **Query Definition**: Create questions with custom outcomes and supporting data
-- 🤖 **AI Jury Configuration**: Select and configure multiple AI models
+- 🤖 **AI Jury Configuration**: Select and configure multiple AI models, and the arbiter jury size each request carries (K/M/N/P and timeout: Small 6/5/4/3, 300 s by default, up to Jumbo 50/38/27/17, 600 s); one v2 aggregator serves every size
 - ⚡ **Blockchain Integration**: MetaMask wallet connection and smart contract interaction
 - 📊 **Results Visualization**: Interactive charts and detailed AI justifications
 - 🔧 **Contract Management**: Admin interface for managing smart contracts

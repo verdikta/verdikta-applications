@@ -102,7 +102,8 @@ Each configured contract displays:
 
 #### Smart Contract Interface
 Contracts must be a v2 `ReputationAggregator` (verdikta-dispatcher). The v1 aggregators do not work with this application: their request takes 7 arguments, and they have none of the calls the page uses to move a round on. The application uses:
-- `requestAIEvaluationWithApproval()` (9 arguments) and `maxTotalFee(maxFee, minFee, withBeacons)`: Request and prepay an evaluation
+- `requestAIEvaluationWithApproval()` (10 arguments, the last the jury) and `maxTotalFee(maxFee, minFee, withBeacons, K, P)`: Request and prepay an evaluation
+- `getJury(aggId)`: A round's jury `(K, M, N, P, timeout)`. One aggregator serves every jury size, so one address per network is enough; its owner bounds the jury with `maxJury()` and `maxTimeout()`
 - `drawJury()`, `closeCommits()`, `promote()`, `settle()`: Move a round on, from the user's wallet
 - `getRoundInfo()`, `getEvaluation()`: Read the round and its result
 - `ethOwed()`, `withdrawEth()`: Prepay credit

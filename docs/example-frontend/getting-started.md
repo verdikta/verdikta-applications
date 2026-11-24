@@ -9,7 +9,7 @@ Before you begin, make sure you have:
 - **Web Browser**: A modern web browser with JavaScript enabled
 - **MetaMask Wallet**: Browser extension installed and configured
 - **Network**: Access to Base or to the Base Sepolia testnet (the network is chosen in the header)
-- **ETH**: For paying AI jury evaluation fees and gas. With the application's settings each query prepays 0.0018 ETH, and the part that is not spent comes back as credit (see [Run Query](run-query.md#cost-considerations)). Each query takes a few wallet transactions: the request, then the calls that move the round on (draw the jury, promote the commits). No LINK is needed
+- **ETH**: For paying AI jury evaluation fees and gas. With the application's settings and the default Small jury each query prepays 0.0018 ETH (more for a bigger jury), and the part that is not spent comes back as credit (see [Run Query](run-query.md#cost-considerations)). Each query takes a few wallet transactions: the request, then the calls that move the round on (draw the jury, promote the commits). No LINK is needed
 
 ## Initial Setup
 

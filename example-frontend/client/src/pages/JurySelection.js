@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { PAGES } from '../App';
 import ClassSelector from '../components/ClassSelector';
+import { JURY_PRESETS, DEFAULT_JURY_PRESET_KEY, formatJury } from '../utils/juryPresets';
 
 function JurySelection({
   outcomeLabels,
@@ -19,7 +20,10 @@ function JurySelection({
   selectedClassId,
   onClassSelect,
   overrideClassInfo,
-  staticConfigMode = false
+  staticConfigMode = false,
+  // The arbiter jury every request carries (utils/juryPresets.js)
+  juryPresetKey = DEFAULT_JURY_PRESET_KEY,
+  onJuryPresetChange
 }) {
   const [activeTooltipId, setActiveTooltipId] = useState(null);
 
@@ -103,6 +107,41 @@ function JurySelection({
           ))}
         </ul>
       </div>
+
+      <section className="arbiter-jury-size">
+        <div className="form-group">
+          <div className="label-with-tooltip">
+            <label htmlFor="jury-preset">Arbiter jury size</label>
+            <div
+              className="tooltip-trigger"
+              onMouseEnter={() => setActiveTooltipId('jury-preset')}
+              onMouseLeave={() => setActiveTooltipId(null)}
+            >
+              ⓘ
+              {activeTooltipId === 'jury-preset' && (
+                <div className="tooltip-content">
+                  Sent with every request: K arbiters drawn / M promoted to reveal / N reveals
+                  counted / P clustered, and the round timeout from the draw. A larger jury costs
+                  more (the prepay is max(fee, floor) × (K + 3 × P) plus the draw and promote
+                  rewards). Jumbo also runs a beacon stage before the draw.
+                </div>
+              )}
+            </div>
+          </div>
+          <select
+            id="jury-preset"
+            value={juryPresetKey}
+            onChange={(e) => onJuryPresetChange?.(e.target.value)}
+            disabled={!onJuryPresetChange}
+          >
+            {JURY_PRESETS.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.name}: {formatJury(p.jury)}{p.withBeacons ? ', with beacons' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      </section>
 
       <section className="jury-table">
         <h3>AI Jury Configuration</h3>

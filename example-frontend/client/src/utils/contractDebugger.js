@@ -1,11 +1,16 @@
 // Browser-based contract debugging utility for the v2 ETH-funded ReputationAggregator.
 // Fired on-demand from RunQuery when a request errors. Arbiters are paid in ETH, so the
 // diagnostics check the requester's ETH balance vs. the worst-case prepay
-// (maxTotalFee(maxFee, minFee, withBeacons)) and dry-run the 9-argument payable request;
-// there is no LINK allowance/balance to inspect.
+// (maxTotalFee(maxFee, minFee, withBeacons, K, P)) and dry-run the 10-argument payable
+// request, whose last argument is the jury; there is no LINK allowance/balance to inspect.
 
 import { ethers } from 'ethers';
 import { CONTRACT_ABI } from './contractUtils';
+import { DEFAULT_JURY_PRESET_KEY, juryPresetByKey, juryShapeError } from './juryPresets';
+
+const DEFAULT_JURY = juryPresetByKey(DEFAULT_JURY_PRESET_KEY).jury;
+
+const juryArg = (j) => ({ K: j.K, M: j.M, N: j.N, P: j.P, timeout: j.timeout });
 
 export class ContractDebugger {
   constructor(provider, contractAddress, walletAddress) {
@@ -15,12 +20,13 @@ export class ContractDebugger {
     this.contract = new ethers.Contract(contractAddress, CONTRACT_ABI, provider);
   }
 
-  async debugContractState(contractClass, maxFee = ethers.parseUnits('0.0001', 18), minFee = 0n, withBeacons = false) {
+  async debugContractState(contractClass, maxFee = ethers.parseUnits('0.0001', 18), minFee = 0n, withBeacons = false, jury = DEFAULT_JURY) {
     const debug = {
       timestamp: new Date().toISOString(),
       contract: this.contractAddress,
       wallet: this.walletAddress,
       class: contractClass,
+      jury,
       checks: {}
     };
 
@@ -34,32 +40,38 @@ export class ContractDebugger {
         console.error('❌ No contract code at address (wrong network or address?)');
       }
 
-      // 2. Round configuration (v2 has no getContractConfig(); each value is a public getter)
-      console.log('📋 Checking aggregator configuration...');
+      // 2. The owner's bounds on a request's jury (v2 has no K()..P() or round timeout of its
+      //    own: the jury is the request's) and the fee ceiling
+      console.log('📋 Checking aggregator limits...');
       try {
-        const [K, M, N, P, timeout, tPlus, ceiling] = await Promise.all([
-          this.contract.K(),
-          this.contract.M(),
-          this.contract.N(),
-          this.contract.P(),
-          this.contract.responseTimeoutSeconds(),
+        const [maxJury, maxTimeout, tPlus, ceiling] = await Promise.all([
+          this.contract.maxJury(),
+          this.contract.maxTimeout(),
           this.contract.tPlus(),
           this.contract.maxOracleFee()
         ]);
         debug.checks.config = {
           success: true,
-          K: Number(K),
-          M: Number(M),
-          N: Number(N),
-          P: Number(P),
-          responseTimeoutSeconds: Number(timeout),
+          maxJury: Number(maxJury),
+          maxTimeout: Number(maxTimeout),
           commitWindowSeconds: Number(tPlus),
           maxOracleFee: ethers.formatEther(ceiling)
         };
       } catch (err) {
-        // A v1 aggregator has none of these getters: the address is not a v2 aggregator.
+        // A v1 aggregator (or a v2 one from before the per-request jury) lacks these getters.
         debug.checks.config = { success: false, error: err.message };
       }
+
+      // 2b. The request's jury against the rules and those limits (the keeper's shortlist,
+      //     60 by default, is checked on-chain too)
+      const shape = juryShapeError(jury);
+      const cfg = debug.checks.config;
+      const limit = !cfg.success ? null
+        : jury.K > cfg.maxJury ? `K ${jury.K} is above maxJury ${cfg.maxJury}`
+        : jury.timeout <= cfg.commitWindowSeconds ? `timeout ${jury.timeout} s is not above tPlus ${cfg.commitWindowSeconds} s`
+        : jury.timeout > cfg.maxTimeout ? `timeout ${jury.timeout} s is above maxTimeout ${cfg.maxTimeout} s`
+        : null;
+      debug.checks.jury = { success: !shape && !limit, ...jury, ...(shape || limit ? { error: shape || limit } : {}) };
 
       // 3. Requester ETH balance + on-chain prepay credit
       console.log('💰 Checking ETH balance & prepay credit...');
@@ -83,7 +95,7 @@ export class ContractDebugger {
       console.log('💸 Checking fee calculation...');
       try {
         const [totalFee, ceiling] = await Promise.all([
-          this.contract.maxTotalFee(maxFee, minFee, withBeacons),
+          this.contract.maxTotalFee(maxFee, minFee, withBeacons, jury.K, jury.P),
           this.contract.maxOracleFee().catch(() => null)
         ]);
 
@@ -119,7 +131,7 @@ export class ContractDebugger {
     }
   }
 
-  async dryRunTransaction(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons) {
+  async dryRunTransaction(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons, jury = DEFAULT_JURY) {
     try {
       console.log('🧪 Performing dry run...');
 
@@ -127,7 +139,7 @@ export class ContractDebugger {
       let value = 0n;
       try {
         const [total, credit] = await Promise.all([
-          this.contract.maxTotalFee(maxFee, minFee, withBeacons),
+          this.contract.maxTotalFee(maxFee, minFee, withBeacons, jury.K, jury.P),
           this.contract.ethOwed(this.walletAddress).catch(() => 0n)
         ]);
         value = total > credit ? total - credit : 0n;
@@ -146,6 +158,7 @@ export class ContractDebugger {
         maxFeeBasedScalingFactor,
         contractClass,
         withBeacons,
+        juryArg(jury),
         { value, from: this.walletAddress }
       );
 
@@ -195,7 +208,7 @@ export class ContractDebugger {
     }
   }
 
-  async generateDebugReport(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons) {
+  async generateDebugReport(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons, jury = DEFAULT_JURY) {
     console.log('🔍 Generating comprehensive debug report...');
 
     const report = {
@@ -209,13 +222,14 @@ export class ContractDebugger {
         estimatedBaseCost: ethers.formatUnits(estimatedBaseCost, 18),
         maxFeeBasedScalingFactor,
         contractClass,
-        withBeacons
+        withBeacons,
+        jury
       }
     };
 
     // Run all debugging checks
-    report.stateAnalysis = await this.debugContractState(contractClass, maxFee, minFee, withBeacons);
-    report.dryRun = await this.dryRunTransaction(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons);
+    report.stateAnalysis = await this.debugContractState(contractClass, maxFee, minFee, withBeacons, jury);
+    report.dryRun = await this.dryRunTransaction(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons, jury);
 
     // Generate recommendations
     report.recommendations = this.generateRecommendations(report);
@@ -241,7 +255,16 @@ export class ContractDebugger {
       recommendations.push({
         priority: 'CRITICAL',
         issue: 'Not a v2 aggregator',
-        solution: 'The address does not answer the v2 aggregator getters (K(), tPlus(), ...). It may be a v1 aggregator: select the v2 aggregator address for this network.'
+        solution: 'The address does not answer the v2 aggregator getters (maxJury(), maxTimeout(), tPlus(), ...). It may be a v1 aggregator: select the v2 aggregator address for this network.'
+      });
+    }
+
+    // The request's jury breaks a rule or a limit: the request would revert BadJury
+    if (report.stateAnalysis.checks.jury && !report.stateAnalysis.checks.jury.success) {
+      recommendations.push({
+        priority: 'CRITICAL',
+        issue: 'Jury refused (BadJury)',
+        solution: `The request's jury would be refused: ${report.stateAnalysis.checks.jury.error}. Pick another jury size on the Jury Selection page.`
       });
     }
 
@@ -259,7 +282,7 @@ export class ContractDebugger {
       recommendations.push({
         priority: 'CRITICAL',
         issue: 'Transaction will revert',
-        solution: `Dry run reverted: ${report.dryRun.revertReason}. Common causes: BadInput (estimatedBaseCost not below the clamped fee ceiling, alpha above 1000, or scaling outside 1..65535), InsufficientPayment (value plus credit below maxTotalFee), or a beacon request on an aggregator without a beacon contract. In v2 the request does not draw the jury, so an empty arbiter pool shows up at drawJury(), not here.`
+        solution: `Dry run reverted: ${report.dryRun.revertReason}. Common causes: BadJury (the jury breaks K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, K <= maxJury and the keeper's shortlist, or tPlus < timeout <= maxTimeout), BadInput (estimatedBaseCost not below the clamped fee ceiling, alpha above 1000, or scaling outside 1..65535), InsufficientPayment (value plus credit below maxTotalFee), or a beacon request on an aggregator without a beacon contract. In v2 the request does not draw the jury, so an empty arbiter pool shows up at drawJury(), not here.`
       });
     }
 
@@ -269,4 +292,4 @@ export class ContractDebugger {
 
 // Usage example:
 // const dbg = new ContractDebugger(provider, contractAddress, walletAddress);
-// const report = await dbg.generateDebugReport(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons);
+// const report = await dbg.generateDebugReport(cidArray, textAddendum, alpha, maxFee, minFee, estimatedBaseCost, maxFeeBasedScalingFactor, contractClass, withBeacons, { K: 6, M: 5, N: 4, P: 3, timeout: 300 });

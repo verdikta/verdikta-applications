@@ -74,12 +74,13 @@ App.js (Root Component)
 - **Access Control**: Permission management
 
 #### Key Functions (v2 aggregator)
-- `requestAIEvaluationWithApproval()`: Submit and prepay an evaluation request (9 arguments, `payable`)
+- `requestAIEvaluationWithApproval()`: Submit and prepay an evaluation request (10 arguments, the last the jury `(K, M, N, P, timeout)`; `payable`)
 - `drawJury()`, `closeCommits()`, `promote()`: Move a round from phase to phase. The Run Query page sends them from the user's wallet (`client/src/utils/timeoutUtils.js`)
 - `settle()`: Fail and refund a round that passed its deadline without a result
 - `getRoundInfo()`: A round's phase, deadline and commits, shown in the page's phase timeline
 - `getEvaluation()`: Retrieve evaluation results
-- `K()`, `M()`, `N()`, `P()`, `tPlus()`, `responseTimeoutSeconds()`, `maxOracleFee()`: Configuration (v2 has no `getContractConfig()`)
+- `getJury(aggId)`: The jury a round was requested with; the page's timeline shows it
+- `maxJury()`, `maxTimeout()`, `tPlus()`, `maxOracleFee()`: Configuration: the bounds on a request's jury and the fee ceiling (v2 has no `getContractConfig()`, and no `K()`…`P()` or round timeout: the jury is per request)
 
 ### Storage Layer
 
@@ -101,7 +102,7 @@ App.js (Root Component)
 2. **Package Creation**: Frontend packages data into standardized format
 3. **IPFS Upload**: Package uploaded to distributed storage
 4. **Blockchain Transaction**: Smart contract called with package reference; the request prepays the round in ETH
-5. **Jury Draw**: The user's wallet sends `drawJury` from block B+2; the aggregator draws K arbiters and sends them the request through their Chainlink operators
+5. **Jury Draw**: The user's wallet sends `drawJury` from block B+2; the aggregator draws the request's K arbiters and sends them the request through their Chainlink operators
 6. **AI Evaluation**: The arbiters' AI models process the query and commit their answers
 7. **Promotion and Reveal**: The user's wallet sends `promote` once the commit phase closes (and `closeCommits` first if it needs closing); the promoted arbiters reveal, and the last needed reveal finalizes the round
 8. **Result Storage**: Outcomes stored on blockchain and IPFS
@@ -155,7 +156,7 @@ App.js (Root Component)
 #### Payment
 - **ETH**: Payment for AI services, sent with the request (`requestAIEvaluationWithApproval()` is `payable`)
 - **Aggregator Address**: A v2 `ReputationAggregator` per network, set in `client/.env` (`REACT_APP_CONTRACT_ADDRESSES`) or on the Contract Management page. The v2 aggregator is not deployed yet: `client/.env.example` holds placeholders to replace after the deploy. The v1 aggregators do not work with this client
-- **Prepayment Pattern**: The request prepays `maxTotalFee(maxFee, minFee, withBeacons)`; what is not spent, and the draw and promote rewards earned by the user's wallet, are credited in the aggregator (`ethOwed()`) and can be withdrawn (`withdrawEth()`). There is no token and no allowance
+- **Prepayment Pattern**: The request prepays `maxTotalFee(maxFee, minFee, withBeacons, K, P)` for its jury; what is not spent, and the draw and promote rewards earned by the user's wallet, are credited in the aggregator (`ethOwed()`) and can be withdrawn (`withdrawEth()`). There is no token and no allowance
 - **Round Driving**: After the request the page sends `drawJury` (from block B+2), `closeCommits` if needed and `promote` (from the close block + 2) from the user's wallet, each dry-run first, and `settle` if the round misses its deadline. See [Run Query](run-query.md#4-driving-the-round)
 
 ### AI Provider Integration

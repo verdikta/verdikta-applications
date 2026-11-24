@@ -3,7 +3,7 @@
 **Version Beta-1**
 
 !!! info "What this guide was checked against"
-    Revised on 2026-11-23 for the **v2** aggregator: the `ReputationAggregator`, `ReputationKeeper` and `JuryBeacons` contracts on the `beacon` branch of [verdikta-dispatcher](https://github.com/verdikta/verdikta-dispatcher/tree/beacon/reputationBasedAggregator/contracts), with the jury sizes set by its `deploy/03_config.js`. The v2 aggregator is **not deployed yet**, so this guide gives no address: the examples use the placeholder `<V2_AGGREGATOR_ADDRESS>`, to be replaced once it is deployed. The v1 aggregator still running on Base works differently (one transaction per request, a fixed timeout) and is not covered here. Fees are paid in ETH. The numbers in this guide are the defaults in the v2 source, settings that the contracts' owner can change: each one is given with the contract function that returns the current value, so you can check it yourself after the deployment.
+    Revised on 2026-11-24 for the **v2** aggregator: the `ReputationAggregator`, `ReputationKeeper` and `JuryBeacons` contracts on the `beacon` branch of [verdikta-dispatcher](https://github.com/verdikta/verdikta-dispatcher/tree/beacon/reputationBasedAggregator/contracts). One aggregator serves every jury size: each request carries its own jury, and the four sizes below are the bounty program's presets. The v2 aggregator is **not deployed yet**, so this guide gives no address: the examples use the placeholder `<V2_AGGREGATOR_ADDRESS>`, to be replaced once it is deployed. The v1 aggregator still running on Base works differently (one transaction per request, a fixed timeout) and is not covered here. Fees are paid in ETH. The numbers in this guide are the defaults in the v2 source, settings that the contracts' owner can change: each one is given with the contract function that returns the current value, so you can check it yourself after the deployment.
 
 ## Introduction
 
@@ -55,7 +55,7 @@ Verdikta uses multiple logical components. On-chain there is the Aggregator's co
 
 - **User (Requester):** This is you (or your smart contract) requesting an AI evaluation. For example, you might be developing a dApp that needs an AI to score a piece of content or resolve a dispute between two parties. Typically, the user formulates the query and stores it on IPFS before calling the Verdikta contract to start an evaluation.
 
-- **Aggregator Contract:** This is the core Verdikta smart contract deployed on-chain. It coordinates the process. Its responsibilities include the following: receiving and escrowing evaluation requests, drawing a jury of arbiters for each request, collecting their responses through a commit-reveal process, aggregating the results (e.g. computing an average score), and reporting each arbiter's performance to the Reputation Keeper. You interact directly with this contract to request evaluations, to move your request through its steps, and to fetch results. Each aggregator deployment has one jury size; there is one deployment per size (see the table under the lifecycle below).
+- **Aggregator Contract:** This is the core Verdikta smart contract deployed on-chain. It coordinates the process. Its responsibilities include the following: receiving and escrowing evaluation requests, drawing a jury of arbiters for each request, collecting their responses through a commit-reveal process, aggregating the results (e.g. computing an average score), and reporting each arbiter's performance to the Reputation Keeper. You interact directly with this contract to request evaluations, to move your request through its steps, and to fetch results. One deployment serves every jury size: each request says how many arbiters to draw, promote, count and cluster, and how long the round may run (see the table under the lifecycle below).
 
 - **Reputation Keeper Contract:** The Aggregator contract relies on a separate Reputation Keeper contract to do its job. This smart contract executes the Stake and Reputation System. Each arbiter has skin in the game. Arbiters stake Verdikta tokens to register with the Reputation Keeper (100 tokens per arbiter by default, `stakeRequirement()`). An arbiter whose score falls to zero is blocked from selection for a time, and repeated blocks end in a permanent ban; the contract can also burn part of the stake, an amount that is zero by default (see [Reputation Tracking](#reputation-tracking)). The reputation scores measure past performance. If an arbiter answers on time and close to the other arbiters, its reputation scores go up; if an arbiter deviates or fails to respond, its reputation scores go down. The Reputation Keeper also sends arbiters short "health calls" that each must answer within 60 seconds; an arbiter that does not is frozen (left out of selection) until it answers. The Reputation Keeper uses timeliness and quality ratings for each arbiter to decide eligibility to participate and to determine likelihood of selection in queries. The use of staking and reputation scoring creates an incentive structure where arbiters are motivated to provide truthful, high-quality answers.
 
@@ -71,11 +71,11 @@ Here is a step-by-step outline of what happens when you request an AI evaluation
 
 2. **Query CID Details:** The first CID in the query represents data in the following form: It is a zipped directory holding files, one of which is named `manifest.json`. This JSON manifest file holds 1) a version number, 2) a name for the primary file describing the query, 3) jury parameters including which AI models to query and how to weight them, and 4) a list of supporting files. Additional CIDs can hold additional supporting files. Often just one CID will be used, while the optional use of multiple CIDs allows data to originate at different times and from different sources, which is useful for some applications.
 
-3. **Request Submission (On-Chain):** The user calls the Aggregator contract's function `requestAIEvaluationWithApproval()` to initiate the request. This call sends the CIDs and the optional text field, and the same transaction carries the ETH that pays for the evaluation (see the coding section for how to size it). The request only records the query and escrows the ETH, in block *B*; no arbiter is chosen or paid yet. The contract emits a `RequestAIEvaluation` event with the request's aggregation ID (`aggId`), which you need for every later step. Aggregation IDs are sequential: the first request to a deployment gets `bytes32(1)`, the next `bytes32(2)`, and so on.
+3. **Request Submission (On-Chain):** The user calls the Aggregator contract's function `requestAIEvaluationWithApproval()` to initiate the request. This call sends the CIDs and the optional text field, the jury the request wants (*K*, *M*, *N*, *P* and the round timeout, see [Jury Size](#jury-size)), and the same transaction carries the ETH that pays for the evaluation (see the coding section for how to size it). The request only records the query and escrows the ETH, in block *B*; no arbiter is chosen or paid yet. The contract emits a `RequestAIEvaluation` event with the request's aggregation ID (`aggId`), which you need for every later step. Aggregation IDs are sequential: the first request to a deployment gets `bytes32(1)`, the next `bytes32(2)`, and so on.
 
 4. **Use of Multiple AI Engines:** With Verdikta, any number of AI types can be requested with any number of calls made to each. The ability to interact with a particular AI model type is determined by the arbiter's 64-bit *class*, with some classes able to use frontier models from, for example, OpenAI and Anthropic, while others are able to run open source models. Some arbiters can handle multiple classes. A request names one class, and the models listed in its manifest should come from that class's pool; the pools are listed in the [ClassID usage guide](https://docs.verdikta.org/verdikta-common/CLASSID_USAGE_GUIDE/). Every arbiter selected for a request is asked to run the same models, the ones the manifest names.
 
-5. **Jury Draw (Random & Trustless):** From block *B*+2 on, anyone can call `drawJury(aggId)`. The draw uses the seed `keccak256(aggId, blockhash(B+1))` and the Reputation Keeper's state as it was in block *B*, so nobody can predict the jury when the request is signed, and who draws, or when, does not change it. The keeper selects *K* arbiters from the pool of staked arbiters that support the requested class, giving higher-weighted chances to those with better reputations (see [Random Selection of Arbiters](#random-selection-of-arbiters)), and the aggregator sends each the query. Each selected arbiter's owner is credited its base fee at this moment. The draw pays a reward of twice your fee ceiling: to you, if you draw within 30 seconds (`requesterDrawPriority()`); after that, to whoever draws. Draw promptly: the seed must be stored within about 27 minutes (8,191 blocks; `drawJury` or `sealSeed(aggId)` stores it), and no draw is possible more than a day after the request. A round that misses either limit can only be cancelled, and its prepayment goes to the treasury (see [Failure and Refund Paths](#failure-and-refund-paths)).
+5. **Jury Draw (Random & Trustless):** From block *B*+2 on, anyone can call `drawJury(aggId)`. The draw uses the seed `keccak256(aggId, blockhash(B+1))` and the Reputation Keeper's state as it was in block *B*, so nobody can predict the jury when the request is signed, and who draws, or when, does not change it. The keeper selects the request's *K* arbiters from the pool of staked arbiters that support the requested class, giving higher-weighted chances to those with better reputations (see [Random Selection of Arbiters](#random-selection-of-arbiters)), and the aggregator sends each the query. Each selected arbiter's owner is credited its base fee at this moment. The draw pays a reward of twice your fee ceiling: to you, if you draw within 30 seconds (`requesterDrawPriority()`); after that, to whoever draws. Draw promptly: the seed must be stored within about 27 minutes (8,191 blocks; `drawJury` or `sealSeed(aggId)` stores it), and no draw is possible more than a day after the request. A round that misses either limit can only be cancelled, and its prepayment goes to the treasury (see [Failure and Refund Paths](#failure-and-refund-paths)).
 
     **Beacons (optional).** A request may set the `withBeacons` flag (the bounty program's largest jury size does). The first `drawJury` then starts a beacon stage instead: the keeper picks 4 arbiters of the class, each reveals its next hash-chain value, and once the first 2 values are in (within 120 seconds), a second `drawJury` draws the jury with those values mixed into the seed. The 2 beacons whose values are used are each paid one fee. Beacons make the seed independent of the block producer as well.
 
@@ -95,7 +95,7 @@ Here is a step-by-step outline of what happens when you request an AI evaluation
 
 11. **Payouts:** Every arbiter in the jury was credited its base fee at the draw. The clustered arbiters receive a bonus on top (a multiple, 3X by default, `bonusMultiplier()`, of their fee) when the result is aggregated. Payments are credits in the contract's ledger (`ethOwed`), which each arbiter's owner collects with `withdrawEth()`. Whatever is left of your prepayment is credited to you in the same ledger at that moment: you can withdraw it or let it pay for your next request.
 
-12. **Settlement and Reputation:** Each round has a deadline: `responseTimeoutSeconds()` after the draw, extended if the commit phase closed late or `promote` came late, so that promoted arbiters still get their reveal time. After the deadline, `settle(aggId)` reports every juror's outcome to the Reputation Keeper, which updates the scores (see [Reputation Tracking](#reputation-tracking)). Anyone may call `settle`, and every new request settles up to 2 due rounds first (`settlePerRequest()`), so settlement does not depend on an outside service. A round that never produced a result is closed as failed by the same call; see [Failure and Refund Paths](#failure-and-refund-paths).
+12. **Settlement and Reputation:** Each round has a deadline: the request's timeout after the draw, extended if the commit phase closed late or `promote` came late, so that promoted arbiters still get their reveal time. After the deadline, `settle(aggId)` reports every juror's outcome to the Reputation Keeper, which updates the scores (see [Reputation Tracking](#reputation-tracking)). Anyone may call `settle`, and every new request settles up to 2 due rounds first (`settlePerRequest()`), so settlement does not depend on an outside service. A round that never produced a result is closed as failed by the same call; see [Failure and Refund Paths](#failure-and-refund-paths).
 
 13. **Result Available to User:** The user (or any interested party) can retrieve the outcome as soon as the `FulfillAIEvaluation` event is emitted, before settlement. The user's original contract (if they used one to call Verdikta) can read it with `getEvaluation(aggId)`, and each juror's own score with `getOutcomeScores(aggId, outcome)` (see [Reading Results On-Chain](#reading-results-on-chain)).
 
@@ -117,18 +117,32 @@ You can follow a round with `getRoundInfo(aggId)`, which returns its phase and i
 
 `getRoundInfo` also returns the request block and time, the stored seed hash, the block at which the commit phase closed, the ETH received and what was credited from it (base fees, bonuses, rewards), the `deadline` (0 until the draw), the end of the *T*+ window (`windowEnd`) and the number of commits.
 
-Each aggregator deployment has one jury size. Here are the configurable parameters, with the values the v2 deployment script sets for the four sizes the bounty program uses, and the function that returns each one:
+### Jury Size
 
-| **Configuration Parameters** | **Small** | **Medium** | **Large** | **Jumbo** | **Read it with** |
-|------------------------------|-----------|------------|-----------|-----------|------------------|
-| Arbiters drawn (*K*) | 6 | 8 | 21 | 50 | `K()` |
-| Committers promoted to reveal (*M*) | 5 | 5 | 16 | 38 | `M()` |
-| Reveals aggregated (*N*) | 4 | 4 | 13 | 27 | `N()` |
-| Cluster size (*P*) | 3 | 3 | 10 | 17 | `P()` |
-| Seconds from the draw to the deadline | 300 | 300 | 300 | 600 | `responseTimeoutSeconds()` |
-| Commit window *T*+ (seconds after the draw) | 155 | 155 | 155 | 155 | `tPlus()` |
+One aggregator serves every jury size: the jury is part of each request, as its last argument, `Jury {K, M, N, P, timeout}` (in Solidity a struct of four `uint8` and a `uint40`; in ethers an object or array). `getJury(aggId)` returns the jury a round was requested with. The aggregator has no jury size of its own. The four sizes the bounty program uses (its class presets) are:
 
-The other settings are the same for every size: a bonus multiplier of 3 (`bonusMultiplier()`), a draw reward of 2 fees (`drawRewardFees()`) with 30 seconds' priority for the requester (`requesterDrawPriority()`), a promote reward of 1 fee (`promoteRewardFees()`), a reveal window of 120 seconds (`revealWindow()`), 2 due rounds settled per request (`settlePerRequest()`), and a highest fee one arbiter may charge of 0.0004 ETH (`maxOracleFee()`). Beacons (`JuryBeacons`) pick 4 arbiters and use the first 2 values revealed within 120 seconds. The contracts' owner can change all of these; a round keeps the jury size and rewards it was requested with.
+| **Jury** | **Small** | **Medium** | **Large** | **Jumbo** |
+|----------|-----------|------------|-----------|-----------|
+| Arbiters drawn (*K*) | 6 | 8 | 21 | 50 |
+| Committers promoted to reveal (*M*) | 5 | 5 | 16 | 38 |
+| Reveals aggregated (*N*) | 4 | 4 | 13 | 27 |
+| Cluster size (*P*) | 3 | 3 | 10 | 17 |
+| Seconds from the draw to the deadline (`timeout`) | 300 | 300 | 300 | 600 |
+| Beacons (`withBeacons`) | off | off | off | on |
+
+You may ask for any other jury that keeps to the rules. A request reverts with `BadJury` unless:
+
+- *K* ≥ *M* ≥ *N* ≥ *P* ≥ 1;
+- *N* ≤ 40 (the *N*-th reveal pays for clustering all *N*);
+- *P* ≥ 2, unless *N* = 1;
+- *K* ≤ `maxJury()` (50 by default) and *K* ≤ the keeper's `shortlistSize()` (60);
+- `tPlus()` < timeout ≤ `maxTimeout()` (155 s and 3600 s by default).
+
+The contracts' owner sets `maxJury`, `maxTimeout` and `tPlus` with `setLimits`. A bigger jury costs more (see [Funding a Request](#funding-a-request)) and its draw uses more gas.
+
+The commit window *T*+ (155 seconds after the draw, `tPlus()`) is the same for every request.
+
+The other settings are the same for every size: a bonus multiplier of 3 (`bonusMultiplier()`), a draw reward of 2 fees (`drawRewardFees()`) with 30 seconds' priority for the requester (`requesterDrawPriority()`), a promote reward of 1 fee (`promoteRewardFees()`), a reveal window of 120 seconds (`revealWindow()`), 2 due rounds settled per request (`settlePerRequest()`), and a highest fee one arbiter may charge of 0.0004 ETH (`maxOracleFee()`). Beacons (`JuryBeacons`) pick 4 arbiters and use the first 2 values revealed within 120 seconds. The contracts' owner can change all of these; a round keeps the jury and rewards it was requested with.
 
 The section will show how you as a developer can submit a request and retrieve results, with code examples in JavaScript and Solidity.
 
@@ -219,20 +233,21 @@ This uploads the zipped query file and prints its IPFS CID, a string that starts
 
 With the query now available on IPFS, the next step is to work out how much ETH to send with the request. There is nothing to approve and no token to buy: you pay in ETH, in the same transaction that makes the request.
 
-You choose three things:
+You choose four things:
 
 - a ceiling, `maxFee`: the highest fee you accept from any one arbiter. Arbiters whose posted fee is above your ceiling are not eligible, and a ceiling above the contract's own (`maxOracleFee()`, 0.0004 ETH by default) is lowered to that value. Call the result *eff*;
 - a floor, `minFee` (0 for none): every juror, and every beacon used, is paid at least this, whatever fee it posted, and its bonus is figured on that amount. The floor may be above the ceiling: the ceiling decides who is eligible, the floor what you choose to pay;
-- whether to use beacons, `withBeacons`.
+- whether to use beacons, `withBeacons`;
+- the jury, `(K, M, N, P, timeout)` (see [Jury Size](#jury-size)): the fee depends on its *K* and *P*.
 
-The aggregator then requires a prepayment that covers the worst case, which `maxTotalFee(maxFee, minFee, withBeacons)` returns:
+The aggregator then requires a prepayment that covers the worst case, which `maxTotalFee(maxFee, minFee, withBeacons, K, P)` returns for the jury you will ask for:
 
 ```
 juror       = max(eff, minFee)
 maxTotalFee = juror × (K + bonus multiplier × P [+ 2 beacons]) + eff × (draw reward 2 + promote reward 1)
 ```
 
-For the Small jury size (K = 6, P = 3, bonus multiplier 3) with a ceiling of 0.00015 ETH, no floor and no beacons, that is 0.00015 × (6 + 9) + 0.00015 × 3 = 0.00015 × 18 = 0.0027 ETH.
+For the Small jury (K = 6, P = 3, bonus multiplier 3) with a ceiling of 0.00015 ETH, no floor and no beacons, that is 0.00015 × (6 + 9) + 0.00015 × 3 = 0.00015 × 18 = 0.0027 ETH. For Jumbo (K = 50, P = 17, with beacons) at the same ceiling it is 0.00015 × (50 + 51 + 2) + 0.00015 × 3 = 0.0159 ETH.
 
 What a round really costs is set by the drawn arbiters' own fees (or your floor, if higher), not by your ceiling. Each of the *K* jurors is credited its fee at the draw, and each of the *P* clustered arbiters gets three times its fee on top. At a posted fee of 0.00002 ETH for every juror, a Small round that completes costs 6 × 0.00002 + 9 × 0.00002 = 0.0003 ETH in arbiter fees, plus gas. The draw reward (2 × *eff*) and the promote reward (1 × *eff*) go to whoever sends those calls: if you send them yourself (the draw within 30 seconds), they come back to you. (You can read an arbiter's fee yourself: the aggregator's `keeper()` returns the Reputation Keeper's address, whose `getArbiter(key)` returns each arbiter's fee and scores; the `ArbiterRegistered` events list the arbiters.)
 
@@ -240,7 +255,7 @@ The rest of your prepayment is credited back to you in the aggregator's `ethOwed
 
 ### Making a Request
 
-Here is an example script that sends the query with the CID above, moves the round through its steps and then reads the result. It needs Node.js 18 or later and the `ethers` library (`npm install ethers`), and a wallet key with a little ETH on Base in the environment variable `PRIVATE_KEY`. Because the v2 aggregator is not deployed yet, the address is a placeholder: set `AGG` to the address of the deployment with the jury size you want once it exists.
+Here is an example script that sends the query with the CID above, moves the round through its steps and then reads the result. It needs Node.js 18 or later and the `ethers` library (`npm install ethers`), and a wallet key with a little ETH on Base in the environment variable `PRIVATE_KEY`. Because the v2 aggregator is not deployed yet, the address is a placeholder: set `AGG` to its address once it exists. The jury is set in the script (`JURY`, the Small preset); the same aggregator takes any other.
 
 ```javascript
 #!/usr/bin/env node
@@ -261,13 +276,16 @@ const MIN_FEE = 0n;                             // fee floor: 0 = none
 const BASE    = 8_000_000_000n;                 // estimated base cost in wei, below MAX_FEE
 const SCALE   = 5;                              // limit on the preference for cheaper arbiters
 const BEACONS = false;                          // true: draw the jury with beacon values
+// the jury: K drawn, M promoted, N counted, P clustered, timeout (s from the draw).
+// Small here; Medium 8/5/4/3/300, Large 21/16/13/10/300, Jumbo 50/38/27/17/600 (beacons on)
+const JURY    = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
 const DELAY   = 10_000;                         // poll every 10 s
 
 const ABI = [
-  'function requestAIEvaluationWithApproval(string[] cids, string addendumText, uint256 alpha, uint256 maxFee, uint256 minFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 requestedClass, bool withBeacons) payable returns (bytes32)',
-  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) view returns (uint256)',
+  'function requestAIEvaluationWithApproval(string[] cids, string addendumText, uint256 alpha, uint256 maxFee, uint256 minFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor, uint64 requestedClass, bool withBeacons, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury) payable returns (bytes32)',
+  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P) view returns (uint256)',
   'function ethOwed(address payee) view returns (uint256)',
-  'function M() view returns (uint8)',
+  'function getJury(bytes32 aggId) view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout)',
   'function drawJury(bytes32 aggId)',
   'function closeCommits(bytes32 aggId)',
   'function promote(bytes32 aggId)',
@@ -298,13 +316,13 @@ const ABI = [
   };
 
   /* size the prepayment: credit you already hold in the aggregator is used first */
-  const required = await agg.maxTotalFee(MAX_FEE, MIN_FEE, BEACONS);
+  const required = await agg.maxTotalFee(MAX_FEE, MIN_FEE, BEACONS, JURY.K, JURY.P);
   const credit = await agg.ethOwed(signer.address);
   const value = credit >= required ? 0n : required - credit;
   console.log('worst case:', ethers.formatEther(required), 'ETH; sending:', ethers.formatEther(value), 'ETH');
 
-  /* send the request: it only escrows the ETH (and may settle older rounds) */
-  const args = [[CID], '', ALPHA, MAX_FEE, MIN_FEE, BASE, SCALE, CLASS, BEACONS];
+  /* send the request with its jury: it only escrows the ETH (and may settle older rounds) */
+  const args = [[CID], '', ALPHA, MAX_FEE, MIN_FEE, BASE, SCALE, CLASS, BEACONS, JURY];
   const gas = await agg.requestAIEvaluationWithApproval.estimateGas(...args, { value });
   const tx = await agg.requestAIEvaluationWithApproval(...args, { value, gasLimit: (gas * 3n) / 2n });
   console.log('tx:', tx.hash);
@@ -314,8 +332,8 @@ const ABI = [
     .find(l => l?.name === 'RequestAIEvaluation').args.aggRequestId;
   console.log('aggId:', aggId);
 
-  /* move the round on until it has a result or has failed */
-  const M = await agg.M();
+  /* move the round on until it has a result or has failed; M is the round's own */
+  const { M } = await agg.getJury(aggId);
   while (true) {
     const r = await agg.getRoundInfo(aggId);
     const phase = Number(r.phase);
@@ -353,6 +371,16 @@ The Verdikta system can also be called from a smart contract. Given below is a S
 pragma solidity ^0.8.21;
 
 interface IReputationAggregator {
+    // the jury a request asks for: K drawn, M promoted, N counted, P clustered, and the
+    // round timeout in seconds from the draw
+    struct Jury {
+        uint8 K;
+        uint8 M;
+        uint8 N;
+        uint8 P;
+        uint40 timeout;
+    }
+
     function requestAIEvaluationWithApproval(
         string[] calldata cids,
         string calldata addendum,
@@ -362,10 +390,12 @@ interface IReputationAggregator {
         uint256 estimatedBaseCost,
         uint256 maxFeeScaling,
         uint64 jobClass,
-        bool withBeacons
+        bool withBeacons,
+        Jury calldata jury
     ) external payable returns (bytes32);
 
-    function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) external view returns (uint256);
+    function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P) external view returns (uint256);
+    function getJury(bytes32 aggId) external view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout);
     function drawJury(bytes32 aggId) external;
     function getEvaluation(bytes32) external view returns (uint256[] memory, string memory, bool);
     function getOutcomeScores(bytes32, uint256 outcome) external view returns (uint256[] memory, bool);
@@ -381,6 +411,11 @@ contract DemoClient {
     bytes32 public currentAggId;
 
     uint256 public constant MAX_ORACLE_FEE = 15e13; // 0.00015 ETH per arbiter at most
+    uint8 public constant K = 6;                    // the Small jury: 6 drawn, 5 promoted,
+    uint8 public constant M = 5;                    // 4 counted, 3 clustered, 300 s
+    uint8 public constant N = 4;
+    uint8 public constant P = 3;
+    uint40 public constant TIMEOUT = 300;
 
     event Requested(bytes32 id);
     event Result(bytes32 id, uint256[] scores, string justif);
@@ -393,7 +428,7 @@ contract DemoClient {
 
     // Worst-case ETH to send with request()
     function quote() external view returns (uint256) {
-        return agg.maxTotalFee(MAX_ORACLE_FEE, 0, false);
+        return agg.maxTotalFee(MAX_ORACLE_FEE, 0, false, K, P);
     }
 
     // Send quote() as the value of this call. Credit this contract already holds
@@ -401,7 +436,8 @@ contract DemoClient {
     function request() external payable {
         require(currentAggId == bytes32(0), "already pending");
         currentAggId = agg.requestAIEvaluationWithApproval{value: msg.value}(
-            cids, "", 500, MAX_ORACLE_FEE, 0, 8e9, 5, 128, false
+            cids, "", 500, MAX_ORACLE_FEE, 0, 8e9, 5, 128, false,
+            IReputationAggregator.Jury(K, M, N, P, TIMEOUT)
         );
         emit Requested(currentAggId);
     }
@@ -458,7 +494,7 @@ Verdikta achieves this in three steps:
    The request is recorded in block *B*, and the draw happens from block *B*+2 with the seed `keccak256(aggId, blockhash(B+1))`, mixed with 2 beacon values when the request asked for beacons. The keeper checkpoints everything selection reads (scores, fees, stake, health calls) by block, and the draw reads it as of block *B*. Nothing that happens after the request, including who calls `drawJury` and when, changes the jury.
 
 2. **Build a shortlist of eligible arbiters**  
-   An arbiter is eligible if it is registered for the requested class, is not paused, banned, exiting, blocked, under-staked or frozen (an unanswered health call), and its posted fee (in ETH) ≤ your ceiling. The keeper visits the class's list in a random order derived from the seed and stops once it has 60 eligible arbiters (`shortlistSize()`) or has visited 400 entries (`maxScan()`). If fewer than *K* are eligible, the round fails at the draw and your prepayment is refunded.
+   An arbiter is eligible if it is registered for the requested class, is not paused, banned, exiting, blocked, under-staked or frozen (an unanswered health call), and its posted fee (in ETH) ≤ your ceiling. The keeper visits the class's list in a random order derived from the seed and stops once it has 60 eligible arbiters (`shortlistSize()`) or has visited 400 entries (`maxScan()`). If fewer than *K* are eligible, the jury repeats arbiters: the *m* eligible ones are drawn, and slot *k* holds pick *k* mod *m*, so an arbiter may hold several slots (and is paid for each). Only when none is eligible does the round fail at the draw, and your prepayment is refunded.
 
 3. **Run a weighted-random draw**  
    For every shortlisted arbiter *i* the contract computes a weight as follows:
@@ -467,7 +503,7 @@ Verdikta achieves this in three steps:
 
    The first factor is a reputation weight between 1000 and 2000; the second is a fee-based factor between 1 and *S~max~*, which is *S~max~* for a fee at or below β. The user specifies the timeliness-versus-quality weight α, the max scaling parameter S~max~, the base cost β, the max fee F~max~ (the ceiling) and the fee floor F~min~ when making the request. *Q~i~* and *T~i~* are arbiter *i*'s quality and timeliness scores (0 to `cap`, 1000 by default), and *fee~i~* is its posted fee. Because the fee factor uses the fee you actually pay, a fee posted below your floor gains no extra weight.
 
-The contract then draws *K* arbiters one after another without replacement, each with a probability proportional to its weight among those not yet drawn:
+The contract then draws the request's *K* arbiters (or all *m* eligible, if fewer) one after another without replacement, each with a probability proportional to its weight among those not yet drawn:
 
 $$P_{i} = \frac{\text{w}_{i}}{\sum\text{w}_{j}}$$
 
@@ -512,7 +548,7 @@ A round that cannot produce a result ends in one of the ways below. In every cas
 
 | **What happened** | **Ends as** | **Who ends it** | **Unspent prepayment goes to** |
 |-------------------|-------------|-----------------|--------------------------------|
-| Fewer than *K* eligible arbiters at the draw, or (with beacons) fewer than 2 beacon candidates | Phase 8, `EvaluationFailed(aggId, 1)` | the `drawJury` call | requester, at the draw |
+| No eligible arbiter at the draw (with fewer than *K*, arbiters are repeated instead), or (with beacons) fewer than 2 beacon candidates | Phase 8, `EvaluationFailed(aggId, 1)` | the `drawJury` call | requester, at the draw |
 | Fewer than *M* commits by the deadline | Phase 8, `EvaluationFailed(aggId, 3)` | `settle` | requester |
 | Fewer than *N* reveals by the deadline | Phase 8, `EvaluationFailed(aggId, 5)` | `settle` | requester |
 | At least *M* commits, but nobody called `closeCommits` after *T*+, or the phase was closed and nobody called `promote` | Phase 8, `EvaluationFailed(aggId, 3 or 4)` | `settle` | **treasury** |

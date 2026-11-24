@@ -27,9 +27,11 @@ import './Contracts.css';
 // Concise plain-language descriptions of each contract's role.
 const DESCRIPTIONS = {
   aggregator:
-    'Runs each evaluation in two phases. A request escrows the fees; from two blocks later ' +
-    'anyone can draw the jury (K arbiters, chosen by reputation from the keeper’s state at ' +
-    'the request block). The commit phase closes at M+ commits, or after T+ with at least M; ' +
+    'Runs each evaluation in two phases. One aggregator serves every jury size: each request ' +
+    'carries its own jury (K, M, N, P and the round timeout), within the owner’s limits below. ' +
+    'A request escrows the fees; from two blocks later anyone can draw the jury (K arbiters, ' +
+    'chosen by reputation from the keeper’s state at the request block; with fewer eligible, ' +
+    'the jury repeats arbiters). The commit phase closes at M+ commits, or after T+ with at least M; ' +
     'M commits are promoted to reveal, and the N-th reveal finalizes the verdict. The P ' +
     'closest reveals earn the bonus. Late reveals are still scored, and settlement after the ' +
     'deadline reports every slot’s outcome to the keeper.',
@@ -285,14 +287,11 @@ function Contracts() {
 
           {agg?.config && (
             <div className="config-grid">
-              <ConfigItem label="Jury (K)" value={agg.config.K} title="Arbiters drawn per request" />
-              <ConfigItem label="Commits needed (M)" value={agg.config.M} title="Commits needed to close the commit phase after T+; also the number of commits promoted to reveal" />
-              <ConfigItem label="Early close (M+)" value={agg.config.mPlus} title="The commit phase closes at once when this many commits are in: M + ceil((K − M) / 2)" />
-              <ConfigItem label="Reveals to finalize (N)" value={agg.config.N} />
-              <ConfigItem label="Cluster (P)" value={agg.config.P} title="Reveals in the consensus cluster, each paid the bonus" />
+              <ConfigItem label="Jury" value="Per request" title="Each request sets its own jury: K drawn, M commits needed (and promoted), N reveals to finalize, P in the cluster, and the round timeout from the draw. The commit phase closes at once at M+ = M + ceil((K − M) / 2) commits. A request is refused (BadJury) unless K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, P ≥ 2 unless N = 1, K ≤ Max Jury and the keeper's shortlist, and T+ < timeout ≤ Max Timeout" />
+              <ConfigItem label="Max Jury (K)" value={agg.config.maxJury} title="maxJury(): the largest K a request may ask for (also capped by the keeper's shortlist size)" />
+              <ConfigItem label="Max Timeout" value={formatDuration(agg.config.maxTimeout)} title="maxTimeout(): the longest round timeout a request may ask for (from the draw to the round deadline; settlement is due after it)" />
               <ConfigItem label="Bonus Multiplier" value={agg.config.bonusMultiplier != null ? `${agg.config.bonusMultiplier}x` : null} />
-              <ConfigItem label="Round Timeout" value={formatDuration(agg.config.responseTimeoutSeconds)} title="From the draw to the round deadline; settlement is due after it" />
-              <ConfigItem label="Commit Window (T+)" value={formatDuration(agg.config.tPlus)} title="After this, M commits are enough to close the commit phase" />
+              <ConfigItem label="Commit Window (T+)" value={formatDuration(agg.config.tPlus)} title="After this, M commits are enough to close the commit phase. A request's timeout must exceed it" />
               <ConfigItem label="Reveal Window" value={formatDuration(agg.config.revealWindow)} title="Reveal time guaranteed to promoted arbiters after promotion" />
               <ConfigItem label="Max Oracle Fee" value={agg.config.maxOracleFee != null ? `${agg.config.maxOracleFee} ETH` : null} title="Fee ceiling: arbiters posting more are never drawn" />
               <ConfigItem label="Draw Reward" value={agg.config.drawRewardFees != null ? `${agg.config.drawRewardFees} × fee ceiling` : null} title="× the request's fee ceiling (min(maxFee, maxOracleFee)), not an arbiter's fee. Paid into ethOwed to whoever draws the jury (only the requester during the priority window)" />

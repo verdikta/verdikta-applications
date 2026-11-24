@@ -55,8 +55,9 @@
 // and a late claim's bond and prepay are held as any claim's, so the equation is unchanged. After
 // every step a held listing takes no commit and its heldAt is the time it had (0 once it has
 // rolled or closed); at the end every
-// claim made on a listing after its hold is a late claim, and the sequence must have paid awards
-// to claims committed before a hold and settled after it. One seed, with none of the safeguards'
+// claim made on a listing after its hold is a late claim, and the sequence must have settled late
+// claims made on a listing on hold and paid awards to claims committed before a hold and settled
+// after it. One seed, with none of the safeguards'
 // or the appeal's streams: the suite runs close to its job's time limit, and
 // StakeAttestation.hold.test.js runs every claim path against the hold. Skipped under
 // solidity-coverage, where that file covers every line the seed reaches.
@@ -639,7 +640,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await attempt("lateOnHeld", () =>
             send(hunter, "lateClaim", [id, ethers.sha256(ethers.toBeHex(before + 1n, 32)), H.CT], price + BigInt(r6.pick([0, 0, 1000]))));
           if ((await sa.claimCount()) === before) return;
-          const claim = { id: before + 1n, listingId: id, hunter, late: true };
+          const claim = { id: before + 1n, listingId: id, hunter, late: true, onHeld: true };
           claims.push(claim);
           if (r6.next() < 0.8) await attempt("disclose", () => send(hunter, "disclose", [claim.id, H.CT_CID]));
         },
@@ -837,9 +838,12 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
             const k = await sa.getClaim(c.id);
             // Every claim made on the listing after its hold is a late claim; none before it is.
             expect(k.late, `seed ${seed} listing ${id} claim ${c.id}: late`).to.equal(c.id > seen.claims);
-            if (k.late && k.state === ClaimState.Settled) bump("lateSettled", 1);
-            // A claim committed before the hold and settled after it, with its award.
-            if (!k.late && k.state === ClaimState.Settled && k.settledAt > seen.at && k.paidWei + k.owedWei > 0n) bump("awardAfterHold", 1);
+            // A late claim made while the listing was on hold (not one made once it had rolled
+            // or closed), settled, then or later.
+            if (c.onHeld && k.state === ClaimState.Settled) bump("lateSettled", 1);
+            // A claim committed before the hold and settled after it, some of its award paid
+            // from the escrow at settle or by a later top-up (not merely owed).
+            if (!k.late && k.state === ClaimState.Settled && k.settledAt > seen.at && k.paidWei > 0n) bump("awardAfterHold", 1);
           }
         }
       } else {
@@ -866,8 +870,8 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
     for (const k of [...REACHED_P16, "appeal", "appealRetrigger", "result2", "result3", "result4"]) {
       expect(reachedP16[k] || 0, `${k} ${JSON.stringify(reachedP16)}`).to.be.greaterThan(0);
     }
-    // The hold's seed held listings, refused holds and commits, took late claims on held listings
-    // and settled them, and paid awards to claims committed before a hold and settled after it.
+    // The hold's seed held listings, refused holds and commits, took late claims on listings on hold
+    // and settled some of those, and paid awards to claims committed before a hold and settled after it.
     for (const k of [...REACHED_P39, "holdRefused", "commitRefused", "lateOnHeld", "lateSettled", "awardAfterHold"]) {
       expect(reachedP39[k] || 0, `${k} ${JSON.stringify(reachedP39)}`).to.be.greaterThan(0);
     }

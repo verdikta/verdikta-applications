@@ -385,6 +385,18 @@ export function heldSiteChecks(prefix, { record, feed, listingId, heldAt, state,
   ];
 }
 
+/** JSON-RPC methods that send a transaction. */
+const SENDS = Object.freeze(['eth_sendRawTransaction', 'eth_sendTransaction']);
+/**
+ * What a tool asks the chain only for a commit that is going ahead: whether the hunter is on the listing's allowlist,
+ * what the wallet holds, its nonce, the gas, and the transaction itself. The commit's price is left out (a tool may
+ * quote it with a refusal), and so is every read of the listing or its hold.
+ */
+const COMMIT_ONLY = Object.freeze({
+  views: Object.freeze(['isAllowed']),
+  methods: Object.freeze(['eth_getBalance', 'eth_getTransactionCount', 'eth_estimateGas', ...SENDS]),
+});
+
 /**
  * A commit the tool refused on the listing on hold, by what it left and not by its code or its words (a later node
  * gives a listing on hold a refusal of its own): the tool exited as it does for a refusal, with one of its own
@@ -392,18 +404,31 @@ export function heldSiteChecks(prefix, { record, feed, listingId, heldAt, state,
  * listing's counts and queue are what they were; and the chain takes no commit there.
  *
  * An unrelated failure leaves the same things untouched (an archive that could not be read, a folder in use), so what
- * the invocation asked the chain is checked too, from a recording of its own RPC calls: it read whether this listing
- * takes a commit, the chain's answer was no, and it sent no transaction. A run that failed before that read never
- * asked. `asked.reads` holds each read of the listing's eligibility: the acceptsCommits view (answer false: no commit)
- * or the heldAt view (answer non-zero: on hold), whichever the tool reads.
+ * the invocation asked the chain is checked too, from a recording of its own RPC calls, in their order: it read
+ * whether this listing takes a commit, the chain's answer was no, it sent no transaction, and it did not go on
+ * preparing the commit after that answer. A run that failed before that read never asked. A run that read the
+ * refusal, went on to what only a commit needs (the allowlist, the wallet's balance, its nonce, the gas, the
+ * transaction) and then failed on something else left the same things untouched too, and did not stop at the chain's
+ * answer: those calls after the refusing read fail the check. What a tool may still ask after it (the hold's time,
+ * whether a late claim is taken, the listing) is not among them.
  * `before` and `after`: { pins, nonce, claimCount, claimsCommitted, pendingClaims, lateClaims, tailClaim, acceptsCommits }.
- * `asked`: { reads: { view: 'acceptsCommits'|'heldAt', answer: boolean|bigint|null }[], sent: number }.
+ * `asked.calls`: the invocation's JSON-RPC calls in the order the node answered them, each
+ * { method, batch, view?, asks?, answer? }. `batch` numbers the HTTP request the call came in, so calls sent together
+ * are not taken for one after the other; `view` names the contract's function for an eth_call to it; `asks` is set on
+ * a read of this listing's eligibility, 'acceptsCommits' (answer false: no commit) or 'heldAt' (answer non-zero: on
+ * hold), whichever the tool reads, with the chain's `answer` (null: none came).
  */
 export function refusedCommitChecks(prefix, { run, before, after, asked }) {
-  const refuses = (r) => (r.view === 'acceptsCommits' ? r.answer === false : r.view === 'heldAt' && typeof r.answer === 'bigint' && r.answer !== 0n);
+  const calls = asked?.calls ?? [];
+  const reads = calls.filter((c) => c.asks);
+  const refuses = (r) => (r.asks === 'acceptsCommits' ? r.answer === false : r.asks === 'heldAt' && typeof r.answer === 'bigint' && r.answer !== 0n);
   // heldAt 0 says nothing either way; acceptsCommits true says the listing takes the commit
-  const takes = (r) => r.view === 'acceptsCommits' && r.answer !== false;
-  const reads = asked?.reads ?? [];
+  const takes = (r) => r.asks === 'acceptsCommits' && r.answer !== false;
+  const refusal = calls.find(refuses);
+  const sent = calls.filter((c) => SENDS.includes(c.method));
+  // what only a commit that is going ahead asks, in a request made after the refusing answer was in
+  const wentOn = refusal ? calls.filter((c) => c.batch > refusal.batch && (COMMIT_ONLY.methods.includes(c.method) || COMMIT_ONLY.views.includes(c.view))) : [];
+  const said = (c) => (c.asks ? `${c.asks} -> ${c.answer}` : c.view ?? c.method);
   const named = /^verdikta-attest: ([A-Z_]+): /m.exec(String(run?.stderr ?? ''))?.[1] ?? null;
   // exit 1 is the tool's "refused or failed": a refusal is one of its own errors, and not the two that mean it never got an answer
   const refused = run?.code === 1 && named !== null && !['INTERNAL', 'RPC_UNAVAILABLE'].includes(named) && !run?.json?.claimId;
@@ -414,7 +439,11 @@ export function refusedCommitChecks(prefix, { run, before, after, asked }) {
     check(`${prefix}.commit.nothingSent`, Boolean(before) && after?.nonce === before.nonce && after?.claimCount === before.claimCount, `the hunter's nonce ${before?.nonce} then ${after?.nonce}; claims on the contract ${before?.claimCount} then ${after?.claimCount}`),
     check(`${prefix}.commit.claimCountAsItWas`, Boolean(before) && Boolean(after) && counts.every((k) => before[k] === after[k]), JSON.stringify(counts.map((k) => [k, before?.[k], after?.[k]]), big)),
     check(`${prefix}.commit.chainRefuses`, before?.acceptsCommits === false && after?.acceptsCommits === false, `acceptsCommits ${before?.acceptsCommits} then ${after?.acceptsCommits}`),
-    check(`${prefix}.commit.stoppedAtTheChainsAnswer`, reads.some(refuses) && !reads.some(takes) && asked?.sent === 0, `the tool's own reads of the listing: ${JSON.stringify(reads, big)}; transactions it sent: ${asked?.sent}`),
+    check(
+      `${prefix}.commit.stoppedAtTheChainsAnswer`,
+      Boolean(refusal) && !reads.some(takes) && sent.length === 0 && wentOn.length === 0,
+      `the tool's calls, in order: ${calls.map(said).join(', ') || 'none'}; after the refusing answer it went on with: ${wentOn.map(said).join(', ') || 'nothing of a commit'}; transactions it sent: ${sent.length}`,
+    ),
   ];
 }
 

@@ -1056,21 +1056,34 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       };
     };
     // An unrelated failure would leave the same things untouched. So this one invocation reaches the chain through a
-    // recording proxy, and what it asked is read back: whether this listing takes a commit (the acceptsCommits view, or
-    // the hold's own), the chain's answer, and that it sent no transaction.
+    // recording proxy, and what it asked is read back, in order: whether this listing takes a commit (the
+    // acceptsCommits view, or the hold's own), the chain's answer, that it sent no transaction, and that after the
+    // refusing answer it asked nothing only a commit that goes ahead needs (checks.js refusedCommitChecks).
     const hunterRpc = await owned(h.startRecordingProxy(chain.rpcUrl), (p) => p.close());
     const watchedTool = createTool({ chain: { ...chain, rpcUrl: hunterRpc.url }, ipfs, runnerUrl: hunterRunner.url, runnerToken, devKey, log });
     const beforeRefusal = await commitCounts();
     const refusedCommit = await watchedTool('commit', onHoldDir, '--listing', String(listingId), '--yes');
-    const toolRpc = hunterRpc.post('/').filter((c) => c.request && !Array.isArray(c.request));
-    const readsOf = (viewName) => toolRpc
-      .filter((c) => c.request.method === 'eth_call' && String(c.request.params?.[0]?.to).toLowerCase() === chain.contract.toLowerCase() && c.request.params[0].data === sa.interface.encodeFunctionData(viewName, [listingId]))
-      .map((c) => ({ view: viewName, answer: typeof c.response?.result === 'string' && c.response.result !== '0x' ? sa.interface.decodeFunctionResult(viewName, c.response.result)[0] : null }));
-    const asked = {
-      reads: [...readsOf('acceptsCommits'), ...readsOf('heldAt')],
-      sent: toolRpc.filter((c) => ['eth_sendRawTransaction', 'eth_sendTransaction'].includes(c.request.method)).length,
-    };
-    one('held.commit.toolWasWatched', toolRpc.length > 0 && toolRpc.every((c) => c.status === 200), `${toolRpc.length} JSON-RPC calls of this invocation recorded`);
+    const toolRpc = hunterRpc.post('/');
+    // this listing's eligibility, by the exact call: the view asked, and what the chain said
+    const eligibility = new Map(['acceptsCommits', 'heldAt'].map((name) => [sa.interface.encodeFunctionData(name, [listingId]), name]));
+    const answerOf = (name, response) => (typeof response?.result === 'string' && response.result !== '0x' ? sa.interface.decodeFunctionResult(name, response.result)[0] : null);
+    // each JSON-RPC call of the invocation, in the order the node answered; a batch's calls share its number
+    const toolCalls = toolRpc.flatMap((c, batch) => {
+      const requests = Array.isArray(c.request) ? c.request : [c.request];
+      const responses = Array.isArray(c.response) ? c.response : [c.response];
+      return requests.filter(Boolean).map((request) => {
+        const call = { method: request.method, batch };
+        const to = request.params?.[0];
+        if (request.method !== 'eth_call' || String(to?.to).toLowerCase() !== chain.contract.toLowerCase()) return call;
+        const data = String(to.data ?? to.input ?? '');
+        call.view = sa.interface.getFunction(data.slice(0, 10))?.name ?? data.slice(0, 10);
+        const asks = eligibility.get(data);
+        if (asks) Object.assign(call, { asks, answer: answerOf(asks, responses.find((r) => r?.id === request.id)) });
+        return call;
+      });
+    });
+    const asked = { calls: toolCalls };
+    one('held.commit.toolWasWatched', toolRpc.length > 0 && toolRpc.every((c) => c.status === 200) && toolCalls.every((c) => typeof c.method === 'string'), `${toolCalls.length} JSON-RPC calls of this invocation recorded: ${toolCalls.map((c) => c.asks ?? c.view ?? c.method).join(', ')}`);
     expect(refusedCommitChecks('held', { run: refusedCommit, before: beforeRefusal, after: await commitCounts(), asked }));
 
     stage('hold: the earlier claim is judged and paid as before');

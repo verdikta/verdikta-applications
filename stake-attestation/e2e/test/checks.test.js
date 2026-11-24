@@ -471,7 +471,14 @@ test('heldSiteChecks: the site says on hold, since when, not live, no feed entry
 const counts = (over = {}) => ({ pins: 12, nonce: 30, claimCount: 9n, claimsCommitted: 7n, pendingClaims: 1n, lateClaims: 0n, tailClaim: 9n, acceptsCommits: false, ...over });
 const refusal = (over = {}) => ({ code: 1, json: null, stdout: '', stderr: 'verdikta-attest: LISTING_NOT_ACCEPTING: This listing takes no commits now.\n', ...over });
 
-const askedAndRefused = { reads: [{ view: 'acceptsCommits', answer: false }], sent: 0 };
+// the invocation's JSON-RPC calls as the round reads them back from its recording: one HTTP request each, in order
+const trace = (...calls) => ({ calls: calls.map((c, batch) => ({ batch, ...c })) });
+const eligibilityRead = (asks, answer) => ({ method: 'eth_call', view: asks, asks, answer });
+const viewCall = (name) => ({ method: 'eth_call', view: name });
+const rpcCall = (method) => ({ method });
+// the tool as it is: the chain, the listing, the commit's price, then whether the listing takes a commit
+const BEFORE_THE_ANSWER = [rpcCall('eth_chainId'), viewCall('getListing'), viewCall('commitPrice')];
+const askedAndRefused = trace(...BEFORE_THE_ANSWER, eligibilityRead('acceptsCommits', false));
 
 test('refusedCommitChecks: by what a refused commit leaves. The tool refused, nothing was pinned, nothing was sent, the counts are what they were', () => {
   const o = (over = {}) => ({ run: refusal(), before: counts(), after: counts(), asked: askedAndRefused, ...over });
@@ -500,26 +507,52 @@ test('refusedCommitChecks: by what a refused commit leaves. The tool refused, no
 test('refusedCommitChecks: an unrelated failure leaves the same things untouched, so the tool\'s own reads must show it reached the chain\'s refusal', () => {
   const o = (over = {}) => ({ run: refusal(), before: counts(), after: counts(), asked: askedAndRefused, ...over });
   // the tool may read the listing's eligibility as acceptsCommits, as heldAt, or both; either answer that refuses will do
-  allPass(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'heldAt', answer: HELD_AT }], sent: 0 } })));
-  allPass(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: false }, { view: 'heldAt', answer: HELD_AT }], sent: 0 } })));
-  allPass(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'heldAt', answer: 0n }, { view: 'acceptsCommits', answer: false }], sent: 0 } })));
+  allPass(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('heldAt', HELD_AT)) })));
+  allPass(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('acceptsCommits', false), eligibilityRead('heldAt', HELD_AT)) })));
+  allPass(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('heldAt', 0n), eligibilityRead('acceptsCommits', false)) })));
   // exit 1 with one of the tool's own errors, and nothing pinned, sent or counted: an archive it could not read, a
   // folder in use, a file it could not open. It never asked the chain about the listing, and that is what fails it.
   for (const unrelated of ['ARCHIVE_UNAVAILABLE', 'FOLDER_BUSY', 'FILE_ERROR']) {
     const run = refusal({ stderr: `verdikta-attest: ${unrelated}: Something else went wrong.\n` });
-    const list = refusedCommitChecks('x', o({ run, asked: { reads: [], sent: 0 } }));
-    assert.deepEqual(failing(list), ['x.commit.stoppedAtTheChainsAnswer'], unrelated);
+    for (const asked of [trace(), trace(...BEFORE_THE_ANSWER)]) {
+      assert.deepEqual(failing(refusedCommitChecks('x', o({ run, asked }))), ['x.commit.stoppedAtTheChainsAnswer'], unrelated);
+    }
   }
   fails(refusedCommitChecks('x', o({ asked: undefined })), 'x.commit.stoppedAtTheChainsAnswer');
   // it asked, and the answer did not come: no refusal of the chain's was read
-  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: null }], sent: 0 } })), 'x.commit.stoppedAtTheChainsAnswer');
+  fails(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('acceptsCommits', null)) })), 'x.commit.stoppedAtTheChainsAnswer');
   // a hold view that answers 0 refuses nothing
-  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'heldAt', answer: 0n }], sent: 0 } })), 'x.commit.stoppedAtTheChainsAnswer');
+  fails(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('heldAt', 0n)) })), 'x.commit.stoppedAtTheChainsAnswer');
   // the chain said the listing takes a commit: whatever stopped the tool, it was not the listing
-  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: true }], sent: 0 } })), 'x.commit.stoppedAtTheChainsAnswer');
-  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: false }, { view: 'acceptsCommits', answer: true }], sent: 0 } })), 'x.commit.stoppedAtTheChainsAnswer');
+  fails(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('acceptsCommits', true)) })), 'x.commit.stoppedAtTheChainsAnswer');
+  fails(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('acceptsCommits', false), eligibilityRead('acceptsCommits', true)) })), 'x.commit.stoppedAtTheChainsAnswer');
+  // the same views of another listing are no read of this one's eligibility: the round marks only this listing's
+  fails(refusedCommitChecks('x', o({ asked: trace(viewCall('acceptsCommits'), viewCall('heldAt')) })), 'x.commit.stoppedAtTheChainsAnswer');
   // and a transaction went out through that node
-  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: false }], sent: 1 } })), 'x.commit.stoppedAtTheChainsAnswer');
+  fails(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('acceptsCommits', false), rpcCall('eth_sendRawTransaction')) })), 'x.commit.stoppedAtTheChainsAnswer');
+});
+
+test('refusedCommitChecks: a tool that read the refusal and went on preparing the commit did not stop at the chain\'s answer, whatever it failed on later', () => {
+  const o = (over = {}) => ({ run: refusal(), before: counts(), after: counts(), asked: askedAndRefused, ...over });
+  // It read "no commit", ignored it, went through the allowlist and the wallet's balance, and then failed on a file
+  // of the claim: exit 1 with an error of its own, nothing pinned, nothing sent, the counts as they were. Every other
+  // check passes; this one does not.
+  const fileError = refusal({ stderr: 'verdikta-attest: FILE_ERROR: The archive could not be written.\n' });
+  const wentOn = trace(...BEFORE_THE_ANSWER, eligibilityRead('acceptsCommits', false), viewCall('isAllowed'), rpcCall('eth_maxPriorityFeePerGas'), rpcCall('eth_getBalance'));
+  assert.deepEqual(failing(refusedCommitChecks('x', o({ run: fileError, asked: wentOn }))), ['x.commit.stoppedAtTheChainsAnswer']);
+  assert.match(refusedCommitChecks('x', o({ run: fileError, asked: wentOn })).find((c) => c.name === 'x.commit.stoppedAtTheChainsAnswer').detail, /after the refusing answer it went on with: isAllowed, eth_getBalance;/);
+  // each of them alone is enough, and so is the hold's own view as the refusing read
+  for (const next of [viewCall('isAllowed'), rpcCall('eth_getBalance'), rpcCall('eth_getTransactionCount'), rpcCall('eth_estimateGas')]) {
+    fails(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('acceptsCommits', false), next) })), 'x.commit.stoppedAtTheChainsAnswer');
+    fails(refusedCommitChecks('x', o({ asked: trace(eligibilityRead('heldAt', 0n), eligibilityRead('heldAt', HELD_AT), next) })), 'x.commit.stoppedAtTheChainsAnswer');
+  }
+  // Only what came after the answer counts. The same calls before it are a tool that checks in another order; and
+  // calls sent in one request with the refusing read were asked with it, not after it.
+  allPass(refusedCommitChecks('x', o({ asked: trace(viewCall('isAllowed'), rpcCall('eth_getBalance'), eligibilityRead('acceptsCommits', false)) })));
+  allPass(refusedCommitChecks('x', o({ asked: { calls: [{ batch: 0, ...viewCall('commitPrice') }, { batch: 1, ...eligibilityRead('acceptsCommits', false) }, { batch: 1, ...viewCall('isAllowed') }, { batch: 1, ...rpcCall('eth_getBalance') }] } })));
+  // What a tool may still ask once it has the refusal, to say why and what is left: the hold's time, whether a late
+  // claim is taken, the listing, the price, the chain's time. None of it prepares a commit.
+  allPass(refusedCommitChecks('x', o({ asked: trace(...BEFORE_THE_ANSWER, eligibilityRead('acceptsCommits', false), eligibilityRead('heldAt', HELD_AT), viewCall('acceptsLateClaims'), viewCall('getListing'), viewCall('commitPrice'), rpcCall('eth_getBlockByNumber'), rpcCall('eth_blockNumber')) })));
 });
 
 test('lateClaimChecks: taken on the listing on hold as a late claim, behind the claim from before it, and never one of its pending claims', () => {

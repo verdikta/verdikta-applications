@@ -1821,7 +1821,9 @@ which reads the chain, the record and the feed. **A commit is refused**: the too
 before the hold, exits as it does for a refusal, and what that leaves is checked and not its code or its words: nothing
 pinned, the hunter's nonce and the contract's claim count unmoved, the listing's counts and queue as they were. An
 unrelated failure would leave the same, so that one invocation reaches the chain through a recording proxy, and what it
-asked is read back: whether this listing takes a commit, the chain's answer no, and no transaction sent. **The
+asked is read back, in order: whether this listing takes a commit, the chain's answer no, no transaction sent, and
+after that answer none of what only a commit that goes ahead asks (the allowlist, the wallet's balance and nonce, the
+gas): a tool that read the refusal, went on and failed on something else did not stop at the chain's answer. **The
 claim from before the hold is judged and paid as before**: the maker releases it, the hunter reveals it, the jury gives
 the first claim's HIGH (the second juror's script answers it so, and the round first checks that juror has answered
 exactly the two claims before), the keeper starts the confirmation after the dispute window and the held listing's

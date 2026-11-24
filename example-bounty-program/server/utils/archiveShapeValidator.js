@@ -257,8 +257,8 @@ function validateArchiveShape(buffer) {
  * (network/availability — not the hunter's fault, `gatewayFailure: true`)
  * from a genuine shape failure. Never throws.
  * @param {string} cid
- * @param {{ perGatewayTimeoutMs?: number, totalTimeoutMs?: number, maxBytes?: number }} [opts]
- * @returns {Promise<{ ok: true } | { ok: false, check: string, message: string, gatewayFailure?: true }>}
+ * @param {{ perGatewayTimeoutMs?: number, totalTimeoutMs?: number, maxBytes?: number, withBuffer?: boolean }} [opts]
+ * @returns {Promise<{ ok: true, buffer?: Buffer } | { ok: false, check: string, message: string, gatewayFailure?: true }>}
  */
 async function fetchAndValidateArchiveShape(cid, opts = {}) {
   if (!BARE_CID_RE.test(String(cid))) {
@@ -282,7 +282,9 @@ async function fetchAndValidateArchiveShape(cid, opts = {}) {
       gatewayFailure: true,
     };
   }
-  return validateArchiveShape(buffer);
+  const shape = validateArchiveShape(buffer);
+  // withBuffer hands a conforming archive's bytes back, for callers that go on to read it.
+  return shape.ok && opts.withBuffer ? { ...shape, buffer } : shape;
 }
 
 /**

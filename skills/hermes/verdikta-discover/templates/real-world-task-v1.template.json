@@ -1,6 +1,6 @@
 {
   "template_id": "real-world-task-v1",
-  "template_version": "1.0.0",
+  "template_version": "1.1.0",
   "status": "DRAFT_SERVICE_NOT_OFFER",
   "recommended_threshold": 80,
   "threshold_note": "Proposed pilot threshold; stored outside the rubric and calibrated before funded use. Not a measured performance guarantee.",
@@ -31,7 +31,7 @@
     "evidence.md",
     "the evidence files named in result.json"
   ],
-  "delivery_note": "Deliver result.json, a readable evidence.md and every evidence file it names, attached to the submission. Photos the specification marks token_required must show the challenge token physically in the scene. Declare partial or undone steps; never fabricate or edit evidence.",
+  "delivery_note": "Deliver result.json, a readable evidence.md and every evidence file it names, attached to the submission. Photos the specification marks token_required must show the challenge token physically in the scene. Name each file in result.json exactly as attached, and attach what the jury must see as image files (links are archival). Declare partial or undone steps and any conversion, resizing or redaction; never fabricate evidence or alter what it shows.",
   "evidence_rule": "Evidence authenticity is assessed from the files and their consistency, not proven. The challenge token in the scene, and agreement between files, capture times and the attestation, reduce the risk of reused or generated evidence without removing it.",
   "must_pass_note": "must=true criteria have weight zero. Weighted criteria sum to 1.0. Schema validation is not proof that semantic gates will be adjudicated correctly.",
   "non_goals": [

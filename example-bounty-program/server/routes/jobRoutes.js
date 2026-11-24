@@ -20,6 +20,7 @@ const { extractTaskDescription } = require('../utils/taskDescription');
 const { config } = require('../config');
 const archiveGenerator = require('../utils/archiveGenerator');
 const archiveShapeValidator = require('../utils/archiveShapeValidator');
+const workOrderCheck = require('../utils/workOrderSubmissionCheck');
 const { findOversizedImages, OVERSIZED_IMAGE_FIX } = require('../utils/imageLimits');
 const { validateRubric, validateJuryNodes, normalizeBountyPayments, validateProcurement, validateWagerTarget, isValidFileType, MAX_FILE_SIZE,
         oracleUnreadableReason, detectBinaryContainer, ALLOWED_ZIP_BASED_EXTENSIONS,
@@ -1810,14 +1811,28 @@ const CALLDATA_SHAPE_CHECK_BUDGET_MS = 20000;
  * public gateways throttle this host, so a fetch failure says nothing about the
  * archive. That caller gets the calldata plus an unverified warning.
  *
+ * For a real-world-task-v1 work-order bounty, a fetched archive also gets the work-order
+ * check (utils/workOrderSubmissionCheck.js): a result.json that names files the archive
+ * does not hold, or carries another request's digest, is refused the same way.
+ *
  * Returns null when it has already sent the 400; otherwise
- * { archiveShape: 'ok' | 'unknown', warnings: [] }.
+ * { archiveShape: 'ok' | 'unknown', warnings: [], workOrderCheck? }.
  */
-async function gateHunterArchive(res, hunterCid, logLabel) {
+async function gateHunterArchive(res, hunterCid, logLabel, job = null) {
   const result = await archiveShapeValidator.fetchAndValidateArchiveShape(hunterCid, {
     totalTimeoutMs: CALLDATA_SHAPE_CHECK_BUDGET_MS,
+    withBuffer: true,
   });
-  if (result.ok) return { archiveShape: 'ok', warnings: [] };
+  if (result.ok) {
+    const inputs = job && result.buffer ? workOrderCheck.archiveFileInputs(result.buffer) : null;
+    const check = inputs ? await workOrderCheck.checkWorkOrderSubmission(job, inputs) : { applies: false };
+    if (check.applies && !check.ok) {
+      logger.info(`[${logLabel}] hunterCid refused by the work-order check`, { hunterCid, codes: check.errors.map(e => e.code) });
+      res.status(400).json(workOrderCheck.workOrderErrorBody(check));
+      return null;
+    }
+    return { archiveShape: 'ok', warnings: check.applies ? check.warnings : [], ...(check.applies ? { workOrderCheck: check } : {}) };
+  }
 
   if (result.gatewayFailure) {
     logger.warn(`[${logLabel}] hunterCid could not be fetched for the shape check; returning calldata unverified`, {
@@ -1913,7 +1928,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
     // Shape-check the archive BEFORE spending the evaluation prepay on a
     // doomed submission (see #34 — bounties 57/58/59 each pinned a
     // differently-malformed archive and every arbiter aborted).
-    const archiveGate = await gateHunterArchive(res, hunterCid, 'submit/prepare');
+    const archiveGate = await gateHunterArchive(res, hunterCid, 'submit/prepare', job);
     if (!archiveGate) return;
 
     const iface = new ethers.Interface([
@@ -1945,6 +1960,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
       },
       archiveShape: archiveGate.archiveShape,
       ...(archiveGate.warnings.length ? { warnings: archiveGate.warnings } : {}),
+      ...(archiveGate.workOrderCheck ? { workOrderCheck: archiveGate.workOrderCheck } : {}),
       ...(ignoredFields.length ? { ignoredFields, ignoredFieldsNote: 'These hunter-side oracle fields are no longer part of prepareSubmission; the bounty creator set the oracle settings at createBounty.' } : {}),
       // Canonical topic0 + ABI for the event this tx emits — filter the receipt logs
       // on `event.topic0` and decode with `event.abi` rather than deriving either.
@@ -4776,6 +4792,22 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
         }
       }
 
+      // ---- 7b. work_order (real-world-task-v1: result.json, listed file names, request digest) ----
+      if (uploadedFiles.length > 0) {
+        const orderCheck = await workOrderCheck.checkWorkOrderSubmission(job, workOrderCheck.uploadedFileInputs(uploadedFiles));
+        if (orderCheck.applies) {
+          checks.push({
+            name: 'work_order',
+            passed: orderCheck.ok,
+            details: orderCheck.ok
+              ? `${orderCheck.resultFile} names only attached files and carries this bounty's request digest`
+              : orderCheck.errors.map(e => e.details || e.message).join(' ')
+          });
+          for (const e of orderCheck.errors) errors.push({ code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}), fix: e.fix });
+          for (const w of orderCheck.warnings) warnings.push(`${w.message}. ${w.fix}`);
+        }
+      }
+
       // ---- 8. rubric_basic_check (best effort) ----
       if (job && uploadedFiles.length > 0) {
         try {
@@ -5033,6 +5065,14 @@ router.post('/:jobId/submit', async (req, res) => {
       });
     }
 
+    // Work-order bounties (real-world-task-v1): refuse, before pinning, a result.json that
+    // names files this upload does not contain or carries another request's digest.
+    const orderCheck = await workOrderCheck.checkWorkOrderSubmission(job, workOrderCheck.uploadedFileInputs(uploadedFiles));
+    if (orderCheck.applies && !orderCheck.ok) {
+      logger.info('[jobs/submit] refused by the work-order check', { jobId, codes: orderCheck.errors.map(e => e.code) });
+      return res.status(400).json(workOrderCheck.workOrderErrorBody(orderCheck));
+    }
+
     const fileDescriptions = (() => {
       try { return req.body.fileDescriptions ? JSON.parse(req.body.fileDescriptions) : {}; }
       catch { return {}; }
@@ -5103,6 +5143,8 @@ router.post('/:jobId/submit', async (req, res) => {
         files: uploadedFiles.map(f => ({ filename: f.originalname, size: f.size, description: fileDescriptions[f.originalname] })),
         totalSize: uploadedFiles.reduce((s, f) => s + f.size, 0)
       },
+      // Present for real-world-task-v1 work orders: what was checked, and warnings that did not block.
+      ...(orderCheck.applies ? { workOrderCheck: orderCheck, ...(orderCheck.warnings.length ? { warnings: orderCheck.warnings } : {}) } : {}),
       tips: [
         'Next: call prepareSubmission on-chain, then POST /api/jobs/:id/submissions/confirm',
         `Check submission status: GET /api/jobs/${jobId}/submissions`
@@ -5415,6 +5457,8 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     let { hunterCid } = req.body;
     // null = no upload happened here (hunterCid supplied directly); true/false = readback result.
     let hunterCidVerified = null;
+    // What the multipart branch learned about its own upload (work-order warnings, if any).
+    let uploadGate = { archiveShape: 'ok', warnings: [] };
     // Legacy hunter-side oracle fields: accepted, logged, and IGNORED (never forwarded).
     const ignoredFields = ['addendum', 'alpha', 'maxOracleFee', 'estimatedBaseCost', 'maxFeeBasedScaling']
       .filter(k => req.body && req.body[k] != null && req.body[k] !== '');
@@ -5502,6 +5546,13 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
           fix: `${OVERSIZED_IMAGE_FIX} Use POST /api/jobs/:id/submit/dry-run to pre-check.`
         });
       }
+      // Same work-order check as POST /submit, before anything is pinned.
+      const orderCheck = await workOrderCheck.checkWorkOrderSubmission(job, workOrderCheck.uploadedFileInputs(uploadedFiles));
+      if (orderCheck.applies && !orderCheck.ok) {
+        logger.info('[bundle] refused by the work-order check', { jobId, codes: orderCheck.errors.map(e => e.code) });
+        return res.status(400).json(workOrderCheck.workOrderErrorBody(orderCheck));
+      }
+      if (orderCheck.applies) uploadGate = { archiveShape: 'ok', warnings: orderCheck.warnings, workOrderCheck: orderCheck };
       const fileDescriptions = (() => {
         try { return req.body.fileDescriptions ? JSON.parse(req.body.fileDescriptions) : {}; }
         catch { return {}; }
@@ -5556,9 +5607,9 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     // (#34). An archive built just above by createHunterSubmissionCIDArchive is
     // conforming by construction, and a fresh pin may not have reached the
     // gateways yet, so it is not re-fetched.
-    let archiveGate = { archiveShape: 'ok', warnings: [] };
+    let archiveGate = uploadGate;
     if (hunterCidVerified === null) {
-      archiveGate = await gateHunterArchive(res, hunterCid, 'submit/bundle');
+      archiveGate = await gateHunterArchive(res, hunterCid, 'submit/bundle', job);
       if (!archiveGate) return;
     }
 
@@ -5587,6 +5638,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
       hunterCidVerified,
       archiveShape: archiveGate.archiveShape,
       ...(archiveGate.warnings.length ? { warnings: archiveGate.warnings } : {}),
+      ...(archiveGate.workOrderCheck ? { workOrderCheck: archiveGate.workOrderCheck } : {}),
       oracleSettings: bountyOracle,
       ...(ignoredFields.length ? { ignoredFields, ignoredFieldsNote: 'These hunter-side oracle fields are no longer part of prepareSubmission; the bounty creator set the oracle settings at createBounty. They were not forwarded.' } : {}),
       transactions: [

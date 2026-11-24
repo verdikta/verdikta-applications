@@ -119,7 +119,19 @@ Guide: https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/hea
 Schemas: https://github.com/verdikta/verdikta-applications/tree/main/skills/verdikta-discover/schemas
 Check before uploading (Node only, reads only the files you name):
   node scripts/check-result.bundle.mjs --description bounty-description.txt --result result.json
+  (a real-world task: add --files and the name of every file you will attach)
 The onboarding skill's submit_to_bounty.js runs this check for you and refuses a result that fails it.
+Real-world tasks (real-world-task-v1): /submit, /submit/bundle and /submit/prepare return
+400 WORK_ORDER_CHECK_FAILED, before anything is pinned or paid, when there is no file named
+result.json, when result.json lists an evidence filename that is not an attached file (names must
+match exactly), or when its input_sha256 is not the bounty's request digest. Result-schema findings,
+PDF attachments and a total over about 5 MB come back as warnings[] and do not block; the body's
+workOrderCheck lists everything. /submit/dry-run reports the same as a work_order check.
+Attach what the jury must look at as separate image files (near 1 MB each), not inside a PDF: a
+PDF reaches the jury as extracted text, or not at all. Links are archival; the jury grades from
+the attachments. For every bounty, the archive /submit builds now ends its query text with an
+index of the attachments (reference, file name, type, your fileDescriptions entry), which the
+jury reads.
 
 ## Create API compatibility
 POST /api/jobs/create accepts positive decimal or scientific-notation ETH amounts,

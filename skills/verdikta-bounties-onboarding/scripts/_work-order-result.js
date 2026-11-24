@@ -20,6 +20,7 @@ export const looksLikeWorkOrder = (description) => typeof description === 'strin
  * { workOrder, templateId, errors }: workOrder is false when the description carries no work order (nothing to check).
  * For a work order, the files must include a result.json that validates against the template's result schema, carries the
  * request's task_id and the stated input_sha256, and covers exactly the requested items; a fixture-only result is refused.
+ * For a real-world task, every evidence filename result.json lists must also be the base name of one of the files.
  */
 export async function checkWorkOrderResult({ description, files = [], loadModule }) {
   if (!looksLikeWorkOrder(description)) return { workOrder: false, templateId: null, errors: [] };
@@ -34,7 +35,10 @@ export async function checkWorkOrderResult({ description, files = [], loadModule
   let result;
   try { result = JSON.parse(await readFile(resultFile, 'utf8')); }
   catch (error) { return { workOrder: true, templateId: parsed.templateId, errors: [`result.json is not valid JSON: ${error.message}`] }; }
-  const { validateResult } = await importDiscover('validation.mjs', purpose, loadModule);
-  const errors = validateResult(parsed.templateId, parsed.request, result, parsed.requestDigest, { production: true });
+  const { validateResult, evidenceFileErrors } = await importDiscover('validation.mjs', purpose, loadModule);
+  const errors = [...validateResult(parsed.templateId, parsed.request, result, parsed.requestDigest, { production: true })];
+  // A real-world task: every evidence file result.json lists must be one of the files being uploaded, by its exact name
+  // (the API refuses the upload otherwise). An older verdikta-discover without this check validates the rest as before.
+  if (parsed.templateId === 'real-world-task-v1' && typeof evidenceFileErrors === 'function') errors.push(...evidenceFileErrors(result, files.map(f => path.basename(f))));
   return { workOrder: true, templateId: parsed.templateId, errors };
 }

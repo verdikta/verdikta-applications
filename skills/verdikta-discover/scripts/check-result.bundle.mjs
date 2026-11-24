@@ -10537,6 +10537,16 @@ function reviewRequestErrors(request) {
   if (JSON.stringify(request).length > MAX_REQUEST_CHARS) errors.push("Request too large for the evaluation description: shorten the artifact text or the questions");
   return errors;
 }
+function evidenceFileErrors(result, attachedNames) {
+  const attached = new Set(attachedNames), errors = [];
+  if (!attached.has("result.json")) errors.push("No attached file is named result.json");
+  for (const name of new Set((Array.isArray(result?.evidence) ? result.evidence : []).map((e) => e?.filename).filter((n) => typeof n === "string"))) {
+    if (attached.has(name)) continue;
+    const near = attachedNames.find((n) => n.toLowerCase() === name.toLowerCase());
+    errors.push(`result.json lists ${name}, which is not among the attached files${near ? ` (${near} differs only in case)` : ""}`);
+  }
+  return errors;
+}
 function taskRequestErrors(request) {
   const errors = [], start = Date.parse(request.time_window.start), end = Date.parse(request.time_window.end);
   if (!(end > start)) errors.push("The time window must end after it starts");
@@ -11033,7 +11043,7 @@ var review_v1_template_default = {
 // templates/real-world-task-v1.template.json
 var real_world_task_v1_template_default = {
   template_id: "real-world-task-v1",
-  template_version: "1.0.0",
+  template_version: "1.1.0",
   status: "DRAFT_SERVICE_NOT_OFFER",
   recommended_threshold: 80,
   threshold_note: "Proposed pilot threshold; stored outside the rubric and calibrated before funded use. Not a measured performance guarantee.",
@@ -11064,7 +11074,7 @@ var real_world_task_v1_template_default = {
     "evidence.md",
     "the evidence files named in result.json"
   ],
-  delivery_note: "Deliver result.json, a readable evidence.md and every evidence file it names, attached to the submission. Photos the specification marks token_required must show the challenge token physically in the scene. Declare partial or undone steps; never fabricate or edit evidence.",
+  delivery_note: "Deliver result.json, a readable evidence.md and every evidence file it names, attached to the submission. Photos the specification marks token_required must show the challenge token physically in the scene. Name each file in result.json exactly as attached, and attach what the jury must see as image files (links are archival). Declare partial or undone steps and any conversion, resizing or redaction; never fabricate evidence or alter what it shows.",
   evidence_rule: "Evidence authenticity is assessed from the files and their consistency, not proven. The challenge token in the scene, and agreement between files, capture times and the attestation, reduce the risk of reused or generated evidence without removing it.",
   must_pass_note: "must=true criteria have weight zero. Weighted criteria sum to 1.0. Schema validation is not proof that semantic gates will be adjudicated correctly.",
   non_goals: [
@@ -11138,7 +11148,7 @@ var out = (obj, code) => {
 };
 try {
   const resultPath = flag("--result");
-  if (!resultPath || !flag("--description") && !flag("--request")) throw new Error("Usage: check-result.mjs (--description FILE | --request FILE [--template ID]) --result FILE [--allow-fixture]");
+  if (!resultPath || !flag("--description") && !flag("--request")) throw new Error("Usage: check-result.mjs (--description FILE | --request FILE [--template ID]) --result FILE [--allow-fixture] [--files NAME...]");
   const result = JSON.parse(await read(resultPath));
   let templateId, request, digest, parseErrors = [];
   if (flag("--description")) {
@@ -11153,7 +11163,8 @@ try {
     templateId = flag("--template") ?? inferTemplateId(request);
     if (!templateId) throw new Error("Name the template with --template; the request shape does not identify one");
   }
-  const errors = parseErrors.length ? parseErrors : validateResult(templateId, request, result, digest, { production: !has("--allow-fixture") });
+  const errors = parseErrors.length ? [...parseErrors] : validateResult(templateId, request, result, digest, { production: !has("--allow-fixture") });
+  if (has("--files") && templateId === "real-world-task-v1") errors.push(...evidenceFileErrors(result, args.slice(args.indexOf("--files") + 1).map((f) => f.split(/[\\/]/).pop())));
   out({ ok: errors.length === 0, template_id: templateId, task_id: request?.task_id ?? null, input_sha256: digest, errors }, errors.length ? 1 : 0);
 } catch (error) {
   out({ ok: false, errors: [error.message] }, 1);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
@@ -14,6 +14,7 @@ import { FundListing } from './FundListing.jsx';
 import { CloseListing, RenewListing, TopUpEscrow, Withdraw } from './ListingActions.jsx';
 import { ListingMore } from './ListingExtras.jsx';
 import { ListingWarning } from './ListingWarning.jsx';
+import { useSeenMined } from './seenMined.js';
 import { DisclosureKeyForms } from './SameRepository.jsx';
 
 const F = STRINGS.fund;
@@ -54,9 +55,14 @@ export function FundPage({ listingId }) {
   const [lookup, setLookup] = useState('');
   const [loaded, setLoaded] = useState(null); // { listing, hold, takesCommits, block } | { missing, block } | { failed }
   const [attempt, setAttempt] = useState(0);
-  // the opening fund() this page sent and saw mined: { block }. Like a hold's receipt, it stands only while the page's
-  // read is from before that block; a read of that block or later decides.
-  const [openedHere, setOpenedHere] = useState(null);
+  // The opening fund() this page sent and saw mined: { block }. Like a hold's receipt, it stands while the page's read
+  // is from before that block; from then on only while the read has the listing opened (its openedAt set, whatever its
+  // state since); and once a read does not, it is dropped for good (lib/seenMined.js): a listing closed without ever
+  // opening is never said to have been opened here.
+  const [openedHere, setOpenedHere, openingStands] = useSeenMined(
+    loaded?.block ?? null,
+    () => !loaded?.listing || BigInt(loaded.listing.openedAt) !== 0n,
+  );
   // a hold this page sent and saw mined: { at, block }. It stands only while the page's read is from before that
   // block (lib/hold.js holdView); a read of that block or later decides, and replaces it.
   const [heldHere, setHeldHere] = useState(null);
@@ -119,7 +125,19 @@ export function FundPage({ listingId }) {
   const onOpened = useCallback((block = 0) => {
     setOpenedHere({ block });
     refresh(block);
-  }, [refresh]);
+  }, [refresh, setOpenedHere]);
+  // The listing this page shows, by maker and artifact. On a chain whose blocks were replaced the id can come to name
+  // another listing: everything the page kept for the one it showed (a hold or an opening it saw mined, an action's
+  // line, the record and the successors found for it) is that listing's, and goes with it.
+  const identity = loaded?.listing ? `${loaded.listing.maker}:${loaded.listing.artifactHash}`.toLowerCase() : null;
+  const shownIdentity = useRef(null);
+  useEffect(() => {
+    if (shownIdentity.current !== null && identity !== null && identity !== shownIdentity.current) {
+      setHeldHere(null);
+      setOpenedHere(null);
+    }
+    if (identity !== null) shownIdentity.current = identity;
+  }, [identity, setOpenedHere]);
 
   const header = (
     <>
@@ -164,9 +182,9 @@ export function FundPage({ listingId }) {
   // A listing this page just opened reads Listed until a read reaches the opening's block: until then it is shown as
   // open, by the receipt. A read of that block or later that still says Listed means the opening is not on the chain
   // as read: the state is the read's, the page says so, and the funding form is back.
-  const openingAhead = openedHere !== null && loaded.block < openedHere.block;
-  const openingDropped = openedHere !== null && !openingAhead && state === 'Listed';
-  const shown = state === 'Listed' && openingAhead ? 'Open' : state;
+  const openingAhead = openingStands && state === 'Listed';
+  const openingDropped = openedHere !== null && !openingStands;
+  const shown = openingAhead ? 'Open' : state;
   // errata E8 and E9: the floor and the size list() copied onto this listing, for its whole life
   const terms = safeguardTerms(l);
   return (
@@ -199,17 +217,22 @@ export function FundPage({ listingId }) {
           <button type="button" className="secondary" data-testid="listing-read-again" onClick={() => refresh(behind)}>{F.retry}</button>
         </>
       )}
-      {/* Once opened from this page the opening's own line stays, with its transaction. What the listing is now is
-          never that line's to say: from the first read that has the opening (`followed`) it says only that this page
-          opened it, and "is open until" is the line below, of the listing and its hold as last read. */}
-      {(state === 'Listed' || openedHere !== null) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} followed={state !== 'Listed'} dropped={openingDropped} onOpened={onOpened} />}
-      {state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
-      {hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
-      {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
-      <ListingMore listingId={listingId} listing={l} hold={hold} takesCommits={loaded.takesCommits} readBlock={loaded.block} onHeld={onHeld} onChanged={refresh} />
-      <TopUpEscrow listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
-      <RenewListing listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
-      <CloseListing listingId={listingId} listing={l} readBlock={loaded.block} onChanged={refresh} />
+      {/* keyed by the listing shown: another listing under this id starts each part afresh, with nothing kept of the first */}
+      <Fragment key={identity}>
+        {/* The funding form of a listing that is Listed, and the opening's own line, with its transaction, while the
+            opening stands. What the listing is now is never that line's to say: from the first read that has the
+            opening (`followed`) it says only that this page opened it, and "is open until" is the line below, of the
+            listing and its hold as last read. An opening a read contradicted is said only while the listing is still
+            Listed, where it can be funded again; of a listing closed without opening, nothing is said of it. */}
+        {(state === 'Listed' || openingStands) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} followed={state !== 'Listed'} dropped={openingDropped} onOpened={onOpened} />}
+        {state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
+        {hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
+        {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
+        <ListingMore listingId={listingId} listing={l} hold={hold} takesCommits={loaded.takesCommits} readBlock={loaded.block} onHeld={onHeld} onChanged={refresh} />
+        <TopUpEscrow listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
+        <RenewListing listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
+        <CloseListing listingId={listingId} listing={l} readBlock={loaded.block} onChanged={refresh} />
+      </Fragment>
       <Withdraw version={version} />
     </>
   );

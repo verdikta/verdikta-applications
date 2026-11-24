@@ -53,12 +53,28 @@ async function listingCall(chain, listingId) {
 const isCallWith = (data) => (p) => p?.method === 'eth_call' && String(p.params?.[0]?.data ?? p.params?.[0]?.input ?? '').toLowerCase() === data.toLowerCase();
 /**
  * From now on the site's reader answers getListing(id) with the listing as the chain has it at this moment, whatever
- * is mined after: a chain on which a later transaction of the page is not there (its block was replaced).
+ * is mined after: a chain on which a later transaction of the page is not there (its block was replaced). The test
+ * can put another answer in `reader.result` later, for what that chain does next.
+ * @returns {Promise<{ result: string }>}
  */
 async function readerKeepsListing(page, stack, chain, listingId) {
   const now = await listingCall(chain, listingId);
-  return interceptRpc(page, stack, (p) => (isCallWith(now.data)(p) ? { result: now.result } : undefined), { from: 'reader' });
+  const reader = { result: now.result };
+  await interceptRpc(page, stack, (p) => (isCallWith(now.data)(p) ? { result: reader.result } : undefined), { from: 'reader' });
+  return reader;
 }
+/** A getListing answer with some of its fields changed, by name. */
+function changedListing(chain, result, change) {
+  const fields = chain.sa.interface.getFunction('getListing').outputs[0].components.map((c) => c.name);
+  const values = chain.sa.interface.decodeFunctionResult('getListing', result)[0].toArray(true);
+  for (const [name, value] of Object.entries(change)) {
+    expect(fields.includes(name), `the listing has a field ${name}`).toBe(true);
+    values[fields.indexOf(name)] = value;
+  }
+  return chain.sa.interface.encodeFunctionResult('getListing', [values]);
+}
+const CLOSED = 4n;
+const renewButton = (page, stack) => page.getByTestId('renew').getByRole('button', { name: fill(STRINGS.renew.button, { fee: formatEth(BigInt(stack.listingFeeWei)) }) });
 const api = async (stack, path) => {
   const res = await fetch(`${stack.apiUrl}${path}`);
   return res.ok ? res.json() : null;
@@ -538,7 +554,7 @@ test.describe('the maker\'s hold', () => {
     await page.goto(`/#/fund/${listingId}`);
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Listed);
     // the chain as the site's reader has it from here keeps the listing listed and not funded, at every later block
-    await readerKeepsListing(page, stack, chain, listingId);
+    const reader = await readerKeepsListing(page, stack, chain, listingId);
     await page.getByRole('button', { name: STRINGS.chain.fund }).click();
     const dropped = page.getByTestId('opening-dropped');
     await expect(dropped).toBeVisible({ timeout: 30_000 });
@@ -552,6 +568,18 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toBeVisible();
     await expect(page.getByTestId('hold')).toHaveCount(0);
     await expect(page.getByTestId('listing-behind')).toHaveCount(0);
+    // On that chain the maker then closes the listing, which never opened. The page reads closed (here after a close
+    // from this page that the wallet's own read refuses), and nothing on it says this page opened the listing.
+    reader.result = changedListing(chain, reader.result, { state: CLOSED });
+    const close = page.getByTestId('close');
+    await close.getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) }).click();
+    await close.getByRole('button', { name: new RegExp(`^Close listing ${listingId} and take back `) }).click();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    await expect(page.getByTestId('opened')).toHaveCount(0);
+    await expect(page.getByTestId('opening-dropped')).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText(funded.transactionHash);
+    await expect(page.locator('main')).not.toContainText('This page opened');
+    await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toHaveCount(0);
   });
 
   test('a roll forward that is not on the chain when the page reads again: said plainly, and the panel is offered again', async ({ page, stack, chain }) => {
@@ -563,7 +591,7 @@ test.describe('the maker\'s hold', () => {
     const pick = field(page, RF.pick);
     await expect(pick).toBeVisible();
     await pick.selectOption(String(successor.listingId));
-    await readerKeepsListing(page, stack, chain, first.listingId);
+    const reader = await readerKeepsListing(page, stack, chain, first.listingId);
     const button = page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) });
     await button.click();
     const panel = page.getByTestId('roll-forward');
@@ -576,6 +604,15 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
     expect(await panel.getByTestId('roll-hold-first').innerText()).toBe(RF.hold.first);
     await expect(button).toBeVisible();
+    // On that chain the listing is then closed, with no successor. The page reads closed (here after a renewal the
+    // wallet's own read refuses): it is not a roll, and the dropped roll's line does not come back for it.
+    reader.result = changedListing(chain, reader.result, { state: CLOSED, escrowWei: 0n });
+    await renewButton(page, stack).click();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    await expect(page.getByTestId('rolled')).toHaveCount(0);
+    await expect(page.getByTestId('roll-forward')).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText(event.transactionHash);
+    await expect(page.locator('main')).not.toContainText('Rolled forward to listing');
   });
 
   test('a close that is not on the chain when the page reads again: said plainly, and the close is offered again from its first step', async ({ page, stack, chain }) => {
@@ -586,7 +623,7 @@ test.describe('the maker\'s hold', () => {
     const close = page.getByTestId('close');
     const ask = close.getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) });
     await expect(ask).toBeVisible();
-    await readerKeepsListing(page, stack, chain, listingId);
+    const reader = await readerKeepsListing(page, stack, chain, listingId);
     await ask.click();
     await close.getByRole('button', { name: fill(STRINGS.close.confirm, { id: listingId, eth: escrow }) }).click();
     const dropped = close.getByTestId('close-dropped');
@@ -596,6 +633,81 @@ test.describe('the maker\'s hold', () => {
     await expect(close.getByTestId('closed')).toHaveCount(0);
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
     await expect(ask).toBeVisible();
+    // On that chain the listing is closed later by another transaction, after its escrow changed. The page reads closed
+    // (here after a renewal the wallet's own read refuses) and says nothing of what the dropped close reported: not
+    // its hash, not the amount it said came back.
+    reader.result = changedListing(chain, reader.result, { state: CLOSED, escrowWei: 0n });
+    await renewButton(page, stack).click();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    await expect(page.getByTestId('closed')).toHaveCount(0);
+    await expect(page.getByTestId('close')).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText(event.transactionHash);
+    await expect(page.locator('main')).not.toContainText('of escrow went back');
+  });
+
+  test('the feed describes one version under a successor\'s id and the chain has another: it is not offered', async ({ page, stack, chain }) => {
+    const repo = `https://github.com/acme/moved-${Date.now().toString(36)}`;
+    const first = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    const successor = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    const other = await chain.openListing({ recipient: key.recipient });
+    expect(other.artifactHash).not.toBe(successor.artifactHash);
+    await chain.until(async () => ((await api(stack, '/api/feed'))?.listings ?? []).some((l) => l.listingId === String(successor.listingId)), { what: 'the fixed version in the feed' });
+    // Before the picker first loads: the chain as the site's reader has it holds another of the maker's open listings
+    // under the successor's id (open, the maker's, no predecessor: one the contract would take), while the feed still
+    // describes the fixed version there.
+    const theirs = await listingCall(chain, other.listingId);
+    const fixed = await listingCall(chain, successor.listingId);
+    await installWallet(page, stack);
+    await interceptRpc(page, stack, (p) => (isCallWith(fixed.data)(p) ? { result: theirs.result } : undefined), { from: 'reader' });
+    await page.goto(`/#/fund/${first.listingId}`);
+    const roll = page.getByTestId('roll-forward');
+    // the option would show the fixed version's commit and be sent for the other listing: there is none
+    await expect(roll).toContainText(RF.none);
+    await expect(roll.getByRole('combobox')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) })).toHaveCount(0);
+  });
+
+  test('another listing under the page\'s id: while its record is read, nothing found for the first listing can be sent', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const repo = `https://github.com/acme/first-${Date.now().toString(36)}`;
+    const first = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    const successor = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    const other = await chain.openListing({ recipient: key.recipient, spec: { repo: `https://github.com/acme/second-${Date.now().toString(36)}` } });
+    await chain.until(async () => ((await api(stack, '/api/feed'))?.listings ?? []).some((l) => l.listingId === String(successor.listingId)), { what: 'the successor in the feed' });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${first.listingId}`);
+    const roll = page.getByTestId('roll-forward');
+    const button = page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) });
+    await expect(button).toBeVisible();
+    // From here the chain as the site's reader has it holds another of the maker's listings under this id, of another
+    // repository, and the site's record of that one is slow to answer.
+    const mine = await listingCall(chain, first.listingId);
+    const theirs = await listingCall(chain, other.listingId);
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let asked = 0;
+    await page.route((url) => url.pathname === `/api/records/${other.artifactHash.toLowerCase()}`, async (route) => {
+      asked += 1;
+      await held;
+      await route.continue();
+    });
+    await interceptRpc(page, stack, (p) => (isCallWith(mine.data)(p) ? { result: theirs.result } : undefined), { from: 'reader' });
+    // the page reads the listing again after its next transaction, a renewal
+    await renewButton(page, stack).click();
+    // it now shows the other listing, and is reading that listing's record
+    const shown = await chain.sa.getListing(other.listingId);
+    await expect(page.getByTestId('listing-summary')).toContainText(shown.listingCid, { timeout: 30_000 });
+    await expect.poll(() => asked).toBe(1);
+    // nothing kept from the first listing: no successor of its repository to send, and no line of its renewal
+    await expect(roll).toContainText(RF.loading);
+    await expect(button).toHaveCount(0);
+    await expect(roll.getByRole('combobox')).toHaveCount(0);
+    await expect(page.getByTestId('renewed')).toHaveCount(0);
+    release();
+    // and none once the record is there: it is the other listing's
+    await expect(roll).not.toContainText(RF.loading);
+    await expect(button).toHaveCount(0);
+    expect((await chain.sa.getListing(first.listingId)).successor).toBe(0n);
   });
 
   test('a hold the chain dates otherwise than the receipt did: one time on the page, the chain\'s, and no transaction named for it', async ({ page, stack, chain }) => {

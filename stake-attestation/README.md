@@ -1569,17 +1569,23 @@ goes in a URL.
   nothing of the hold left on the page; and a hold the chain dates otherwise than the receipt did
   is said by the chain's time everywhere, without the transaction. A `hold()` that was mined with
   no `Held` event of this listing in its receipt is named by its transaction and claims no hold.
-  The opening, a roll forward and a close stand by their receipts the same way: a read of their
-  block or later that does not show them (a listing still Listed, still Open or Depleted, not
-  Closed) is the state the page shows, an alert names the transaction, and the action is offered
-  again. **Every action is sent for the listing the page shows.** Listing ids are given in the
+  The opening, a roll forward and a close stand by their receipts the same way
+  (`client/src/lib/seenMined.js`): a read of their block or later that does not show them (a
+  listing that never opened, whose successor is not the one named, that is not Closed) is the
+  state the page shows, an alert names the transaction while the action can still be taken, and
+  the action is offered again. A receipt a read contradicted is dropped for good: what the
+  listing becomes later, by another transaction, is never said with its hash or its figures.
+  **Every action is sent for the listing the page shows.** Listing ids are given in the
   order `list()` is mined, so on a chain whose blocks were replaced an id can name another
   listing of the maker's, or none. Just before sending, each action (top-up, renew, hold, close,
   roll forward) reads the listing through the wallet at one block, the count first
   (`listingAt` in `client/src/chain/wallet.js`): another artifact or another maker under the id,
   or no such listing, sends nothing and reads the page again from that block
   (`sameListing` in `client/src/lib/listingActions.js`); a roll's successor is held to the
-  artifact the picker showed.
+  artifact the picker showed, and the picker offers a listing only when the feed's entry and the
+  chain have the same artifact under its id. When a read finds another listing under the page's
+  id, every part of the page starts afresh for it: the record, the successors found, each
+  action's line and the hold or opening the page saw mined were the first listing's.
   The commit offer follows the contract's `acceptsCommits`, read with the listing: a listing that
   rolled forward or closed is never said to be offered. A listing opened from its own page is
   followed the same way, so its claims, the hold and the rest are there without a reload; the

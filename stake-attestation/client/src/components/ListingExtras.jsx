@@ -14,6 +14,7 @@ import { siteErrorText } from './Facts.jsx';
 import { SelectField } from './Field.jsx';
 import { HoldListing } from './ListingActions.jsx';
 import { SameRepositorySection } from './SameRepository.jsx';
+import { useSeenMined } from './seenMined.js';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const RF = STRINGS.roll;
@@ -118,12 +119,13 @@ export function RollForward({ listingId, listing, record, recordReading = false,
   const [again, setAgain] = useState(0);
   const [pick, setPick] = useState('');
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null); // { id, tx, block }
   const [error, setError] = useState(null);
-  // A roll this page saw mined stands by its receipt while the page's read is from before its block (`readBlock`: the
-  // block the listing was read at). From that block on the read decides: a listing that still reads Open or Depleted
-  // has not rolled forward, the panel says so, and offers the roll again.
-  const rolledHere = done !== null && (!ROLLABLE.has(state) || readBlock === null || readBlock < done.block);
+  // The roll this page saw mined: { id, tx, block }. It stands by its receipt while the page's read is from before its
+  // block (`readBlock`: the block the listing was read at). From that block on the read decides, by the listing's own
+  // successor: one that is not the listing this roll named has not rolled forward to it. A listing that still reads
+  // Open or Depleted then gets the panel again, with an alert; and a receipt a read contradicted is dropped for good
+  // (lib/seenMined.js), so a listing closed or rolled elsewhere afterwards is never said to be this roll's doing.
+  const [done, setDone, rolledHere] = useSeenMined(readBlock, (d) => BigInt(listing.successor) === BigInt(d.id));
 
   useEffect(() => {
     if (!ROLLABLE.has(state) || !identity) return undefined;
@@ -137,7 +139,10 @@ export function RollForward({ listingId, listing, record, recordReading = false,
         const id = BigInt(e.listingId);
         // the feed may trail the chain by a block: a listing held since is not offered
         const [s, onHold] = await Promise.all([sa.getListing(id), hold.supported ? readHold(sa, id) : NO_HOLD]);
-        if (onHold.heldAt === 0n && confirmSuccessor(s, { successorId: id, listingId: BigInt(listingId), account: listing.maker })) {
+        // The option shows the feed's commit and is sent for the chain's listing: they must be the same version. A
+        // feed that still describes another listing under this id (its blocks were replaced) offers nothing.
+        if (same(e.artifactHash, s.artifactHash) && onHold.heldAt === 0n
+          && confirmSuccessor(s, { successorId: id, listingId: BigInt(listingId), account: listing.maker })) {
           // the artifact as the chain has it under that id: what is rolled to is that version, or nothing is sent
           out.push({ id: e.listingId, commit: e.artifact.baseCommit, artifactHash: s.artifactHash, escrowWei: e.escrowRemainingWei, openedAt: e.openedAt });
         }
@@ -312,7 +317,7 @@ export function ListingMore({ listingId, listing, hold = NO_HOLD, takesCommits =
       </div>
       <SameRepositorySection data={data} />
       {/* the hold is the chain's alone, as roll forward's lines are: neither waits for the site's record */}
-      <HoldListing listingId={listingId} listing={listing} hold={hold} onHeld={onHeld} onChanged={onChanged} />
+      <HoldListing listingId={listingId} listing={listing} hold={hold} readBlock={readBlock} onHeld={onHeld} onChanged={onChanged} />
       {/* whatever the record's read came to: what the panel says before a fix is the chain's, and only its picker is the record's */}
       <RollForward listingId={listingId} listing={listing} record={data} recordReading={reading} hold={hold} readBlock={readBlock} onRecordAgain={recordAgain} onChanged={onChanged} />
     </>

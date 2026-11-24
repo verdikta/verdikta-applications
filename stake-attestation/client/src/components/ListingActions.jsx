@@ -9,6 +9,7 @@ import { NO_HOLD, holdTerms, readHold } from '../lib/hold.js';
 import { closeTerms, renewTerms, sameListing, topUpEffect, topUpTerms } from '../lib/listingActions.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
+import { useSeenMined } from './seenMined.js';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
@@ -275,13 +276,16 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
  * that a read of that block or later does not show is said in an alert, never as a hold, and the action is offered
  * again: the maker must not publish a fix on the strength of a hold that is not on the chain.
  */
-export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () => {}, onChanged = () => {} }) {
+export function HoldListing({ listingId, listing, hold = NO_HOLD, readBlock = null, onHeld = () => {}, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const H = STRINGS.hold;
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null); // { tx, heldAt }
+  // The hold this page saw mined: { tx, heldAt, block }. It is the listing's hold while the read is from before its
+  // block, and from then on while the read has a hold of that very time; once a read does not, it is dropped for good
+  // (lib/seenMined.js), and a hold the listing has later is never said with this transaction.
+  const [done, setDone, mine] = useSeenMined(readBlock, (d) => hold.held && hold.heldAt === BigInt(d.heldAt));
   const [error, setError] = useState(null);
   const terms = holdTerms(listing, hold);
 
@@ -332,7 +336,7 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
         onChanged(receipt.blockNumber);
         return undefined;
       }
-      setDone({ tx: receipt.hash, heldAt: held.args.heldAt });
+      setDone({ tx: receipt.hash, heldAt: held.args.heldAt, block: receipt.blockNumber });
       onHeld(held.args.heldAt, receipt.blockNumber);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
@@ -346,9 +350,8 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () =>
   if (hold.held) {
     // The time is the page's one answer for this hold (`hold.heldAt`: the chain's once a read has it), here as in the
     // summary and the roll forward panel. The transaction this page saw mined is named with it only while the hold
-    // read is that transaction's: a hold the chain dates otherwise (the call mined again in another block, or
-    // another hold altogether) is said by its own time, without a transaction this page cannot vouch for.
-    const mine = done !== null && BigInt(done.heldAt) === hold.heldAt;
+    // read is that transaction's (`mine`): a hold the chain dates otherwise (the call mined again in another block,
+    // or another hold altogether) is said by its own time, without a transaction this page cannot vouch for.
     body = (
       <>
         {mine
@@ -414,15 +417,17 @@ export function CloseListing({ listingId, listing, readBlock = null, onChanged =
   const C = STRINGS.close;
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null); // { tx, amount, account, deferred, block }
   const [error, setError] = useState(null);
   const terms = closeTerms(listing);
-  // A close this page saw mined stands by its receipt while the page's read is from before its block (`readBlock`: the
-  // block the listing was read at). From that block on the read decides: a listing that does not read closed is not,
-  // the page says so, and the close is offered again by its terms.
-  const closedHere = done !== null && (terms.why === 'closed' || readBlock === null || readBlock < done.block);
+  // The close this page saw mined: { tx, amount, account, deferred, block }. It stands by its receipt while the page's
+  // read is from before its block (`readBlock`: the block the listing was read at). From that block on the read
+  // decides: a listing that does not read closed is not, the page says so, and the close is offered again by its
+  // terms. A receipt a read contradicted is dropped for good (lib/seenMined.js): if the listing is closed later, by
+  // another transaction, this section says nothing of it, as on a visit that sent no close, and never that
+  // transaction's hash or what it reported as returned.
+  const [done, setDone, closedHere] = useSeenMined(readBlock, () => terms.why === 'closed');
 
-  if (terms.why === 'closed' && !done) return null;
+  if (terms.why === 'closed' && !closedHere) return null;
 
   const close = async () => {
     setBusy(true);

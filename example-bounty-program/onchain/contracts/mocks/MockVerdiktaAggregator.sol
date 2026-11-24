@@ -199,7 +199,10 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     }
 
     /// @notice The N counted reveals arrive (phase 5): the round finalizes on the cluster mean, which
-    ///         the mock takes as the mean of all reveals. Every reveal must have the same length.
+    ///         the mock takes as the mean of all reveals. Reveals may differ in length, as on the real
+    ///         aggregator: the result has the most common length (ties: the shorter), each reveal resized
+    ///         to it for the mean (truncated, or zero-filled), while getOutcomeScores returns each reveal
+    ///         as sent (0 for an outcome a short reveal lacks).
     function scriptReveals(bytes32 aggId, uint256[][] calldata reveals, string calldata justifications) external {
         Round storage r = _round(aggId);
         if (r.phase != PH_REVEAL || block.timestamp > r.deadline) revert WrongPhase();
@@ -208,10 +211,11 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     }
 
     /// @notice Shortcut: from any drawn phase before final, N identical reveals of `aggregated`
-    ///         (commits and promotion are skipped; nobody earns the promote reward).
+    ///         (commits and promotion are skipped; nobody earns the promote reward). Not after the
+    ///         round's deadline: there the real aggregator only settles the round, as failed.
     function scriptResult(bytes32 aggId, uint256[] calldata aggregated, string calldata justifications) external {
         Round storage r = _round(aggId);
-        if (r.phase < PH_COMMIT || r.phase > PH_REVEAL) revert WrongPhase();
+        if (r.phase < PH_COMMIT || r.phase > PH_REVEAL || block.timestamp > r.deadline) revert WrongPhase();
         uint256[][] memory reveals = new uint256[][](r.n);
         for (uint256 i = 0; i < r.n; i++) reveals[i] = aggregated;
         if (r.commits < r.m) r.commits = r.m;
@@ -494,13 +498,13 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     }
 
     function _finalizeWith(Round storage r, bytes32 aggId, uint256[][] memory reveals, string memory justifications) private {
-        uint256 len = reveals[0].length;
-        if (len == 0 || len > MAX_LIKELIHOOD_LENGTH) revert Unreachable();
+        uint256 len = _modalLength(reveals);
         uint256[] memory agg = new uint256[](len);
         for (uint256 i = 0; i < reveals.length; i++) {
-            if (reveals[i].length != len) revert Unreachable();
+            // the real aggregator ignores an empty or overlong reveal; the mock refuses to script one
+            if (reveals[i].length == 0 || reveals[i].length > MAX_LIKELIHOOD_LENGTH) revert Unreachable();
             r.reveals[i] = reveals[i];
-            for (uint256 j = 0; j < len; j++) agg[j] += reveals[i][j];
+            for (uint256 j = 0; j < len && j < reveals[i].length; j++) agg[j] += reveals[i][j];
             emit RevealReceived(aggId, i, false, 0);
         }
         for (uint256 j = 0; j < len; j++) agg[j] /= reveals.length;
@@ -516,6 +520,17 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         r.phase = PH_FINAL;
         _refund(r, aggId, r.requester);
         emit FulfillAIEvaluation(aggId, agg, justifications);
+    }
+
+    /// @dev The most common reveal length, ties to the shorter (AggregatorLib.normalizeToModal).
+    function _modalLength(uint256[][] memory reveals) private pure returns (uint256 modal) {
+        uint256 best = 0;
+        for (uint256 i = 0; i < reveals.length; i++) {
+            uint256 li = reveals[i].length;
+            uint256 c = 0;
+            for (uint256 j = 0; j < reveals.length; j++) if (reveals[j].length == li) c++;
+            if (c > best || (c == best && li < modal)) (best, modal) = (c, li);
+        }
     }
 
     function _refund(Round storage r, bytes32 aggId, address to) private {

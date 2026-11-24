@@ -732,6 +732,34 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await checkInvariant(step, `round ${extra}`);
         }
       }
+      // A fixed promotion, after the random steps so their sequences are unchanged: one open round
+      // still before its deadline (drawn here if need be) gets its M+ commits and is promoted from
+      // C+2, as a keeper would. The random streams reach promotion only by chance: since the mock
+      // refuses results after a round's deadline (as the real aggregator does), rounds left past it
+      // crowd the round stream's picks, and over these seeds it promoted none.
+      for (const c of await claimsIn([ClaimState.Revealed, ClaimState.Disputed])) {
+        const requestId = openRequestOf(await sa.getClaim(c.id));
+        let info = await aggregator.getRoundInfo(requestId);
+        if (info.phase === 1n) {
+          const block = BigInt(await ethers.provider.getBlockNumber());
+          if (block < info.requestBlock + 2n) await mine(Number(info.requestBlock + 2n - block));
+          await attempt("draw", () => send(makers[0], "drawJury", [c.id]));
+          info = await aggregator.getRoundInfo(requestId);
+        }
+        if ((info.phase !== 3n && info.phase !== 4n) || info.deadline < BigInt(await time.latest()) + 60n) continue;
+        if (info.phase === 3n) {
+          const K = Number(await aggregator.K()), M = Number(await aggregator.M());
+          const mPlus = M + Math.ceil((K - M) / 2);
+          await attempt("commits", () => aggregator.scriptCommits(requestId, Math.max(1, mPlus - Number(info.commits))));
+        }
+        if ((await phaseOf(requestId)) !== 4n) continue;
+        await mine(2);
+        await attempt("promote", () => aggregator.connect(plainSigners[0]).promote(requestId));
+        if ((await phaseOf(requestId)) === 5n) {
+          await checkInvariant(300, "fixed promotion");
+          break;
+        }
+      }
       // Drain: every round finalized, every wallet recovered, then refund attribution.
       await aggregator.setWithdrawBroken(false);
       if (await aggregator.paused()) await aggregator.setPaused(false);

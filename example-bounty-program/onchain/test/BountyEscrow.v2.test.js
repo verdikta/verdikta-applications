@@ -286,6 +286,50 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
     });
   });
 
+  describe("reveals of mixed length, as the real aggregator reads them", function () {
+    // The real aggregator accepts any valid length, gives the result the most common one (ties: the
+    // shorter) and returns each reveal as sent from getOutcomeScores (0 for an outcome it lacks).
+    it("one one-number reveal among two-outcome reveals is read at FUND index 1, where it scores 0", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f);
+      const { submissionId } = await submit(f, bountyId);
+      const aggId = await runRound(f, bountyId, submissionId, [yes(), yes(), yes(), [900_000n]]);
+      const agg = await aggOf(f, bountyId);
+      expect((await agg.getEvaluation(aggId))[0]).to.have.length(2);
+      expect((await agg.getOutcomeScores(aggId, 1))[0]).to.deep.equal([900_000n, 900_000n, 900_000n, 0n]);
+      await f.escrow.finalizeSubmission(bountyId, submissionId);
+      const s = await f.escrow.getSubmission(bountyId, submissionId);
+      expect([s.status, s.passCount]).to.deep.equal([3n, 3n]);                // 3 of 4: a pass
+    });
+
+    it("a tie between lengths is read as one number, so two-outcome reveals count their DONT_FUND score", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f);
+      const { submissionId } = await submit(f, bountyId);
+      const aggId = await runRound(f, bountyId, submissionId, [yes(), yes(), [900_000n], [900_000n]]);
+      const agg = await aggOf(f, bountyId);
+      expect((await agg.getEvaluation(aggId))[0]).to.have.length(1);
+      expect((await agg.getOutcomeScores(aggId, 0))[0]).to.deep.equal([100_000n, 100_000n, 900_000n, 900_000n]);
+      expect((await f.escrow.getOracleResult(bountyId, submissionId)).outcome).to.equal(3);   // 2 of 4: soft fail
+    });
+  });
+
+  describe("the mock follows the real deadline", function () {
+    it("no result can be scripted after the round's deadline: it only settles, failed, and closes as no result", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f);
+      const { submissionId, aggId } = await submit(f, bountyId);
+      const agg = await aggOf(f, bountyId);
+      await mine(2);
+      await f.escrow.connect(f.other).drawJury(bountyId, submissionId);
+      const deadline = (await agg.getRoundInfo(aggId)).deadline;
+      await time.increaseTo(deadline + 1n);
+      await expect(agg.scriptResult(aggId, yes(), JUST)).to.be.revertedWithCustomError(agg, "WrongPhase");
+      await f.escrow.connect(f.other).closeFailedRound(bountyId, submissionId);
+      expect((await f.escrow.getSubmission(bountyId, submissionId)).status).to.equal(6n);    // AwaitingRerun
+    });
+  });
+
   describe("re-runs", function () {
     async function softFailed(f, o = {}) {
       const { bountyId, deadline } = await createBounty(f, o);

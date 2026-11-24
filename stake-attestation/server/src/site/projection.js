@@ -1,6 +1,16 @@
 // What the indexed events say, folded once per cursor: the listings (identity, CIDs, whether they
-// opened, rolled or closed), the claims (listing, last known state, outcome), where each event
-// belongs, and which claims are published.
+// opened, rolled or closed, and since when their maker holds them), the claims (listing, last known
+// state, outcome), where each event belongs, and which claims are published.
+//
+// The maker's hold (node P40; owner, 2026-11-23). hold() stops new commits on a listing and leaves
+// its state Open or Depleted, so the state alone does not say it. A listing's `heldAt` is the Held
+// event's time (unix seconds) while the listing is on hold, and null otherwise: before a hold, and
+// once it has ended in a roll forward or a close (RolledForward, Closed), which are the only ways out
+// of Open and Depleted. That is the contract's heldAt view, which answers 0 for the same listings.
+// It comes from the events alone: no call is made for it, so a contract from before the hold, which
+// emits no Held and has no such view, reads as not held; and a reorg that drops the event drops the
+// hold with it, as it drops every event after the fork (indexer.js). The Held event itself stays in
+// the feed's events, so a listing's history keeps the time after the hold has ended.
 //
 // Publication (design §14): the site publishes only valid findings. A claim is published once it
 // settled with an outcome LOW..CRITICAL, the record's findings; every other claim (INVALID,
@@ -123,6 +133,7 @@ export function project(events) {
         opened: false,
         rolled: false,
         closed: false,
+        heldAt: null, // the hold's time while the listing is on hold (see the top of this file)
         // fixed at list(), read at the Listed block (indexer.js); null in a state from before node P18
         terms: e.terms ?? null,
         narrowInvalidFloor: e.terms?.narrowInvalidFloor ?? null,
@@ -133,12 +144,21 @@ export function project(events) {
     } else if (e.name === 'Opened') {
       const l = listings.get(a.listingId);
       if (l) l.opened = true;
+    } else if (e.name === 'Held') {
+      const l = listings.get(a.listingId);
+      if (l) l.heldAt = Number(a.heldAt);
     } else if (e.name === 'RolledForward') {
       const l = listings.get(a.listingId);
-      if (l) l.rolled = true;
+      if (l) {
+        l.rolled = true;
+        l.heldAt = null;
+      }
     } else if (e.name === 'Closed') {
       const l = listings.get(a.listingId);
-      if (l) l.closed = true;
+      if (l) {
+        l.closed = true;
+        l.heldAt = null;
+      }
     }
     if (e.name === 'Committed' || e.name === 'LateClaim') {
       claims.set(a.claimId, {

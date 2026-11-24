@@ -746,9 +746,9 @@ the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
 
 | Route | |
 |---|---|
-| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none, `null` while an archive answer the site stored before it read documents is read again, which keeps that answer as it was if the gateway fails), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, the claims open now (`pendingClaims`, and `headClaim`, the earliest of them or `null`: claims reveal in commit order, so these are the ones a new claim waits behind), escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15). Node P35 added two fields and changed none: `disclosureRecipient`, the age recipient (`age1…`) of the same 32 bytes as `disclosureKey` (`shared/src/disclosureKey.js`), and `sameRepository`, every other listing the site indexed whose `artifact.repo` is the entry's, exactly as listed, that opened (one that never opened takes no claims, and anyone can make one for the gas of `list()`), at any commit and in whatever state it is in now: each one's id, artifact hash, artifact, state and lapsed at the answer's block, whether it counts, and its page (`/#/fund/<id>`), oldest first |
+| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none, `null` while an archive answer the site stored before it read documents is read again, which keeps that answer as it was if the gateway fails), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, the claims open now (`pendingClaims`, and `headClaim`, the earliest of them or `null`: claims reveal in commit order, so these are the ones a new claim waits behind), escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed, lapsed and held listings are not in it (design §15; a held one: "A held listing", below). Node P35 added two fields and changed none: `disclosureRecipient`, the age recipient (`age1…`) of the same 32 bytes as `disclosureKey` (`shared/src/disclosureKey.js`), and `sameRepository`, every other listing the site indexed whose `artifact.repo` is the entry's, exactly as listed, that opened (one that never opened takes no claims, and anyone can make one for the gas of `list()`), at any commit and in whatever state it is in now: each one's id, artifact hash, artifact, state and lapsed at the answer's block, `heldAt` (below), whether it counts, and its page (`/#/fund/<id>`), oldest first |
 | `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
-| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of; `documents` each counted listing's document globs, from its archive), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below); `sameRepository` (node P35): the listings of the record's repository on its other versions that opened, each as in the feed. 404 for a hash with no opened listing |
+| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart, each with its state, lapsed and `heldAt`; `artifact` and `fork` say what the record is of; `documents` each counted listing's document globs, from its archive), read in `recordPage` pages when it is long; `labels`, each counted listing's (`labels.listings[<id>]`, with `heldAt`, below); `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below); `sameRepository` (node P35): the listings of the record's repository on its other versions that opened, each as in the feed. 404 for a hash with no opened listing |
 | `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
 | `GET /api/status` | the indexer's cursor, the keeper's address, transaction in flight and last result, and refused listing attempts by reason (`listings.refused`: no address or repository name, kept beside the state) |
 
@@ -771,7 +771,8 @@ on the chain, drops the events after it and reads again from there, or from `SA_
 none is. A chunk whose blocks changed while it was read is not committed. Each `Listed` event is
 stored with `terms`, the listing's fixed windows, award table, narrow-INVALID floor and
 confirmation size, read once with `getListing` at that event's block by its hash, and dropped with
-it on a reorg; nothing else of a stored event is not the log's.
+it on a reorg; nothing else of a stored event is not the log's. A `Held` event (the maker's `hold`)
+is stored like any other, the listing and the time, with nothing read from the chain for it.
 
 **The projection** (`server/src/site/projection.js`, node P18) folds the settlement safeguards'
 events (`Appealed`, `ConfirmationRequested`, `ConfirmationRefunded`, `ConfirmationNoVerdict`,
@@ -812,13 +813,49 @@ the top award, priced by Chainlink's ETH/USD aggregator at `SA_ETH_USD_FEED` (no
 `SA_ETH_USD_MAX_AGE_SECONDS`), is below `SA_UNDER_STAKED_RATIO_BPS` of it (no usable price: no
 label, never a guess), and `invited` for an allowlist. The floor and the share default to
 **placeholders** (0.04 ETH and 10%, `server/src/record/labels.js`) until the owner sets the
-launch values at G1; `/api/status` and every record name the placeholders still in use.
+launch values at G1; `/api/status` and every record name the placeholders still in use. A listing's
+labels also carry three facts of it at the answer's block: `lapsed`, `heldAt` (next paragraph) and
+`live`, true only of a listing that takes commits: Open, not lapsed and not held.
+
+**A held listing** (node P40; owner, 2026-11-23; "The contract: listings"). A maker's `hold` stops
+new commits on a listing at once and leaves its state Open or Depleted, so the state alone does not
+say it. The site says it in one new field, `heldAt`: the time of the hold in unix seconds (a number,
+as the feed's `openedAt` and `fundedUntil`) while the listing is on hold, and `null` otherwise: never
+held, or the hold has ended in a roll forward or a close. That is what the contract's `heldAt` view
+answers, with `null` for its 0. The field stands beside every `lapsed` the site writes itself:
+
+- in a listing's labels: `labels.listings[<id>]` of a record, and `labels` of a feed entry;
+- in each entry of a record's `notCounted.listings`;
+- in each entry of `sameRepository`, a feed entry's and a record's.
+
+`record` stays the lens's answer field for field, so it has no such field. No existing field
+changes its name or its meaning: `state` is the chain's, so a held listing reads Open or Depleted
+wherever a state is given, and `labels.live`, true only of a listing that takes commits, is false
+while `heldAt` is set.
+
+A held listing is not in `/api/feed`, as a lapsed one is not, whether it counts or not, so
+`labels.heldAt` is `null` on every entry there. That keeps `pendingClaims` and `headClaim` to
+listings that take commits. A late claim is taken only on a Rolled, a Closed or a held listing,
+and none of the three is an entry again (Rolled and Closed are final, and a hold has no resume), so
+no entry's queue holds a late claim and every claim in it is one of `pendingClaims`. A held
+listing's late claims are the record's `lateClaims`, never its `pending`; the claims committed
+before the hold stay `pending` until they are settled or expired, and are paid as before.
+
+The time comes from the indexed `Held` event (`server/src/site/projection.js`), and `RolledForward`
+and `Closed` end it, so it is the answer's block's, like the rest of the answer. A reorg that drops
+the event drops the hold with it. The event stays in `/api/feed/events` and in a record's
+`history` after the hold has ended, with the time in its arguments (a decimal string there, as
+every uint of an event is). The server makes no call for the hold, so against a contract with no
+hold (no `Held` event, no `heldAt` view) every answer is as before, with `heldAt` `null`.
 
 **The badge** reads "no finding at or above *class* while staked" (*class*: the listing's
 lowest class counted, with "under-staked" or "invited" after it when they apply) while a
 listing of the hash takes commits, only "scanned" below the floor, and "*n* valid finding(s) at
 or above *class*" once the record holds one; when no listing of the hash takes commits it says
-how the stake ended (closed, rolled forward, depleted, lapsed). It is drawn on lines of the
+how the stake ended (closed, rolled forward, depleted, lapsed), or, when one of them is on hold,
+"stake on hold since *date*" (the hold's day, UTC, `YYYY-MM-DD`; `badge.state` is `ended`, as for
+the others), whatever else is true of that listing and before a listing that ended. A held listing
+is never the live listing of a badge. It is drawn on lines of the
 message's own parts, what it states and then the shown listing's proof under it (a contract's on
 two lines), so a repository's badge is about two thirds as wide as one line would be; a line break
 stands where a " · " was, and the SVG's title and aria-label hold the message whole. Every string

@@ -5,7 +5,7 @@
 // hold, null otherwise, which is what the contract's heldAt view answers (0 for null). What is held here:
 //
 //   the index      the Held event is stored as the log has it, and the listing carries its time while it is on hold; a
-//                  reorg that drops the event restores the listing
+//                  reorg that drops the event restores the listing, and a restart reads the hold from the stored state
 //   GET /api/feed  a held listing is no entry, counted or apart, as a lapsed one is not; so pendingClaims and headClaim
 //                  describe only listings that take commits, where no late claim is in the queue
 //   outside it     a record's labels.listings[<id>], its notCounted.listings and every sameRepository entry carry
@@ -400,6 +400,27 @@ describe('a held listing, as the site reports it', () => {
     const f = await feed();
     assert.equal([...f.listings, ...f.notCounted].some((e) => e.listingId === id(L.depleted)), false);
     assert.equal((await badgeOf(api, L.depleted.artifactHash)).message, onHold(T.depleted));
+  });
+
+  test('a restart: the hold is in the stored state, and the answers say it before the chain\'s logs are read again', async () => {
+    const { dir } = site;
+    const cursorBefore = site.store.state.cursor;
+    site.close();
+    const again = siteFor(ctx, { dir });
+    try {
+      assert.deepEqual(again.store.state.cursor, cursorBefore, 'no sync has run');
+      assert.equal(again.store.state.events.filter((e) => e.name === 'Held').length, 5);
+      assert.equal(project(again.store.state.events).listings.get(id(L.held)).heldAt, T.held);
+      const rec = await again.record(L.held.artifactHash);
+      assert.equal(rec.labels.listings[id(L.held)].heldAt, T.held);
+      assert.equal(rec.labels.listings[id(L.held)].live, false);
+      assert.equal(rec.badge.message, onHold(T.held));
+      const f = await again.feed();
+      assert.ok(f.listings.some((e) => e.listingId === id(L.open)));
+      assert.equal([...f.listings, ...f.notCounted].some((e) => e.listingId === id(L.held)), false);
+    } finally {
+      again.close();
+    }
   });
 });
 

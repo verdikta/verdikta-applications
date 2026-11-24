@@ -18,6 +18,10 @@
 //   with `terms`, read once at the event's own block by its hash (EIP-1898), committed with its
 //   chunk and dropped with it on a reorg. The projection derives each claim's appeal window and
 //   confirmation deadline from them; nothing else of the stored event changes.
+// - The maker's hold (node P40). Held is stored as every event is, with the log's own arguments
+//   (the listing and the time), and nothing is read from the chain for it: the projection gives the
+//   listing its time (projection.js). A reorg that orphans the hold's block drops the event with
+//   the rest, so the listing is as it was before the hold.
 import { stakeAttestation } from '../chain/abi.js';
 import { eventArgsJson, outputJson } from '../chain/codec.js';
 import { readerAt } from '../chain/read.js';

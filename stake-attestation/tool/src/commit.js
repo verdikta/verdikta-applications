@@ -64,6 +64,11 @@
 // And --restart does not start a late claim over, nor is a late claim ever signed in a folder that has set a claim's
 // files aside (LATE_NEEDS_NEW_FOLDER, lateNeedsNewFolder): such a folder knows nothing of the earlier files, so no
 // read it makes before it pays can find their claim. A new folder files the late claim, and the old one stays whole.
+//
+// For the same reason a folder that set files aside signs nothing more once its new commit lost its nonce to another
+// transaction of the wallet (COMMIT_REPLACED, finishCommitWait): that transaction may be a claim of the files set
+// aside. The refusal is not recorded: the signed bytes stay saved, and every run reads it again from the chain and
+// the disk, so no stop on the way leaves a folder that signs. The commit goes in a new folder.
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { codeReview } from './common.js';
@@ -468,6 +473,12 @@ async function finishCommitWait(ctx, ws, state, { receipt, gone, superseded }) {
     // what is signed next is asked what any signature is.
     const at = await anchoredClaim(ctx, ws, state);
     if (at.existing) return adoptLogged(ctx, ws, state, at.existing, at.from);
+    // Where --restart set files aside, what took the nonce may be a claim of those files, paid already: the folder
+    // signs nothing more. Nothing is saved for it, before the message or after: the signed bytes stay, and every
+    // later run reads from the chain that their nonce is gone and from the disk that files are set aside, and ends
+    // here again. So no process that stops anywhere on the way leaves a folder that signs.
+    const stop = replacedAfterRestart(ws);
+    if (stop) throw fail('COMMIT_REPLACED', stop);
     // nothing is signed any more, so the folder names no kind: the next run's flag says which is sent
     const next = { ...withKind(state, false), stage: 'prepared', commitTx: null };
     ws.saveState(next);
@@ -560,18 +571,27 @@ function withSetAside(ws, unproven) {
   return `${unproven} This folder also holds files that --restart set aside (${asideNames(stamps)}): look for a claim of each of those too, before a new folder pays. And ${SAVED_STATE_NAMES}`;
 }
 
+/** What COMMIT_REPLACED ends with in a folder that set nothing aside: a run again signs a new commit, as it always did. */
+const SIGN_AGAIN = 'Run commit again: it signs a new one.';
+
 /**
- * What COMMIT_REPLACED adds in a folder where --restart set files aside: the transaction that took the nonce may be a
- * claim of those files' hashes, sent some other way. That claim is paid, and another signature here would pay again
- * while its disclosure window runs. So the run does not say to sign again before that transaction is looked at, and
- * says how the claim gets its files: a set-aside claim's files, under their plain names in a private folder, are a
- * prepared folder, and commit there finds the claim and discloses it. A set that an earlier version of the tool
- * prepared has no anchor, and needs none for that.
+ * What COMMIT_REPLACED ends with in a folder where --restart set files aside (the owner's decision of 2026-11-24).
+ * The transaction that took the nonce may be a claim of those files' hashes, sent some other way: that claim is
+ * paid, and another signature here would pay again while its disclosure window runs. The folder cannot tell, so it
+ * signs nothing more (finishCommitWait), and the text says where each case goes from here:
+ *
+ *   - such a claim gets its files back by hand: a set-aside claim's files, under their plain names in a private
+ *     folder, are a prepared folder, and commit there looks for the claim as it does in any prepared folder
+ *     (anchoredClaim). The text says what that search covers and what it does not: from the block the set was
+ *     prepared at, or, after a reorganization below it, from the finalized block its anchor saved. A set an earlier
+ *     version prepared has no anchor, and a claim that a reorganization put below its block is not found. The text
+ *     promises nothing for that case: the tool has no command for it.
+ *   - anything else: the commit is prepared in a new folder, with one copy of the claim's files.
  */
 function replacedAfterRestart(ws) {
   const stamps = ws.setAsideClaims();
-  if (stamps.length === 0) return undefined;
-  return `Before that, look at the transaction that took the nonce. This folder holds files that --restart set aside (${asideNames(stamps)}): if that transaction is a claim of the two hashes in one of those state.json files, that claim is paid, its disclosure window is running, and it needs those files. Then do not run commit here again. Make a new claim folder with a .verdikta-claim folder in it, of mode 0700; copy that stamp's archive.zip, keys.json, ciphertext.age and state.json there under those plain names, and anchor.json too where the stamp has one, each with its mode (cp -p); and run commit on the new folder, which finds the claim and discloses it.`;
+  if (stamps.length === 0) return null;
+  return `This folder signs nothing more: --restart set files aside here (${asideNames(stamps)}), and the transaction that took the nonce may be a claim of the two hashes in one of those state.json files, sent some other way. Look at that transaction first. If it is such a claim, it is paid, its disclosure window is running, and it needs those files. Make a new claim folder with a .verdikta-claim folder in it, of mode 0700; copy that stamp's archive.zip, keys.json, ciphertext.age and state.json there under those plain names, and anchor.json too where the stamp has one, each with its mode (cp -p); and run commit on that folder. That run looks for the claim in the logs from the block the set was prepared at (startBlock in its state.json), or, where the chain was reorganized below that block and the set's anchor.json holds a finalized block that still stands, from that block; and it discloses the claim it finds. It does not find a claim below that: for a set with no anchor.json, one that a reorganization put below startBlock. If the transaction is no such claim, prepare the commit in a new folder: copy finding.json, report.md and the patches there, and run commit on it.`;
 }
 
 /**
@@ -791,12 +811,9 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
     if ((!state || startOver) && (listingId === undefined || listingId === null)) throw fail('USAGE', 'A first commit needs --listing <id>.');
     const id = BigInt(state ? state.listingId : listingId);
 
-    const wasSigned = state?.stage === 'commit-signed';
+    // (saved bytes whose nonce went to another transaction, with no claim of these hashes made: the folder is prepared
+    // again and this run signs anew, as it always did; where --restart set files aside it ends here, COMMIT_REPLACED)
     if (state?.stage === 'commit-signed') state = await settleCommit(ctx, ws, state);
-    // The saved bytes' nonce went to another transaction and no claim of these hashes came of it. Where --restart
-    // set files aside, that transaction may be a claim of those, paid already: said here, before this run goes on to
-    // sign anew (replacedAfterRestart). With nothing set aside the run signs anew, as it always did.
-    if (wasSigned && state.stage === 'prepared' && ws.setAsideClaims().length > 0) throw fail('COMMIT_REPLACED', replacedAfterRestart(ws));
     // (--restart's new claim is checked as a first one is, with no state: its files may be other files)
     if (!state || state.stage === 'prepared') {
       const { listing, inputs, price } = await readyToCommit(ctx, ws, startOver ? null : state, id, hunter, acknowledge, late);
@@ -816,9 +833,9 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
       if (!state) state = await prepare(ctx, ws, listing, inputs, hunter, id);
       state = await sendCommit(ctx, ws, state, id, late, price);
       // The signed bytes' nonce went to another transaction while this run waited, and no claim came of it: there is
-      // none to disclose. The folder is prepared again, and a run again signs anew. Where --restart set files aside,
-      // that transaction is to be looked at first (replacedAfterRestart).
-      if (state.stage === 'prepared') throw fail('COMMIT_REPLACED', replacedAfterRestart(ws));
+      // none to disclose. The folder is prepared again, and a run again signs anew. (Where --restart set files aside
+      // the run has ended before this, with the folder still signed: finishCommitWait.)
+      if (state.stage === 'prepared') throw fail('COMMIT_REPLACED', SIGN_AGAIN);
     }
     // The claim exists, and is the kind the chain says. A run whose flag says the other kind goes on all the same,
     // since the bond is paid and only the disclosure keeps it, and says which kind the folder holds.

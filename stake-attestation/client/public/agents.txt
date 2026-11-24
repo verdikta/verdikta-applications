@@ -656,15 +656,27 @@ each mode 0600, in a folder of mode 0700.
 - Never delete state.json and run `commit` again: without it the tool draws new keys and
   commits again, for a second bond.
 - Once the commit is sent, the claim is the archive.zip saved there: editing the folder's files
-  changes nothing that is revealed. Before that, a change stops `commit` with INPUTS_CHANGED
-  (--restart starts a commit over with new keys, and sets the old files aside in the same
-  folder: it deletes nothing. It sets them aside only once the listing, your balance and --yes
-  have let the new commit through: a run refused before that leaves the folder as it was. From
-  then on the old files are under their set-aside names, whatever becomes of the new commit: if
-  a run then says another transaction took the commit's nonce (COMMIT_REPLACED), look at that
-  transaction before you run `commit` again, as its text says. It may be a claim of the files
-  set aside, which is paid and needs them. A late claim is not started over: section 3, "Late
-  claims").
+  changes nothing that is revealed. Before that, a change stops `commit` with INPUTS_CHANGED,
+  and --restart starts the commit over with new keys (a late claim is not started over: section
+  3, "Late claims").
+- What `commit` and --restart do with a folder that holds a prepared or a signed commit:
+    - A claim of the folder's two hashes that is on the chain already is adopted first, before
+      the listing, your balance, --yes or --restart is asked (section 4).
+    - --restart sets the old files aside in the same folder, under set-aside names: it deletes
+      nothing. It sets them aside only once the listing, your balance and --yes have let the
+      new commit through: a run refused before that leaves the folder as it was.
+    - --restart is refused while your wallet has a transaction that is not mined (WALLET_BUSY,
+      exit 4): it may be the folder's own claim.
+    - Every folder saves anchor.json when it is prepared. A commit whose nonce went to another
+      transaction before it was mined, with no claim made, ends with COMMIT_REPLACED, and a run
+      again signs a new one.
+    - In a folder where --restart set files aside, a run that finds its saved commit replaced
+      ends with COMMIT_REPLACED before it signs anew: the transaction that took the nonce may
+      be a claim of the files set aside, sent some other way, which is paid and needs them. The
+      text says how such a claim gets its files back, and what that run finds and does not.
+    - Such a folder signs nothing more: every later run of `commit` there ends with
+      COMMIT_REPLACED, and the commit goes in a new folder (copy finding.json, report.md and
+      the patches there).
 - Do not run two copies of the tool on one folder (FOLDER_BUSY).
 
 ## 10. The full reference

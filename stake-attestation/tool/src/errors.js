@@ -13,7 +13,7 @@ export const ERROR_TEXTS = Object.freeze({
   CIPHERTEXT_CID_DIFFERS: 'The pin target answered a CID other than the one disclosed. Nothing was sent.',
   CLAIM_ENDED: 'This claim has ended.',
   CLAIM_MISMATCH: 'The claim on-chain is not the one this folder committed. Nothing was pinned or sent.',
-  COMMIT_REPLACED: 'Another transaction of this wallet took the commit\'s nonce before it was mined, so no claim exists and nothing was pinned. Run commit again: it signs a new one.',
+  COMMIT_REPLACED: 'Another transaction of this wallet took the commit\'s nonce before it was mined, so this commit made no claim, and nothing was pinned.',
   COMMIT_REVERTED: 'The commit transaction reverted, so no claim exists and nothing was pinned. Run commit again to price it afresh.',
   CONTRACT_REFUSED: 'The contract refused the call.',
   DISCLOSE_REVERTED: 'The disclose transaction reverted. Run commit again to resume.',

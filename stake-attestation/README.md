@@ -1444,15 +1444,30 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   that only prints the terms, leaves the prepared folder whole, the active one, with its keys. Those reads take their
   time, so the old files' claim is looked for once more, the last thing before they are set aside: one mined meanwhile
   is adopted, and `--restart` is refused. From then on the old files are under their set-aside names whatever becomes
-  of the new commit, and a refusal after that point leaves the new prepared claim the active one. If the new commit
-  then loses its nonce to another transaction (`COMMIT_REPLACED`), that transaction may be a claim of the files set
-  aside, sent some other way: it is paid, and its disclosure window runs. So in a folder that holds set-aside files
-  the text does not say to sign again before that transaction is looked at, and a run that finds saved commit bytes
-  gone there ends with it before it signs anything else. It names every set, and says how such a claim gets its
-  files: a new claim folder with a `.verdikta-claim` of mode 0700 in it, that stamp's `archive.zip`, `keys.json`,
-  `ciphertext.age` and `state.json` there under those plain names (and `anchor.json` where the stamp has one: a set
-  an earlier version prepared has none, and needs none), each with its mode; `commit` on that folder finds the claim
-  and discloses it.
+  of the new commit, and a refusal after that point leaves the new prepared claim the active one.
+- **A folder that set files aside, and a commit that lost its nonce.** If the new commit then loses its nonce to
+  another transaction of the wallet (`COMMIT_REPLACED`), that transaction may be a claim of the files set aside, sent
+  some other way: it is paid, and its disclosure window runs. The folder cannot tell, so it signs nothing more (the
+  owner's decision of 2026-11-24). A run that finds the saved commit replaced ends with `COMMIT_REPLACED` before it
+  signs anew, and so does every later run of `commit` there, `--yes` or not. Nothing is recorded for this: the
+  signed bytes stay saved, and each run reads from the chain that their nonce is gone and from the disk that files
+  are set aside, so a process that stops anywhere on the way leaves no folder that signs. The commit goes in a new
+  folder, with one copy of the claim's files. The text names every set, and says how a claim of files set aside gets
+  them back: a new claim folder with a `.verdikta-claim` of mode 0700 in it, that stamp's `archive.zip`, `keys.json`,
+  `ciphertext.age` and `state.json` there under those plain names (and `anchor.json` where the stamp has one), each
+  with its mode, and `commit` on that folder. It also says what that run finds. It looks for the claim in the logs
+  from the block the set was prepared at, or, where the chain was reorganized below that block and the set's anchor
+  holds a finalized block that still stands, from that block. It does not find a claim below that: for a set with no
+  `anchor.json` (one an earlier version prepared), a claim that a reorganization put below the block the set was
+  prepared at. The tool has no command for that case.
+- **What this changes for a commit.** A late claim is new; these six things differ for a commit, each on the safe
+  side. (1) `--restart` sets the old files aside where it deleted them, and only once the listing, the wallet's
+  balance and `--yes` have passed. (2) `--restart` is refused with `WALLET_BUSY` while the wallet has a transaction
+  that is not mined. (3) A prepared folder whose claim is on the chain already adopts it first. (4) Every folder
+  saves `anchor.json` when it is prepared, and a first send whose nonce went to another transaction with no claim
+  made ends with `COMMIT_REPLACED`. (5) Where files were set aside, a run that finds its saved commit replaced ends
+  with `COMMIT_REPLACED` before it signs anew. (6) Such a folder signs nothing more, and the commit goes in a new
+  folder. What a commit sends is unchanged, and `state.json` has the keys it had.
 - **No late claim in a folder that set a claim aside.** `--restart` starts a commit over, not a late claim, and a
   late claim is never signed in a folder where `--restart` has set a claim's files aside: `LATE_NEEDS_NEW_FOLDER`,
   before the terms are said and before any key is drawn, and again at the one place a late claim is signed. Such a
@@ -1470,7 +1485,7 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
 - **A fee that moved, a nonce that went.** A live fee that moved between the terms and the signature is said before
   it is signed, for either kind. And a signed commit whose
   nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was
-  pinned, and a run again signs anew.
+  pinned, and a run again signs anew (in a folder that set no files aside: see above for one that did).
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. Then, as `commit`,

@@ -2415,3 +2415,24 @@ test('the README\'s hunter section shows the command and says what a late claim 
   assert.match(flat, /no award/);
   for (const code of ['LATE_CLAIMS_ONLY', 'LISTING_TAKES_COMMITS', 'NO_LATE_CLAIMS']) assert.ok(flat.includes(`\`${code}\``), code);
 });
+
+test('the README says the six things this change does to a commit, and what a folder that set files aside does once its commit lost its nonce', () => {
+  const readme = fs.readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
+  const start = readme.indexOf('\n## The hunter tool\n');
+  const flat = readme.slice(start, readme.indexOf('\n## ', start + 1)).replace(/\s+/g, ' ');
+  for (const said of [
+    '(1) `--restart` sets the old files aside where it deleted them, and only once the listing, the wallet\'s balance and `--yes` have passed.',
+    '(2) `--restart` is refused with `WALLET_BUSY` while the wallet has a transaction that is not mined.',
+    '(3) A prepared folder whose claim is on the chain already adopts it first.',
+    '(4) Every folder saves `anchor.json` when it is prepared, and a first send whose nonce went to another transaction with no claim made ends with `COMMIT_REPLACED`.',
+    '(5) Where files were set aside, a run that finds its saved commit replaced ends with `COMMIT_REPLACED` before it signs anew.',
+    '(6) Such a folder signs nothing more, and the commit goes in a new folder.',
+    'What a commit sends is unchanged, and `state.json` has the keys it had.',
+  ]) assert.ok(flat.includes(said), said);
+  // the folder that signs nothing more, with nothing recorded for it; and what a run on the restored files finds
+  assert.match(flat, /The folder cannot tell, so it signs nothing more/);
+  assert.match(flat, /and so does every later run of `commit` there, `--yes` or not\. Nothing is recorded for this/);
+  assert.match(flat, /The commit goes in a new folder, with one copy of the claim's files\./);
+  assert.match(flat, /It looks for the claim in the logs from the block the set was prepared at, or, where the chain was reorganized below that block and the set's anchor holds a finalized block that still stands, from that block\./);
+  assert.match(flat, /It does not find a claim below that: for a set with no `anchor\.json` \(one an earlier version prepared\), a claim that a reorganization put below the block the set was prepared at\. The tool has no command for that case\./);
+});

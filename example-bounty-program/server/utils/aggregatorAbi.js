@@ -15,6 +15,7 @@ const AGGREGATOR_ABI = [
   'function getEvaluation(bytes32 aggId) view returns (uint256[] aggregated, string justifications, bool valid)',
   'function getOutcomeScores(bytes32 aggId, uint256 outcome) view returns (uint256[] scores, bool valid)',
   'function getSlot(bytes32 aggId, uint256 i) view returns (tuple(address oracle, uint96 fee, bytes32 key, address payee, uint40 committedAt, uint8 flags, uint8 qcode, bytes32 commitHash))',
+  'function getJury(bytes32 aggId) view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout)',
   'function isFailed(bytes32 aggId) view returns (bool)',
   'function roundCount() view returns (uint256)',
   // moving a round (anyone)
@@ -25,18 +26,16 @@ const AGGREGATOR_ABI = [
   'function settle(bytes32 aggId)',
   'function cancelUnsealed(bytes32 aggId)',
   // money
-  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) view returns (uint256)',
+  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P) view returns (uint256)',
   'function ethOwed(address account) view returns (uint256)',
   'function withdrawEth()',
   // configuration
   'function maxOracleFee() view returns (uint256)',
-  'function responseTimeoutSeconds() view returns (uint40)',
+  // the jury is each request's (getJury per round); the owner bounds it: K <= maxJury, T+ < timeout <= maxTimeout
+  'function maxJury() view returns (uint8)',
+  'function maxTimeout() view returns (uint40)',
   'function tPlus() view returns (uint40)',
   'function revealWindow() view returns (uint40)',
-  'function K() view returns (uint8)',
-  'function M() view returns (uint8)',
-  'function N() view returns (uint8)',
-  'function P() view returns (uint8)',
   'function bonusMultiplier() view returns (uint8)',
   'function drawRewardFees() view returns (uint8)',
   'function promoteRewardFees() view returns (uint8)',
@@ -72,6 +71,7 @@ const AGGREGATOR_ABI = [
   'error NotDue()',
   'error SeedExpired()',
   'error DrawExpired()',
+  'error BadJury()',
   'error NothingOwed()',
   'error EthTransferFailed()'
 ];

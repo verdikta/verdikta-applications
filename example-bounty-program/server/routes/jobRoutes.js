@@ -41,7 +41,7 @@ const { buildActionRequired } = require('../utils/actionRequired');
 const { checkWagerCreate, wagerRefusal, isLinkedWagerJob, sameAddress } = require('../utils/wagerGuard');
 const { verifyWagerPackage } = require('../utils/wagerPackage');
 const { looksLikeMutualWager } = require('../../shared/mutualWager');
-const { CLASS_PRESETS, presetByKey, presetForBounty, usdToWei } = require('../../shared/classPresets');
+const { CLASS_PRESETS, presetByKey, presetForBounty, usdToWei, toBountyParams } = require('../../shared/classPresets');
 const { SUBMISSION_STATUSES } = require('../utils/aggregatorAbi');
 
 /* ======================
@@ -192,10 +192,11 @@ const ORACLE_MAX_FEE_SCALING = 1000;
 const ORACLE_FEE_CEILING_WEI = ethers.parseEther('0.0004');
 
 // v2 (BountyEscrow on the v2 aggregator): the oracle struct gains the fee floor and the beacon
-// flag; the bounty names its jury (approved aggregator index), item 12's pass quota Q and forfeit
-// line R, and the hunter bond.
+// flag; the bounty carries its own jury (K drawn, M promoted, N counted, P clustered, and the round
+// timeout in seconds; item 15: one aggregator serves every jury size), item 12's pass quota Q and
+// forfeit line R, and the hunter bond.
 const CREATE_BOUNTY_ABI =
-  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)';
+  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)';
 const createBountyIface = new ethers.Interface([CREATE_BOUNTY_ABI]);
 const UINT96_MAX = (1n << 96n) - 1n;
 
@@ -271,17 +272,64 @@ function resolveOracleSettings(body = {}, opts = {}) {
   };
 }
 
+const JURY_FIELDS = ['K', 'M', 'N', 'P', 'timeout'];
+const UINT40_MAX = 2 ** 40 - 1;
+
+/**
+ * The creator's jury override (`body.jury`): an object (or its JSON) with any of K, M, N, P and
+ * timeout, each replacing the preset's. Returns the override object (only the fields given), or
+ * undefined when there is none. The pre-item-15 jury INDEX (a number) is refused with a hint.
+ */
+function parseJuryOverride(v) {
+  if (v === undefined || v === null || v === '') return undefined;
+  let o = v;
+  if (typeof o === 'string') {
+    try { o = JSON.parse(o); } catch { o = Number(v); }
+  }
+  if (typeof o !== 'object' || Array.isArray(o)) {
+    throw new Error('jury is the bounty\'s own jury { K, M, N, P, timeout } (an aggregator index is no longer used): pass an object, or omit it to use the class preset\'s');
+  }
+  const out = {};
+  for (const f of JURY_FIELDS) {
+    if (o[f] === undefined || o[f] === null || o[f] === '') continue;
+    const n = Number(o[f]);
+    const max = f === 'timeout' ? UINT40_MAX : 255;
+    if (!Number.isInteger(n) || n < 0 || n > max) throw new Error(`jury.${f} must be an integer between 0 and ${max}`);
+    out[f] = n;
+  }
+  const unknown = Object.keys(o).filter((k) => !JURY_FIELDS.includes(k));
+  if (unknown.length) throw new Error(`jury has unknown field(s) ${unknown.join(', ')}: use ${JURY_FIELDS.join(', ')}`);
+  return out;
+}
+
+/**
+ * BountyEscrow.createBounty's jury rule (the aggregator's structural one): K >= M >= N >= P >= 1,
+ * N <= 40, P >= 2 unless N = 1, and a timeout. Returns an error string or null. The aggregator's
+ * live limits (K <= maxJury and the keeper's shortlist, T+ < timeout <= maxTimeout) are checked
+ * separately when it can be read; each request checks them again.
+ */
+function juryRuleError(j) {
+  if (!j || typeof j !== 'object') return 'jury is missing';
+  const { K, M, N, P, timeout } = j;
+  if (!(P >= 1 && P <= N && N <= M && M <= K && N <= 40 && (P !== 1 || N === 1))) {
+    return `jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury")`;
+  }
+  if (!(timeout > 0)) return 'jury.timeout must be a positive number of seconds';
+  return null;
+}
+
 /**
  * Resolve the creator's v2 decision settings (TODO item 15's size classes, item 12's rule): the
- * jury, pass quota Q, forfeit line R and hunter bond, plus the class's fee floor and beacon flag as
- * defaults for resolveOracleSettings. The preset is `bountyClass` if given, else the smallest class
- * offered for the bounty's USD amount (shared/classPresets.js); every field the creator passes
- * overrides it. USD amounts convert at `ethUsd`; with no price, a preset that needs one throws
- * (pass bond and oracleMinOracleFee explicitly).
+ * jury { K, M, N, P, timeout }, pass quota Q, forfeit line R and hunter bond, plus the class's fee
+ * floor and beacon flag as defaults for resolveOracleSettings. The preset is `bountyClass` if given,
+ * else the smallest class offered for the bounty's USD amount (shared/classPresets.js); every field
+ * the creator passes overrides it (the jury field by field, through toBountyParams). USD amounts
+ * convert at `ethUsd`; with no price, a preset that needs one throws (pass bond and
+ * oracleMinOracleFee explicitly).
  *
- * @returns {{ bountyClass, jury, quota, forfeitLine, bond (wei string), minOracleFeeWei, withBeacons }}
+ * @returns {{ bountyClass, jury: {K, M, N, P, timeout}, quota, forfeitLine, bond (wei string), minOracleFeeWei, withBeacons }}
  */
-function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null, juryCount = 4 } = {}) {
+function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null } = {}) {
   const key = body.bountyClass || presetForBounty(bountyUsd)?.key || 'small';
   const preset = presetByKey(key);
   if (!preset) throw new Error(`bountyClass must be one of ${CLASS_PRESETS.map((c) => c.key).join(', ')}`);
@@ -296,11 +344,19 @@ function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null, j
     if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error(`${name} must be an integer between 0 and 255`);
     return n;
   };
-  const jury = int(body.jury, preset.jury, 'jury');
-  const quota = int(body.quota, preset.quota, 'quota');
-  const forfeitLine = int(body.forfeitLine, preset.forfeitLine, 'forfeitLine');
-  if (jury >= juryCount) throw new Error(`jury must be an approved aggregator index, 0..${juryCount - 1} (contract: "bad jury")`);
+  const juryOverride = parseJuryOverride(body.jury);
+  // The creator's jury, Q and R over the preset's (toBountyParams). Its bond and fee floor are
+  // priced below, with the price-missing message, so any positive price serves here.
+  const fromPreset = toBountyParams(preset.key, Number(ethUsd) > 0 ? ethUsd : 1, {
+    jury: juryOverride ? { ...preset.jury, ...juryOverride } : undefined,
+    quota: int(body.quota, undefined, 'quota'),
+    forfeitLine: int(body.forfeitLine, undefined, 'forfeitLine'),
+  });
+  const { jury, quota, forfeitLine } = fromPreset;
+  const juryErr = juryRuleError(jury);
+  if (juryErr) throw new Error(juryErr);
   if (quota < 1 || forfeitLine > quota) throw new Error('quota must be at least 1 and forfeitLine at most quota (contract: "bad quota")');
+  if (quota > jury.N) throw new Error(`quota ${quota} exceeds the jury's N (${jury.N}) (contract: "bad quota")`);
   const bond = body.bond != null && body.bond !== '' ? parseFeeToWei(body.bond, 'bond', { maxWei: BOND_SANITY_MAX_WEI }) : priced(preset.bondUsd, 'bond');
   if (bond < 0n || bond > UINT96_MAX) throw new Error('bond is out of range (contract: "bad bond")');
   const minOracleFeeWei = body.oracleMinOracleFee != null && body.oracleMinOracleFee !== ''
@@ -324,13 +380,27 @@ function presetNeedsPrice(body = {}, bountyUsd = null) {
   return (!bondGiven && preset.bondUsd > 0) || (!floorGiven && preset.feeFloorUsd > 0);
 }
 
-/** Decision settings of a job record (v1-era records: v1's rule, jury 0, no bond). */
+/**
+ * A job record's jury { K, M, N, P, timeout }: its own (from the API or getBounty's juryK..juryTimeout,
+ * via the sync), else its class preset's, else the Small preset's (records from before item 15
+ * stored an aggregator index).
+ */
+function jobJury(job) {
+  const d = job?.decisionSettings;
+  const j = d?.jury;
+  if (j && typeof j === 'object' && Number(j.K) > 0) {
+    return { K: Number(j.K), M: Number(j.M), N: Number(j.N), P: Number(j.P), timeout: Number(j.timeout) };
+  }
+  return { ...(presetByKey(d?.bountyClass) || presetByKey('small')).jury };
+}
+
+/** Decision settings of a job record (v1-era records: v1's rule, the Small jury, no bond). */
 function jobDecisionSettings(job) {
   const d = job?.decisionSettings;
   if (d && d.quota != null) {
-    return { bountyClass: d.bountyClass || null, jury: Number(d.jury ?? 0), quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? 0), bond: String(d.bond ?? '0') };
+    return { bountyClass: d.bountyClass || null, jury: jobJury(job), quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? 0), bond: String(d.bond ?? '0') };
   }
-  return { bountyClass: null, jury: 0, quota: 1, forfeitLine: 1, bond: '0' };
+  return { bountyClass: null, jury: jobJury(job), quota: 1, forfeitLine: 1, bond: '0' };
 }
 
 /**
@@ -391,7 +461,7 @@ function buildCreateBountyTx(job) {
       minOracleFee: oracle.minOracleFee,
       withBeacons: oracle.withBeacons
     },
-    jury: String(decision.jury),
+    jury: Object.fromEntries(JURY_FIELDS.map((f) => [f, String(decision.jury[f])])),
     quota: String(decision.quota),
     forfeitLine: String(decision.forfeitLine),
     bond: decision.bond
@@ -410,7 +480,7 @@ function buildCreateBountyTx(job) {
       BigInt(params.creatorAssessmentWindowSize),
       [BigInt(oracle.maxOracleFee), BigInt(oracle.alpha), BigInt(oracle.estimatedBaseCost), BigInt(oracle.maxFeeBasedScaling),
         BigInt(oracle.minOracleFee), Boolean(oracle.withBeacons)],
-      BigInt(decision.jury),
+      JURY_FIELDS.map((f) => BigInt(decision.jury[f])),
       BigInt(decision.quota),
       BigInt(decision.forfeitLine),
       BigInt(decision.bond)
@@ -429,7 +499,7 @@ function buildCreateBountyTx(job) {
       value: valueWei.toString(),
       chainId: config.chainId
     },
-    note: 'createBounty takes ONE struct argument (no overloads). msg.value must equal max(creatorDeterminationPayment, arbiterDeterminationPayment). jury picks the approved aggregator (jury size); quota/forfeitLine are item 12\'s pass quota Q and forfeit line R; bond is what each hunter posts at start (returned unless a hard fail forfeits it to you). Parse the BountyCreated event on the receipt for bountyId, then PATCH /api/jobs/:jobId/bountyId { bountyId, txHash }.'
+    note: 'createBounty takes ONE struct argument (no overloads). msg.value must equal max(creatorDeterminationPayment, arbiterDeterminationPayment). jury is the bounty\'s own (K drawn, M promoted, N counted, P clustered, timeout in seconds), sent with every request to the escrow\'s one aggregator; quota/forfeitLine are item 12\'s pass quota Q and forfeit line R; bond is what each hunter posts at start (returned unless a hard fail forfeits it to you). Parse the BountyCreated event on the receipt for bountyId, then PATCH /api/jobs/:jobId/bountyId { bountyId, txHash }.'
   };
 }
 
@@ -631,19 +701,22 @@ router.post('/create', async (req, res) => {
       const usdAmt = Number(bountyAmountUSD);
       let ethUsd = ethAmt > 0 && usdAmt > 0 ? usdAmt / ethAmt : null;
       if (ethUsd == null && presetNeedsPrice(req.body || {}, usdAmt || null)) ethUsd = (await getEthPriceUsd()).usd;
-      let juryCount = 4;
-      try { juryCount = (await getContractService().getAggregators()).length || juryCount; } catch (_) { /* static */ }
-      decisionSettings = resolveDecisionSettings(req.body || {}, { bountyUsd: Number(bountyAmountUSD) || null, ethUsd, juryCount });
+      decisionSettings = resolveDecisionSettings(req.body || {}, { bountyUsd: Number(bountyAmountUSD) || null, ethUsd });
       let feeCeilingWei = null;
       if (isVerdiktaServiceAvailable()) {
         try {
-          const aggConfig = await getVerdiktaService().getAggregatorConfig(decisionSettings.jury);
+          const aggConfig = await getVerdiktaService().getAggregatorConfig();
           if (aggConfig?.maxOracleFee) feeCeilingWei = ethers.parseEther(String(aggConfig.maxOracleFee));
-          if (aggConfig?.N && decisionSettings.quota > aggConfig.N) {
-            throw new Error(`quota ${decisionSettings.quota} exceeds the jury's N (${aggConfig.N}) (contract: "bad quota")`);
+          // The aggregator's live jury limits: every request would revert BadJury otherwise.
+          const j = decisionSettings.jury;
+          if (aggConfig?.maxJury && j.K > aggConfig.maxJury) {
+            throw new Error(`jury.K ${j.K} exceeds the aggregator's maxJury (${aggConfig.maxJury}) (aggregator: "BadJury")`);
+          }
+          if (aggConfig?.tPlus && aggConfig?.maxTimeout && !(j.timeout > aggConfig.tPlus && j.timeout <= aggConfig.maxTimeout)) {
+            throw new Error(`jury.timeout ${j.timeout} s must be above T+ (${aggConfig.tPlus} s) and at most the aggregator's maxTimeout (${aggConfig.maxTimeout} s) (aggregator: "BadJury")`);
           }
         } catch (e) {
-          if (/bad quota/.test(e.message)) throw e;
+          if (/BadJury/.test(e.message)) throw e;
           logger.debug('[jobs/create] aggregator config read failed; using static checks', { msg: e.message });
         }
       }
@@ -656,7 +729,7 @@ router.post('/create', async (req, res) => {
       return res.status(400).json({
         error: 'Invalid oracle settings',
         details: oracleErr.message,
-        fix: 'Optional fields: bountyClass (' + CLASS_PRESETS.map((c) => c.key).join(' | ') + '; presets the rest, by default the smallest class offered for bountyAmountUSD), jury (approved aggregator index), quota (Q >= 1), forfeitLine (R <= Q), bond (decimal ETH or integer wei), oracleMaxOracleFee (decimal ETH or integer wei, > 0, <= the jury\'s ceiling), oracleMinOracleFee (fee floor, decimal ETH or wei), oracleWithBeacons (bool), oracleAlpha (0..1000), oracleEstimatedBaseCost (decimal ETH or wei, < oracleMaxOracleFee), oracleMaxFeeBasedScaling (1..1000). Omit them to use the preset and the server defaults. GET /api/classes/presets lists the presets.',
+        fix: 'Optional fields: bountyClass (' + CLASS_PRESETS.map((c) => c.key).join(' | ') + '; presets the rest, by default the smallest class offered for bountyAmountUSD), jury ({ K, M, N, P, timeout }: any of them, over the preset\'s; K >= M >= N >= P >= 1, N <= 40), quota (1 <= Q <= N), forfeitLine (R <= Q), bond (decimal ETH or integer wei), oracleMaxOracleFee (decimal ETH or integer wei, > 0, <= the aggregator\'s ceiling), oracleMinOracleFee (fee floor, decimal ETH or wei), oracleWithBeacons (bool), oracleAlpha (0..1000), oracleEstimatedBaseCost (decimal ETH or wei, < oracleMaxOracleFee), oracleMaxFeeBasedScaling (1..1000). Omit them to use the preset and the server defaults. GET /api/classes/presets lists the presets.',
         defaults: {
           oracleMaxOracleFee: config.submissionDefaults.maxOracleFeeWei,
           oracleAlpha: config.submissionDefaults.alpha,
@@ -1044,7 +1117,7 @@ router.post('/create', async (req, res) => {
       // Creator-chosen oracle request settings (wei strings + integers). Passed
       // verbatim into createBounty's `oracle` struct and used for every evaluation.
       oracleSettings,
-      // v2: jury, Q, R and bond (wei string), passed into createBounty.
+      // v2: jury { K, M, N, P, timeout }, Q, R and bond (wei string), passed into createBounty.
       decisionSettings,
       rubricTemplate,
       // Which client created it (website or an agent's key), for the template-usage report.
@@ -1950,7 +2023,7 @@ router.post('/:jobId/close', async (req, res) => {
 // The oracle request parameters (maxOracleFee, alpha, estimatedBaseCost,
 // maxFeeBasedScaling) are CREATOR-chosen at createBounty and stored on the bounty
 // (`oracleSettings` on GET /api/jobs/:id); the contract uses them verbatim with an
-// empty addendum, and ethMaxBudget = maxTotalFee(bounty.oracle.maxOracleFee) is the
+// empty addendum, and ethMaxBudget = maxTotalFee(bounty.oracle..., the bounty's K and P) is the
 // same for every submission. The legacy hunter-side fields (addendum, alpha,
 // maxOracleFee, estimatedBaseCost, maxFeeBasedScaling) are accepted and IGNORED for
 // one release; they are not forwarded anywhere.
@@ -2817,7 +2890,16 @@ router.post('/rubric/validate', async (req, res) => {
         else logger.warn('[rubric/validate] default oracle settings unavailable — skipping coverage', { msg: oracleErr.message });
       }
       if (oracleSettings) {
-        const coverageCheck = await checkClassCoverage(classId, oracleSettings, { creator: req.body?.creator });
+        // the jury the create would use (bountyClass / jury override; the Small preset's otherwise)
+        let jury = null;
+        try {
+          const b = req.body || {};
+          const preset = presetByKey(b.bountyClass) || presetForBounty(Number(b.bountyAmountUSD) || null) || presetByKey('small');
+          jury = { ...preset.jury, ...(parseJuryOverride(b.jury) || {}) };
+        } catch (juryErr) {
+          errors.push(`Invalid jury: ${juryErr.message}`);
+        }
+        const coverageCheck = await checkClassCoverage(classId, oracleSettings, { creator: req.body?.creator, jury });
         coverage = coverageCheck.coverage;
         if (coverageCheck.refusal) errors.push(coverageCheck.refusal);
         warnings.push(...coverageCheck.warnings);
@@ -5758,7 +5840,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
     const bountyIdNum   = parseInt(jobId);
 
     // The bounty's creator-chosen oracle settings size the prepay:
-    // ethMaxBudget = aggregator.maxTotalFee(oracle.maxOracleFee), identical for every
+    // ethMaxBudget = aggregator.maxTotalFee(oracle fees, beacons, the bounty's jury K and P), identical for every
     // submission to this bounty.
     const bountyOracle = jobOracleSettings(job);
     const maxOracleFeeWei = BigInt(bountyOracle.maxOracleFee);
@@ -7284,7 +7366,7 @@ async function roundStepTx(ctx, call, { value = '0' } = {}) {
   let to = config.bountyEscrowAddress;
   let args = [ctx.onChainBountyId, ctx.subId];
   if (call.target === 'aggregator') {
-    to = await (await ctx.cs.getAggregatorFor(ctx.onChainBountyId)).getAddress();
+    to = await ctx.cs.getAggregatorAddress();
     args = [ctx.chainSub.verdiktaAggId];
   }
   const data = iface.encodeFunctionData(call.method, args);
@@ -7666,7 +7748,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
               let aggHistory = null;
               if (closeFailedEligible && isVerdiktaServiceAvailable()) {
                 try {
-                  const aggregator = await (await cs.getAggregatorFor(onChainBountyId)).getAddress();
+                  const aggregator = await cs.getAggregatorAddress();
                   aggHistory = await getVerdiktaService().getAggHistory(chainSub.verdiktaAggId, { aggregator });
                 } catch (aggHistErr) {
                   logger.warn('[diagnose] getAggHistory failed', { jobId, submissionId, msg: aggHistErr.message });
@@ -8390,7 +8472,7 @@ router.post('/estimate-fee', async (req, res) => {
 
 /**
  * Estimate one round's prepay (v2): the aggregator's own quote,
- *   maxTotalFee(maxFee, minFee, withBeacons) = juror x (K + B x P [+ beacon quorum]) + eff x (draw + promote rewards),
+ *   maxTotalFee(maxFee, minFee, withBeacons, K, P) = juror x (K + B x P [+ beacon quorum]) + eff x (draw + promote rewards),
  * eff = min(maxFee, ceiling), juror = max(eff, minFee), for the bounty's jury. That is exactly what
  * a start escrows (startValue adds the hunter bond); the unspent part is refunded when the round
  * resolves. The jury models (juryNodes, iterations) run inside each arbiter and do not change it.
@@ -8398,25 +8480,27 @@ router.post('/estimate-fee', async (req, res) => {
  * @param juryNodes, iterations  reported back only (v1 multiplied the fee by them)
  * @param oracleSettings  the bounty's settings ({maxOracleFee, minOracleFee, withBeacons, ...} in wei);
  *   server defaults otherwise
- * @param decision  { jury, bond } (wei string); jury 0 and no bond otherwise
+ * @param decision  { jury: {K, M, N, P, timeout}, bond (wei string) }; the Small jury and no bond otherwise
  */
 async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null, decision = null) {
   const maxFeeWei = BigInt(String(oracleSettings?.maxOracleFee ?? config.submissionDefaults.maxOracleFeeWei));
   const minFeeWei = BigInt(String(oracleSettings?.minOracleFee ?? '0'));
   const withBeacons = Boolean(oracleSettings?.withBeacons);
-  const jury = Number(decision?.jury ?? 0);
+  const jury = decision?.jury && typeof decision.jury === 'object' && Number(decision.jury.K) > 0
+    ? decision.jury
+    : presetByKey('small').jury;
   const bondWei = BigInt(String(decision?.bond ?? '0'));
 
-  // The live quote and the jury's shape, when the aggregator can be read; v2 defaults otherwise
-  // (the small jury: K 6, P 3, bonus 3, rewards 2 + 1, a 2-value beacon quorum, a 0.0004 ETH ceiling).
-  let shape = { K: 6, M: 5, N: 4, P: 3, bonusMultiplier: 3, maxOracleFee: '0.0004' };
+  // The live quote for the bounty's jury, when the aggregator can be read; v2 defaults otherwise
+  // (bonus 3, rewards 2 + 1, a 2-value beacon quorum, a 0.0004 ETH ceiling).
+  let shape = { bonusMultiplier: 3, maxOracleFee: '0.0004' };
   let quoteWei = null;
   let aggregatorConfigAvailable = false;
   if (isVerdiktaServiceAvailable()) {
     try {
       const vs = getVerdiktaService();
-      shape = await vs.getAggregatorConfig(jury);
-      quoteWei = BigInt(await vs.aggregatorFor({ jury }).maxTotalFee(maxFeeWei, minFeeWei, withBeacons));
+      shape = await vs.getAggregatorConfig();
+      quoteWei = BigInt(await vs.aggregator.maxTotalFee(maxFeeWei, minFeeWei, withBeacons, jury.K, jury.P));
       aggregatorConfigAvailable = true;
     } catch (err) {
       logger.warn('[estimate-fee] Could not read the aggregator', { msg: err.message });
@@ -8425,11 +8509,11 @@ async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null
   const ceilingWei = ethers.parseEther(String(shape.maxOracleFee || '0.0004'));
   const effWei = maxFeeWei < ceilingWei ? maxFeeWei : ceilingWei;
   const jurorWei = minFeeWei > effWei ? minFeeWei : effWei;
-  const slots = BigInt(shape.K) + BigInt(shape.bonusMultiplier) * BigInt(shape.P) + (withBeacons ? 2n : 0n);
+  const slots = BigInt(jury.K) + BigInt(shape.bonusMultiplier) * BigInt(jury.P) + (withBeacons ? 2n : 0n);
   if (quoteWei == null) quoteWei = jurorWei * slots + effWei * 3n;
   // The least a finished round spends: the K base fees (+ 2 beacon values) — bonuses and rewards
   // only go to arbiters who earn them, and the rest comes back.
-  const minAttemptWei = jurorWei * (BigInt(shape.K) + (withBeacons ? 2n : 0n));
+  const minAttemptWei = jurorWei * (BigInt(jury.K) + (withBeacons ? 2n : 0n));
 
   let totalCalls = 0;
   for (const node of juryNodes || []) totalCalls += node.runs || 1;
@@ -8442,8 +8526,8 @@ async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null
     startValueWei: (quoteWei + bondWei).toString(),
     startValueEth: eth(quoteWei + bondWei),
     breakdown: {
-      jury,
-      K: Number(shape.K), M: Number(shape.M), N: Number(shape.N), P: Number(shape.P),
+      jury: { K: Number(jury.K), M: Number(jury.M), N: Number(jury.N), P: Number(jury.P), timeout: Number(jury.timeout) },
+      K: Number(jury.K), M: Number(jury.M), N: Number(jury.N), P: Number(jury.P),
       bonusMultiplier: Number(shape.bonusMultiplier),
       feeCeilingEth: eth(effWei),
       feeFloorEth: eth(minFeeWei),
@@ -8465,7 +8549,7 @@ async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null
     },
     aggregatorConfigAvailable,
     note: aggregatorConfigAvailable
-      ? 'The prepay is the jury\'s aggregator\'s own quote (maxTotalFee) for these settings; a start attaches it plus the bond (startValue). The unspent part of the prepay is refunded when the round resolves; an attempt costs at least minAttemptCostEth.'
+      ? 'The prepay is the aggregator\'s own quote (maxTotalFee) for this bounty\'s jury and settings; a start attaches it plus the bond (startValue). The unspent part of the prepay is refunded when the round resolves; an attempt costs at least minAttemptCostEth.'
       : 'Estimated with v2 defaults (the aggregator could not be read).',
     warning: 'The quote moves with the aggregator\'s owner-set parameters; read requiredPrepay / startValue from the escrow (GET /api/jobs/:id/onchain-status) before starting.'
   };

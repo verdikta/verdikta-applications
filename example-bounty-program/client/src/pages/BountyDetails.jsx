@@ -3739,7 +3739,7 @@ function SubmissionCard({
           <div style={{ marginTop: '0.25rem', fontSize: '0.8rem', fontFamily: 'monospace' }}>
             <span style={{ color: '#666' }}>Verdikta Agg ID: </span>
             <Link
-              to={`/agg-history/${submission.verdiktaAggId}?bountyId=${jobId}`}
+              to={`/agg-history/${submission.verdiktaAggId}`}
               style={{ color: '#1976d2', textDecoration: 'underline' }}
               title="View oracle evaluation history"
               onClick={(e) => e.stopPropagation()}

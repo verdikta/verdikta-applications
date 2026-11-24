@@ -26,7 +26,7 @@
  * bounty's quota Q and forfeit line R turn it into pass / soft fail / hard fail.
  *
  * v2 round ids are sequential per aggregator, so rounds are cached under
- * "<jobId>:<aggId>" (a bounty uses one aggregator). Every re-run round of a
+ * "<jobId>:<aggId>" (one aggregator serves every bounty). Every re-run round of a
  * submission is kept (submission.aggIds). Finalized and dead rounds never change,
  * so they are cached in data/<network>/scoreSpread.json and fetched once; a
  * background pass picks up new rounds. Readers never wait on RPC.
@@ -170,11 +170,18 @@ function submissionRoundIds(sub) {
   return ids;
 }
 
-/** The bounty's Q-of-N settings, when the job record has them. */
+/** A jury { K, M, N, P, timeout } as numbers, or null (records from before item 15 stored an index). */
+function juryOf(j) {
+  if (!j || typeof j !== 'object' || !(Number(j.K) > 0)) return null;
+  return { K: Number(j.K), M: Number(j.M), N: Number(j.N), P: Number(j.P), timeout: Number(j.timeout) };
+}
+
+/** The bounty's Q-of-N settings and jury, when the job record has them. */
 function decisionOf(job) {
   const d = job?.decisionSettings;
-  if (!d || d.quota == null) return { quota: null, forfeitLine: null, jury: d?.jury != null ? Number(d.jury) : null };
-  return { quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? d.quota), jury: d.jury != null ? Number(d.jury) : null };
+  const jury = juryOf(d?.jury);
+  if (!d || d.quota == null) return { quota: null, forfeitLine: null, jury };
+  return { quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? d.quota), jury };
 }
 
 // ------------------------------------------------------------
@@ -222,7 +229,8 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
           threshold: job.threshold ?? null,
           quota,
           forfeitLine,
-          jury,
+          // the round's own jury (getJury), else the bounty's
+          jury: juryOf(rec.jury) || jury,
           submissionId: sub.submissionId,
           round: k + 1,
           rounds: ids.length,
@@ -324,7 +332,7 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
     worst: [...a.rounds].sort((x, y) => Math.abs(y.gap) - Math.abs(x.gap))[0]
   })).sort((x, y) => y.meanAbsGap - x.meanAbsGap || y.reveals - x.reveals);
 
-  // Rounds by their jury's N (the counted reveals: 4 small, 13 medium, 27 large).
+  // Rounds by their jury's N (the counted reveals: 4 for Small and Medium, 13 Large, 27 Jumbo).
   const revealCounts = {};
   for (const s of samples) revealCounts[s.n] = (revealCounts[s.n] || 0) + 1;
 
@@ -443,7 +451,13 @@ async function fetchRound(ctx, aggregator, aggId, hintTs = 0) {
   }
   const startTs = Number(info.requestTime);
   const reqBlock = Number(info.requestBlock);
-  const base = { aggId, aggregator: aggAddr, phase, startTs, reqBlock, fetchedAt };
+  // The round's jury, as requested (one aggregator serves every jury size). Null when unreadable.
+  let jury = null;
+  try {
+    const [K, M, N, P, timeout] = (await aggCall(ctx, aggAddr, 'getJury', [aggId])).map(Number);
+    if (K > 0) jury = { K, M, N, P, timeout };
+  } catch { /* not cached by it: the scores still are */ }
+  const base = { aggId, aggregator: aggAddr, phase, startTs, reqBlock, fetchedAt, jury };
   if (!FINAL_PHASES.has(phase)) {
     // Still running (re-read next pass), or dead with no scores (final).
     if (!DEAD_PHASES.has(phase)) return { ...base, finalized: false, finalAccept: null, settled: false, reveals: [] };

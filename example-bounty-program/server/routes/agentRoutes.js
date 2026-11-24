@@ -434,12 +434,13 @@ creators then post bounties with classId X.
   identifiers the class's operators advertise. An identifier their nodes don't
   serve makes every evaluation fail, and the bounty can't be edited or canceled.
 - Every class must have arbiters: GET /api/classes/:classId/coverage
-  [?maxOracleFee=] reads the on-chain registry.
+  [?maxOracleFee=&bountyClass=] reads the on-chain registry (K from that size
+  class's jury; default small).
   /jobs/create (and /rubric/validate) refuse with code CLASS_UNSERVABLE only
   when no arbiter is eligible at the bounty's fee, because then no jury can
-  ever be drawn. Fewer than K distinct eligible arbiters (the jury's draw
-  size) is a warning: while it lasts every draw fails (the keeper finds too
-  few; the round fails in the draw phase, prepay refunded). A single operator,
+  ever be drawn. Fewer than K distinct eligible arbiters (the bounty's jury's
+  draw size) is a warning: while it lasts the keeper repeats arbiters to fill
+  the jury's K slots, so it holds fewer independent arbiters. A single operator,
   or arbiters owned by the creator's own address are warnings too, returned in the
   create response's classPolicy and shown to hunters on the bounty page.
 
@@ -785,7 +786,11 @@ truth either way. The struct returned is:
     uint64   creatorAssessmentWindowSize,
     tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling,
           uint256 minOracleFee, bool withBeacons) oracle,
-    uint8    jury,                            // approved aggregator index (jury size); aggregatorOf(bountyId)
+    uint8    juryK,                           // the bounty's jury, stored flat: K drawn,
+    uint8    juryM,                           //   M promoted,
+    uint8    juryN,                           //   N counted,
+    uint8    juryP,                           //   P clustered,
+    uint40   juryTimeout,                     //   round timeout (seconds, from the draw)
     uint8    quota,                           // Q: a round passes with >= Q juror scores at the threshold
     uint8    forfeitLine,                     // R: fewer than R forfeits the hunter bond
     uint256  bond                             // hunter bond (wei), posted at start
@@ -805,7 +810,7 @@ same value server-side from the getBounty struct.
 
 ### Creating Bounties (on-chain)
 One function, one struct argument (no overloads):
-function createBounty(tuple(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256)
+function createBounty(tuple(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, tuple(uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256)
 Easiest: POST /api/jobs/create and sign its onChain.transaction (the exact struct + calldata).
 - creatorDeterminationPayment: ETH (wei) paid to the hunter if the creator approves directly
 - arbiterDeterminationPayment: ETH (wei) paid to the hunter if the oracle approves
@@ -822,8 +827,10 @@ Easiest: POST /api/jobs/create and sign its onChain.transaction (the exact struc
   "oracle fee above ceiling", "base cost must be below fee", "bad fee scaling", "bad alpha",
   "bad fee floor", "bad budget".
 - jury, quota, forfeitLine, bond: the decision settings (see "Size classes" under
-  "Evaluation Lifecycle (v2)"). jury indexes the escrow's approved aggregators ("bad jury");
-  R <= Q <= N of that jury ("bad quota"); bond in wei ("bad bond").
+  "Evaluation Lifecycle (v2)"). jury is the bounty's own (K, M, N, P, timeout), sent with every
+  request to the escrow's one aggregator: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1
+  ("bad jury"); R <= Q <= N ("bad quota"); bond in wei ("bad bond"). Each request also checks
+  the aggregator's live limits (K <= maxJury(), T+ < timeout <= maxTimeout(); BadJury).
   These checks use the aggregator ceiling AT CREATION. If the aggregator owner later lowers
   the ceiling, startPreparedSubmission clamps: fee -> min(fee, ceiling), base cost -> fee-1
   if it no longer fits (alpha/scaling unchanged), so starts keep working. Read
@@ -834,6 +841,8 @@ Easiest: POST /api/jobs/create and sign its onChain.transaction (the exact struc
 - Via the API (POST /api/jobs/create) the same settings are the optional body fields
   oracleMaxOracleFee, oracleAlpha, oracleEstimatedBaseCost, oracleMaxFeeBasedScaling,
   oracleMinOracleFee, oracleWithBeacons, and bountyClass, jury, quota, forfeitLine, bond.
+  jury there is an optional object with any of K, M, N, P, timeout over the preset's (a
+  number, the old aggregator index, is refused).
   They are echoed back as oracleSettings and decisionSettings on GET /api/jobs/:id.
 
 Common params:
@@ -879,9 +888,11 @@ To check window status: check creatorWindowEnd on the submission (unix timestamp
 Size classes. A bounty's creator picks its jury and decision rule, by default from a size
 class (GET /api/classes/presets[?usd=<bounty USD>] lists them with wei values and the
 suggested class; POST /jobs/create takes bountyClass and overrides any field):
-  bondless-small / small (jury 0), medium (jury 1), large (jury 2), jumbo (jury 3, beacons).
-  Each sets jury, quota Q, forfeitLine R, the hunter bond and a per-juror fee floor.
-  The escrow has one approved aggregator per jury size: aggregatorOf(bountyId).
+  bondless-small / small (jury K/M/N/P 6/5/4/3, 300 s), medium (8/5/4/3, 300 s),
+  large (21/16/13/10, 300 s), jumbo (50/38/27/17, 600 s, beacons).
+  Each sets the jury, quota Q, forfeitLine R, the hunter bond and a per-juror fee floor.
+  The escrow has one aggregator, aggregator(), for every jury size; a bounty's jury reads
+  back from getBounty (juryK..juryTimeout), a round's from the aggregator's getJury(aggId).
 
 Bond. The start attaches startValue(bountyId) = requiredPrepay (the round's prepay; the
 unspent part is refunded) + the bond. The bond is held until the submission resolves and
@@ -1186,7 +1197,7 @@ router.get('/api/docs', (req, res) => {
       rubric: 'Exactly one of rubricJson (object), rubricCid (pinned rubric) or rubricTemplate (a key from GET /api/templates; the server fills in that template\'s exact rubric, and its recommended threshold and classId unless you send them). Optional rubricTemplateVersion must equal the current version or the request returns 400 TEMPLATE_VERSION_CHANGED. Unknown keys return 400 UNKNOWN_TEMPLATE; a key together with rubricJson or rubricCid returns 400 RUBRIC_TEMPLATE_CONFLICT. The response\'s job.rubricTemplate { key, version, match: exact|modified|null, source } says which template the rubric matches.',
       exactDeadline: 'submissionDeadline (instead of submissionWindowHours, not with it): whole unix seconds or ISO-8601 with a zone ("2026-10-22T00:00:00Z"); encoded to the second and echoed as job.submissionCloseTimeIso. Past, millisecond, zone-less or fractional values return 400 "Invalid bounty window" before anything is pinned. Use it when the description names a date.',
       deadlineCheck: 'PATCH /bountyId returns warnings: [{ code: "DEADLINE_MISMATCH", plannedSubmissionDeadline(+Iso), onChainSubmissionDeadline(+Iso), differenceSeconds, message, fix }] when the on-chain deadline differs from the planned one (exact: any difference; window: more than 15 minutes). The link still succeeds; the deadline cannot be changed, so recreate the bounty if its terms name the planned date.',
-      sizeClass: 'Optional bountyClass (bondless-small | small | medium | large | jumbo; GET /api/classes/presets) presets jury, quota (Q), forfeitLine (R), bond, oracleMinOracleFee and oracleWithBeacons; default: the smallest class offered for bountyAmountUSD. Any of those fields overrides the preset (bond and fee floor: decimal ETH or integer wei). The preset\'s USD amounts convert at bountyAmountUSD / bountyAmount, else the server\'s ETH price. Echoed as decisionSettings and oracleSettings; onChain.transaction carries them. Invalid values return 400 "Invalid oracle settings" with a fix.',
+      sizeClass: 'Optional bountyClass (bondless-small | small | medium | large | jumbo; GET /api/classes/presets) presets jury, quota (Q), forfeitLine (R), bond, oracleMinOracleFee and oracleWithBeacons; default: the smallest class offered for bountyAmountUSD. Any of those fields overrides the preset (bond and fee floor: decimal ETH or integer wei; jury: an object with any of K, M, N, P, timeout, each over the preset\'s; an aggregator index is refused). The preset\'s USD amounts convert at bountyAmountUSD / bountyAmount, else the server\'s ETH price. Echoed as decisionSettings and oracleSettings; onChain.transaction carries them. Invalid values return 400 "Invalid oracle settings" with a fix.',
       payments: 'Both creatorDeterminationPayment and arbiterDeterminationPayment are required when either is supplied or a positive window is requested. Incomplete settings return 400. No-window split payments must both equal bountyAmount (mismatches return 400, not ignored). Windowed funding uses their maximum.',
       errors: { queryTooLong: 'Evaluation query too long (code QUERY_TOO_LONG)', legacyInvalidAmount: 'Invalid bountyAmount', legacyInvalidTarget: 'Invalid targetHunter address', window: 'Invalid bounty window', payments: 'Invalid bounty payment', explicitProcurement: 'Invalid procurement intent' },
       queryLength: `The evaluation query composed from the template, workProductType, title, description, rubric criterion labels and descriptions, and forbiddenContent must be at most ${maxEvaluationQueryChars()} characters (JS String.length), the arbiters' cap. Longer returns 400 QUERY_TOO_LONG before anything is pinned, with composedLength, limit, over and breakdown { template, workProductType, title, description, criteria: [{ id, chars }], forbiddenContent }.`,
@@ -1242,7 +1253,7 @@ router.get('/api/docs', (req, res) => {
         method: 'GET',
         path: '/jobs/:id/onchain-status',
         description: 'Public: no key needed (see auth.publicReads). Optional convenience: a live getBounty(uint256) read, ABI-decoded server-side. The contract is the source of truth — you can perform the same read yourself with any ABI-aware library (see contracts.bountyEscrow); this endpoint is a shortcut, not an authority. Use when the cached /jobs/:id view may be stale, or to diagnose ID drift via the "linkage" field. IMPORTANT: :id is the on-chain bountyId, not the API jobId — they only match for linked jobs. Use /api/jobs/lookup first if you are not sure.',
-        returns: '{ success, bountyId, startValue (wei to attach at start, read live: prepay + hunter bond), requiredPrepay (one round\'s prepay: attach it to a re-run), decisionSettings (jury, quota Q, forfeitLine R, bond), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth (live escrow; 0 once paid out or refunded), bountyAmountWei, bountyAmount (funded amount), createdAt (unix seconds, block time of createBounty), createdAtIso, submissionDeadline, submissionDeadlineIso, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, creatorAssessmentWindowSize, creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, oracleSettings: { maxOracleFee (wei), maxOracleFeeEth, alpha, estimatedBaseCost (wei), estimatedBaseCostEth, maxFeeBasedScaling } (the creator\'s bounty.oracle; maxOracleFee is the per-arbiter fee ceiling, so a bounty whose class has no arbiter priced at or below it can never be evaluated), effectiveOracleSettings (same keys, from effectiveOracleParams(bountyId): clamped to the aggregator\'s live fee ceiling; null if unreadable), linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, cached (true = shared anonymous snapshot), note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. linkage.fix is a string when present and is OMITTED (not null) when state is linked — type it as optional, not nullable. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
+        returns: '{ success, bountyId, startValue (wei to attach at start, read live: prepay + hunter bond), requiredPrepay (one round\'s prepay: attach it to a re-run), decisionSettings (jury { K, M, N, P, timeout }, quota Q, forfeitLine R, bond), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth (live escrow; 0 once paid out or refunded), bountyAmountWei, bountyAmount (funded amount), createdAt (unix seconds, block time of createBounty), createdAtIso, submissionDeadline, submissionDeadlineIso, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, creatorAssessmentWindowSize, creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, oracleSettings: { maxOracleFee (wei), maxOracleFeeEth, alpha, estimatedBaseCost (wei), estimatedBaseCostEth, maxFeeBasedScaling } (the creator\'s bounty.oracle; maxOracleFee is the per-arbiter fee ceiling, so a bounty whose class has no arbiter priced at or below it can never be evaluated), effectiveOracleSettings (same keys, from effectiveOracleParams(bountyId): clamped to the aggregator\'s live fee ceiling; null if unreadable), linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, cached (true = shared anonymous snapshot), note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. linkage.fix is a string when present and is OMITTED (not null) when state is linked — type it as optional, not nullable. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
       },
       {
         method: 'GET',
@@ -1418,7 +1429,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submissions/:subId/round-step',
-        description: 'Calldata for whichever step moves the round on now: drawJury, closeCommits / promote (sent to the bounty\'s aggregator, aggregatorOf(bountyId); the promote reward goes to the sender), closeFailedRound or expireRerun. Anyone may send it; the server\'s keeper usually does.',
+        description: 'Calldata for whichever step moves the round on now: drawJury, closeCommits / promote (sent to the escrow\'s aggregator, aggregator(); the promote reward goes to the sender), closeFailedRound or expireRerun. Anyone may send it; the server\'s keeper usually does.',
         contentType: 'application/json',
         fields: [],
         returns: 'Standard calldataResponseShape plus nextAction, phase and contractCall { target: "escrow" | "aggregator", method, args, abi }. 400 { error, nextAction, hint } when no round step is due (e.g. AWAIT_ORACLE, FINALIZE, RERUN).'
@@ -1587,9 +1598,9 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/classes/presets',
-        description: 'Public. The bounty size classes (bondless-small, small, medium, large, jumbo): jury (approved aggregator index) with its K/M/N/P, pass quota Q, forfeit line R, hunter bond and per-juror fee floor (USD, plus wei at the server\'s ETH price), beacons, cost per round and the largest bounty each is offered for. With ?usd= it names the suggested class. Defaults only: POST /jobs/create takes bountyClass and overrides any field.',
+        description: 'Public. The bounty size classes (bondless-small, small, medium, large, jumbo): the jury { K, M, N, P, timeout } each bounty carries, pass quota Q, forfeit line R, hunter bond and per-juror fee floor (USD, plus wei at the server\'s ETH price), beacons, cost per round and the largest bounty each is offered for. With ?usd= it names the suggested class. Defaults only: POST /jobs/create takes bountyClass and overrides any field.',
         params: ['usd (optional; the bounty amount in USD)'],
-        returns: '{ success, classes: [ { key, name, jury, K, M, N, P, quota, forfeitLine, withBeacons, feeFloorUsd, bondUsd, costPerRoundUsd, offeredUpToUsd, maxBountyUsd, wei: { bond, minOracleFee } | null } ], suggested, ethUsd, maxRounds: 6, rerunWindowSeconds: 7200, note }'
+        returns: '{ success, classes: [ { key, name, jury: { K, M, N, P, timeout }, quota, forfeitLine, withBeacons, feeFloorUsd, bondUsd, costPerRoundUsd, offeredUpToUsd, maxBountyUsd, wei: { bond, minOracleFee } | null } ], suggested, ethUsd, maxRounds: 6, rerunWindowSeconds: 7200, note }'
       },
       {
         method: 'GET',
@@ -1604,8 +1615,8 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/classes/:classId/coverage',
-        description: 'Live arbiter coverage for ANY class from the on-chain registry: { listed, servable (false = no eligible arbiter, so no jury can be drawn and /jobs/create would refuse; null = could not check; fewer than K eligible is a warning), refusal, coverage: { totalInClass, activeInClass, eligibleCount, pricedOutCount, distinctOwnersEligible, oraclesToPoll (K), juryDrawSize }, warnings[] }.',
-        params: ['maxOracleFee (optional; decimal ETH or integer wei; defaults to the API default fee)']
+        description: 'Live arbiter coverage for ANY class from the on-chain registry: { listed, servable (false = no eligible arbiter, so no jury can be drawn and /jobs/create would refuse; null = could not check; fewer than K eligible is a warning), refusal, coverage: { totalInClass, activeInClass, eligibleCount, pricedOutCount, distinctOwnersEligible, oraclesToPoll (K), juryDrawSize, jury }, warnings[] }. Fewer than K eligible: the keeper repeats arbiters to fill the jury.',
+        params: ['maxOracleFee (optional; decimal ETH or integer wei; defaults to the API default fee)', 'bountyClass (optional; the size class whose jury K is checked; default small)']
       },
       ...wagerEndpointDocs()
     ],
@@ -1625,10 +1636,10 @@ router.get('/api/docs', (req, res) => {
       abiNote: 'The read-only views getSubmissions, getSubmissionsPage, getBounties, getOracleResult, nextAction, prepareCutoff, canBeClosed, isAcceptingSubmissions and getEffectiveBountyStatus are implemented in a companion contract (BountyEscrowLens, see lens()) and answered AT THE ESCROW ADDRESS by its fallback via a STATICCALL-guarded delegatecall — same calls, same return values, same revert reasons; no state change is possible and the lens address is an immutable with no setter (not a proxy; the escrow has no owner). An ABI taken from the escrow\'s verified source or compiled artifact will NOT list them: use the signatures documented here. lensDelegate(bytes) is fallback plumbing and reverts "self only". A mistyped function name reverts "unknown function".',
       functions: {
         createBounty: {
-          signature: 'createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)',
+          signature: 'createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)',
           notes: [
-            'ONE function taking a CreateParams struct — no overloads. Encode with ethers: contract.createBounty({ evaluationCid, requestedClass, threshold, submissionDeadline, targetHunter, creatorDeterminationPayment, arbiterDeterminationPayment, creatorAssessmentWindowSize, oracle: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling, minOracleFee, withBeacons }, jury, quota, forfeitLine, bond }, { value }) — or sign the onChain.transaction POST /jobs/create returns',
-            'Decision settings: jury (approved aggregator index, one per jury size: "bad jury"), quota Q and forfeitLine R with R <= Q <= N of that jury ("bad quota"), bond (wei each hunter posts at start: "bad bond"); oracle.minOracleFee is a per-juror fee floor ("bad fee floor"), oracle.withBeacons a beacon-drawn jury. Size-class presets: GET /api/classes/presets',
+            'ONE function taking a CreateParams struct — no overloads. Encode with ethers: contract.createBounty({ evaluationCid, requestedClass, threshold, submissionDeadline, targetHunter, creatorDeterminationPayment, arbiterDeterminationPayment, creatorAssessmentWindowSize, oracle: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling, minOracleFee, withBeacons }, jury: { K, M, N, P, timeout }, quota, forfeitLine, bond }, { value }) — or sign the onChain.transaction POST /jobs/create returns',
+            'Decision settings: jury (the bounty\'s own { K, M, N, P, timeout }: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, else "bad jury"; getBounty returns it flat as juryK..juryTimeout), quota Q and forfeitLine R with R <= Q <= the jury\'s N ("bad quota"), bond (wei each hunter posts at start: "bad bond"); oracle.minOracleFee is a per-juror fee floor ("bad fee floor"), oracle.withBeacons a beacon-drawn jury. Size-class presets: GET /api/classes/presets',
             'submissionDeadline is a unix timestamp in SECONDS (not milliseconds); both prepareSubmission and startPreparedSubmission must happen BEFORE it',
             'targetHunter: full wallet address for targeted bounties, address(0) for open bounties',
             'msg.value = max(creatorDeterminationPayment, arbiterDeterminationPayment); for no window pass both equal to the amount and creatorAssessmentWindowSize 0',
@@ -1684,7 +1695,7 @@ router.get('/api/docs', (req, res) => {
           signature: 'drawJury(uint256 bountyId, uint256 submissionId)',
           notes: [
             'Draws the current round\'s jury through the submission\'s wallet, so the draw reward goes back to the round\'s funder. Anyone may call, from two blocks after the start (or re-run); a beacon bounty needs a second draw once its beacon values are in. Reverts with the aggregator\'s TooEarly / WrongPhase / DrawExpired (a day after the request). The server\'s keeper usually sends it (nextAction DRAW)',
-            'closeCommits(aggId) and promote(aggId) — nextAction CLOSE_COMMITS / PROMOTE — are sent to the bounty\'s aggregator, aggregatorOf(bountyId); aggId is the submission\'s verdiktaAggId'
+            'closeCommits(aggId) and promote(aggId) — nextAction CLOSE_COMMITS / PROMOTE — are sent to the escrow\'s aggregator, aggregator(); aggId is the submission\'s verdiktaAggId'
           ]
         },
         rerunSubmission: {
@@ -1728,9 +1739,9 @@ router.get('/api/docs', (req, res) => {
           signature: 'startValue(uint256 bountyId) view returns (uint256)',
           notes: ['What startPreparedSubmission takes RIGHT NOW: requiredPrepay(bountyId) plus the bounty\'s hunter bond (getBounty().bond). Read it live; the /start endpoint\'s transaction.value is this value.']
         },
-        aggregatorOf: {
-          signature: 'aggregatorOf(uint256 bountyId) view returns (address)',
-          notes: ['The bounty\'s aggregator: the escrow has one approved aggregator per jury size (aggregators(i), aggregatorCount()), fixed at deployment; getBounty().jury is the index. There is no verdikta() getter any more.']
+        aggregator: {
+          signature: 'aggregator() view returns (address)',
+          notes: ['The escrow\'s one aggregator, fixed at deployment, serving every jury size: each bounty carries its own jury (getBounty: juryK, juryM, juryN, juryP, juryTimeout), sent with every request; a round\'s jury reads back with the aggregator\'s getJury(aggId). aggregators(i), aggregatorCount() and aggregatorOf(bountyId) are gone, and there is no verdikta() getter.']
         },
         nextAction: {
           signature: 'nextAction(uint256 bountyId, uint256 submissionId) view returns (string)',

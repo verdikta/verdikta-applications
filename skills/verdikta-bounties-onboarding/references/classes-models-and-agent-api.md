@@ -23,7 +23,7 @@ The bounty program server imports the class map from `@verdikta/common` and expo
 - `GET /api/classes` → lists the registry classes
 - `GET /api/classes/:classId` → class details; a class outside the registry returns `{ listed: false, class: { status: "UNLISTED" } }` (200, not 404)
 - `GET /api/classes/:classId/models` → the registry model list; `UNLISTED` classes return `models: []`
-- `GET /api/classes/:classId/coverage[?maxOracleFee=]` → live arbiters for **any** class from the on-chain ReputationKeeper: `{ listed, servable, refusal, coverage: { totalInClass, eligibleCount, distinctOwnersEligible, oraclesToPoll, ... }, warnings }`
+- `GET /api/classes/:classId/coverage[?maxOracleFee=&bountyClass=]` → live arbiters for **any** class from the on-chain ReputationKeeper: `{ listed, servable, refusal, coverage: { totalInClass, eligibleCount, distinctOwnersEligible, oraclesToPoll, ... }, warnings }`
 
 `GET /api/classes` supports `status` (e.g. `ACTIVE`) and `provider` filters. Treat the list as dynamic: it changes as `@verdikta/common` updates.
 
@@ -33,7 +33,7 @@ Any class ID with registered arbiters can be used (the UI's "Enter custom class 
 - **Registry class**: every jury `{provider, model}` must be on its model list, or `/jobs/create` refuses.
 - **Unlisted class**: allowed. `/jobs/create` returns warnings in `classPolicy.warnings` instead of refusing, because the jury can't be checked. Use exactly the identifiers the class's arbiter operators advertise: an identifier their nodes don't serve makes every evaluation fail, and the bounty can't be edited or canceled afterwards.
 - **Any class**: refused with `code: "CLASS_UNSERVABLE"` only when **zero** arbiters are eligible at the bounty's fee (registered, active, not blocked, fee ≤ `maxOracleFee`). Then every evaluation start reverts `No active oracles available with fee <= maxFee and requested class`.
-- Thin coverage (fewer eligible arbiters than the bounty's jury draws: K = 6 for the small jury, 8 medium, 21 large, 50 jumbo on the v2 aggregators), a single operator, or arbiters owned by the creator's own address are **warnings**; hunters see them on the bounty page. Coverage is checked against the jury the bounty names (its size class), and a fee floor (`minOracleFee`) raises what each juror is paid, not who is eligible.
+- Thin coverage (fewer eligible arbiters than the bounty's jury draws: K = 6 for Small, 8 Medium, 21 Large, 50 Jumbo; the keeper then repeats arbiters to fill the jury), a single operator, or arbiters owned by the creator's own address are **warnings**; hunters see them on the bounty page. Only a class with no eligible arbiter is refused. Coverage is checked against the bounty's own jury (its size class's, or the creator's override; the coverage endpoint takes `?bountyClass=`), and a fee floor (`minOracleFee`) raises what each juror is paid, not who is eligible.
 
 So before creating a bounty on any class:
 
@@ -143,7 +143,7 @@ The API key is only shown once; store it securely.
 
    - `prepareSubmission(bountyId, evaluationCid, hunterCid)`
    - `startPreparedSubmission(bountyId, submissionId)` with exact live `startValue(bountyId)` ETH value (the prepay plus the hunter bond)
-   - the round must then be drawn and moved on: `drawJury(bountyId, submissionId)` from two blocks after the start (twice on a beacon bounty), then `closeCommits(aggId)` / `promote(aggId)` on the bounty's aggregator (`aggregatorOf(bountyId)`). Anyone may send them and the server's keeper usually does; `POST /api/jobs/:jobId/submissions/:id/round-step` returns the one that succeeds now, and `nextAction(bountyId, submissionId)` names it
+   - the round must then be drawn and moved on: `drawJury(bountyId, submissionId)` from two blocks after the start (twice on a beacon bounty), then `closeCommits(aggId)` / `promote(aggId)` on the escrow's aggregator (`aggregator()`). Anyone may send them and the server's keeper usually does; `POST /api/jobs/:jobId/submissions/:id/round-step` returns the one that succeeds now, and `nextAction(bountyId, submissionId)` names it
    - after the result: `finalizeSubmission` (a pass is paid; a soft fail may `rerunSubmission` with `requiredPrepay`; a hard fail forfeits the bond), or `closeFailedRound` for a round with no result
 
 6) **Confirm to backend (after on-chain success)**

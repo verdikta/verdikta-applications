@@ -56,7 +56,7 @@ test('a question proposal is the shared proposeMutualWager bounty, byte for byte
   assert.equal(creationTerms(config).submissionDeadline, BigInt(at(proposal.settle)));
   assert.ok(validateRubric(config.rubricJson).valid);
   assert.equal(config.rubricJson.title, 'Question Wager Settlement (mutual-wager-v7)');
-  assert.deepEqual([config.jury, config.quota, config.forfeitLine, config.bond, config.oracle.minOracleFee, config.oracle.withBeacons], [0, 3, 1, '0', '0', false]);
+  assert.deepEqual([config.jury, config.quota, config.forfeitLine, config.bond, config.oracle.minOracleFee, config.oracle.withBeacons], [{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }, 3, 1, '0', '0', false]);
   assert.equal(W.shared.mutualWagerRubricProblem(config.rubricJson, W.questionTemplate), null);
   assert.deepEqual(config.rubricJson, W.wagerRubricJson('question'));
   // An explicit Claims open, and a game input with kind "game", go through the same shared builder.
@@ -114,7 +114,7 @@ test('answer: a v7 offer is mirrored with the shared answerMutualWager, checked 
   assert.equal(r.answer.title, qfx('job', 41).title);
   const config = W.createConfig({ createBody: r.answer.createBody, wager: {} });
   assert.equal(W.shared.mutualWagerRubricProblem(config.rubricJson, W.questionTemplate), null);
-  assert.deepEqual([config.jury, config.quota, config.forfeitLine, config.bond, config.oracle.minOracleFee, config.oracle.withBeacons], [0, 3, 1, '0', '0', false]);
+  assert.deepEqual([config.jury, config.quota, config.forfeitLine, config.bond, config.oracle.minOracleFee, config.oracle.withBeacons], [{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }, 3, 1, '0', '0', false]);
   assert.match(r.answer.description, /\(mutual-wager-v7\) ===/);
   assert.match(r.answer.description, /^Counter bounty: #40, verified by the Poster before posting \(.*mirrored terms, same rubric, jury, oracle and decision settings\)\. It pays the Poster only if YES wins\.$/m);
   assert.ok(r.answer.description.includes(`\n${DECISION_LINE}\n`));
@@ -161,10 +161,10 @@ test('check refuses bad question counters, each for its own reason', () => {
   // Nor does a v4 bounty back a v7 one.
   assert.match(report({ number: 41, status: lfx('status', 41), job: lfx('job', 41), rpc: lfx('chain', 41) }, alice, { mine: mine40 }).problems.join('\n'), /its terms name rubric mutual-wager-v4/);
   // An answer with other decision settings than the offer's terms is refused, by its lines and by the site and escrow records.
-  const quota2 = qfx('job', 41).description.replace(DECISION_LINE, 'Decision settings (both bounties): jury 0, quota 2, forfeitLine 1, bondWei 0.');
+  const quota2 = qfx('job', 41).description.replace(DECISION_LINE, 'Decision settings (both bounties): jury (K 6, M 5, N 4, P 3, timeout 300), quota 2, forfeitLine 1, bondWei 0.');
   assert.match(report(bounty(41, { job: { description: quota2 } }), alice, { mine: mine40 }).problems.join('\n'), /"Decision settings \(both bounties\):" line differs from yours/);
-  const onChain = report(bounty(41, { status: { decisionSettings: { jury: 0, quota: 2, forfeitLine: 1, bondWei: '0' } }, rpc: { quota: '2' } }), alice, { mine: mine40 }).problems.join('\n');
-  assert.match(onChain, /Counter bounty #41: its decision settings \(jury 0, quota 2, forfeitLine 1, bondWei 0\) differ from yours/);
+  const onChain = report(bounty(41, { status: { decisionSettings: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 1, bondWei: '0' } }, rpc: { quota: '2' } }), alice, { mine: mine40 }).problems.join('\n');
+  assert.match(onChain, /Counter bounty #41: its decision settings \(jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 2, forfeitLine 1, bondWei 0\) differ from yours/);
   assert.match(onChain, /Bounty #41 on chain: its decision settings on chain \(quota 2\) are not the ones the terms name/);
   const v9 = qfx('job', 40).description.replace(/mutual-wager-v7/g, 'mutual-wager-v9');
   assert.deepEqual(report(bounty(40, { job: { description: v9 } }), bob).problems, ['Bounty #40 is a mutual-wager-v9 wager. wager.js handles game wagers (mutual-wager-v6, mutual-wager-v3) and question wagers (mutual-wager-v7, mutual-wager-v5, mutual-wager-v4) only, so it cannot be answered or claimed with it.']);

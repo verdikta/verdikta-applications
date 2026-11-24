@@ -43,7 +43,7 @@ const WITHDRAW_EVERY_MS = 60 * 60_000;
 class RoundKeeper {
   /**
    * @param {object} o
-   * @param {object} o.contractService  ContractService (escrow contract, provider, getAggregatorFor/getAggregators)
+   * @param {object} o.contractService  ContractService (escrow contract, provider, getAggregator/getAggregatorAddress)
    * @param {object} o.signer           ethers Signer for the keeper key
    * @param {object} [o.logger]
    * @param {() => number} [o.now]      ms clock (tests)
@@ -84,7 +84,7 @@ class RoundKeeper {
       contract = this.cs.contract.connect(this.signer);
     } else {
       if (!state.aggId) return { action, sent: false, reason: 'no_agg_id' };
-      contract = (await this.cs.getAggregatorFor(bountyId)).connect(this.signer);
+      contract = (await this.cs.getAggregator()).connect(this.signer);
     }
     const args = spec.args(bountyId, submissionId, state.aggId);
     const from = await this.address();
@@ -125,7 +125,7 @@ class RoundKeeper {
 
   /**
    * Housekeeping: warn on a low gas balance, and now and then withdraw the keeper's rewards
-   * (promote) from every approved aggregator. Never throws.
+   * (promote) from the escrow's aggregator. Never throws.
    */
   async housekeeping() {
     const now = this.now();
@@ -147,18 +147,17 @@ class RoundKeeper {
     }
   }
 
-  /** Withdraw this keeper's ethOwed from every approved aggregator that owes it something. */
+  /** Withdraw this keeper's ethOwed from the escrow's aggregator, if it owes anything. */
   async withdrawRewards() {
     const me = await this.address();
     const out = [];
-    for (const addr of await this.cs.getAggregators()) {
-      const agg = this.cs.getAggregatorAt(addr);
-      const owed = await agg.ethOwed(me);
-      if (owed > 0n) {
-        const tx = await agg.connect(this.signer).withdrawEth();
-        this.logger.info('[keeper] withdrew rewards', { aggregator: addr, amountEth: ethers.formatEther(owed), hash: tx.hash });
-        out.push({ aggregator: addr, amount: owed.toString(), hash: tx.hash });
-      }
+    const addr = await this.cs.getAggregatorAddress();
+    const agg = this.cs.getAggregatorAt(addr);
+    const owed = await agg.ethOwed(me);
+    if (owed > 0n) {
+      const tx = await agg.connect(this.signer).withdrawEth();
+      this.logger.info('[keeper] withdrew rewards', { aggregator: addr, amountEth: ethers.formatEther(owed), hash: tx.hash });
+      out.push({ aggregator: addr, amount: owed.toString(), hash: tx.hash });
     }
     return out;
   }

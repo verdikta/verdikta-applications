@@ -198,11 +198,11 @@ describe('checkClassCoverage()', () => {
     expect((await checkClassCoverage(717, settings)).refusal).toMatch(/None of the 3 arbiter\(s\) registered for class 717 is currently selectable/);
   });
 
-  it('v2: below K distinct eligible arbiters is a warning, not a refusal (the count moves; the creator may wait)', async () => {
+  it('v2: below K distinct eligible arbiters is a warning, not a refusal (the keeper repeats arbiters; the count moves)', async () => {
     mockEligibility.mockResolvedValue(pool({ eligible: 2, total: 8, active: 8, pricedOut: 6, toPoll: 6 }));
     const r = await checkClassCoverage(717, settings);
     expect(r.refusal).toBeNull();
-    expect(r.warnings.join('\n')).toMatch(/Only 2 eligible arbiter\(s\) in class 717, and this jury draws 6 distinct arbiters/);
+    expect(r.warnings.join('\n')).toMatch(/Only 2 eligible arbiter\(s\) in class 717, and this jury draws 6: .*repeats arbiters to fill its 6 slots/);
     expect(r.warnings.join('\n')).not.toMatch(/No active oracles available|duplicate/);
     expect(r.coverage).toMatchObject({ eligibleCount: 2, juryDrawSize: 6 });
     mockEligibility.mockResolvedValue(pool({ eligible: 6, toPoll: 6, owners: [OPERATOR_OWNER, '0x' + '33'.repeat(20)] }));
@@ -259,7 +259,29 @@ describe('POST /jobs/create', () => {
     // the encoded createBounty carries the unlisted class
     const { Interface } = require('ethers');
     const abi = require('../../../skills/verdikta-bounties-onboarding/scripts/bounty-escrow.abi.json');
-    expect(new Interface(abi).decodeFunctionData('createBounty', res.body.onChain.transaction.data)[0].requestedClass).toBe(717n);
+    const decoded = new Interface(abi).decodeFunctionData('createBounty', res.body.onChain.transaction.data)[0];
+    expect(decoded.requestedClass).toBe(717n);
+    // the bounty carries the class preset's jury (item 15), and coverage is checked against its K
+    expect(decoded.jury.toObject()).toEqual({ K: 6n, M: 5n, N: 4n, P: 3n, timeout: 300n });
+    expect(mockEligibility).toHaveBeenCalledWith(717, expect.anything(), { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 } });
+  });
+
+  it('takes the creator\'s jury override over the preset, and refuses a jury the escrow would', async () => {
+    const res = await request(app).post('/jobs/create').send(body({ bountyClass: 'small', jury: { K: 7, M: 6 } }));
+    expect(res.status).toBe(200);
+    const { Interface } = require('ethers');
+    const abi = require('../../../skills/verdikta-bounties-onboarding/scripts/bounty-escrow.abi.json');
+    const decoded = new Interface(abi).decodeFunctionData('createBounty', res.body.onChain.transaction.data)[0];
+    expect(decoded.jury.toObject()).toEqual({ K: 7n, M: 6n, N: 4n, P: 3n, timeout: 300n });
+    const bad = await request(app).post('/jobs/create').send(body({ bountyClass: 'small', jury: { M: 7 } }));
+    expect(bad.status).toBe(400);
+    expect(bad.body.details).toMatch(/bad jury/);
+    const index = await request(app).post('/jobs/create').send(body({ bountyClass: 'small', jury: 1 }));
+    expect(index.status).toBe(400);
+    expect(index.body.details).toMatch(/aggregator index is no longer used/);
+    const quota = await request(app).post('/jobs/create').send(body({ bountyClass: 'small', quota: 5 }));
+    expect(quota.status).toBe(400);
+    expect(quota.body.details).toMatch(/exceeds the jury's N \(4\)/);
   });
 
   it('refuses a class no arbiter can serve, before pinning or storing anything', async () => {

@@ -80,7 +80,8 @@ const CONFIG = {
 
 // v2 BountyEscrow (merged escrow + lens ABI). createBounty takes ONE CreateParams struct
 // (no overloads), with the v2 fields: oracle.minOracleFee (fee floor) and oracle.withBeacons,
-// jury (approved aggregator index), quota (Q), forfeitLine (R) and the hunter bond.
+// the bounty's jury struct (K, M, N, P, timeout; one aggregator serves every jury size), quota (Q),
+// forfeitLine (R) and the hunter bond.
 // msg.value == max(creatorDeterminationPayment, arbiterDeterminationPayment); a non-windowed
 // bounty passes both payments equal to the amount and window 0.
 const BOUNTY_ESCROW_ABI = require('../../onchain/abi/BountyEscrow.json');
@@ -115,11 +116,26 @@ function oracleParamsFromJob(job, cls = null) {
   };
 }
 
-// The v2 decision settings the API persisted (job.decisionSettings), else `cls`.
+/** "K,M,N,P,timeout" (the --jury flag) as { K, M, N, P, timeout }, or throws. */
+function parseJuryFlag(value) {
+  const parts = String(value ?? '').split(',').map((x) => Number(x.trim()));
+  if (parts.length !== 5 || parts.some((n, i) => !Number.isInteger(n) || n < 1 || n > (i === 4 ? 2 ** 40 - 1 : 255))) {
+    throw new Error('--jury must be K,M,N,P,timeout (e.g. 6,5,4,3,300): the bounty\'s own jury (an aggregator index is no longer used)');
+  }
+  const [K, M, N, P, timeout] = parts;
+  return { K, M, N, P, timeout };
+}
+
+/** A jury { K, M, N, P, timeout } as the createBounty struct's (BigInts). */
+const juryStruct = (j) => ({ K: BigInt(j.K), M: BigInt(j.M), N: BigInt(j.N), P: BigInt(j.P), timeout: BigInt(j.timeout) });
+
+// The v2 decision settings the API persisted (job.decisionSettings), else `cls`. The jury is the
+// bounty's own { K, M, N, P, timeout } (item 15); the Small preset's if neither names one.
 function decisionParamsFromJob(job, cls = null) {
   const s = job?.decisionSettings || cls || {};
+  const jury = [s.jury, cls?.jury].find((j) => j && typeof j === 'object' && Number(j.K) > 0) || presetByKey('small').jury;
   return {
-    jury: BigInt(s.jury ?? 0),
+    jury: juryStruct(jury),
     quota: BigInt(s.quota ?? 1),
     forfeitLine: BigInt(s.forfeitLine ?? 0),
     bond: BigInt(String(s.bond ?? '0')),
@@ -170,7 +186,7 @@ function classBodyFields(cls, options, amountEth) {
 
 function describeClass(cls) {
   const p = presetByKey(cls.key);
-  return `${p.name} (jury ${cls.jury}, Q=${cls.quota}, R=${cls.forfeitLine}, bond ${ethers.formatEther(cls.bond)} ETH, ` +
+  return `${p.name} (jury ${cls.jury.K}/${cls.jury.M}/${cls.jury.N}/${cls.jury.P}, ${cls.jury.timeout} s, Q=${cls.quota}, R=${cls.forfeitLine}, bond ${ethers.formatEther(cls.bond)} ETH, ` +
     `fee floor ${ethers.formatEther(cls.minOracleFee)} ETH, beacons ${cls.withBeacons ? 'on' : 'off'}` +
     `${cls.ethUsd ? `, at $${cls.ethUsd}/ETH` : ''})`;
 }
@@ -386,6 +402,13 @@ function parseArgs() {
         }
         break;
       case '--jury':
+        try {
+          options.jury = parseJuryFlag(args[++i]);
+        } catch (e) {
+          console.error(`Error: ${e.message}`);
+          process.exit(1);
+        }
+        break;
       case '--quota':
       case '--forfeit-line': {
         const name = args[i];
@@ -394,7 +417,7 @@ function parseArgs() {
           console.error(`Error: ${name} must be an integer between 0 and 255`);
           process.exit(1);
         }
-        options[{ '--jury': 'jury', '--quota': 'quota', '--forfeit-line': 'forfeitLine' }[name]] = v;
+        options[{ '--quota': 'quota', '--forfeit-line': 'forfeitLine' }[name]] = v;
         break;
       }
       case '--bond':
@@ -490,7 +513,8 @@ Options:
 Size class (v2; presets in shared/classPresets.js, GET /api/classes/presets):
   --bounty-class <key>     ${CLASS_PRESETS.map((c) => c.key).join(' | ')}
                            (default: the smallest class offered for the bounty's USD value)
-  --jury <index>           Approved aggregator (jury size) index, overrides the preset
+  --jury <K,M,N,P,timeout> The bounty's own jury (drawn, promoted, counted, clustered; round
+                           timeout in seconds), overrides the preset's (e.g. 6,5,4,3,300)
   --quota <Q>              Pass quota: a round passes with >= Q juror scores at the threshold
   --forfeit-line <R>       R <= Q: fewer than R passing scores forfeits the hunter bond
   --bond <eth|wei>         Hunter bond posted at start (decimal ETH or integer wei)
@@ -816,7 +840,7 @@ async function main() {
       console.log(`  Job created: ID=${job.jobId}, CID=${job.evaluationCid?.substring(0, 20)}...`);
       if (job.decisionSettings) {
         const d = job.decisionSettings;
-        console.log(`  Decision:  class ${d.bountyClass || '?'}, jury ${d.jury}, Q=${d.quota}, R=${d.forfeitLine}, bond ${ethers.formatEther(String(d.bond ?? '0'))} ETH`);
+        console.log(`  Decision:  class ${d.bountyClass || '?'}, jury ${d.jury && typeof d.jury === 'object' ? `${d.jury.K}/${d.jury.M}/${d.jury.N}/${d.jury.P}, ${d.jury.timeout} s` : '?'}, Q=${d.quota}, R=${d.forfeitLine}, bond ${ethers.formatEther(String(d.bond ?? '0'))} ETH`);
       }
 
       // Step 2: Create bounty on-chain

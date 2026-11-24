@@ -583,9 +583,8 @@ async function submitWork(jobId, content, hunter, dryRun) {
 // BLOCKCHAIN INTERACTION
 // =============================================================================
 
-// v2 BountyEscrow, merged escrow + lens ABI: there is no single Verdikta address any more (the
-// escrow has one approved aggregator per jury size, aggregatorOf(bountyId)); round results are
-// read through the lens (getOracleResult, nextAction) at the escrow address.
+// v2 BountyEscrow, merged escrow + lens ABI: the escrow names its one aggregator (aggregator();
+// each bounty carries its own jury), and round results are read through the lens (getOracleResult, nextAction) at the escrow address.
 const BOUNTY_ESCROW_ABI = require('../../onchain/abi/BountyEscrow.json');
 const { PHASES, OUTCOMES: ORACLE_OUTCOMES, SUBMISSION_STATUSES } = require('../utils/aggregatorAbi');
 

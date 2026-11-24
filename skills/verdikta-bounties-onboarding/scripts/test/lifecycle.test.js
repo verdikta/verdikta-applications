@@ -30,8 +30,9 @@ async function creationFixture(t,changes={}) {
  const response={success:true,job:{jobId:7,evaluationCid:cid,threshold:85,submissionOpenTime:now,submissionCloseTime:now+86400},onChain:{transaction:{}}};
  const bound=bindCreation(cfg,response);
  response.onChain.transaction={to:d.address,chainId:d.chainId,value:bound.value.toString(),data:iface.encodeFunctionData('createBounty',[bound.params])};
- const bounty={creator,...bound.params};let creates=0,links=0;
- const env={baseUrl:'https://mock.invalid',contract:()=>({aggregators:async()=>target,maxOracleFee:async()=>1000n,N:async()=>4n,getBounty:async()=>bounty}),fetchApi:async(url)=>{if(url.endsWith('/jobs/create')){creates++;return json(response);}links++;return json({success:true,job:{jobId:7}});}};
+ const {jury,...flat}=bound.params;
+ const bounty={creator,...flat,juryK:jury.K,juryM:jury.M,juryN:jury.N,juryP:jury.P,juryTimeout:jury.timeout};let creates=0,links=0;
+ const env={baseUrl:'https://mock.invalid',contract:()=>({aggregator:async()=>target,maxOracleFee:async()=>1000n,maxJury:async()=>50n,maxTimeout:async()=>3600n,tPlus:async()=>155n,getBounty:async()=>bounty}),fetchApi:async(url)=>{if(url.endsWith('/jobs/create')){creates++;return json(response);}links++;return json({success:true,job:{jobId:7}});}};
  const send=h.lib.sendTx;
  h.lib.sendTx=async(...params)=>{const r=await send(...params);r.logs=[log('BountyCreated',[7,creator,cid,128,85,1000000000000000n,now+86400])];return r;};
  return {...h,cfg,args,file,response,bounty,env,counts:()=>({creates,links})};
@@ -148,7 +149,7 @@ test('claim sends the one call each nextAction names, and nothing for the waits'
  const sub={hunter:creator,bondFunder:target,hunterCid,verdiktaAggId:aggId,rerunDeadline:1800000000n,rounds:1n};
  async function claim(next,flags=[]) {
    const f=harness({jobId:'7',submissionId:'0'}),txs=[];const send=f.lib.sendTx;f.lib.sendTx=async(s,m,tx,o)=>{txs.push({tx,o});return send(s,m,tx,o);};
-   const env={baseUrl:'https://mock.invalid',contract:()=>({nextAction:async()=>next,getSubmission:async()=>sub,aggregatorOf:async()=>aggregator,requiredPrepay:async()=>100n,getOracleResult:async()=>({outcome:3n,passCount:2n,hasResult:true})})};
+   const env={baseUrl:'https://mock.invalid',contract:()=>({nextAction:async()=>next,getSubmission:async()=>sub,aggregator:async()=>aggregator,requiredPrepay:async()=>100n,getOracleResult:async()=>({outcome:3n,passCount:2n,hasResult:true})})};
    process.argv.push(...flags);
    try {await runClaim(f.lib,env);} finally {process.argv.splice(-flags.length||process.argv.length,flags.length);}
    return {sent:f.sent,txs,reviews:f.reviews};
@@ -187,16 +188,19 @@ test('submit starts with the live startValue (prepay + bond) and shows the bond'
  const g=harness({...args}),v1={...start,value:'100'};
  await assert.rejects(runSubmit(g.lib,{...env,fetchApi:async url=>url.endsWith('/start')?json({transaction:v1}):env.fetchApi(url)}),/value mismatch/);assert.deepEqual(g.sent,[]);
 });
-test('create sends every v2 setting explicitly and checks the jury\'s live ceiling and N',async t=>{
+test('create sends every v2 setting explicitly and checks the aggregator\'s live ceiling and jury limits',async t=>{
  const f=await creationFixture(t,{bountyClass:'small',bond:'5000'}),bodies=[],fetchApi=f.env.fetchApi;
  f.env.fetchApi=async(url,init)=>{if(url.endsWith('/jobs/create'))bodies.push(JSON.parse(init.body));return fetchApi(url,init);};
  await runCreate(f.lib,f.env);
- assert.deepEqual(['bountyClass','jury','quota','forfeitLine','bond','oracleMinOracleFee','oracleWithBeacons'].map(k=>bodies[0][k]),['small',0,3,1,'5000','0',false]);
- assert.ok(f.reviews.flat().some(x=>x?.includes('Decision: Small preset; jury 0; a round passes with 3 juror score(s)')&&x.includes('hunter bond 0.000000000000005 ETH (5000 wei)')));
- const g=await creationFixture(t,{quota:5,forfeitLine:1});
- await assert.rejects(runCreate(g.lib,g.env),/quota 5 exceeds the jury's N \(4\)/);assert.equal(g.counts().creates,0);
+ assert.deepEqual(['bountyClass','jury','quota','forfeitLine','bond','oracleMinOracleFee','oracleWithBeacons'].map(k=>bodies[0][k]),['small',{K:6,M:5,N:4,P:3,timeout:300},3,1,'5000','0',false]);
+ assert.ok(f.reviews.flat().some(x=>x?.includes('Decision: Small preset; jury K 6 drawn, M 5 promoted, N 4 counted, P 3 clustered, round timeout 300 s; a round passes with 3 juror score(s)')&&x.includes('hunter bond 0.000000000000005 ETH (5000 wei)')));
+ await assert.rejects(creationFixture(t,{quota:5,forfeitLine:1}),/quota 5 exceeds the jury's N \(4\)/);
+ const g=await creationFixture(t,{jury:{timeout:5000}});
+ await assert.rejects(runCreate(g.lib,g.env),/jury.timeout 5000 s must be above T\+ \(155 s\) and at most the aggregator's maxTimeout \(3600 s\)/);assert.equal(g.counts().creates,0);
+ const k=await creationFixture(t,{jury:{K:60}});
+ await assert.rejects(runCreate(k.lib,k.env),/jury.K 60 exceeds the aggregator's maxJury \(50\)/);assert.equal(k.counts().creates,0);
  const h=await creationFixture(t);const other=h.env.contract;h.env.contract=(...a)=>({...other(...a),maxOracleFee:async()=>99n});
- await assert.rejects(runCreate(h.lib,h.env),/exceeds the live ceiling of jury 0/);assert.equal(h.counts().creates,0);
+ await assert.rejects(runCreate(h.lib,h.env),/exceeds the aggregator's live ceiling/);assert.equal(h.counts().creates,0);
 });
 
 test('onboarding worker performs only a read-only open-job listing',async()=>{

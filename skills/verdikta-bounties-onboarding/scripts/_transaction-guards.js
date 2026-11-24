@@ -5,7 +5,8 @@ import deployments from './deployments.json' with { type: 'json' };
 import presets from './_class-presets.cjs';
 export { abi, deployments, presets };
 export const iface = new Interface(abi);
-// The two round steps that go to the bounty's aggregator (escrow.aggregatorOf), not the escrow. Gas only, anyone may send.
+// The two round steps that go to the escrow's aggregator (escrow.aggregator(), one for every jury size), not the escrow.
+// Gas only, anyone may send.
 export const aggregatorIface = new Interface(['function closeCommits(bytes32 aggId)', 'function promote(bytes32 aggId)']);
 export const AGGREGATOR_METHODS = Object.freeze(['closeCommits', 'promote']);
 /**
@@ -79,12 +80,14 @@ export function creationTerms(config) {
   return { params: { requestedClass, threshold, targetHunter, creatorDeterminationPayment: creator, arbiterDeterminationPayment: arbiter, creatorAssessmentWindowSize: window, oracle, jury, quota, forfeitLine, bond }, value, submissionDeadline, decision };
 }
 const UINT96 = (1n << 96n) - 1n;
+export const JURY_FIELDS = Object.freeze(['K', 'M', 'N', 'P', 'timeout']);
 /**
- * The v2 decision settings (item 12's rule, item 15's size classes): jury (approved aggregator index), pass quota Q,
- * forfeit line R <= Q, hunter bond (wei), fee floor oracle.minOracleFee (wei) and oracle.withBeacons. They start from
- * a size-class preset (_class-presets.cjs, the site's and API's): config.bountyClass, else the smallest class offered
- * for bountyAmount at config.ethUsd, else Bondless Small. Any of jury, quota, forfeitLine, bond, oracle.minOracleFee
- * and oracle.withBeacons in the config overrides the preset. A preset's USD bond or fee floor converts only at an
+ * The v2 decision settings (item 12's rule, item 15's size classes): the bounty's own jury { K, M, N, P, timeout }
+ * (sent with every request to the escrow's one aggregator), pass quota Q, forfeit line R <= Q, hunter bond (wei), fee
+ * floor oracle.minOracleFee (wei) and oracle.withBeacons. They start from a size-class preset (_class-presets.cjs, the
+ * site's and API's): config.bountyClass, else the smallest class offered for bountyAmount at config.ethUsd, else
+ * Bondless Small. Any of jury (an object with any of K, M, N, P, timeout, each over the preset's), quota, forfeitLine,
+ * bond, oracle.minOracleFee and oracle.withBeacons in the config overrides the preset (through toBountyParams). A preset's USD bond or fee floor converts only at an
  * owner-reviewed config.ethUsd; without one, give the wei amount. Everything is sent to the API explicitly, so the
  * server never picks a class or an ETH price for this bounty.
  */
@@ -103,16 +106,32 @@ export function decisionTerms(config) {
     if (!(Number(config.ethUsd) > 0)) throw new Error(`The ${preset.name} preset's ${name} is $${usd}: give ${name === 'bond' ? 'bond' : 'oracle.minOracleFee'} in wei, or an owner-reviewed ethUsd to convert it`);
     return presets.usdToWei(usd, config.ethUsd);
   };
-  const small = (value, fallback, name) => uint(value ?? fallback, name, 255n);
-  const jury = small(config.jury, preset.jury, 'jury'), quota = small(config.quota, preset.quota, 'quota'), forfeitLine = small(config.forfeitLine, preset.forfeitLine, 'forfeitLine');
+  const juryOverride = config.jury;
+  if (juryOverride != null && (typeof juryOverride !== 'object' || Array.isArray(juryOverride))) {
+    throw new Error('jury is the bounty\'s own jury { K, M, N, P, timeout } (an aggregator index is no longer used): give an object, or leave it out for the preset\'s');
+  }
+  const unknown = Object.keys(juryOverride ?? {}).filter((k) => !JURY_FIELDS.includes(k));
+  if (unknown.length) throw new Error(`jury has unknown field(s) ${unknown.join(', ')}: use ${JURY_FIELDS.join(', ')}`);
+  // The creator's jury, Q and R over the preset's. The bond and fee floor are priced below, so any price serves here.
+  const merged = presets.toBountyParams(preset.key, Number(config.ethUsd) > 0 ? config.ethUsd : 1, {
+    jury: juryOverride ? { ...preset.jury, ...Object.fromEntries(Object.entries(juryOverride).filter(([, v]) => v != null)) } : undefined,
+    quota: config.quota, forfeitLine: config.forfeitLine,
+  });
+  const jury = Object.fromEntries(JURY_FIELDS.map((f) => [f, uint(merged.jury[f], `jury.${f}`, f === 'timeout' ? (1n << 40n) - 1n : 255n)]));
+  const quota = uint(merged.quota, 'quota', 255n), forfeitLine = uint(merged.forfeitLine, 'forfeitLine', 255n);
+  // BountyEscrow.createBounty's jury rule (the aggregator's structural one); its live limits are checked per request.
+  const { K, M, N, P } = jury;
+  if (!(P >= 1n && P <= N && N <= M && M <= K && N <= 40n && (P !== 1n || N === 1n))) throw new Error(`jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury")`);
+  if (jury.timeout < 1n) throw new Error('jury.timeout must be a positive number of seconds');
   if (quota < 1n || forfeitLine > quota) throw new Error('quota must be at least 1 and forfeitLine at most quota');
+  if (quota > N) throw new Error(`quota ${quota} exceeds the jury's N (${N}) (contract: "bad quota")`);
   const withBeacons = o.withBeacons ?? preset.withBeacons;
   if (typeof withBeacons !== 'boolean') throw new Error('oracle.withBeacons must be true or false');
   return { bountyClass: preset.key, className: preset.name, jury, quota, forfeitLine, bond: priced(config.bond, preset.bondUsd, 'bond'), minOracleFee: priced(o.minOracleFee, preset.feeFloorUsd, 'fee floor'), withBeacons };
 }
 /** The /jobs/create fields for decisionTerms: every one explicit (wei as decimal strings). */
 export function decisionBody(decision) {
-  return { bountyClass: decision.bountyClass, jury: Number(decision.jury), quota: Number(decision.quota), forfeitLine: Number(decision.forfeitLine), bond: decision.bond.toString(), oracleMinOracleFee: decision.minOracleFee.toString(), oracleWithBeacons: decision.withBeacons };
+  return { bountyClass: decision.bountyClass, jury: Object.fromEntries(JURY_FIELDS.map((f) => [f, Number(decision.jury[f])])), quota: Number(decision.quota), forfeitLine: Number(decision.forfeitLine), bond: decision.bond.toString(), oracleMinOracleFee: decision.minOracleFee.toString(), oracleWithBeacons: decision.withBeacons };
 }
 // Unix seconds, or ISO-8601 UTC ending in Z ("2026-10-22T00:00:00Z"). The server encodes this second exactly.
 export function exactDeadline(value) {
@@ -146,12 +165,12 @@ export function bindCreation(config, response, { recovery = false, apiCreatedAt 
   if (Number(job.threshold) !== Number(config.threshold)) throw new Error('Server threshold drift');
   return { params: { ...params, evaluationCid: job.evaluationCid, submissionDeadline: deadline }, value, transaction: response.onChain.transaction };
 }
-// aggregator: for closeCommits / promote only, the bounty's aggregator as the reviewed escrow names it (aggregatorOf).
+// aggregator: for closeCommits / promote only, the aggregator as the reviewed escrow names it (escrow.aggregator()).
 export function verifyTransaction(tx, { network, method, args, value = 0n, maxValueWei, aggregator = null }) {
   const deployment = escrowDeployment(network);
   if (Number(tx?.chainId) !== deployment.chainId) throw new Error('Transaction chain mismatch');
   const onAggregator = AGGREGATOR_METHODS.includes(method);
-  if (onAggregator && !aggregator) throw new Error(`${method} goes to the bounty's aggregator; its address from escrow.aggregatorOf is required`);
+  if (onAggregator && !aggregator) throw new Error(`${method} goes to the bounty's aggregator; its address from escrow.aggregator() is required`);
   const to = getAddress(onAggregator ? aggregator : deployment.address);
   if (getAddress(tx.to) !== to) throw new Error('Transaction destination mismatch');
   if (uint(tx.value, 'transaction value') !== BigInt(value) || (onAggregator && BigInt(value) !== 0n)) throw new Error('Transaction value mismatch');
@@ -183,6 +202,12 @@ export function verifyCreatedBounty(bounty, expected, creator) {
       for (const [field, term] of Object.entries(value)) {
         const live = bounty.oracle[field];
         if (typeof term === 'boolean' ? Boolean(live) !== term : BigInt(live) !== term) throw new Error(`Created bounty oracle ${field} mismatch`);
+      }
+    } else if (key === 'jury') {
+      // getBounty stores the jury flat: juryK, juryM, juryN, juryP, juryTimeout
+      for (const [field, term] of Object.entries(value)) {
+        const live = bounty[`jury${field[0].toUpperCase()}${field.slice(1)}`];
+        if (live == null || BigInt(live) !== BigInt(term)) throw new Error(`Created bounty jury ${field} mismatch`);
       }
     } else if (key === 'targetHunter') {
       if (getAddress(bounty[key]) !== getAddress(value)) throw new Error('Created bounty target mismatch');

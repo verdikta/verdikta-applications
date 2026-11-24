@@ -45,7 +45,7 @@ test('validateDecision enforces 1 <= Q <= N and 0 <= R <= Q', () => {
 test('decisionFromForm gives the create fields (wei strings; empty money left to the server)', () => {
   const d = decisionFromForm({ quota: '17', forfeitLine: '12', bondEth: '0.1', feeFloorEth: '', withBeacons: true }, 'jumbo');
   assert.deepEqual(d, {
-    bountyClass: 'jumbo', jury: 3, quota: 17, forfeitLine: 12, bond: '100000000000000000', minOracleFee: undefined, withBeacons: true,
+    bountyClass: 'jumbo', jury: { K: 50, M: 38, N: 27, P: 17, timeout: 600 }, quota: 17, forfeitLine: 12, bond: '100000000000000000', minOracleFee: undefined, withBeacons: true,
   });
   assert.throws(() => decisionFromForm({}, 'nope'), /unknown bounty class/);
 });

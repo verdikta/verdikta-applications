@@ -14,7 +14,7 @@ const CURRENT_BLOCK = 50_000_000;
 const now = () => Math.floor(Date.now() / 1000);
 
 function makeService({ phase, jurors = 0, committed = 0, revealed = 0, deadline = now() - 60, failedPhase = 3 }) {
-  const svc = new VerdiktaService('http://127.0.0.1:1', [AGG], 0);
+  const svc = new VerdiktaService('http://127.0.0.1:1', AGG, 0);
   const real = svc.aggregator;
   const iface = real.interface;
   svc.provider = { getBlockNumber: async () => CURRENT_BLOCK };
@@ -29,7 +29,7 @@ function makeService({ phase, jurors = 0, committed = 0, revealed = 0, deadline 
   const stub = {
     interface: iface,
     getAddress: async () => AGG,
-    K: async () => 6n, M: async () => 5n, N: async () => 4n, P: async () => 3n,
+    getJury: async () => [6n, 5n, 4n, 3n, 300n],
     getRoundInfo: async () => ({
       phase: BigInt(phase), requestBlock: BigInt(CURRENT_BLOCK - 1500), sealedHash: phase > 1 ? '0x' + 'ab'.repeat(32) : ethers.ZeroHash,
       closeBlock: 0n, received: 10n, baseFees: 6n, bonuses: 0n, rewards: 0n,
@@ -42,7 +42,6 @@ function makeService({ phase, jurors = 0, committed = 0, revealed = 0, deadline 
       commitHash: ethers.ZeroHash
     })
   };
-  svc.aggregators = [stub];
   svc.aggregator = stub;
   return svc;
 }
@@ -52,6 +51,8 @@ describe('getAggHistory outcome (v2)', () => {
     const h = await makeService({ phase: 8, jurors: 6 }).getAggHistory(AGG_ID);
     expect(h.found).toBe(true);
     expect(h.analysis.totalSlots).toBe(6);
+    // the round's own jury, from getJury (one aggregator serves every jury size)
+    expect(h.contractParams).toEqual({ K: 6, M: 5, N: 4, P: 3, timeout: 300 });
     expect(h.analysis.committed).toBe(0);
     expect(h.outcome).toBe(LIKELY_MALFORMED_OUTCOME);
     expect(h.analysis.likelyMalformed).toBe(true);
@@ -84,6 +85,11 @@ describe('getAggHistory outcome (v2)', () => {
       .toBe('IN PROCESS (commit phase)');
     expect((await makeService({ phase: 7, jurors: 6, committed: 6, revealed: 4 }).getAggHistory(AGG_ID)).outcome)
       .toBe('COMPLETED');
+  });
+
+  it('refuses an aggregator other than the escrow\'s', async () => {
+    await expect(makeService({ phase: 8, jurors: 6 }).getAggHistory(AGG_ID, { aggregator: '0x' + '2'.repeat(40) }))
+      .rejects.toThrow(/not the escrow's aggregator/);
   });
 
   it('an id the aggregator has no round for is not found', async () => {

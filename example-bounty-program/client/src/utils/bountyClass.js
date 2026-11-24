@@ -64,7 +64,7 @@ export function validateDecision(f, key) {
   if (!c) return 'Pick a bounty size class';
   const q = Number(f.quota);
   const r = Number(f.forfeitLine);
-  if (!Number.isInteger(q) || q < 1 || q > c.N) return `Quota (Q) must be a whole number from 1 to ${c.N} (the ${c.name} jury's N)`;
+  if (!Number.isInteger(q) || q < 1 || q > c.jury.N) return `Quota (Q) must be a whole number from 1 to ${c.jury.N} (the ${c.name} jury's N)`;
   if (!Number.isInteger(r) || r < 0 || r > q) return `Forfeit line (R) must be a whole number from 0 to Q (${q})`;
   for (const [label, v] of [['Bond', f.bondEth], ['Fee floor', f.feeFloorEth]]) {
     const s = String(v ?? '').trim();
@@ -78,7 +78,8 @@ export function validateDecision(f, key) {
 
 /**
  * The decision fields for POST /api/jobs/create and createBounty from the form: { bountyClass,
- * jury, quota, forfeitLine, bond (wei string | undefined), minOracleFee (wei string | undefined),
+ * jury: { K, M, N, P, timeout } (the class preset's: the bounty carries its own jury, item 15),
+ * quota, forfeitLine, bond (wei string | undefined), minOracleFee (wei string | undefined),
  * withBeacons }. An empty bond / fee floor is left out (the server converts the class's USD
  * figure at its ETH price).
  */
@@ -91,7 +92,7 @@ export function decisionFromForm(f, key) {
   };
   return {
     bountyClass: c.key,
-    jury: c.jury,
+    jury: { ...c.jury },
     quota: Number(f.quota),
     forfeitLine: Number(f.forfeitLine),
     bond: wei(f.bondEth),

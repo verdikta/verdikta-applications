@@ -27,8 +27,8 @@ function makeKeeper({ failEstimate = false, owed = 0n } = {}) {
   const cs = {
     contract: escrow,
     provider: { getBalance: async () => 10n ** 18n },
-    getAggregatorFor: async () => agg,
-    getAggregators: async () => ['0xagg'],
+    getAggregator: async () => agg,
+    getAggregatorAddress: async () => '0xagg',
     getAggregatorAt: () => ({ ethOwed: async () => owed, connect: () => ({ withdrawEth: async () => { calls.push({ name: 'aggregator', method: 'withdrawEth' }); return { hash: '0xw' }; } }) })
   };
   const keeper = new RoundKeeper({ contractService: cs, signer: { getAddress: async () => '0xkeeper' }, logger: quiet, now: () => t });
@@ -48,7 +48,7 @@ describe('RoundKeeper', () => {
     }
   });
 
-  test('CLOSE_COMMITS and PROMOTE go to the bounty\'s aggregator with the round id', async () => {
+  test('CLOSE_COMMITS and PROMOTE go to the escrow\'s aggregator with the round id', async () => {
     for (const [action, method] of [['CLOSE_COMMITS', 'closeCommits'], ['PROMOTE', 'promote']]) {
       const { keeper, calls } = makeKeeper();
       await keeper.tend(5, 2, { nextAction: action, aggId: AGG_ID });
@@ -81,7 +81,7 @@ describe('RoundKeeper', () => {
     expect(calls).toHaveLength(2);
   });
 
-  test('withdraws its own rewards from aggregators that owe it', async () => {
+  test('withdraws its own rewards from the aggregator when it owes them', async () => {
     const owing = makeKeeper({ owed: 5n });
     expect(await owing.keeper.withdrawRewards()).toHaveLength(1);
     const none = makeKeeper({ owed: 0n });
@@ -90,11 +90,16 @@ describe('RoundKeeper', () => {
 });
 
 describe('shared/classPresets', () => {
-  test('presets follow item 15: R <= Q <= N, Jumbo alone has beacons, offers ascend', () => {
+  test('presets follow item 15: a valid jury, R <= Q <= N, Jumbo alone has beacons, offers ascend', () => {
     let last = -1;
     for (const c of classPresets.CLASS_PRESETS) {
+      const { K, M, N, P, timeout } = c.jury;
+      // the escrow's createBounty rule, and the aggregator's default limits (maxJury 50, T+ 155 < timeout <= 3600)
+      expect(P >= 2 && P <= N && N <= M && M <= K && N <= 40).toBe(true);
+      expect(K).toBeLessThanOrEqual(50);
+      expect(timeout > 155 && timeout <= 3600).toBe(true);
       expect(c.forfeitLine).toBeLessThanOrEqual(c.quota);
-      expect(c.quota).toBeLessThanOrEqual(c.N);
+      expect(c.quota).toBeLessThanOrEqual(N);
       expect(c.withBeacons).toBe(c.key === 'jumbo');
       expect(c.offeredUpToUsd).toBeGreaterThan(last);
       last = c.offeredUpToUsd;
@@ -111,7 +116,11 @@ describe('shared/classPresets', () => {
 
   test('toBountyParams converts USD at the given price and takes overrides', () => {
     const p = classPresets.toBountyParams('medium', 2500);
-    expect(p).toMatchObject({ jury: 1, quota: 3, forfeitLine: 2, withBeacons: false });
+    expect(p).toMatchObject({ jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 2, withBeacons: false });
+    // a copy: the preset's own jury stays frozen and unchanged
+    p.jury.K = 9;
+    expect(classPresets.presetByKey('medium').jury.K).toBe(8);
+    expect(classPresets.toBountyParams('medium', 2500, { jury: { K: 9, M: 6, N: 5, P: 3, timeout: 400 } }).jury).toEqual({ K: 9, M: 6, N: 5, P: 3, timeout: 400 });
     expect(p.bond).toBe((10n ** 18n / 50n).toString());           // $50 at $2,500 = 0.02 ETH
     expect(p.minOracleFee).toBe((10n ** 14n).toString());          // $0.25 at $2,500 = 0.0001 ETH
     expect(classPresets.toBountyParams('medium', 2500, { bond: 0n }).bond).toBe('0');
@@ -138,6 +147,7 @@ describe('GET /api/classes/presets', () => {
     expect(res.body.classes.map((c) => c.key)).toEqual(classPresets.CLASS_PRESETS.map((c) => c.key));
     expect(res.body.suggested).toBe('medium');
     expect(res.body.classes.find((c) => c.key === 'medium').wei.bond).toBe((10n ** 18n / 50n).toString());
+    expect(res.body.classes.find((c) => c.key === 'jumbo').jury).toEqual({ K: 50, M: 38, N: 27, P: 17, timeout: 600 });
     expect(res.body).toMatchObject({ maxRounds: 6, rerunWindowSeconds: 7200, ethUsd: 2500 });
   });
 });
@@ -154,7 +164,7 @@ describe('RoundKeeper gas near the per-transaction cap', () => {
       f.staticCall = async () => true;
       return f;
     } });
-    const cs = { contract: mk(), getAggregatorFor: async () => mk() };
+    const cs = { contract: mk(), getAggregator: async () => mk() };
     const keeper = new RoundKeeper({ contractService: cs, signer: { getAddress: async () => '0xk' }, logger: quiet });
     await keeper.tend(1, 0, { nextAction: 'DRAW' });
     expect(calls[0].opts.gasLimit).toBe(16_500_000n);

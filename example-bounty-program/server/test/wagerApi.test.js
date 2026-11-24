@@ -66,7 +66,7 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(clientIdentification);
 app.use('/api/jobs', jobRoutes);
-// A fixed ETH price: a 0.0001 ETH stake is then the Bondless Small class (jury 0, Q 3, R 1, no floor).
+// A fixed ETH price: a 0.0001 ETH stake is then the Bondless Small class (jury 6/5/4/3, 300 s; Q 3, R 1, no floor).
 const wagerRouter = createWagerRouter({ ...jobRoutes._wagerDeps, priceUsd: async () => ({ usd: 2500 }) });
 app.use('/api/wagers', wagerRouter);
 let cidSeq = 0;
@@ -133,14 +133,15 @@ function putOnChain(n, body, { createdAt = NOW() - 60, deadline = Date.parse(bod
     oracle: { maxOracleFee: ethers.parseEther(body.oracleMaxOracleFee), alpha: BigInt(body.oracleAlpha),
       estimatedBaseCost: ethers.parseEther(body.oracleEstimatedBaseCost), maxFeeBasedScaling: BigInt(body.oracleMaxFeeBasedScaling),
       minOracleFee: ethers.parseEther(String(body.oracleMinOracleFee ?? '0')), withBeacons: Boolean(body.oracleWithBeacons) },
-    jury: BigInt(body.jury ?? 0), quota: BigInt(body.quota ?? 3), forfeitLine: BigInt(body.forfeitLine ?? 1), bond: BigInt(body.bond ?? 0),
+    ...(() => { const j = body.jury ?? { K: 6, M: 5, N: 4, P: 3, timeout: 300 }; return { juryK: BigInt(j.K), juryM: BigInt(j.M), juryN: BigInt(j.N), juryP: BigInt(j.P), juryTimeout: BigInt(j.timeout) }; })(),
+    quota: BigInt(body.quota ?? 3), forfeitLine: BigInt(body.forfeitLine ?? 1), bond: BigInt(body.bond ?? 0),
     ...chain,
   };
 }
 // The context /propose builds at that price for a 0.0001 ETH stake.
 const ctx = () => {
   const c = require('../utils/wagerGuard').wagerContext();
-  c.defaults.decision = { jury: 0, quota: 3, forfeitLine: 1 };
+  c.defaults.decision = { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1 };
   c.defaults.bountyClass = 'bondless-small';
   c.defaults.oracle = { ...c.defaults.oracle, minOracleFeeEth: '0.0', withBeacons: false };
   return c;
@@ -256,28 +257,28 @@ describe('POST /api/wagers/propose', () => {
 
 describe('decision settings (v2 escrow, mutual-wager-v6)', () => {
   it('propose takes the size-class preset for the stake at the ETH price, with no bond', async () => {
-    // 0.2 ETH at $2,500 is $500: the Medium class (jury 1, Q 3, R 2, a $0.25 fee floor), bond 0 whatever the preset's.
+    // 0.2 ETH at $2,500 is $500: the Medium class (jury 8/5/4/3, Q 3, R 2, a $0.25 fee floor), bond 0 whatever the preset's.
     const res = await post('/api/wagers/propose', proposal({ stake: '0.2' }));
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, problems: [] });
     const body = res.body.createBody;
-    expect(body).toMatchObject({ jury: 1, quota: 3, forfeitLine: 2, bond: '0', oracleMinOracleFee: '0.0001', oracleWithBeacons: false, bountyClass: 'medium' });
+    expect(body).toMatchObject({ jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 2, bond: '0', oracleMinOracleFee: '0.0001', oracleWithBeacons: false, bountyClass: 'medium' });
     expect(body.description).toMatch(/\nOracle settings \(both bounties\): maxOracleFeeEth 0\.00002, estimatedBaseCostEth 0\.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0\.0001, withBeacons false\.\n/);
-    expect(body.description).toMatch(/\nDecision settings \(both bounties\): jury 1, quota 3, forfeitLine 2, bondWei 0\.\n/);
+    expect(body.description).toMatch(/\nDecision settings \(both bounties\): jury \(K 8, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 2, bondWei 0\.\n/);
     expect(body.description).toMatch(/mirrored terms, same rubric, jury, oracle and decision settings|Counter bounty: REQUIRED/);
     const created = await post('/api/jobs/create', body);
     expect(created.status).toBe(200);
-    expect(mockStorageData.jobs[0].decisionSettings).toMatchObject({ bountyClass: 'medium', jury: 1, quota: 3, forfeitLine: 2, bond: '0' });
+    expect(mockStorageData.jobs[0].decisionSettings).toMatchObject({ bountyClass: 'medium', jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 2, bond: '0' });
   });
 
   it('propose takes the proposer\'s own decision settings, and refuses a bond', async () => {
-    const res = await post('/api/wagers/propose', proposal({ decision: { jury: 2, quota: 10, forfeitLine: 8 } }));
-    expect(res.body.createBody).toMatchObject({ jury: 2, quota: 10, forfeitLine: 8, bond: '0', oracleMinOracleFee: '0.0' });
+    const res = await post('/api/wagers/propose', proposal({ decision: { jury: { K: 21, M: 16, N: 13, P: 10, timeout: 300 }, quota: 10, forfeitLine: 8 } }));
+    expect(res.body.createBody).toMatchObject({ jury: { K: 21, M: 16, N: 13, P: 10, timeout: 300 }, quota: 10, forfeitLine: 8, bond: '0', oracleMinOracleFee: '0.0' });
     expect(res.body.createBody.bountyClass).toBeUndefined();
-    const bonded = await post('/api/wagers/propose', proposal({ decision: { jury: 0, quota: 3, forfeitLine: 1, bond: '0.001' } }));
+    const bonded = await post('/api/wagers/propose', proposal({ decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: '0.001' } }));
     expect(bonded.status).toBe(400);
     expect(bonded.body.problems).toEqual([expect.objectContaining({ field: 'decision', message: expect.stringMatching(/no hunter bond/) })]);
-    const bad = await post('/api/wagers/propose', proposal({ decision: { jury: 0, quota: 2, forfeitLine: 3 } }));
+    const bad = await post('/api/wagers/propose', proposal({ decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 3 } }));
     expect(bad.body.problems).toEqual([expect.objectContaining({ field: 'decision', message: expect.stringMatching(/forfeitLine \(R\) must be an integer from 0 to quota/) })]);
   });
 
@@ -290,7 +291,7 @@ describe('decision settings (v2 escrow, mutual-wager-v6)', () => {
     const res = await request(noPrice).post('/api/wagers/propose').set(KEY).send(proposal());
     expect(res.status).toBe(400);
     expect(res.body.problems).toEqual([expect.objectContaining({ field: 'decision', message: expect.stringMatching(/ETH price is unavailable/) })]);
-    const given = await request(noPrice).post('/api/wagers/propose').set(KEY).send(proposal({ decision: { jury: 0, quota: 3, forfeitLine: 1 } }));
+    const given = await request(noPrice).post('/api/wagers/propose').set(KEY).send(proposal({ decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1 } }));
     expect(given.body.ok).toBe(true);
   });
 
@@ -299,7 +300,7 @@ describe('decision settings (v2 escrow, mutual-wager-v6)', () => {
     const res = await post('/api/wagers/answer', { counter: 41, creator: BOB });
     expect(res.body.ok).toBe(false);
     expect(res.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'WAGER_COUNTER',
-      message: expect.stringMatching(/its decision settings \(jury 0, quota 4, forfeitLine 1, bondWei 0\) differ from yours \(jury 0, quota 3, forfeitLine 1, bondWei 0\)/) })]));
+      message: expect.stringMatching(/its decision settings \(jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 4, forfeitLine 1, bondWei 0\) differ from yours \(jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 1, bondWei 0\)/) })]));
     // A bond the claimant would have to post is named as such.
     putOnChain(42, proposed({ wagerId: 'VW-TEST-BOND' }), { chain: { bond: 10n ** 15n } });
     const bonded = await post('/api/wagers/answer', { counter: 42, creator: BOB });
@@ -461,8 +462,8 @@ describe('POST /jobs/create enforces the full wager check, and /api/wagers/check
     ['an extra criterion field', (b) => { b.rubricJson.criteria[2].note = 'x'; }, 'WAGER_RUBRIC', /a criterion has a field the template does not \(note\)/],
     // v2 escrow (mutual-wager-v6): the decision settings, fee floor and beacon flag are the terms'.
     ['a hunter bond', (b) => { b.bond = '0.001'; }, 'WAGER_MISMATCH', /cannot back a wager: A wager has no hunter bond/],
-    ['a quota the terms do not name', (b) => { b.quota = 4; }, 'WAGER_MISMATCH', /"Decision settings" line must match this bounty: Decision settings \(both bounties\): jury 0, quota 4, forfeitLine 1, bondWei 0\./],
-    ['another jury', (b) => { b.jury = 1; }, 'WAGER_MISMATCH', /"Decision settings" line/],
+    ['a quota the terms do not name', (b) => { b.quota = 4; }, 'WAGER_MISMATCH', /"Decision settings" line must match this bounty: Decision settings \(both bounties\): jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 4, forfeitLine 1, bondWei 0\./],
+    ['another jury', (b) => { b.jury = { K: 7, M: 5, N: 4, P: 3, timeout: 300 }; }, 'WAGER_MISMATCH', /"Decision settings" line/],
     ['a forfeit line the terms do not name', (b) => { b.forfeitLine = 0; }, 'WAGER_MISMATCH', /"Decision settings" line/],
     ['a fee floor the terms do not name', (b) => { b.oracleMinOracleFee = '0.0001'; }, 'WAGER_MISMATCH', /"Oracle settings" line must match this bounty: .*minOracleFeeEth 0\.0001, withBeacons false\./],
     ['beacons the terms do not name', (b) => { b.oracleWithBeacons = true; }, 'WAGER_MISMATCH', /"Oracle settings" line/],
@@ -721,7 +722,7 @@ describe('POST /api/wagers/claim', () => {
     mockChain[61].forfeitLine = 3n;   // Bob's own bounty: a claim on it fails outright below 3 of 4
     const res = await claim();
     expect(res.body.ok).toBe(false);
-    expect(res.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'CLAIM_COUNTER', message: expect.stringMatching(/its decision settings \(jury 0, quota 3, forfeitLine 3, bondWei 0\) differ from yours/) })]));
+    expect(res.body.problems).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'CLAIM_COUNTER', message: expect.stringMatching(/its decision settings \(jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 3, bondWei 0\) differ from yours/) })]));
   });
 
   it('refuses a claim on a paid bounty, or citing a counter other than the named one', async () => {

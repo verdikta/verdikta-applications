@@ -34,7 +34,7 @@ test('an honest first bounty passes and the shared answer builder mirrors it, na
   assert.match(r.answer.description, /^Counter bounty: #18, verified by the Poster before posting \(.*created 2026-10-20T16:39:00\.000Z, deadline 2026-10-21T20:38:58\.000Z, mirrored terms, same rubric, jury, oracle and decision settings\)/m);
   // The answer copies the offer's settings lines, the v2 ones included.
   assert.ok(r.answer.description.includes(`\nOracle settings (both bounties): maxOracleFeeEth 0.00002, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0.0, withBeacons false.\n${DECISION_LINE}\n`));
-  assert.deepEqual(r.values.decision, { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' });
+  assert.deepEqual(r.values.decision, { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bondWei: '0' });
   const config = W.createConfig({ createBody: r.answer.createBody, wager: {} });
   assert.equal(config.procurementMode, 'TARGETED'); assert.equal(config.targetHunter, alice); assert.equal(config.bountyAmount, '0.0001');
   assert.equal(config.submissionDeadline, '2026-10-21T19:00:00Z'); assert.equal(config.creatorAssessmentWindowSeconds, 0);
@@ -42,9 +42,9 @@ test('an honest first bounty passes and the shared answer builder mirrors it, na
   assert.deepEqual(config.juryNodes.map((n) => n.provider), ['OpenAI', 'Anthropic']);
   assert.deepEqual(config.oracle, { maxOracleFee: '20000000000000', alpha: 500, estimatedBaseCost: '10000000000000', maxFeeBasedScaling: 3, minOracleFee: '0', withBeacons: false });
   // v2: the decision settings the offer's terms name (here the default, Bondless Small), sent explicitly; never a bond.
-  assert.deepEqual([config.bountyClass, config.jury, config.quota, config.forfeitLine, config.bond], ['bondless-small', 0, 3, 1, '0']);
+  assert.deepEqual([config.bountyClass, config.jury, config.quota, config.forfeitLine, config.bond], ['bondless-small', { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, 3, 1, '0']);
   const p = creationTerms(config).params;
-  assert.deepEqual([p.jury, p.quota, p.forfeitLine, p.bond, p.oracle.minOracleFee, p.oracle.withBeacons], [0n, 3n, 1n, 0n, 0n, false]);
+  assert.deepEqual([{ ...p.jury }, p.quota, p.forfeitLine, p.bond, p.oracle.minOracleFee, p.oracle.withBeacons], [{ K: 6n, M: 5n, N: 4n, P: 3n, timeout: 300n }, 3n, 1n, 0n, 0n, false]);
   assert.ok(validateRubric(config.rubricJson).valid); assert.ok(!('threshold' in config.rubricJson)); assert.equal(W.shared.mutualWagerRubricProblem(config.rubricJson), null);
   assert.equal(config.rubricJson.title, 'Mutual Wager Settlement (mutual-wager-v6)');
   assert.equal(creationTerms(config).submissionDeadline, BigInt(Date.parse('2026-10-21T19:00:00Z') / 1000));
@@ -73,8 +73,8 @@ test('check refuses every bad counter, each for its own reason, standalone', () 
   for (const [n, me] of [[21, bob], [24, alice]]) { const p = only(n, me); assert.equal(p.length, 1); assert.match(p[0], /"No winner" line must be the standard clause/); }
   for (const [n, me] of [[22, bob], [25, alice]]) { const p = only(n, me); assert.equal(p.length, 1); assert.match(p[0], /oracle settings \(maxOracleFeeEth 0\.000000000000000001.*minOracleFeeEth 0\.0, withBeacons false\) differ from yours/); }
   // v6 adds the decision settings to the counter check: the site's record of them, and the counter's own terms lines.
-  assert.deepEqual(report(bounty(18, { status: { decisionSettings: { jury: 0, quota: 2, forfeitLine: 1, bondWei: '0' } }, rpc: { quota: '2' } }), bob).problems.filter((p) => p.startsWith('Counter')),
-    ['Counter bounty #18: its decision settings (jury 0, quota 2, forfeitLine 1, bondWei 0) differ from yours (jury 0, quota 3, forfeitLine 1, bondWei 0): a claim on it would be judged by another rule.']);
+  assert.deepEqual(report(bounty(18, { status: { decisionSettings: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 1, bondWei: '0' } }, rpc: { quota: '2' } }), bob).problems.filter((p) => p.startsWith('Counter')),
+    ['Counter bounty #18: its decision settings (jury (K 6, M 5, N 4, P 3, timeout 300), quota 2, forfeitLine 1, bondWei 0) differ from yours (jury (K 6, M 5, N 4, P 3, timeout 300), quota 3, forfeitLine 1, bondWei 0): a claim on it would be judged by another rule.']);
   assert.match(report(bounty(18, { status: { decisionSettings: undefined } }), bob).problems.join('\n'), /the site does not show its decision settings/);
   const noDecision = fx(18, 'job').job.description.replace(`${DECISION_LINE}\n`, '');
   assert.deepEqual(report(bounty(18, { job: { description: noDecision } }), bob).problems, ['The Decision settings line cannot be read back ("jury <index>, quota <Q>, forfeitLine <R>, bondWei 0.").']);
@@ -89,7 +89,7 @@ test('check against the bettor\'s own posted terms: honest counter passes, bad c
   assert.match(report(bounty(25), alice, { mine: mine(18) }).problems.join('\n'), /oracle settings/);
   for (const n of [20, 21, 22]) assert.ok(report(bounty(n), bob, { mine: mine(19) }).problems.length, `#${n}`);
   // A counter whose terms name other decision settings than mine is refused, line and site record alike.
-  const other = fx(19, 'job').job.description.replace(DECISION_LINE, 'Decision settings (both bounties): jury 0, quota 2, forfeitLine 1, bondWei 0.');
+  const other = fx(19, 'job').job.description.replace(DECISION_LINE, 'Decision settings (both bounties): jury (K 6, M 5, N 4, P 3, timeout 300), quota 2, forfeitLine 1, bondWei 0.');
   assert.match(report(bounty(19, { job: { description: other } }), alice, { mine: mine(18) }).problems.join('\n'), /"Decision settings \(both bounties\):" line differs from yours/);
   // An answer naming some other bounty of mine as its counter is refused.
   const named = bounty(19); named.job = { ...named.job, description: named.job.description.replace(/^Counter bounty: .*$/m, 'Counter bounty: #7, verified by the Poster before posting (created by the Claimant, targeted at the Poster, 0.0001 ETH, created 2026-10-20T16:39:00.000Z, deadline 2026-10-21T20:38:58.000Z, mirrored terms, same rubric, jury, oracle and decision settings). It pays the Poster only if the Detroit Pistons win.') };
@@ -104,8 +104,8 @@ test('the escrow read must agree with the site record', () => {
   assert.match(report(bounty(18, { status: { decisionSettings: undefined } }), bob).problems.join('\n'), /on chain: its decision settings differs from the site's record/);
   assert.match(report(bounty(18, { rpc: { oracle: { ...fx(18, 'rpc').oracle, withBeacons: true } } }), bob).problems.join('\n'), /on chain: its oracle settings differ/);
   // The site's record and the escrow agree, but on a bond and another quota than the terms name.
-  const bonded = report(bounty(18, { rpc: { bond: '5000', quota: '2' }, status: { decisionSettings: { jury: 0, quota: 2, forfeitLine: 1, bondWei: '5000' } } }), bob).problems.join('\n');
-  assert.match(bonded, /on chain: its decision settings on chain \(quota 2, hunter bond 5000\) are not the ones the terms name \(jury 0, quota 3, forfeitLine 1, bondWei 0, fee floor 0\.0 ETH, beacons off; a wager has no bond\)/);
+  const bonded = report(bounty(18, { rpc: { bond: '5000', quota: '2' }, status: { decisionSettings: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 1, bondWei: '5000' } } }), bob).problems.join('\n');
+  assert.match(bonded, /on chain: its decision settings on chain \(quota 2, hunter bond 5000\) are not the ones the terms name \(jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 1, bondWei 0, fee floor 0\.0 ETH, beacons off; a wager has no bond\)/);
   assert.match(bonded, /asks the claimant for a bond/);
   assert.doesNotMatch(bonded, /differs from the site's record/);
   assert.match(report(bounty(18, { rpc: { status: '1' } }), bob).problems.join('\n'), /no longer open/);
@@ -119,22 +119,22 @@ test('chainProblems holds the escrow to the decision settings, fee floor and bea
   assert.deepEqual(both({}), []);
   // Agreeing with the site's record is not enough: each differs from the terms.
   const floor = both({ oracle: { ...rpc.oracle, minOracleFee: '1000' } }, { oracleSettings: { ...status.oracleSettings, minOracleFee: '1000' } });
-  assert.deepEqual(floor, ['Bounty #18 on chain: its decision settings on chain (fee floor 1000) are not the ones the terms name (jury 0, quota 3, forfeitLine 1, bondWei 0, fee floor 0.0 ETH, beacons off; a wager has no bond).']);
+  assert.deepEqual(floor, ['Bounty #18 on chain: its decision settings on chain (fee floor 1000) are not the ones the terms name (jury (K 6, M 5, N 4, P 3, timeout 300), quota 3, forfeitLine 1, bondWei 0, fee floor 0.0 ETH, beacons off; a wager has no bond).']);
   assert.match(both({ oracle: { ...rpc.oracle, withBeacons: true } }, { oracleSettings: { ...status.oracleSettings, withBeacons: true } }).join('\n'), /\(beacons on\) are not the ones the terms name/);
-  assert.match(both({ jury: '1', forfeitLine: '0' }, { decisionSettings: { jury: 1, quota: 3, forfeitLine: 0, bondWei: '0' } }).join('\n'), /\(jury 1, forfeit line 0\) are not the ones/);
+  assert.match(both({ juryK: '8', forfeitLine: '0' }, { decisionSettings: { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 0, bondWei: '0' } }).join('\n'), /\(jury K 8, forfeit line 0\) are not the ones/);
   // A bond is refused whatever the terms say, and with no terms at all.
   assert.match(W.chainProblems(18, { ...status, decisionSettings: { ...status.decisionSettings, bondWei: '1' } }, { ...rpc, bond: '1' }, NOW).join('\n'), /\(hunter bond 1\) are not the ones the terms name \(no decision settings; a wager has no bond\)/);
   // Terms that name other settings: an escrow with those passes, one with the defaults does not.
-  const custom = { decision: { jury: 1, quota: 2, forfeitLine: 0, bondWei: '0' }, oracle: { ...v6.oracle, minOracleFeeEth: '0.000001', withBeacons: true } };
-  const customRpc = { ...rpc, jury: '1', quota: '2', forfeitLine: '0', oracle: { ...rpc.oracle, minOracleFee: '1000000000000', withBeacons: true } };
-  const customStatus = { ...status, decisionSettings: { jury: 1, quota: 2, forfeitLine: 0, bondWei: '0' }, oracleSettings: { ...status.oracleSettings, minOracleFee: '1000000000000', withBeacons: true } };
+  const custom = { decision: { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 0, bondWei: '0' }, oracle: { ...v6.oracle, minOracleFeeEth: '0.000001', withBeacons: true } };
+  const customRpc = { ...rpc, juryK: '8', quota: '2', forfeitLine: '0', oracle: { ...rpc.oracle, minOracleFee: '1000000000000', withBeacons: true } };
+  const customStatus = { ...status, decisionSettings: { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 0, bondWei: '0' }, oracleSettings: { ...status.oracleSettings, minOracleFee: '1000000000000', withBeacons: true } };
   assert.deepEqual(W.chainProblems(18, customStatus, customRpc, NOW, custom), []);
-  assert.deepEqual(W.chainProblems(18, status, rpc, NOW, custom), ['Bounty #18 on chain: its decision settings on chain (jury 0, quota 3, forfeit line 1, fee floor 0, beacons off) are not the ones the terms name (jury 1, quota 2, forfeitLine 0, bondWei 0, fee floor 0.000001 ETH, beacons on; a wager has no bond).']);
+  assert.deepEqual(W.chainProblems(18, status, rpc, NOW, custom), ['Bounty #18 on chain: its decision settings on chain (jury K 6, quota 3, forfeit line 1, fee floor 0, beacons off) are not the ones the terms name (jury (K 8, M 5, N 4, P 3, timeout 300), quota 2, forfeitLine 0, bondWei 0, fee floor 0.000001 ETH, beacons on; a wager has no bond).']);
   // v3 terms name none: a v3 pair on the v2 escrow is held to the settings this skill posted those with (Bondless Small).
   const v3 = values(legacy(18, 'job').job.description);
   assert.equal(v3.decision, null);
   assert.deepEqual(W.chainProblems(18, status, rpc, NOW, v3), []);
-  assert.match(W.chainProblems(18, { ...status, decisionSettings: { ...status.decisionSettings, quota: 2 } }, { ...rpc, quota: '2' }, NOW, v3).join('\n'), /\(quota 2\) are not the ones the terms name \(jury 0, quota 3, forfeitLine 1, bondWei 0, fee floor 0\.0 ETH, beacons off/);
+  assert.match(W.chainProblems(18, { ...status, decisionSettings: { ...status.decisionSettings, quota: 2 } }, { ...rpc, quota: '2' }, NOW, v3).join('\n'), /\(quota 2\) are not the ones the terms name \(jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 1, bondWei 0, fee floor 0\.0 ETH, beacons off/);
 });
 
 test('timing, targeting and deadline rules', () => {
@@ -167,31 +167,31 @@ test('a proposal is the shared builder\'s bounty, with a hash over its exact des
   assert.equal(theirs.offer.description, fx(19, 'job').job.description);
   const config = W.createConfig({ createBody: p.createBody, wager: {} });
   assert.equal(config.submissionDeadline, proposal.settle); assert.equal(config.targetHunter, bob);
-  assert.deepEqual([config.bountyClass, config.jury, config.quota, config.forfeitLine, config.bond, config.oracle.minOracleFee, config.oracle.withBeacons], ['bondless-small', 0, 3, 1, '0', '0', false]);
+  assert.deepEqual([config.bountyClass, config.jury, config.quota, config.forfeitLine, config.bond, config.oracle.minOracleFee, config.oracle.withBeacons], ['bondless-small', { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, 3, 1, '0', '0', false]);
 });
 
 test('operator decision settings and fee floor go into the terms, and createConfig sends the terms\' values', () => {
-  const defaults = { ...W.WAGER_DEFAULTS, decision: { jury: 1, quota: 2, forfeitLine: 0 }, oracle: { ...W.WAGER_DEFAULTS.oracle, minOracleFeeEth: '0.000001', withBeacons: true } };
+  const defaults = { ...W.WAGER_DEFAULTS, decision: { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 0 }, oracle: { ...W.WAGER_DEFAULTS.oracle, minOracleFeeEth: '0.000001', withBeacons: true } };
   const p = W.buildProposal(proposal, { me: alice, ctx, now: NOW, defaults });
   assert.deepEqual(p.problems, []);
   assert.match(p.offer.description, /^Oracle settings \(both bounties\): maxOracleFeeEth 0\.00002, estimatedBaseCostEth 0\.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0\.000001, withBeacons true\.$/m);
-  assert.match(p.offer.description, /^Decision settings \(both bounties\): jury 1, quota 2, forfeitLine 0, bondWei 0\.$/m);
+  assert.match(p.offer.description, /^Decision settings \(both bounties\): jury \(K 8, M 5, N 4, P 3, timeout 300\), quota 2, forfeitLine 0, bondWei 0\.$/m);
   const config = W.createConfig({ createBody: p.createBody, wager: {} });
-  assert.deepEqual([config.jury, config.quota, config.forfeitLine, config.bond], [1, 2, 0, '0']);
+  assert.deepEqual([config.jury, config.quota, config.forfeitLine, config.bond], [{ K: 8, M: 5, N: 4, P: 3, timeout: 300 }, 2, 0, '0']);
   assert.deepEqual([config.oracle.minOracleFee, config.oracle.withBeacons], ['1000000000000', true]);
   const params = creationTerms(config).params;
-  assert.deepEqual([params.jury, params.quota, params.forfeitLine, params.bond, params.oracle.minOracleFee, params.oracle.withBeacons], [1n, 2n, 0n, 0n, 1000000000000n, true]);
+  assert.deepEqual([{ ...params.jury }, params.quota, params.forfeitLine, params.bond, params.oracle.minOracleFee, params.oracle.withBeacons], [{ K: 8n, M: 5n, N: 4n, P: 3n, timeout: 300n }, 2n, 0n, 0n, 1000000000000n, true]);
   // The terms read back to the same values, and the answer to such an offer carries them unchanged.
-  assert.deepEqual(W.termsValues(p.terms).decision, { jury: 1, quota: 2, forfeitLine: 0, bondWei: '0' });
-  const offer = bounty(18, { job: { description: p.offer.description, title: p.offer.title }, status: { decisionSettings: { jury: 1, quota: 2, forfeitLine: 0, bondWei: '0' }, oracleSettings: { ...fx(18, 'status').oracleSettings, minOracleFee: '1000000000000', minOracleFeeEth: '0.000001', withBeacons: true } },
-    rpc: { jury: '1', quota: '2', forfeitLine: '0', oracle: { ...fx(18, 'rpc').oracle, minOracleFee: '1000000000000', withBeacons: true } } });
+  assert.deepEqual(W.termsValues(p.terms).decision, { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 0, bondWei: '0' });
+  const offer = bounty(18, { job: { description: p.offer.description, title: p.offer.title }, status: { decisionSettings: { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 0, bondWei: '0' }, oracleSettings: { ...fx(18, 'status').oracleSettings, minOracleFee: '1000000000000', minOracleFeeEth: '0.000001', withBeacons: true } },
+    rpc: { juryK: '8', quota: '2', forfeitLine: '0', oracle: { ...fx(18, 'rpc').oracle, minOracleFee: '1000000000000', withBeacons: true } } });
   const r = report(offer, bob);
   assert.deepEqual(r.problems, []);
   const answered = W.createConfig({ createBody: r.answer.createBody, wager: {} });
-  assert.deepEqual([answered.jury, answered.quota, answered.forfeitLine, answered.bond, answered.oracle.minOracleFee, answered.oracle.withBeacons], [1, 2, 0, '0', '1000000000000', true]);
+  assert.deepEqual([answered.jury, answered.quota, answered.forfeitLine, answered.bond, answered.oracle.minOracleFee, answered.oracle.withBeacons], [{ K: 8, M: 5, N: 4, P: 3, timeout: 300 }, 2, 0, '0', '1000000000000', true]);
   // A bond, or settings the escrow cannot take, are refused before anything is built.
-  assert.match(W.buildProposal(proposal, { me: alice, ctx, now: NOW, defaults: { ...defaults, decision: { jury: 0, quota: 3, forfeitLine: 1, bond: '5' } } }).problems.join('\n'), /A wager has no hunter bond/);
-  assert.match(W.buildProposal(proposal, { me: alice, ctx, now: NOW, defaults: { ...defaults, decision: { jury: 0, quota: 1, forfeitLine: 2 } } }).problems.join('\n'), /forfeitLine \(R\) must be an integer from 0 to quota/);
+  assert.match(W.buildProposal(proposal, { me: alice, ctx, now: NOW, defaults: { ...defaults, decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: '5' } } }).problems.join('\n'), /A wager has no hunter bond/);
+  assert.match(W.buildProposal(proposal, { me: alice, ctx, now: NOW, defaults: { ...defaults, decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 1, forfeitLine: 2 } } }).problems.join('\n'), /forfeitLine \(R\) must be an integer from 0 to quota/);
 });
 
 test('bad proposal inputs are refused before anything is saved', () => {
@@ -302,7 +302,7 @@ test('claim refuses before the game can be final, after settlement, on bad evide
   assert.throws(() => claim({ counter: { ...counter, status: { ...counter.status, linkage: { state: 'mismatch' } } } }), /not linked/);
   assert.throws(() => claim({ counter: { ...counter, job: { ...counter.job, rubricContent: legacy(18, 'job').job.rubricContent } } }), /Counter bounty #18: its rubric criterion counter_bounty_\w+ differs/);
   // v6: the counter's decision settings must be the ones the terms name, and a v3 bounty never backs a v6 one.
-  assert.throws(() => claim({ counter: { ...counter, status: { ...counter.status, decisionSettings: { jury: 0, quota: 3, forfeitLine: 1, bondWei: '5000' } } } }), /its decision settings \(jury 0, quota 3, forfeitLine 1, bondWei 5000\) differ from yours .*asks the claimant for a bond/);
+  assert.throws(() => claim({ counter: { ...counter, status: { ...counter.status, decisionSettings: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bondWei: '5000' } } } }), /its decision settings \(jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 1, bondWei 5000\) differ from yours .*asks the claimant for a bond/);
   assert.throws(() => claim({ counter: { ...counter, job: current(legacy(18, 'job').job) } }), /its terms name rubric mutual-wager-v3/);
   assert.match(claim({ sources: [sources[0], 'X post|https://x.com/nba/status/1|Celtics 110 Pistons 104 final'] }).warnings.join('\n'), /social media or a betting site/);
   // Shared timing: without --final-at, submission waits until 5 h after the start; with it, 2 h after the final.

@@ -12,7 +12,7 @@ The 2.0.0 scripts never fall back to the v1 escrow: the v1 `createBounty` struct
 
 ## Creating a bounty: size classes, Q, R and the bond
 
-`createBounty` takes the v2 `CreateParams`: the oracle struct gains `minOracleFee` (a fee floor: every juror is paid at least this) and `withBeacons`, and the bounty gains `jury` (the approved aggregator, one per jury size), `quota` (Q), `forfeitLine` (R ≤ Q) and `bond` (wei each hunter posts at start).
+`createBounty` takes the v2 `CreateParams`: the oracle struct gains `minOracleFee` (a fee floor: every juror is paid at least this) and `withBeacons`, and the bounty gains `jury` (its own `{K, M, N, P, timeout}`: K drawn, M promoted, N counted, P clustered, the round timeout in seconds; one aggregator, `aggregator()`, serves every jury size and each request carries the jury), `quota` (Q), `forfeitLine` (R ≤ Q) and `bond` (wei each hunter posts at start).
 
 A round has N juror scores. At least Q at or above the threshold is a **pass** (paid, bond back). Fewer than R is a **hard fail** (the submission fails and its bond goes to the creator). In between is a **soft fail**: the submission may re-run.
 
@@ -20,9 +20,9 @@ The settings start from a size-class preset, the site's and API's own (`scripts/
 
 - `bountyClass`: the preset. Without one, the smallest class offered for `bountyAmount` at `ethUsd`, else Bondless Small.
 - `ethUsd`: an owner-reviewed ETH price, needed only to convert a preset's USD bond or fee floor (Small and up have a bond; Medium and up a floor).
-- `jury`, `quota`, `forfeitLine`, `bond` (wei), `oracle.minOracleFee` (wei), `oracle.withBeacons`: overrides.
+- `jury` (any of `K`, `M`, `N`, `P`, `timeout`, over the preset's), `quota`, `forfeitLine`, `bond` (wei), `oracle.minOracleFee` (wei), `oracle.withBeacons`: overrides.
 
-`create_bounty.js` sends every setting to `/jobs/create` explicitly, so the server never picks a class or converts a price for the bounty. It checks the jury's live fee ceiling and N, and shows the class, Q, R, bond, floor and beacons in every review. See [commission configuration](commission.md). The 1.x config shape still works and means Bondless Small: no bond, no floor, Q 3 of 4, R 1.
+`create_bounty.js` sends every setting to `/jobs/create` explicitly, so the server never picks a class or converts a price for the bounty. It checks the escrow's rule for the jury (K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, Q ≤ N), the aggregator's live fee ceiling and jury limits, and shows the class, Q, R, bond, floor and beacons in every review. See [commission configuration](commission.md). The 1.x config shape still works and means Bondless Small: no bond, no floor, Q 3 of 4, R 1.
 
 Wagers use new templates for v2, `mutual-wager-v6` (games, replacing v3) and `mutual-wager-v7` (questions, replacing v5). Their terms add a Decision settings line (`jury 0, quota 3, forfeitLine 1, bondWei 0.` by default: Bondless Small) and the fee floor and beacon flag on the Oracle settings line (`..., minOracleFeeEth 0.0, withBeacons false.`), and the jury checks the counter's `decisionSettings` against them. `wager.js propose` takes other settings from `decision` and `oracle.minOracleFeeEth`/`oracle.withBeacons` in `wager-defaults.json` and refuses a bond; `answer` copies the offer's; `check` refuses a counter bounty whose site record or escrow read differs from the terms. v3, v4 and v5 bounties already posted are still checked and claimed, but never answered or funded (a v3/v5 pair on the v2 escrow is held to Bondless Small).
 
@@ -30,7 +30,7 @@ Wagers use new templates for v2, `mutual-wager-v6` (games, replacing v3) and `mu
 
 A start attaches `startValue(bountyId)` = `requiredPrepay(bountyId)` + the bond, not `requiredPrepay` alone; `submit_to_bounty.js` reads it live and shows the split. The server's `/start` returns it as `transaction.value`, with `prepayWei` and `bondWei`.
 
-After the start the round must be **drawn**: `drawJury(bountyId, submissionId)` from two blocks after the start (twice on a beacon bounty), then `closeCommits(aggId)` and `promote(aggId)` on the bounty's aggregator (`aggregatorOf(bountyId)`). Anyone may send them, and the server's keeper usually does. An agent can push its own round with `claim_bounty.js`, one step per run.
+After the start the round must be **drawn**: `drawJury(bountyId, submissionId)` from two blocks after the start (twice on a beacon bounty), then `closeCommits(aggId)` and `promote(aggId)` on the escrow's aggregator (`aggregator()`). Anyone may send them, and the server's keeper usually does. An agent can push its own round with `claim_bounty.js`, one step per run.
 
 ## Resolving: nextAction
 
@@ -40,7 +40,7 @@ After the start the round must be **drawn**: `drawJury(bountyId, submissionId)` 
 | --- | --- |
 | START | `submit_to_bounty.js --resume <id>` (attaches startValue) |
 | DRAW | `claim_bounty.js`: `drawJury` (escrow) |
-| CLOSE_COMMITS, PROMOTE | `claim_bounty.js`: `closeCommits` / `promote` on the bounty's aggregator |
+| CLOSE_COMMITS, PROMOTE | `claim_bounty.js`: `closeCommits` / `promote` on the escrow's aggregator |
 | FINALIZE | `claim_bounty.js`: `finalizeSubmission` (pass: paid; soft fail: awaits a re-run; hard fail: bond to the creator) |
 | CLOSE_FAILED | `claim_bounty.js`: `closeFailedRound` (no result and none can come; replaces v1 `failTimedOutSubmission`/FORCE_FAIL) |
 | RERUN | `claim_bounty.js --rerun`, only with the owner's approval: `rerunSubmission` with a fresh `requiredPrepay` |
@@ -63,7 +63,7 @@ The close needs the pending list empty: rounds in flight and submissions awaitin
 
 ## Reading state
 
-- `getOracleResult` returns a struct: `started`, `hasResult`, `phase`, `outcome` (0 not ready, 1 no result, 2 pass, 3 soft fail, 4 hard fail), `rounds`, `passCount`, `deadline`, `requestTime`, `scores`, `justificationCids`. `startTimestamp`, `settled` and `failed` are gone; the aggregator's `responseTimeoutSeconds` no longer times a round.
-- `getSubmission` adds `bondFunder`, `bondHeld`, `rerunDeadline`, `rounds`, `passCount`; `getBounty` adds `jury`, `quota`, `forfeitLine`, `bond`.
+- `getOracleResult` returns a struct: `started`, `hasResult`, `phase`, `outcome` (0 not ready, 1 no result, 2 pass, 3 soft fail, 4 hard fail), `rounds`, `passCount`, `deadline`, `requestTime`, `scores`, `justificationCids`. `startTimestamp`, `settled` and `failed` are gone; the aggregator's `responseTimeoutSeconds` is gone: a round's timeout is its jury's (`getJury(aggId)`), run from the draw.
+- `getSubmission` adds `bondFunder`, `bondHeld`, `rerunDeadline`, `rounds`, `passCount`; `getBounty` adds the jury flat (`juryK`, `juryM`, `juryN`, `juryP`, `juryTimeout`), `quota`, `forfeitLine`, `bond`. The escrow has one `aggregator()`; `aggregators(i)`, `aggregatorCount()` and `aggregatorOf(id)` are gone. With fewer than K eligible arbiters the keeper repeats arbiters to fill the jury; a draw fails only when none is eligible.
 - Server: `/refresh` reports `SOFT_FAIL_PENDING_FINALIZATION`, `NO_RESULT_PENDING_CLOSE` and `AWAITING_RERUN`, and `failureReason` `NO_RESULT` or `RERUN_EXPIRED`; `/finalize` returns `oracleResult.outcome`, `passCount` and `effect`; `/diagnose` returns `checks.onChain.round`; `GET /:jobId/onchain-status` returns `requiredPrepay`, `startValue` and `decisionSettings`.
 - New endpoints: `POST .../draw`, `.../round-step`, `.../rerun`, `.../expire-rerun`, `.../close-failed` (`.../timeout` is its v1 alias). See [API endpoints](api_endpoints.md#round-steps-v2).

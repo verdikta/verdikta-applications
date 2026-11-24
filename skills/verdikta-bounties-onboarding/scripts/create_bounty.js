@@ -32,19 +32,21 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
   const network = getNetwork(), escrowAt = escrowAddress(network), provider = providerFor(network);
   const d = terms.decision;
   // What a hunter faces on this bounty (item 12's rule): shown in every review.
-  const decisionText = `Decision: ${d.className} preset${config.bountyClass == null ? ' (default)' : ''}; jury ${d.jury}; a round passes with ${d.quota} juror score(s) at or above the threshold, fewer than ${d.forfeitLine} forfeits the bond to you; hunter bond ${formatEther(d.bond)} ETH (${d.bond} wei); fee floor ${d.minOracleFee} wei; beacons ${d.withBeacons ? 'on' : 'off'}`;
+  const decisionText = `Decision: ${d.className} preset${config.bountyClass == null ? ' (default)' : ''}; jury K ${d.jury.K} drawn, M ${d.jury.M} promoted, N ${d.jury.N} counted, P ${d.jury.P} clustered, round timeout ${d.jury.timeout} s; a round passes with ${d.quota} juror score(s) at or above the threshold, fewer than ${d.forfeitLine} forfeits the bond to you; hunter bond ${formatEther(d.bond)} ETH (${d.bond} wei); fee floor ${d.minOracleFee} wei; beacons ${d.withBeacons ? 'on' : 'off'}`;
   try {
     const baseUrl = configuredBaseUrl ? configuredBaseUrl.replace(/\/+$/, '') : reviewedApiOrigin(network);
     await preflightDeployment(network, provider, baseUrl);
     const policy = await loadSpendPolicy();
     if (terms.value > BigInt(policy.maxValueWei) || terms.value > BigInt(policy.maxTotalWei)) throw new Error('Reward exceeds owner cap');
-    // The jury's own aggregator (one per jury size): its live fee ceiling and N, as createBounty checks them.
-    const aggregatorAddress = await contract(escrowAt, ['function aggregators(uint256) view returns(address)'], provider).aggregators(terms.params.jury)
-      .catch(error => { throw new Error(`Jury ${terms.params.jury} is not an approved aggregator of the escrow (aggregators(${terms.params.jury}) failed: ${error.shortMessage ?? error.message})`, { cause: error }); });
-    const aggregator = contract(aggregatorAddress, ['function maxOracleFee() view returns(uint256)', 'function N() view returns(uint8)'], provider);
-    const [ceiling, juryN] = await Promise.all([aggregator.maxOracleFee(), aggregator.N()]);
-    if (terms.params.oracle.maxOracleFee > ceiling) throw new Error(`Oracle fee exceeds the live ceiling of jury ${terms.params.jury} (${ceiling} wei)`);
-    if (terms.params.quota > BigInt(juryN)) throw new Error(`quota ${terms.params.quota} exceeds the jury's N (${juryN})`);
+    // The escrow's aggregator (one for every jury size; the jury is this bounty's own): its live fee ceiling and jury
+    // limits, as createBounty and every request check them.
+    const aggregatorAddress = await contract(escrowAt, ['function aggregator() view returns(address)'], provider).aggregator();
+    const aggregator = contract(aggregatorAddress, ['function maxOracleFee() view returns(uint256)', 'function maxJury() view returns(uint8)', 'function maxTimeout() view returns(uint40)', 'function tPlus() view returns(uint40)'], provider);
+    const [ceiling, maxJury, maxTimeout, tPlus] = await Promise.all([aggregator.maxOracleFee(), aggregator.maxJury(), aggregator.maxTimeout(), aggregator.tPlus()]);
+    const jury = terms.params.jury;
+    if (terms.params.oracle.maxOracleFee > ceiling) throw new Error(`Oracle fee exceeds the aggregator's live ceiling (${ceiling} wei)`);
+    if (jury.K > BigInt(maxJury)) throw new Error(`jury.K ${jury.K} exceeds the aggregator's maxJury (${maxJury}): every request would revert BadJury`);
+    if (!(jury.timeout > BigInt(tPlus) && jury.timeout <= BigInt(maxTimeout))) throw new Error(`jury.timeout ${jury.timeout} s must be above T+ (${tPlus} s) and at most the aggregator's maxTimeout (${maxTimeout} s): every request would revert BadJury`);
     const wallet = (await loadWallet()).connect(provider);
     const apiKey = await loadApiKey();
     if (!apiKey) throw new Error('Configured API identity required');

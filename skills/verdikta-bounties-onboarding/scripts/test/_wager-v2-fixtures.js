@@ -10,7 +10,21 @@
 import { readFileSync } from 'node:fs';
 import * as W from '../_wager.js';
 
-const read = (rel) => JSON.parse(readFileSync(new URL(`./fixtures/${rel}`, import.meta.url), 'utf8'));
+// The recorded records name the jury by the pre-item-15 aggregator index (0, the small jury). Read now, they carry the
+// bounty's own jury as the escrow and the site serve it: getBounty's flat juryK .. juryTimeout, and
+// decisionSettings.jury { K, M, N, P, timeout } (the wager default, Bondless Small).
+export const WAGER_JURY = Object.freeze({ ...W.WAGER_DECISION.jury });
+function withJury(record) {
+  if (!record || typeof record !== 'object') return record;
+  const out = { ...record };
+  if (out.decisionSettings && typeof out.decisionSettings.jury !== 'object') out.decisionSettings = { ...out.decisionSettings, jury: { ...WAGER_JURY } };
+  if ('jury' in out && 'quota' in out && typeof out.jury !== 'object') {
+    delete out.jury;
+    Object.assign(out, { juryK: String(WAGER_JURY.K), juryM: String(WAGER_JURY.M), juryN: String(WAGER_JURY.N), juryP: String(WAGER_JURY.P), juryTimeout: String(WAGER_JURY.timeout) });
+  }
+  return out;
+}
+const read = (rel) => withJury(JSON.parse(readFileSync(new URL(`./fixtures/${rel}`, import.meta.url), 'utf8')));
 /** The recorded v3 game fixtures, unchanged: n 18-25, kind job | status | rpc. */
 export const legacyGame = (n, kind) => read(`wager-testnet/${n}.${kind}.json`);
 /** The recorded v4 question fixtures, unchanged: kind job | status | chain, n 40 | 41. */
@@ -19,7 +33,7 @@ export const legacyQuestion = (kind, n) => read(`wager-question/${kind}-${n}.jso
 export const alice = '0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D', bob = '0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9';
 export const ctx = W.siteContext({ network: 'base-sepolia', origin: 'https://bounties-testnet.verdikta.org', deployment: { address: '0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f', chainId: 84532 } });
 /** The Decision settings line of every v6/v7 fixture: the wager default (Bondless Small), as the recorded escrow records carry it. */
-export const DECISION_LINE = 'Decision settings (both bounties): jury 0, quota 3, forfeitLine 1, bondWei 0.';
+export const DECISION_LINE = 'Decision settings (both bounties): jury (K 6, M 5, N 4, P 3, timeout 300), quota 3, forfeitLine 1, bondWei 0.';
 
 /** A v3 game description as the same bounty's v6 terms: rubric name, full Oracle settings line, Decision settings line, counter wording. */
 export function v6Description(description) {

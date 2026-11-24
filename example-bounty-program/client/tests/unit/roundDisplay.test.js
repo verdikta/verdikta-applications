@@ -20,11 +20,20 @@ test('v2 statuses have their own labels and count as on-chain', () => {
   assert.equal(isAwaitingRerun({ status: 'REJECTED', onChainStatus: 'Failed' }), false);
 });
 
-test('jobDecision reads both record shapes and takes N from the jury preset', () => {
-  const created = jobDecision({ decisionSettings: { bountyClass: 'large', jury: 2, quota: 10, forfeitLine: 8, bond: '1000' } });
-  assert.deepEqual([created.jury, created.quota, created.forfeitLine, created.bondWei, created.N], [2, 10, 8, '1000', 13]);
-  const synced = jobDecision({ decisionSettings: { jury: 1, quota: 3, forfeitLine: 2, bondWei: '5' } });
-  assert.deepEqual([synced.quota, synced.bondWei, synced.N], [3, '5', 4]);
+test('jobDecision reads both record shapes and takes the jury (K, N) from the bounty', () => {
+  const large = { K: 21, M: 16, N: 13, P: 10, timeout: 300 };
+  const created = jobDecision({ decisionSettings: { bountyClass: 'large', jury: large, quota: 10, forfeitLine: 8, bond: '1000' } });
+  assert.deepEqual([created.jury, created.quota, created.forfeitLine, created.bondWei, created.K, created.N, created.className],
+    [large, 10, 8, '1000', 21, 13, 'Large']);
+  // a synced record: the jury from getBounty's flat fields, the class by its jury
+  const synced = jobDecision({ decisionSettings: { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 2, bondWei: '5' } });
+  assert.deepEqual([synced.quota, synced.bondWei, synced.K, synced.N, synced.className], [3, '5', 8, 4, 'Medium']);
+  // a custom jury: its own N, no class name
+  const custom = jobDecision({ decisionSettings: { jury: { K: 12, M: 9, N: 7, P: 5, timeout: 400 }, quota: 5, forfeitLine: 2 } });
+  assert.deepEqual([custom.K, custom.N, custom.className], [12, 7, null]);
+  // a pre-item-15 record (a jury index): no jury; N from its class preset
+  const old = jobDecision({ decisionSettings: { bountyClass: 'small', jury: 0, quota: 3, forfeitLine: 1 } });
+  assert.deepEqual([old.jury, old.N], [null, 4]);
   const v1 = jobDecision({});
   assert.equal(v1.quota, null);
   assert.equal(v1.bondWei, '0');

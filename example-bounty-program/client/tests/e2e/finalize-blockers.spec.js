@@ -23,7 +23,9 @@ const iface = new ethers.Interface([
   'function closeCommits(bytes32)',
   'function promote(bytes32)',
   'function maxOracleFee() view returns (uint256)',
-  'function N() view returns (uint8)',
+  'function maxJury() view returns (uint8)',
+  'function maxTimeout() view returns (uint40)',
+  'function tPlus() view returns (uint40)',
 ]);
 const PREPAY = ethers.parseEther('0.0003');
 const RERUN_WINDOW = 7200;
@@ -58,7 +60,7 @@ function makeChain({ subs, deadlineOffset = 86400, creator = CREATOR }) {
     s.hunter, 0n, s.rerunDeadline || 0, s.rounds || 1, s.scores ? (passes(s) ? 3 : 0) : 0];
   const bountyTuple = () => [creator, 'QmEval' + 'e'.repeat(40), 128, 80, ethers.parseEther('0.01'), now - 86400 * 2,
     state.deadline, state.bountyStatus, ethers.ZeroAddress, state.subs.length, ethers.ZeroAddress, 0n,
-    ethers.parseEther('0.01'), 0, [0n, 0n, 0n, 0n, 0n, false], 0, 3, 1, 0n];
+    ethers.parseEther('0.01'), 0, [0n, 0n, 0n, 0n, 0n, false], 6, 5, 4, 3, 300, 3, 1, 0n];   // jury K/M/N/P/timeout (Small), Q, R, bond
   // getOracleResult: (started, hasResult, phase, outcome, rounds, passCount, deadline, requestTime, scores, justificationCids)
   const oracleResult = (s) => {
     if (s.status !== 1) return [true, false, 0, 0, s.rounds || 1, 0, 0, 0, [], ''];
@@ -128,12 +130,13 @@ function makeChain({ subs, deadlineOffset = 86400, creator = CREATOR }) {
       case 'activeEvaluations': return enc([pending().length]);
       case 'withdrawable': return enc([0]);
       case 'canBeClosed': return enc([state.bountyStatus === 0 && Date.now() / 1000 > state.deadline && !pending().length]);
-      case 'aggregatorOf': case 'aggregators': return enc([AGG]);
-      case 'aggregatorCount': return enc([1]);
+      case 'aggregator': return enc([AGG]);
       case 'requiredPrepay': case 'startValue': return enc([PREPAY]);
       case 'MAX_ROUNDS': return enc([6]);
       case 'maxOracleFee': return enc([ethers.parseEther('0.0004')]);
-      case 'N': return enc([4]);
+      case 'maxJury': return enc([50]);
+      case 'maxTimeout': return enc([3600]);
+      case 'tPlus': return enc([155]);
       case 'getOracleResult': return enc([oracleResult(state.subs[Number(args[1])])]);
       default: return exec(name, args, { write: false, value: BigInt(tx.value || 0) });
     }
@@ -186,7 +189,7 @@ function makeChain({ subs, deadlineOffset = 86400, creator = CREATOR }) {
     threshold: 80, classId: 128, evaluationCid: 'QmEval' + 'e'.repeat(40), status: ['OPEN', 'AWARDED', 'CLOSED'][state.bountyStatus],
     submissionCloseTime: state.deadline, createdAt: Math.floor(Date.now() / 1000) - 86400 * 2, onChain: true, syncedFromBlockchain: true,
     contractAddress: ESCROW, submissionCount: state.subs.length, publicSubmissions: true,
-    decisionSettings: { bountyClass: 'small', jury: 0, quota: 3, forfeitLine: 1, bond: '0' },
+    decisionSettings: { bountyClass: 'small', jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: '0' },
     submissions: state.subs.map((s, i) => ({ submissionId: i, onChainSubmissionId: i, hunter: s.hunter, status: localStatus(s),
       onChainStatus: ['Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval', 'AwaitingRerun'][s.status],
       rounds: s.rounds || 1, rerunDeadline: s.rerunDeadline || null, bondHeldWei: '0',

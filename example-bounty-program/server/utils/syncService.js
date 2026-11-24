@@ -1881,7 +1881,7 @@ class SyncService {
       creatorAssessmentWindowSize: bounty.creatorAssessmentWindowSize || 0,
       // Creator-chosen oracle request settings from getBounty().oracle
       oracleSettings: bounty.oracleSettings || null,
-      // v2: jury, quota Q, forfeit line R and bond from getBounty() (analytics' Q-of-N rule)
+      // v2: jury { K, M, N, P, timeout } (getBounty's juryK..juryTimeout), quota Q, forfeit line R and bond (analytics' Q-of-N rule)
       decisionSettings: bounty.decisionSettings
         ? { jury: bounty.decisionSettings.jury, quota: bounty.decisionSettings.quota,
             forfeitLine: bounty.decisionSettings.forfeitLine, bond: bounty.decisionSettings.bondWei }

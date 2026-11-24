@@ -116,7 +116,7 @@ function Blockchain() {
   // Write Functions
   "function closeExpiredBounty(uint256 bountyId)",
   "function closeFailedRound(uint256 bountyId, uint256 submissionId)",  // anyone: a round with no result that can get none (replaces failTimedOutSubmission)
-  "function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)",
+  "function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)",
   "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   "function drawJury(uint256 bountyId, uint256 submissionId)",  // anyone, from 2 blocks after a start or re-run; twice for a beacon bounty
   "function expireRerun(uint256 bountyId, uint256 submissionId)",  // anyone, once the re-run window closed (or the bounty/deadline ended); bond back to its funder
@@ -142,12 +142,10 @@ function Blockchain() {
   "function SCORE_DIVISOR() view returns (uint256)",  // 10000 — score / divisor = 0..100
   "function SCORE_SCALE() view returns (uint256)",  // 1000000 — max per score entry
   "function activeEvaluations(uint256 bountyId) view returns (uint256)",  // in-flight evaluations (rounds in progress)
-  "function aggregatorCount() view returns (uint256)",  // number of approved aggregators (juries)
-  "function aggregatorOf(uint256 bountyId) view returns (address)",  // the bounty's jury aggregator (closeCommits / promote go there)
-  "function aggregators(uint256 i) view returns (address)",  // approved aggregators by jury index (small, medium, large, jumbo)
+  "function aggregator() view returns (address)",  // the one aggregator every bounty's rounds run on (closeCommits / promote go there)
   "function bountyCount() view returns (uint256)",
-  "function effectiveOracleParams(uint256 bountyId) view returns ((uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons))",  // settings as clamped to the jury aggregator's live ceiling
-  "function getBounty(uint256 bountyId) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint128 bond))",
+  "function effectiveOracleParams(uint256 bountyId) view returns ((uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons))",  // settings as clamped to the aggregator's live ceiling
+  "function getBounty(uint256 bountyId) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 juryK, uint8 juryM, uint8 juryN, uint8 juryP, uint40 juryTimeout, uint8 quota, uint8 forfeitLine, uint128 bond))",
   "function getSubmission(uint256 bountyId, uint256 submissionId) view returns ((address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint8 acceptance, uint8 rejection, uint64 submittedAt, uint64 finalizedAt, uint96 ethMaxBudget, uint64 creatorWindowEnd, address funder, address bondFunder, uint96 bondHeld, uint64 rerunDeadline, uint8 rounds, uint8 passCount))",
   "function lens() view returns (address)",  // the BountyEscrowLens serving the read views (informational)
   "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])",  // ids holding payout priority (in evaluation or awaiting a re-run)
@@ -158,7 +156,7 @@ function Blockchain() {
   "function withdrawable(address) view returns (uint256)",
   "function MAX_BATCH() view returns (uint256)",  // 100 — page size cap of getBounties / getSubmissionsPage (lens)
   "function canBeClosed(uint256 bountyId) view returns (bool)",
-  "function getBounties(uint256 start, uint256 count) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint128 bond)[] out)",  // count capped at MAX_BATCH = 100
+  "function getBounties(uint256 start, uint256 count) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 juryK, uint8 juryM, uint8 juryN, uint8 juryP, uint40 juryTimeout, uint8 quota, uint8 forfeitLine, uint128 bond)[] out)",  // count capped at MAX_BATCH = 100
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns ((bool started, bool hasResult, uint8 phase, uint8 outcome, uint8 rounds, uint256 passCount, uint256 deadline, uint256 requestTime, uint256[] scores, string justificationCids) r)",  // phase 1 draw..9 cancelled; outcome 0 not_ready / 1 no_result / 2 pass / 3 soft_fail / 4 hard_fail
   "function getSubmissions(uint256 bountyId) view returns ((address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint8 acceptance, uint8 rejection, uint64 submittedAt, uint64 finalizedAt, uint96 ethMaxBudget, uint64 creatorWindowEnd, address funder, address bondFunder, uint96 bondHeld, uint64 rerunDeadline, uint8 rounds, uint8 passCount)[] out)",
@@ -199,15 +197,16 @@ async function createBounty() {
     arbiterDeterminationPayment: payout,
     creatorAssessmentWindowSize: 0n,
     oracle: {                                      // YOUR oracle settings, used for every evaluation
-      maxOracleFee: ethers.parseEther('0.00002'),  // per-arbiter fee ceiling (<= the jury aggregator's live maxOracleFee(); clamped to it at start if it drops); also the eligibility filter
+      maxOracleFee: ethers.parseEther('0.00002'),  // per-arbiter fee ceiling (<= the aggregator's live maxOracleFee(); clamped to it at start if it drops); also the eligibility filter
       alpha: 500n,                                 // quality-vs-timeliness blend, 0-1000
       estimatedBaseCost: ethers.parseEther('0.00001'), // < maxOracleFee; 0 disables the price boost
       maxFeeBasedScaling: 3n,                      // 1-1000; 1 disables the price boost
       minOracleFee: 0n,                            // fee floor: every juror (and beacon) is paid at least this (0 = none)
       withBeacons: false,                          // randomness beacons before the draw (the Jumbo class uses them)
     },
-    // Decision rule (item 12) — the website's size classes (Small: jury 0, Q 3, R 1) set these:
-    jury: 0,                                       // approved aggregator index (aggregators(i)): 0 small, 1 medium, 2 large, 3 jumbo
+    // The bounty's own jury and decision rule (items 15, 12) — the website's size classes set these
+    // (Small: K 6, M 5, N 4, P 3, a 300 s timeout; Q 3, R 1). Sent with every request to the one aggregator.
+    jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, // K drawn >= M promoted >= N counted >= P clustered >= 2; N <= 40; timeout in s from the draw
     quota: 3,                                      // Q: arbiter scores at/above the threshold needed to pass (<= the jury's N)
     forfeitLine: 1,                                // R (<= Q): fewer than R passing scores is a hard fail (bond to the creator)
     bond: ethers.parseEther('0.002'),              // hunter bond, attached at start with the prepay (0 = bondless)
@@ -278,8 +277,8 @@ async function roundStep(bountyId, submissionId) {
   if (action === 'CLOSE_FAILED') return (await escrow.closeFailedRound(bountyId, submissionId)).wait();
   if (action === 'EXPIRE_RERUN') return (await escrow.expireRerun(bountyId, submissionId)).wait();
   if (action === 'CLOSE_COMMITS' || action === 'PROMOTE') {
-    // these two are calls on the bounty's own aggregator, keyed by the round's aggId
-    const agg = new ethers.Contract(await escrow.aggregatorOf(bountyId), AGGREGATOR_ABI, signer);
+    // these two are calls on the escrow's aggregator, keyed by the round's aggId
+    const agg = new ethers.Contract(await escrow.aggregator(), AGGREGATOR_ABI, signer);
     const { verdiktaAggId } = await escrow.getSubmission(bountyId, submissionId);
     const tx = action === 'PROMOTE' ? await agg.promote(verdiktaAggId) : await agg.closeCommits(verdiktaAggId);
     return tx.wait();
@@ -336,7 +335,7 @@ async function createWindowedBounty() {
     creatorAssessmentWindowSize: windowSize,
     oracle: { maxOracleFee: ethers.parseEther('0.00002'), alpha: 500n, estimatedBaseCost: ethers.parseEther('0.00001'), maxFeeBasedScaling: 3n,
               minOracleFee: 0n, withBeacons: false },
-    jury: 0, quota: 3, forfeitLine: 1, bond: 0n,
+    jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: 0n,
   }, { value: arbiterPay }  // escrow = max(creatorPay, arbiterPay)
   );
   await tx.wait();
@@ -388,14 +387,14 @@ def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth)
         payout,                                           # arbiterDeterminationPayment
         0,                                                # creatorAssessmentWindowSize
         (                                                 # oracle settings — yours, used for every evaluation
-            w3.to_wei(0.00002, 'ether'),                  # maxOracleFee (<= the jury aggregator's live ceiling; eligibility filter)
+            w3.to_wei(0.00002, 'ether'),                  # maxOracleFee (<= the aggregator's live ceiling; eligibility filter)
             500,                                          # alpha 0-1000
             w3.to_wei(0.00001, 'ether'),                  # estimatedBaseCost (< maxOracleFee; 0 disables price boost)
             3,                                            # maxFeeBasedScaling 1-1000 (1 disables price boost)
             0,                                            # minOracleFee: fee floor per juror (0 = none)
             False,                                        # withBeacons
         ),
-        0,                                                # jury: aggregator index (0 small .. 3 jumbo)
+        (6, 5, 4, 3, 300),                                # jury (K, M, N, P, timeout s): the Small class's
         3,                                                # quota Q: passing scores needed (<= the jury's N)
         1,                                                # forfeitLine R (<= Q): below it the bond goes to the creator
         w3.to_wei(0.002, 'ether'),                        # bond: hunter bond attached at start (0 = bondless)
@@ -435,10 +434,11 @@ def get_bounty(bounty_id):
         'arbiterDeterminationPayment': result[12],
         'creatorAssessmentWindowSize': result[13],
         'oracle': result[14],          # (maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling, minOracleFee, withBeacons)
-        'jury': result[15],            # aggregator index
-        'quota': result[16],           # Q
-        'forfeitLine': result[17],     # R
-        'bond': result[18],            # wei
+        'jury': {'K': result[15], 'M': result[16], 'N': result[17], 'P': result[18],
+                 'timeout': result[19]},  # the bounty's own jury (flat juryK..juryTimeout)
+        'quota': result[20],           # Q
+        'forfeitLine': result[21],     # R
+        'bond': result[22],            # wei
     }
 
 def is_windowed(bounty_id):
@@ -459,7 +459,7 @@ def create_windowed_bounty(eval_cid, class_id, threshold, hours_window,
         '0x0000000000000000000000000000000000000000',
         creator_pay, arbiter_pay, approval_hours * 3600,
         (w3.to_wei(0.00002, 'ether'), 500, w3.to_wei(0.00001, 'ether'), 3, 0, False),  # oracle settings
-        0, 3, 1, 0,                                                               # jury, Q, R, bond
+        (6, 5, 4, 3, 300), 3, 1, 0,                                               # jury (K, M, N, P, timeout), Q, R, bond
     )
     tx = escrow.functions.createBounty(params).build_transaction({
         'from': account.address,
@@ -527,7 +527,7 @@ def submit_work(bounty_id, hunter_cid):
 
 def round_step(bounty_id, submission_id):
     """Send the escrow call nextAction names (DRAW / CLOSE_FAILED / EXPIRE_RERUN; anyone may).
-    CLOSE_COMMITS / PROMOTE go to the bounty's aggregator (aggregatorOf) with the round's aggId."""
+    CLOSE_COMMITS / PROMOTE go to the escrow's aggregator (aggregator()) with the round's aggId."""
     action = escrow.functions.nextAction(bounty_id, submission_id).call()
     fn = {'DRAW': escrow.functions.drawJury, 'CLOSE_FAILED': escrow.functions.closeFailedRound,
           'EXPIRE_RERUN': escrow.functions.expireRerun}.get(action)
@@ -549,21 +549,22 @@ ESCROW=${activeContract.bountyEscrow || '<BountyEscrow address>'}
 RPC=${activeContract.rpcUrl || '<rpc url>'}
 
 cast call $ESCROW \\
-  "getBounty(uint256)((address,string,uint64,uint8,uint128,uint64,uint64,uint8,address,uint64,address,uint128,uint128,uint64,(uint256,uint256,uint256,uint256,uint256,bool),uint8,uint8,uint8,uint128))" \\
+  "getBounty(uint256)((address,string,uint64,uint8,uint128,uint64,uint64,uint8,address,uint64,address,uint128,uint128,uint64,(uint256,uint256,uint256,uint256,uint256,bool),uint8,uint8,uint8,uint8,uint40,uint8,uint8,uint128))" \\
   <bountyId> --rpc-url $RPC
 
 # Field order: creator, evaluationCid, requestedClass, threshold, payoutWei, createdAt,
 # submissionDeadline, status (0 Open, 1 Awarded, 2 Closed), winner, submissions, targetHunter,
 # creatorDeterminationPayment, arbiterDeterminationPayment, creatorAssessmentWindowSize,
 # oracle (maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling, minOracleFee, withBeacons),
-# jury, quota (Q), forfeitLine (R), bond
+# juryK, juryM, juryN, juryP, juryTimeout (the bounty's own jury), quota (Q), forfeitLine (R), bond
 
 # Lens views are served at the same address (merged ABI: /api/abi/BountyEscrow.json)
 cast call $ESCROW "getEffectiveBountyStatus(uint256)(string)" <bountyId> --rpc-url $RPC
 cast call $ESCROW "nextAction(uint256,uint256)(string)" <bountyId> <submissionId> --rpc-url $RPC
 cast call $ESCROW "requiredPrepay(uint256)(uint256)" <bountyId> --rpc-url $RPC
 cast call $ESCROW "startValue(uint256)(uint256)" <bountyId> --rpc-url $RPC   # prepay + bond
-cast call $ESCROW "aggregatorOf(uint256)(address)" <bountyId> --rpc-url $RPC
+cast call $ESCROW "aggregator()(address)" --rpc-url $RPC
+cast call <aggregator> "getJury(bytes32)(uint8,uint8,uint8,uint8,uint40)" <aggId> --rpc-url $RPC   # a round's jury
 cast call $ESCROW "prepareCutoff(uint256)(uint256)" <bountyId> --rpc-url $RPC`;
 
   const ipfsStructure = `# Evaluation Package (evaluationCid)
@@ -783,17 +784,17 @@ submission-package.zip
               <tr>
                 <td>
                   <strong>VerdiktaAggregator</strong>
-                  <span className="contract-desc">AI evaluation oracle — one per jury (small, medium, large, jumbo)</span>
+                  <span className="contract-desc">AI evaluation oracle — one for every jury size (each bounty carries its own jury)</span>
                 </td>
                 <td>
                   {contracts.sepolia.verdiktaAggregator
                     ? <AddressCell address={contracts.sepolia.verdiktaAggregator} explorer={contracts.sepolia.explorer} copyId="verdikta-sepolia" />
-                    : <span className="contract-desc">Per jury: read <code>aggregatorOf(bountyId)</code> or <code>aggregators(i)</code> on the escrow</span>}
+                    : <span className="contract-desc">Read <code>aggregator()</code> on the escrow</span>}
                 </td>
                 <td>
                   {contracts.mainnet.verdiktaAggregator
                     ? <AddressCell address={contracts.mainnet.verdiktaAggregator} explorer={contracts.mainnet.explorer} copyId="verdikta-mainnet" />
-                    : <span className="contract-desc">Per jury: read <code>aggregatorOf(bountyId)</code> or <code>aggregators(i)</code> on the escrow</span>}
+                    : <span className="contract-desc">Read <code>aggregator()</code> on the escrow</span>}
                 </td>
               </tr>
             </tbody>
@@ -963,7 +964,7 @@ submission-package.zip
                 The round must be drawn: <code>drawJury(bountyId, submissionId)</code>, by anyone, from two blocks after the
                 start (a beacon bounty needs a second draw once the beacon values are in). Jurors then commit; when the commit
                 window closes <code>closeCommits(aggId)</code> and, two blocks later, <code>promote(aggId)</code> move it to the
-                reveal phase — those two are calls on the bounty's own aggregator (<code>aggregatorOf(bountyId)</code>). The
+                reveal phase — those two are calls on the escrow's aggregator (<code>aggregator()</code>). The
                 bounty server's keeper usually sends all of these; <code>nextAction</code> names the one due
                 (<code>DRAW</code>, <code>CLOSE_COMMITS</code>, <code>PROMOTE</code>), and anyone may send it.
               </p>
@@ -1210,10 +1211,10 @@ submission-package.zip
             </div>
             <h3>Fee Estimation</h3>
             <p>
-              The oracle is ETH-funded. Each round's prepay (<code>requiredPrepay(bountyId)</code>) is the jury
-              aggregator's quote <code>maxTotalFee(maxOracleFee, minOracleFee, withBeacons)</code>: K jurors at the fee
-              (at least the bounty's fee floor), plus bonuses and draw/promote rewards, plus beacons if used — it grows
-              with the jury size. A start adds the hunter bond (<code>startValue</code>). You only pay for what the round
+              The oracle is ETH-funded. Each round's prepay (<code>requiredPrepay(bountyId)</code>) is the
+              aggregator's quote <code>maxTotalFee(maxOracleFee, minOracleFee, withBeacons, K, P)</code> for the bounty's
+              own jury: K jurors at the fee (at least the bounty's fee floor), plus bonuses for the P clustered, draw/promote
+              rewards, plus beacons if used — it grows with the jury size. A start adds the hunter bond (<code>startValue</code>). You only pay for what the round
               actually costs — the rest comes back. The fee block is clamped to the aggregator's live ceiling at start
               (<code>effectiveOracleParams(bountyId)</code>). Use the API's <code>/estimate-fee</code> endpoint (the
               aggregator's quote with its breakdown) or read <code>requiredPrepay</code> / <code>startValue</code>.
@@ -1291,7 +1292,7 @@ submission-package.zip
               <code>AWAIT_ORACLE</code>, <code>AWAIT_EARLIER</code>, <code>FINALIZE</code>, <code>CLOSE_FAILED</code>,{' '}
               <code>RERUN</code>, <code>AWAIT_EXPIRY</code>, <code>EXPIRE_RERUN</code>, <code>RECOVER_REFUND</code>,{' '}
               <code>DONE</code> or <code>DEAD</code> — always the call that will succeed now (<code>CLOSE_COMMITS</code> /{' '}
-              <code>PROMOTE</code> go to <code>aggregatorOf(bountyId)</code>); the <code>AWAIT_*</code> labels mean retry later. You still need your own IPFS pinning and the evaluation-package /
+              <code>PROMOTE</code> go to the escrow's <code>aggregator()</code>); the <code>AWAIT_*</code> labels mean retry later. You still need your own IPFS pinning and the evaluation-package /
               work-archive formats (see the developer guide), which is what the API otherwise does for you.
             </p>
           </div>
@@ -1324,7 +1325,7 @@ submission-package.zip
             <p>
               Rounds advance by public calls the server's keeper usually sends; anyone may send them when{' '}
               <code>nextAction</code> names them: <code>drawJury(bountyId, submissionId)</code>, <code>closeCommits(aggId)</code>{' '}
-              and <code>promote(aggId)</code> on the bounty's aggregator, and <code>closeFailedRound(bountyId, submissionId)</code>{' '}
+              and <code>promote(aggId)</code> on the escrow's aggregator, and <code>closeFailedRound(bountyId, submissionId)</code>{' '}
               for a round that can get no result (it reverts <code>round still open</code> / <code>result available - use
               finalizeSubmission</code> otherwise, so it can never discard a passing score). Closing refunds the unspent prepay to
               the round's <code>funder</code> and lets the submission re-run. A re-run not taken within its 2-hour window is

@@ -29,8 +29,8 @@ export async function loadSpendPolicy() {
   if (!BigInt(p.maxGasLimit) || !BigInt(p.maxFeePerGasWei) || BigInt(p.maxPriorityFeePerGasWei) > BigInt(p.maxFeePerGasWei)) throw new Error('Invalid gas policy');
   return Object.fromEntries(['maxValueWei', 'maxTotalWei', 'maxGasLimit', 'maxFeePerGasWei', 'maxPriorityFeePerGasWei'].map(key => [key, p[key]]));
 }
-// round = { bountyId, submissionId } for closeCommits / promote: they go to the bounty's aggregator, which is read here
-// from the reviewed escrow (aggregatorOf), with the round's aggregation id, never taken from the caller or the API.
+// round = { bountyId, submissionId } for closeCommits / promote: they go to the escrow's aggregator, which is read here
+// from the reviewed escrow (aggregator()), with the round's aggregation id, never taken from the caller or the API.
 export async function execute(signer, method, tx, { network, args, exactValueWei = 0n, policy, dryRun = false, confirm, onBroadcast, onSigned, review = [], round = null }) {
   if (approvedProviders.get(signer.provider)?.network !== network) throw new Error('Deployment preflight required before signing');
   // Re-check live chain/code/docs even for the second transaction of a lifecycle.
@@ -43,7 +43,7 @@ export async function execute(signer, method, tx, { network, args, exactValueWei
   let aggregator = null;
   if (AGGREGATOR_METHODS.includes(method)) {
     if (round?.bountyId == null || round?.submissionId == null) throw new Error(`${method} needs the bounty and submission whose round it moves`);
-    const [address, submission] = await Promise.all([escrow.aggregatorOf(round.bountyId), escrow.getSubmission(round.bountyId, round.submissionId)]);
+    const [address, submission] = await Promise.all([escrow.aggregator(), escrow.getSubmission(round.bountyId, round.submissionId)]);
     if (String(args[0]).toLowerCase() !== String(submission.verdiktaAggId).toLowerCase()) throw new Error(`${method}: the aggregation id is not this submission's current round`);
     aggregator = getAddress(address);
   }

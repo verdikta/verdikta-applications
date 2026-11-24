@@ -17,27 +17,30 @@ import { ethers } from 'ethers';
 import { config, currentNetwork } from '../config';
 import { selectInjectedProvider, withTimeout, CONNECT_TIMEOUT_MS } from './injectedProvider';
 import escrowAbiJson from '../../../onchain/abi/BountyEscrow.json';
+import { presetByKey } from '../../../shared/classPresets.js';
 
 // BountyEscrow v2 ABI: the merged escrow + lens ABI the contracts build writes
 // (onchain/abi/BountyEscrow.json, the same file the bounty server requires). One source for
-// every tuple: createBounty(CreateParams) with the oracle fee floor / beacons and the jury,
-// quota (Q), forfeitLine (R) and bond; the v2 Submission (bondFunder, bondHeld, rerunDeadline,
+// every tuple: createBounty(CreateParams) with the oracle fee floor / beacons and the jury
+// struct (K, M, N, P, timeout), quota (Q), forfeitLine (R) and bond; the v2 Submission (bondFunder, bondHeld, rerunDeadline,
 // rounds, passCount); the lens's getOracleResult struct and nextAction.
 const BOUNTY_ESCROW_ABI = escrowAbiJson.filter((e) => e.type === 'function' || e.type === 'event' || e.type === 'error');
 
 // The v2 aggregator, for what only it answers: CLOSE_COMMITS and PROMOTE are calls on the
-// bounty's own aggregator (escrow.aggregatorOf(bountyId)), and its config for display. Round
+// escrow's one aggregator (escrow.aggregator()), and its limits for the create pre-checks. The
+// jury is each bounty's (getBounty's juryK..juryTimeout); a round's is getJury(aggId). Round
 // state and results come from the escrow's lens (getOracleResult, nextAction), not from here.
 const VERDIKTA_AGGREGATOR_ABI = [
   'function getRoundInfo(bytes32 aggId) view returns (uint8 phase, uint256 requestBlock, bytes32 sealedHash, uint256 closeBlock, uint256 received, uint256 baseFees, uint256 bonuses, uint256 rewards, uint256 deadline, uint256 windowEnd, uint256 commits, uint256 requestTime)',
+  'function getJury(bytes32 aggId) view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout)',
   'function closeCommits(bytes32 aggId)',
   'function promote(bytes32 aggId)',
   'function maxOracleFee() view returns (uint256)',
-  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons) view returns (uint256)',
-  'function K() view returns (uint8)',
-  'function M() view returns (uint8)',
-  'function N() view returns (uint8)',
-  'function P() view returns (uint8)',
+  'function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P) view returns (uint256)',
+  'function maxJury() view returns (uint8)',
+  'function maxTimeout() view returns (uint40)',
+  'function tPlus() view returns (uint40)',
+  'error BadJury()',
   'error WrongPhase()',
   'error TooEarly()',
   'error NotDue()',
@@ -60,8 +63,8 @@ export const ROUND_STEP_ACTIONS = Object.freeze(['DRAW', 'CLOSE_COMMITS', 'PROMO
 // Contract bounds for creator oracle settings (BountyEscrow MAX_ALPHA / MAX_FEE_SCALING_FACTOR).
 export const ORACLE_MAX_ALPHA = 1000;
 export const ORACLE_MAX_FEE_SCALING = 1000;
-// The per-oracle fee ceiling is the bounty's aggregator's live maxOracleFee() (each jury has
-// its own aggregator); the contract rejects a higher maxOracleFee ("oracle fee above ceiling").
+// The per-oracle fee ceiling is the aggregator's live maxOracleFee() (one aggregator serves
+// every jury); the contract rejects a higher maxOracleFee ("oracle fee above ceiling").
 // The fee floor (minOracleFee) may exceed it: it prices jurors, it does not limit eligibility.
 const UINT96_MAX = (1n << 96n) - 1n;
 
@@ -86,9 +89,9 @@ const REVERT_MESSAGES = [
   ['rerun window closed', 'The 2-hour re-run window has closed — expire the re-run instead (anyone may; the bond goes back).'],
   ['rerun limit reached', 'This submission has used all 6 rounds.'],
   ['rerun window open', 'The re-run window is still open — only the hunter or bond funder can act until it closes.'],
-  ['quota above jury size', 'The bounty\'s quota (Q) is above its jury\'s size N — this bounty cannot start evaluations.'],
   ['bad quota', 'Quota and forfeit line must satisfy 1 ≤ Q, R ≤ Q and Q ≤ the jury\'s N.'],
-  ['bad jury', 'That jury (aggregator index) is not approved on this escrow.'],
+  ['bad jury', 'The jury must satisfy K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, and P ≥ 2 unless N = 1.'],
+  ['badjury', 'The aggregator refused this bounty\'s jury: K above its maxJury (or the keeper\'s shortlist), or a timeout outside T+ < timeout ≤ maxTimeout.'],
   ['bad bond', 'The bond is too large.'],
   ['bad fee floor', 'The fee floor is too large.'],
   ['wrongphase', 'The round is not in the phase this step needs — re-read the next action and retry.'],
@@ -108,7 +111,7 @@ const REVERT_MESSAGES = [
   ['evaluationcid mismatch', 'The evaluation CID does not match the bounty\'s stored evaluation package.'],
   ['submission limit reached', 'This windowed bounty has reached its limit of 128 submissions (bounties without a creator window have no such limit).'],
   // Creator oracle settings
-  ['oracle fee above ceiling', 'Max oracle fee is above the jury aggregator\'s live ceiling (maxOracleFee()).'],
+  ['oracle fee above ceiling', 'Max oracle fee is above the aggregator\'s live ceiling (maxOracleFee()).'],
   ['bad oracle fee', 'Max oracle fee must be greater than 0.'],
   ['base cost must be below fee', 'Estimated base cost must be below the max oracle fee.'],
   ['bad fee scaling', 'Max fee-based scaling must be between 1 and 1000.'],
@@ -221,9 +224,8 @@ class ContractService {
     this._statusCache = new Map();
     this._statusCacheTTL = 5000; // 5 seconds
 
-    // Aggregators (read-only), by jury index and by bounty (v2: one per jury)
-    this._aggByIndex = null;
-    this._aggOfBounty = null;
+    // The escrow's aggregator (read-only; one serves every jury)
+    this._aggregator = null;
   }
 
   // ==========================================================================
@@ -364,8 +366,8 @@ class ContractService {
    * Accepts wei strings/bigints (or decimal-ETH strings containing a '.') for the fee fields,
    * integers for alpha / scaling, a boolean for withBeacons. Defaults come from
    * config.submissionDefaults (fee floor 0, no beacons). Enforces the contract's static bounds so
-   * a bad value fails before the wallet opens; the jury's live fee ceiling is checked in
-   * createBounty (each jury's aggregator has its own maxOracleFee()).
+   * a bad value fails before the wallet opens; the aggregator's live fee ceiling is checked in
+   * createBounty (maxOracleFee()).
    * minOracleFee (v2) is the fee floor: every juror (and beacon) is paid at least that.
    */
   static resolveOracleParams(oracle = {}) {
@@ -409,13 +411,20 @@ class ContractService {
   }
 
   /**
-   * Resolve + validate the v2 decision settings (item 12 / item 15): jury (approved aggregator
-   * index), quota Q (arbiter scores at the threshold needed to pass), forfeitLine R (below R the
-   * hunter's bond goes to the creator) and bond (wei). Defaults: the Small class (jury 0, Q 3,
-   * R 1, no bond). The contract checks R <= Q <= N of the jury's aggregator.
+   * Resolve + validate the v2 decision settings (item 12 / item 15): the bounty's jury
+   * { K, M, N, P, timeout } (K drawn, M promoted, N counted, P clustered, the round timeout in
+   * seconds), quota Q (arbiter scores at the threshold needed to pass), forfeitLine R (below R the
+   * hunter's bond goes to the creator) and bond (wei). Defaults: the Small class (its jury, Q 3,
+   * R 1, no bond). Checked as the escrow does: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless
+   * N = 1, and R <= Q <= N.
    */
   static resolveDecisionParams(decision = {}) {
-    const jury = decision.jury === undefined || decision.jury === null || decision.jury === '' ? 0 : Number(decision.jury);
+    const given = decision.jury;
+    if (given !== undefined && given !== null && given !== '' && typeof given !== 'object') {
+      throw new Error('Jury must be the bounty\'s own { K, M, N, P, timeout } (an aggregator index is no longer used)');
+    }
+    const j = { ...presetByKey('small').jury, ...(given || {}) };
+    const jury = { K: Number(j.K), M: Number(j.M), N: Number(j.N), P: Number(j.P), timeout: Number(j.timeout) };
     const quota = decision.quota === undefined || decision.quota === null || decision.quota === '' ? 3 : Number(decision.quota);
     const forfeitLine = decision.forfeitLine === undefined || decision.forfeitLine === null || decision.forfeitLine === '' ? 1 : Number(decision.forfeitLine);
     let bond = 0n;
@@ -424,9 +433,16 @@ class ContractService {
       try { bond = typeof decision.bond === 'bigint' ? decision.bond : (str.includes('.') ? ethers.parseEther(str) : BigInt(str)); }
       catch { throw new Error('Bond must be a decimal-ETH amount or an integer wei value'); }
     }
-    if (!Number.isInteger(jury) || jury < 0 || jury > 7) throw new Error('Jury must be an aggregator index (0-7)');
+    for (const f of ['K', 'M', 'N', 'P']) {
+      if (!Number.isInteger(jury[f]) || jury[f] < 1 || jury[f] > 255) throw new Error(`Jury ${f} must be an integer from 1 to 255`);
+    }
+    if (!Number.isInteger(jury.timeout) || jury.timeout < 1 || jury.timeout > 2 ** 40 - 1) throw new Error('Jury timeout must be a positive whole number of seconds');
+    if (!(jury.P <= jury.N && jury.N <= jury.M && jury.M <= jury.K && jury.N <= 40 && (jury.P !== 1 || jury.N === 1))) {
+      throw new Error(`Jury ${jury.K}/${jury.M}/${jury.N}/${jury.P} must satisfy K >= M >= N >= P >= 1, N <= 40 and P >= 2 unless N = 1`);
+    }
     if (!Number.isInteger(quota) || quota < 1 || quota > 255) throw new Error('Quota (Q) must be an integer of at least 1');
     if (!Number.isInteger(forfeitLine) || forfeitLine < 0 || forfeitLine > quota) throw new Error('Forfeit line (R) must be an integer between 0 and Q');
+    if (quota > jury.N) throw new Error(`Quota (Q = ${quota}) is above this jury's size N = ${jury.N}`);
     if (bond < 0n || bond > UINT96_MAX) throw new Error('Bond must be between 0 and 2^96-1 wei');
     return { jury, quota, forfeitLine, bond };
   }
@@ -439,7 +455,7 @@ class ContractService {
    * a non-windowed bounty passes both payments equal to the amount and window 0.
    * `oracle` (creator-chosen oracle request settings) is optional — defaults from
    * config.submissionDefaults: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling,
-   * minOracleFee, withBeacons }. `decision` (v2) is { jury, quota, forfeitLine, bond } — see
+   * minOracleFee, withBeacons }. `decision` (v2) is { jury: {K, M, N, P, timeout}, quota, forfeitLine, bond } — see
    * resolveDecisionParams; the create page fills it from the class presets (shared/classPresets.js).
    *
    * `onStep(step, data)` (optional) is told how far the create got: 'staticCall'
@@ -469,19 +485,24 @@ class ContractService {
     const oracleParams = ContractService.resolveOracleParams(oracle || {});
     const decisionParams = ContractService.resolveDecisionParams(decision || {});
 
-    // The jury's aggregator: its live fee ceiling and jury size N (the contract checks both).
+    // The aggregator's live fee ceiling and jury limits (the escrow checks the ceiling at create;
+    // every request checks K <= maxJury and T+ < timeout <= maxTimeout).
     try {
-      const agg = await this.getAggregatorByIndex(decisionParams.jury);
+      const agg = await this.getAggregator();
       if (agg) {
-        const [ceiling, n] = await Promise.all([agg.maxOracleFee(), agg.N()]);
+        const [ceiling, maxJury, maxTimeout, tPlus] = await Promise.all([agg.maxOracleFee(), agg.maxJury(), agg.maxTimeout(), agg.tPlus()]);
         if (oracleParams.maxOracleFee > BigInt(ceiling)) {
-          throw new Error(`Max oracle fee is above this jury's live ceiling of ${ethers.formatEther(ceiling)} ETH`);
+          throw new Error(`Max oracle fee is above the aggregator's live ceiling of ${ethers.formatEther(ceiling)} ETH`);
         }
-        if (decisionParams.quota > Number(n)) throw new Error(`Quota (Q = ${decisionParams.quota}) is above this jury's size N = ${Number(n)}`);
+        const j = decisionParams.jury;
+        if (j.K > Number(maxJury)) throw new Error(`This jury draws K = ${j.K}, above the aggregator's limit of ${Number(maxJury)}`);
+        if (!(j.timeout > Number(tPlus) && j.timeout <= Number(maxTimeout))) {
+          throw new Error(`This jury's timeout (${j.timeout} s) must be above ${Number(tPlus)} s and at most the aggregator's limit of ${Number(maxTimeout)} s`);
+        }
       }
     } catch (e) {
-      if (/above this jury|Quota \(Q/.test(e.message)) throw e;
-      console.warn('Could not read the jury aggregator for pre-checks; the dry-run still checks', e.message);
+      if (/above the aggregator|aggregator's limit/.test(e.message)) throw e;
+      console.warn('Could not read the aggregator for pre-checks; the dry-run still checks', e.message);
     }
 
     try {
@@ -523,7 +544,7 @@ class ContractService {
         arbiterDeterminationPayment: arbiterPayWei,
         creatorAssessmentWindowSize: windowSizeSec,
         oracle: oracleParams,
-        jury: decisionParams.jury,
+        jury: decisionParams.jury,   // { K, M, N, P, timeout }: the CreateParams.jury tuple
         quota: decisionParams.quota,
         forfeitLine: decisionParams.forfeitLine,
         bond: decisionParams.bond
@@ -1057,7 +1078,7 @@ class ContractService {
     if (action === 'EXPIRE_RERUN') return { ...(await this.expireRerun(bountyId, submissionId)), action };
     if (action === 'CLOSE_COMMITS' || action === 'PROMOTE') {
       const sub = await this.contract.getSubmission(bountyId, submissionId);
-      const aggAddr = await this.contract.aggregatorOf(bountyId);
+      const aggAddr = await this.contract.aggregator();
       const agg = new ethers.Contract(aggAddr, VERDIKTA_AGGREGATOR_ABI, this.signer);
       const method = action === 'PROMOTE' ? 'promote' : 'closeCommits';
       try {
@@ -1369,30 +1390,18 @@ class ContractService {
     try { return new ethers.JsonRpcProvider(currentNetwork.rpcUrl); } catch { return this.getReadOnlyProvider(); }
   }
 
-  /** The approved aggregator for jury index `i` (escrow.aggregators(i)), read-only, cached. */
-  async getAggregatorByIndex(i) {
-    this._aggByIndex = this._aggByIndex || new Map();
-    if (this._aggByIndex.has(i)) return this._aggByIndex.get(i);
-    const addr = await this._readEscrow().aggregators(i);
-    const agg = new ethers.Contract(addr, VERDIKTA_AGGREGATOR_ABI, this._publicProvider());
-    this._aggByIndex.set(i, agg);
-    return agg;
+  /** The escrow's aggregator (escrow.aggregator(), immutable; serves every jury), read-only, cached. */
+  async getAggregator() {
+    if (!this._aggregator) {
+      const addr = await this._readEscrow().aggregator();
+      this._aggregator = new ethers.Contract(addr, VERDIKTA_AGGREGATOR_ABI, this._publicProvider());
+    }
+    return this._aggregator;
   }
 
-  /** The aggregator a bounty's rounds run on (escrow.aggregatorOf(bountyId)), read-only, cached. */
-  async getAggregatorFor(bountyId) {
-    this._aggOfBounty = this._aggOfBounty || new Map();
-    const key = String(bountyId);
-    if (this._aggOfBounty.has(key)) return this._aggOfBounty.get(key);
-    const addr = await this._readEscrow().aggregatorOf(bountyId);
-    const agg = new ethers.Contract(addr, VERDIKTA_AGGREGATOR_ABI, this._publicProvider());
-    this._aggOfBounty.set(key, agg);
-    return agg;
-  }
-
-  /** The live per-oracle fee ceiling of jury `i`'s aggregator (wei, bigint). */
-  async getOracleFeeCeilingWei(i = 0) {
-    const agg = await this.getAggregatorByIndex(i);
+  /** The aggregator's live per-oracle fee ceiling (wei, bigint). */
+  async getOracleFeeCeilingWei() {
+    const agg = await this.getAggregator();
     return BigInt(await agg.maxOracleFee());
   }
 
@@ -1508,8 +1517,7 @@ class ContractService {
     this.contract = null;
     this.userAddress = null;
     this._readOnlyProvider = null;
-    this._aggByIndex = null;
-    this._aggOfBounty = null;
+    this._aggregator = null;
     this.clearCache();
   }
 }

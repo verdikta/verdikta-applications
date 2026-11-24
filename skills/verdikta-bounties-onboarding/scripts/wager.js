@@ -75,7 +75,8 @@ const plainBounty = (b) => ({
   creatorDeterminationPayment: String(b.creatorDeterminationPayment), arbiterDeterminationPayment: String(b.arbiterDeterminationPayment),
   creatorAssessmentWindowSize: String(b.creatorAssessmentWindowSize),
   oracle: { maxOracleFee: String(b.oracle.maxOracleFee), alpha: String(b.oracle.alpha), estimatedBaseCost: String(b.oracle.estimatedBaseCost), maxFeeBasedScaling: String(b.oracle.maxFeeBasedScaling), minOracleFee: String(b.oracle.minOracleFee), withBeacons: Boolean(b.oracle.withBeacons) },
-  jury: String(b.jury), quota: String(b.quota), forfeitLine: String(b.forfeitLine), bond: String(b.bond),
+  juryK: String(b.juryK), juryM: String(b.juryM), juryN: String(b.juryN), juryP: String(b.juryP), juryTimeout: String(b.juryTimeout),
+  quota: String(b.quota), forfeitLine: String(b.forfeitLine), bond: String(b.bond),
 });
 
 export async function runWager(lib, {
@@ -135,7 +136,7 @@ export async function runWager(lib, {
     if (!jury.length || jury.some((n) => !String(n.provider ?? '').trim() || !String(n.model ?? '').trim() || !Number.isFinite(n.weight) || n.weight <= 0 || !Number.isInteger(n.runs) || n.runs < 1 || n.runs > 10)
       || Math.abs(jury.reduce((sum, n) => sum + n.weight, 0) - 1) > 0.001) throw new Error(`${file}: jury needs provider, model, a weight (weights sum to 1) and runs 1-10 for every node`);
     if (!W.shared.parseOracleLine(`${W.shared.formatOracle(oracle, { full: true })}.`) || typeof oracle.withBeacons !== 'boolean') throw new Error(`${file}: oracle needs maxOracleFeeEth, estimatedBaseCostEth, minOracleFeeEth (decimal ETH), maxFeeBasedScaling and alpha, and withBeacons true or false`);
-    // The v2 decision settings the terms will name (jury index, pass quota Q, forfeit line R); a wager has no bond.
+    // The v2 decision settings the terms will name (jury { K, M, N, P, timeout }, pass quota Q, forfeit line R); a wager has no bond.
     const d = custom.decision, given = d !== null && typeof d === 'object';
     const decision = d === undefined ? W.WAGER_DEFAULTS.decision : given ? { jury: d.jury, quota: d.quota, forfeitLine: d.forfeitLine } : d;
     const why = W.shared.wagerDecisionProblem(given ? { ...decision, bond: d.bond ?? d.bondWei } : decision);

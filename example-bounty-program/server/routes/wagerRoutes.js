@@ -36,7 +36,7 @@ const RATE_WINDOW_MS = 60000;
 const RATE_MAX = 30;
 
 const isoOf = (sec) => new Date(sec * 1000).toISOString();
-const DECISION_DEFAULTS_NOTE = 'the size-class preset for the stake\'s USD value at the server\'s ETH price (GET /api/classes/presets): jury, quota, forfeitLine, and oracle.minOracleFeeEth and withBeacons; pass decision { jury, quota, forfeitLine } to choose your own. A wager has no hunter bond.';
+const DECISION_DEFAULTS_NOTE = 'the size-class preset for the stake\'s USD value at the server\'s ETH price (GET /api/classes/presets): jury, quota, forfeitLine, and oracle.minOracleFeeEth and withBeacons; pass decision { jury: { K, M, N, P, timeout }, quota, forfeitLine } to choose your own. A wager has no hunter bond.';
 const asBountyNumber = (v) => (v === null || v === undefined || v === '' || !/^\d+$/.test(String(v)) ? null : Number(v));
 
 function inputError(res, problems, message = 'Invalid wager input') {

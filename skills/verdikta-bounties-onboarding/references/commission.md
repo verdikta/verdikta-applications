@@ -11,16 +11,16 @@ For a discovery handoff, install both skill directories and run the discovery pa
 - procurementMode: TARGETED with targetHunter, or deliberately OPEN.
 - bountyAmount: decimal ETH string. Optional creatorDeterminationPayment and arbiterDeterminationPayment are decimal ETH strings; bountyAmount must equal their maximum.
 - creatorAssessmentWindowSeconds: integer seconds divisible by 3600; zero requires equal payments.
-- oracle: maxOracleFee and estimatedBaseCost as integer wei strings; alpha 0–1000; maxFeeBasedScaling 1–1000. Fee must be positive and within the live ceiling of the bounty's jury (its own aggregator); base cost must be below fee. Optional minOracleFee (the fee floor, integer wei: every juror is paid at least this; it may exceed the ceiling) and withBeacons (true or false); both default to the size-class preset.
-- Decision settings (v2, optional; default to a size-class preset): `bountyClass` (`bondless-small`, `small`, `medium`, `large`, `jumbo`), `jury` (the escrow's approved aggregator index, one per jury size), `quota` (Q ≥ 1: a round passes with at least Q of its N juror scores at the threshold; at most the jury's N), `forfeitLine` (R ≤ Q: fewer than R is a hard fail and the hunter's bond goes to you), `bond` (integer wei each hunter posts at start), and `ethUsd` (an owner-reviewed ETH price). Without `bountyClass` the preset is the smallest class offered for `bountyAmount` at `ethUsd`, else Bondless Small. A preset's USD bond and fee floor convert only at `ethUsd`; without it, give `bond` and `oracle.minOracleFee` in wei (Bondless Small needs neither). Every field you give overrides the preset, and the script sends them all to `/jobs/create` explicitly, so the server picks no class and converts no price. `create_bounty.js` checks the jury's live fee ceiling and N, and shows the class, Q, R, bond, floor and beacons in every review.
+- oracle: maxOracleFee and estimatedBaseCost as integer wei strings; alpha 0–1000; maxFeeBasedScaling 1–1000. Fee must be positive and within the live ceiling of the escrow's aggregator (one serves every jury size); base cost must be below fee. Optional minOracleFee (the fee floor, integer wei: every juror is paid at least this; it may exceed the ceiling) and withBeacons (true or false); both default to the size-class preset.
+- Decision settings (v2, optional; default to a size-class preset): `bountyClass` (`bondless-small`, `small`, `medium`, `large`, `jumbo`), `jury` (the bounty's own jury, an object with any of `K` drawn, `M` promoted, `N` counted, `P` clustered and the round `timeout` in seconds, each over the preset's; K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, P ≥ 2 unless N = 1, or the escrow refuses it; an aggregator index is no longer accepted), `quota` (Q ≥ 1: a round passes with at least Q of its N juror scores at the threshold; at most the jury's N), `forfeitLine` (R ≤ Q: fewer than R is a hard fail and the hunter's bond goes to you), `bond` (integer wei each hunter posts at start), and `ethUsd` (an owner-reviewed ETH price). Without `bountyClass` the preset is the smallest class offered for `bountyAmount` at `ethUsd`, else Bondless Small. A preset's USD bond and fee floor convert only at `ethUsd`; without it, give `bond` and `oracle.minOracleFee` in wei (Bondless Small needs neither). Every field you give overrides the preset, and the script sends them all to `/jobs/create` explicitly, so the server picks no class and converts no price. `create_bounty.js` checks the aggregator's live fee ceiling and jury limits (K ≤ `maxJury()`, T+ < timeout ≤ `maxTimeout()`), and shows the class, jury, Q, R, bond, floor and beacons in every review.
 
-| Preset | jury | Q of N | R | bond | fee floor | beacons | offered up to |
+| Preset | jury K/M/N/P, timeout | Q of N | R | bond | fee floor | beacons | offered up to |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Bondless Small | 0 (small) | 3 of 4 | 1 | none | none | no | $25 |
-| Small | 0 (small) | 3 of 4 | 1 | $5 | none | no | $100 |
-| Medium | 1 (medium) | 3 of 4 | 2 | $50 | $0.25 | no | $1,000 |
-| Large | 2 (large) | 10 of 13 | 8 | $100 | $0.25 | no | $10,000 |
-| Jumbo | 3 (jumbo) | 17 of 27 | 12 | $200 | $0.25 | yes | $100,000 |
+| Bondless Small | 6/5/4/3, 300 s | 3 of 4 | 1 | none | none | no | $25 |
+| Small | 6/5/4/3, 300 s | 3 of 4 | 1 | $5 | none | no | $100 |
+| Medium | 8/5/4/3, 300 s | 3 of 4 | 2 | $50 | $0.25 | no | $1,000 |
+| Large | 21/16/13/10, 300 s | 10 of 13 | 8 | $100 | $0.25 | no | $10,000 |
+| Jumbo | 50/38/27/17, 600 s | 17 of 27 | 12 | $200 | $0.25 | yes | $100,000 |
 
 The presets are `scripts/_class-presets.cjs`, the site's `shared/classPresets.js` byte for byte. A soft fail (R to Q−1 scores) or a round with no result lets the hunter re-run (a fresh prepay, a new jury, keeping its place and bond) within 2 hours, up to 6 rounds, before the deadline.
 

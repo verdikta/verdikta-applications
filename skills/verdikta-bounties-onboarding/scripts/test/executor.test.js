@@ -118,7 +118,7 @@ test('closeCommits and promote go to the aggregator the escrow names, for the ro
   const submission={hunter:aggregator,hunterCid:'',evalWallet:aggregator,verdiktaAggId:aggId,status:1,acceptance:0,rejection:0,submittedAt:0,finalizedAt:0,ethMaxBudget:0,creatorWindowEnd:0,funder:aggregator,bondFunder:aggregator,bondHeld:0,rerunDeadline:0,rounds:1,passCount:0};
   try {
     const f=setup();
-    f.provider.call=async({data})=>{const name=iface.parseTransaction({data}).name;return iface.encodeFunctionResult(name,[name==='aggregatorOf'?aggregator:submission]);};
+    f.provider.call=async({data})=>{const name=iface.parseTransaction({data}).name;return iface.encodeFunctionResult(name,[name==='aggregator'?aggregator:submission]);};
     await preflightDeployment('base',f.provider,d.docsUrl.replace('/api/docs',''));
     const tx={to:aggregator,chainId:8453,value:'0',data:aggregatorIface.encodeFunctionData('promote',[aggId])};
     const opts={...f.opts,args:[aggId],round:{bountyId:1n,submissionId:2n}};

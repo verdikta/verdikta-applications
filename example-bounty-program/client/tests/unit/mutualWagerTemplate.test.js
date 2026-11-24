@@ -14,7 +14,7 @@ const { maxEvaluationQueryChars } = require('../../../server/utils/bountyValidat
 // The Commanders @ 49ers wager that settled on mainnet (bounties #301/#303), as a v6 pair (v2 escrow).
 const jury = [{ provider: 'OpenAI', model: 'gpt-5.6-terra', weight: 0.5, runs: 1 }, { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.5, runs: 1 }];
 const oracle = { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: false };
-const decision = { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' };
+const decision = { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bondWei: '0' };
 const site = 'https://bounties.verdikta.org', escrow = '0xA741eFf41Bcf14793E61CEbB4179E05C9124D3f6', chain = 'Base (chain ID 8453)';
 const terms = {
   wagerId: 'VW-WSH-SF-20261019', shortEvent: 'Commanders @ 49ers',
@@ -53,7 +53,7 @@ const counterStatus = (over = {}) => ({
   submissionDeadline: deadline.unix, submissionDeadlineIso: deadline.iso, evaluationCid: 'QmCounterPackage',
   oracleSettings: { maxOracleFee: '20000000000000', maxOracleFeeEth: '0.00002', alpha: 500, estimatedBaseCost: '10000000000000', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3,
     minOracleFee: '0', minOracleFeeEth: '0.0', withBeacons: false },
-  decisionSettings: { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' },
+  decisionSettings: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bondWei: '0' },
   linkage: { state: 'linked' }, ...over,
 });
 const counterJob = (over = {}) => ({
@@ -103,7 +103,7 @@ test('the two bounties of a wager carry mirrored terms', () => {
   assert.deepEqual(b.counter, { number: 301, createdAt: created.iso, deadline: deadline.iso });
   assert.match(b.fields.jury, /^OpenAI gpt-5.6-terra weight 0.5, 1 run \+ Anthropic claude-sonnet-5 weight 0.5, 1 run; 1 iteration\.$/);
   assert.equal(b.fields.oracle, 'maxOracleFeeEth 0.00002, estimatedBaseCostEth 0.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0.0, withBeacons false.');
-  assert.equal(b.fields.decision, 'jury 0, quota 3, forfeitLine 1, bondWei 0.');
+  assert.equal(b.fields.decision, 'jury (K 6, M 5, N 4, P 3, timeout 300), quota 3, forfeitLine 1, bondWei 0.');
   assert.match(b.fields.counter, /mirrored terms, same rubric, jury, oracle and decision settings\)/);
   assert.equal(b.fields.noWinner, 'a tie, or no official final score before the settlement deadline.');
 });

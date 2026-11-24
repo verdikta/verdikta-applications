@@ -99,7 +99,7 @@ describe('POST /jobs/create with a mutual-wager description', () => {
       creator: POSTER, opponent: CLAIMANT, wagerId: 'VW-TEST3-BOS-DET-20261020', stake: '0.0001', start: at(2), settle: at(26),
       event: 'NBA 2026-27 regular season: Boston Celtics (BOS) at Detroit Pistons (DET), Little Caesars Arena, Detroit, Michigan.',
       sides: { creator: 'the Boston Celtics win', opponent: 'the Detroit Pistons win' },
-      jury: [{ provider: 'openai', model: 'test-model', weight: 1, runs: 1 }], decision: { jury: 0, quota: 3, forfeitLine: 1 },
+      jury: [{ provider: 'openai', model: 'test-model', weight: 1, runs: 1 }], decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1 },
     }, wagerContext());
     const res = await request(app).post('/jobs/create').send(createBody);
     expect(res.status).toBe(200);

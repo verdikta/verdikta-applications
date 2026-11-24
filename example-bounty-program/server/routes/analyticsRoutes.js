@@ -738,7 +738,6 @@ async function getSystemHealth() {
   const verdiktaService = getVerdiktaService();
 
   let aggregatorConfig = null;
-  let aggregatorConfigs = null;
   let verdiktaHealth = null;
 
   if (verdiktaService) {
@@ -746,12 +745,6 @@ async function getSystemHealth() {
       verdiktaHealth = await verdiktaService.healthCheck();
       if (verdiktaHealth.healthy) {
         aggregatorConfig = verdiktaHealth.config;
-        // The config of every aggregator the server is configured with.
-        try {
-          aggregatorConfigs = await verdiktaService.getAllAggregatorConfigs();
-        } catch (error) {
-          logger.warn('Failed to read the aggregator configs', { msg: error.message });
-        }
       }
     } catch (error) {
       logger.warn('Failed to get Verdikta health', { msg: error.message });
@@ -775,17 +768,15 @@ async function getSystemHealth() {
     verdikta: {
       configured: isVerdiktaServiceAvailable(),
       healthy: verdiktaHealth?.healthy || false,
+      // the escrow's aggregator (one serves every jury size)
       aggregatorAddress: verdiktaHealth?.aggregatorAddress || null,
-      // the aggregator(s) the server is configured with
-      aggregators: verdiktaHealth?.aggregators || [],
       keeperAddress: verdiktaHealth?.keeperAddress || null,
       wvdkaAddress: verdiktaHealth?.wvdkaAddress || null,
       error: verdiktaHealth?.error || null
     },
+    // the aggregator's config: the jury limits (maxJury, maxTimeout, T+), reveal window, reward fees,
+    // beacons, spreadFloor, maxOracleFee. The jury itself (K/M/N/P, timeout) is each bounty's.
     aggregatorConfig,
-    // each configured aggregator: K/M/N/P, M+, T+, timeout (from the draw), reward fees, beacons,
-    // spreadFloor, maxOracleFee
-    aggregatorConfigs,
     sync: syncStatus ? {
       enabled: syncStatus.enabled,
       isSyncing: syncStatus.isSyncing,

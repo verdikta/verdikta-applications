@@ -12,8 +12,11 @@
 import { createHash } from 'node:crypto';
 import { getAddress, parseEther, ZeroAddress } from 'ethers';
 import shared from './_mutual-wager.cjs';
+import presets from './_class-presets.cjs';
 export { shared };
 
+// A bounty's jury fields: CreateParams.jury { K, M, N, P, timeout }, flat on getBounty as juryK .. juryTimeout.
+const JURY_KEYS = ['K', 'M', 'N', 'P', 'timeout'];
 export const template = shared.MUTUAL_WAGER_TEMPLATE;
 export const questionTemplate = shared.QUESTION_WAGER_TEMPLATE;
 export const DEFAULT_MARKET = shared.DEFAULT_WAGER_MARKET;
@@ -28,14 +31,14 @@ export const WAGER_DEFAULTS = Object.freeze({
   classId: template.classId, threshold: template.threshold, iterations: 1,
   jury: shared.DEFAULT_WAGER_JURY.map((n) => ({ ...n })),
   oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500, minOracleFeeEth: '0', withBeacons: false },
-  decision: { jury: 0, quota: 3, forfeitLine: 1 },
+  decision: { jury: { ...presets.presetByKey('bondless-small').jury }, quota: 3, forfeitLine: 1 },
 });
-// The v2 decision settings a wager this skill proposes defaults to: the Bondless Small preset (jury 0, a round passes
+// The v2 decision settings a wager this skill proposes defaults to: the Bondless Small preset (its jury, a round passes
 // with 3 of its 4 scores at the threshold, below 1 a hard fail), no fee floor, no beacons. An operator file can set
 // others (wager.js --defaults). A wager never has a bond (shared WAGER_BOND_WEI): it would be a stake beyond the terms.
 // The terms state these settings (the Decision settings and Oracle settings lines), both bounties must carry them, and
 // an answer or claim checks the opponent's bounty against the terms, so both sides are judged by the same rule.
-export const WAGER_DECISION = Object.freeze({ bountyClass: 'bondless-small', jury: 0, quota: 3, forfeitLine: 1, bond: '0', minOracleFee: '0', withBeacons: false });
+export const WAGER_DECISION = Object.freeze({ bountyClass: 'bondless-small', jury: Object.freeze({ ...presets.presetByKey('bondless-small').jury }), quota: 3, forfeitLine: 1, bond: '0', minOracleFee: '0', withBeacons: false });
 // No game is final this soon after its scheduled start: claim refuses before it (shared timing adds ~2 h after the final).
 export const CLAIM_OPENS_AFTER_START = 3 * 3600;
 const MIN_SETTLE_AFTER_START = 12 * 3600, MAX_SETTLE_AFTER_START = 60 * 86400;
@@ -185,16 +188,17 @@ export function chainProblems(number, status, b, now, values = null) {
     ['creator payment', big(b.creatorDeterminationPayment) === wei(status.creatorDeterminationPaymentEth)],
     ['approval window', big(b.creatorAssessmentWindowSize) === big(status.creatorAssessmentWindowSize)],
     ['oracle settings', ['maxOracleFee', 'alpha', 'estimatedBaseCost', 'maxFeeBasedScaling', 'minOracleFee'].every((k) => big(b.oracle?.[k]) === big(o[k])) && Boolean(b.oracle?.withBeacons) === Boolean(o.withBeacons)],
-    ['decision settings', [['jury', 'jury'], ['quota', 'quota'], ['forfeitLine', 'forfeitLine'], ['bond', 'bondWei']].every(([k, s]) => big(b[k]) != null && big(b[k]) === big(ds[s]))],
+    ['decision settings', [['quota', 'quota'], ['forfeitLine', 'forfeitLine'], ['bond', 'bondWei']].every(([k, s]) => big(b[k]) != null && big(b[k]) === big(ds[s]))
+      && JURY_KEYS.every((k) => big(b[`jury${k[0].toUpperCase()}${k.slice(1)}`]) != null && big(b[`jury${k[0].toUpperCase()}${k.slice(1)}`]) === big(ds?.jury?.[k]))],
   ];
   const problems = fields.filter(([, ok]) => !ok).map(([name]) => p(`its ${name} differs from the site's record of it.`));
   // Both sides are judged by the rule the terms name, and a claim posts no bond (the escrow, not only the site's record).
   // Terms from before v6/v7 name no decision settings: a pair of those on the v2 escrow was posted with WAGER_DECISION
   // (what this skill sent for every wager before the terms fixed it), so it is still held to that.
   const legacy = values && !values.decision;
-  const d = legacy ? { jury: WAGER_DECISION.jury, quota: WAGER_DECISION.quota, forfeitLine: WAGER_DECISION.forfeitLine, bondWei: WAGER_DECISION.bond } : values?.decision;
+  const d = legacy ? { jury: { ...WAGER_DECISION.jury }, quota: WAGER_DECISION.quota, forfeitLine: WAGER_DECISION.forfeitLine, bondWei: WAGER_DECISION.bond } : values?.decision;
   const o2 = legacy ? { ...values.oracle, minOracleFeeEth: shared.formatEthWei(WAGER_DECISION.minOracleFee), withBeacons: WAGER_DECISION.withBeacons } : values?.oracle;
-  const off = [['jury', b.jury, d?.jury], ['quota', b.quota, d?.quota], ['forfeit line', b.forfeitLine, d?.forfeitLine], ['hunter bond', b.bond, shared.WAGER_BOND_WEI],
+  const off = [...JURY_KEYS.map((k) => [`jury ${k}`, b[`jury${k[0].toUpperCase()}${k.slice(1)}`], d?.jury?.[k]]), ['quota', b.quota, d?.quota], ['forfeit line', b.forfeitLine, d?.forfeitLine], ['hunter bond', b.bond, shared.WAGER_BOND_WEI],
     ['fee floor', b.oracle?.minOracleFee, o2?.minOracleFeeEth !== undefined ? wei(o2.minOracleFeeEth) : undefined]]
     .filter(([, v, want]) => want !== undefined && big(v) !== big(want)).map(([name, v]) => `${name} ${v}`);
   if (b.oracle && o2?.withBeacons !== undefined && Boolean(b.oracle.withBeacons) !== Boolean(o2.withBeacons)) off.push(`beacons ${b.oracle.withBeacons ? 'on' : 'off'}`);
@@ -299,7 +303,7 @@ export function createConfig({ createBody: b, wager }) {
     // The terms' settings, as the shared builder put them in the body: create_bounty.js sends them unchanged.
     oracle: { maxOracleFee: parseEther(String(b.oracleMaxOracleFee)).toString(), alpha: Number(b.oracleAlpha), estimatedBaseCost: parseEther(String(b.oracleEstimatedBaseCost)).toString(), maxFeeBasedScaling: Number(b.oracleMaxFeeBasedScaling),
       minOracleFee: parseEther(String(b.oracleMinOracleFee ?? '0')).toString(), withBeacons: Boolean(b.oracleWithBeacons) },
-    bountyClass: b.bountyClass ?? WAGER_DECISION.bountyClass, jury: Number(b.jury), quota: Number(b.quota), forfeitLine: Number(b.forfeitLine), bond: String(b.bond ?? shared.WAGER_BOND_WEI),
+    bountyClass: b.bountyClass ?? WAGER_DECISION.bountyClass, jury: Object.fromEntries(JURY_KEYS.map((k) => [k, Number(b.jury?.[k])])), quota: Number(b.quota), forfeitLine: Number(b.forfeitLine), bond: String(b.bond ?? shared.WAGER_BOND_WEI),
     wager,
   };
 }

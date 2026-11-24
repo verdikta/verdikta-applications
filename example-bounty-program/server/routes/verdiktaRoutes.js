@@ -9,10 +9,9 @@ const logger = require('../utils/logger');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 
 /**
- * GET /api/verdikta/agg-history/:aggId[?aggregator=0x…|?jury=N|?bountyId=N]
- * Returns the full lifecycle of one round. v2 round ids are sequential per aggregator (one per
- * jury size), so name the aggregator, its jury index, or the bounty whose round it is; the first
- * approved aggregator (jury 0) is assumed otherwise.
+ * GET /api/verdikta/agg-history/:aggId[?aggregator=0x…]
+ * Returns the full lifecycle of one round on the escrow's aggregator (one serves every jury size;
+ * the round's jury comes from getJury). `aggregator`, when given, must be that aggregator.
  */
 router.get('/agg-history/:aggId', async (req, res) => {
   const { aggId } = req.params;
@@ -40,17 +39,12 @@ router.get('/agg-history/:aggId', async (req, res) => {
         return res.status(400).json({ error: 'Invalid aggregator address' });
       }
       where.aggregator = String(req.query.aggregator);
-    } else if (req.query.bountyId != null && req.query.bountyId !== '') {
-      const { getContractService } = require('../utils/contractService');
-      where.aggregator = await (await getContractService().getAggregatorFor(Number(req.query.bountyId))).getAddress();
-    } else if (req.query.jury != null && req.query.jury !== '') {
-      where.jury = Number(req.query.jury);
     }
     let data;
     try {
       data = await verdiktaService.getAggHistory(aggId, where);
     } catch (whereErr) {
-      if (/approved aggregator|no aggregator for jury/.test(whereErr.message)) {
+      if (/escrow's aggregator/.test(whereErr.message)) {
         return res.status(400).json({ error: 'Unknown aggregator', details: whereErr.message });
       }
       throw whereErr;

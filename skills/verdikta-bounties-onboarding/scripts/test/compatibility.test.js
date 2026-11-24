@@ -18,6 +18,11 @@ test('current generated create struct and three-argument prepare',()=>{
   const create=iface.getFunction('createBounty').inputs[0].components;
   assert.deepEqual(create.map(c=>c.name),['evaluationCid','requestedClass','threshold','submissionDeadline','targetHunter','creatorDeterminationPayment','arbiterDeterminationPayment','creatorAssessmentWindowSize','oracle','jury','quota','forfeitLine','bond']);
   assert.deepEqual(create[8].components.map(c=>c.name),['maxOracleFee','alpha','estimatedBaseCost','maxFeeBasedScaling','minOracleFee','withBeacons']);
+  assert.deepEqual(create[9].components.map(c=>c.name+':'+c.type),['K:uint8','M:uint8','N:uint8','P:uint8','timeout:uint40']);
+  const bounty=iface.getFunction('getBounty').outputs[0].components.map(c=>c.name);
+  assert.ok(['juryK','juryM','juryN','juryP','juryTimeout'].every(f=>bounty.includes(f)));assert.ok(!bounty.includes('jury'));
+  for(const gone of ['aggregatorOf','aggregators','aggregatorCount']) assert.equal(iface.getFunction(gone),null);
+  assert.ok(iface.getFunction('aggregator'));
   assert.equal(iface.getFunction('prepareSubmission').inputs.length,3);
   const {tx,expected}=fixture();assert.equal(verifyTransaction(tx,expected).value,1000000000000000n);
   assert.equal(iface.decodeFunctionData('createBounty',tx.data)[0].targetHunter,config.targetHunter);
@@ -36,7 +41,12 @@ test('all transaction fields and argument drift fail closed',()=>{
   const {tx,expected}=fixture();
   for(const mutate of [t=>t.to=ZeroAddress,t=>t.chainId=84532,t=>delete t.chainId,t=>t.value='1',t=>t.data='0x12345678',t=>t.data+='00']) {const bad={...tx};mutate(bad);assert.throws(()=>verifyTransaction(bad,expected));}
   for(const field of ['evaluationCid','requestedClass','threshold','submissionDeadline','targetHunter','creatorDeterminationPayment','arbiterDeterminationPayment','creatorAssessmentWindowSize','jury','quota','forfeitLine','bond']) {
+    if(field==='jury') continue;
     const params={...expected.args[0],[field]: field==='evaluationCid'?'Qm'+'b'.repeat(44):field==='targetHunter'?ZeroAddress:BigInt(expected.args[0][field])+1n};
+    assert.throws(()=>verifyTransaction({...tx,data:iface.encodeFunctionData('createBounty',[params])},expected));
+  }
+  for(const f of ['K','M','N','P','timeout']) {
+    const params={...expected.args[0],jury:{...expected.args[0].jury,[f]:BigInt(expected.args[0].jury[f])+1n}};
     assert.throws(()=>verifyTransaction({...tx,data:iface.encodeFunctionData('createBounty',[params])},expected));
   }
   for(const oracle of [{...expected.args[0].oracle,minOracleFee:1n},{...expected.args[0].oracle,withBeacons:true}]) assert.throws(()=>verifyTransaction({...tx,data:iface.encodeFunctionData('createBounty',[{...expected.args[0],oracle}])},expected));
@@ -58,36 +68,47 @@ test('SubmissionPrepared budget precedes CID; finalization includes paid bool; t
 });
 test('decision settings: a size-class preset (Bondless Small by default), overrides, and USD only at a reviewed price',()=>{
   const d=decisionTerms(config);
-  assert.deepEqual({...d},{bountyClass:'bondless-small',className:'Bondless Small',jury:0n,quota:3n,forfeitLine:1n,bond:0n,minOracleFee:0n,withBeacons:false});
+  const small={K:6n,M:5n,N:4n,P:3n,timeout:300n};
+  assert.deepEqual({...d},{bountyClass:'bondless-small',className:'Bondless Small',jury:small,quota:3n,forfeitLine:1n,bond:0n,minOracleFee:0n,withBeacons:false});
   const p=creationTerms(config).params;
-  assert.deepEqual([p.jury,p.quota,p.forfeitLine,p.bond,p.oracle.minOracleFee,p.oracle.withBeacons],[0n,3n,1n,0n,0n,false]);
+  assert.deepEqual([p.jury,p.quota,p.forfeitLine,p.bond,p.oracle.minOracleFee,p.oracle.withBeacons],[small,3n,1n,0n,0n,false]);
   // A preset with a USD bond or fee floor needs the wei amount, or an owner-reviewed ethUsd to convert it.
   assert.throws(()=>decisionTerms({...config,bountyClass:'medium'}),/Medium preset's bond is \$50: give bond in wei, or an owner-reviewed ethUsd/);
   assert.throws(()=>decisionTerms({...config,bountyClass:'medium',bond:'1'}),/fee floor is \$0.25: give oracle.minOracleFee in wei/);
   const medium=decisionTerms({...config,bountyClass:'medium',ethUsd:2500});
-  assert.deepEqual([medium.jury,medium.quota,medium.forfeitLine,medium.bond,medium.minOracleFee,medium.withBeacons],[1n,3n,2n,20000000000000000n,100000000000000n,false]);
-  assert.equal(decisionTerms({...config,bountyClass:'jumbo',bond:'5',oracle:{...config.oracle,minOracleFee:'7'}}).withBeacons,true);
+  assert.deepEqual([medium.jury,medium.quota,medium.forfeitLine,medium.bond,medium.minOracleFee,medium.withBeacons],[{K:8n,M:5n,N:4n,P:3n,timeout:300n},3n,2n,20000000000000000n,100000000000000n,false]);
+  const jumbo=decisionTerms({...config,bountyClass:'jumbo',bond:'5',oracle:{...config.oracle,minOracleFee:'7'}});
+  assert.equal(jumbo.withBeacons,true);assert.deepEqual(jumbo.jury,{K:50n,M:38n,N:27n,P:17n,timeout:600n});
   // No class named: the smallest class offered for the reward at ethUsd (0.001 ETH x $2500 = $2.50: Bondless Small; 0.2 ETH = $500: Medium).
   assert.equal(decisionTerms({...config,ethUsd:2500}).bountyClass,'bondless-small');
   assert.equal(decisionTerms({...config,bountyAmount:'0.2',ethUsd:2500}).bountyClass,'medium');
-  const custom=decisionTerms({...config,bountyClass:'small',bond:'123',jury:1,quota:2,forfeitLine:0,oracle:{...config.oracle,withBeacons:true}});
-  assert.deepEqual([custom.jury,custom.quota,custom.forfeitLine,custom.bond,custom.withBeacons],[1n,2n,0n,123n,true]);
-  for(const bad of [{bountyClass:'huge'},{quota:0},{quota:2,forfeitLine:3},{jury:256},{bond:'-1'},{bond:(1n<<96n).toString()},{oracle:{...config.oracle,withBeacons:'yes'}}]) assert.throws(()=>decisionTerms({...config,...bad}));
+  // The creator's jury: any of K, M, N, P, timeout over the preset's.
+  const custom=decisionTerms({...config,bountyClass:'small',bond:'123',jury:{K:7,timeout:600},quota:2,forfeitLine:0,oracle:{...config.oracle,withBeacons:true}});
+  assert.deepEqual([custom.jury,custom.quota,custom.forfeitLine,custom.bond,custom.withBeacons],[{K:7n,M:5n,N:4n,P:3n,timeout:600n},2n,0n,123n,true]);
+  assert.throws(()=>decisionTerms({...config,jury:1}),/aggregator index is no longer used/);
+  assert.throws(()=>decisionTerms({...config,jury:{M:7}}),/bad jury/);
+  assert.throws(()=>decisionTerms({...config,jury:{N:2,P:1}}),/bad jury/);
+  assert.throws(()=>decisionTerms({...config,jury:{N:41,M:41,K:41}}),/bad jury/);
+  assert.throws(()=>decisionTerms({...config,quota:5}),/exceeds the jury's N \(4\)/);
+  assert.throws(()=>decisionTerms({...config,jury:{Q:3}}),/unknown field/);
+  for(const bad of [{bountyClass:'huge'},{quota:0},{quota:2,forfeitLine:3},{jury:{K:256}},{jury:{timeout:0}},{bond:'-1'},{bond:(1n<<96n).toString()},{oracle:{...config.oracle,withBeacons:'yes'}}]) assert.throws(()=>decisionTerms({...config,...bad}));
   // Every setting goes to the API explicitly, so the server picks no class and converts no price.
-  assert.deepEqual(decisionBody(medium),{bountyClass:'medium',jury:1,quota:3,forfeitLine:2,bond:'20000000000000000',oracleMinOracleFee:'100000000000000',oracleWithBeacons:false});
+  assert.deepEqual(decisionBody(medium),{bountyClass:'medium',jury:{K:8,M:5,N:4,P:3,timeout:300},quota:3,forfeitLine:2,bond:'20000000000000000',oracleMinOracleFee:'100000000000000',oracleWithBeacons:false});
 });
 test('the created bounty is read back field by field, the v2 settings included',()=>{
   const {params}=bindCreation(config,response),creator='0x3333333333333333333333333333333333333333';
-  const bounty={...params,creator,oracle:{...params.oracle}};
+  // getBounty carries the jury flat (juryK..juryTimeout)
+  const {jury,...rest}=params;
+  const bounty={...rest,creator,oracle:{...params.oracle},juryK:jury.K,juryM:jury.M,juryN:jury.N,juryP:jury.P,juryTimeout:jury.timeout};
   verifyCreatedBounty(bounty,params,creator);
-  for(const change of [{quota:2n},{forfeitLine:0n},{bond:1n},{jury:1n},{oracle:{...params.oracle,withBeacons:true}},{oracle:{...params.oracle,minOracleFee:1n}}]) assert.throws(()=>verifyCreatedBounty({...bounty,...change},params,creator),/mismatch/);
+  for(const change of [{quota:2n},{forfeitLine:0n},{bond:1n},{juryK:7n},{juryN:3n},{juryTimeout:600n},{oracle:{...params.oracle,withBeacons:true}},{oracle:{...params.oracle,minOracleFee:1n}}]) assert.throws(()=>verifyCreatedBounty({...bounty,...change},params,creator),/mismatch/);
 });
 test('closeCommits and promote go only to the aggregator the escrow names, with no value',()=>{
   const aggregator='0x4444444444444444444444444444444444444444',aggId='0x'+'ab'.repeat(32);
   const tx={to:aggregator,chainId:8453,value:'0',data:aggregatorIface.encodeFunctionData('promote',[aggId])};
   const expected={network:'base',method:'promote',args:[aggId],maxValueWei:0n,aggregator};
   assert.equal(verifyTransaction(tx,expected).to,aggregator);
-  assert.throws(()=>verifyTransaction(tx,{...expected,aggregator:null}),/aggregatorOf/);
+  assert.throws(()=>verifyTransaction(tx,{...expected,aggregator:null}),/escrow\.aggregator\(\)/);
   assert.throws(()=>verifyTransaction({...tx,to:deployments.base.address},expected),/destination/);
   assert.throws(()=>verifyTransaction({...tx,data:aggregatorIface.encodeFunctionData('closeCommits',[aggId])},expected),/drift/);
   assert.throws(()=>verifyTransaction({...tx,data:aggregatorIface.encodeFunctionData('promote',['0x'+'cd'.repeat(32)])},expected),/drift/);

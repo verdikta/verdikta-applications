@@ -72,7 +72,7 @@ jest.mock('../utils/contractService', () => ({
       nextAction: (...args) => mockNextAction(...args),
     },
     getRoundState: (...args) => mockGetRoundState(...args),
-    getAggregatorFor: async () => ({ getAddress: async () => '0x' + '1'.repeat(40) }),
+    getAggregatorAddress: async () => '0x' + '1'.repeat(40),
   }),
 }));
 

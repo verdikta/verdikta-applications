@@ -24,7 +24,7 @@
 //                    sources with at least one on a listed source's site, up to 5 Resolution sources,
 //                    Claims open 3 hours after Resolves at.
 //   mutual-wager-v6  games, the current template: v3 for the v2 escrow. The terms add a Decision
-//                    settings line (the jury index, pass quota Q, forfeit line R and the hunter bond,
+//                    settings line (the jury K/M/N/P and timeout, pass quota Q, forfeit line R and the hunter bond,
 //                    always 0 for a wager) and the fee floor and beacon flag to the Oracle settings
 //                    line, and the jury checks that the counter bounty uses the same ones.
 //   mutual-wager-v7  questions, the current template: v5 with v6's decision settings.
@@ -35,7 +35,7 @@
 // terms = { wagerId, event, shortEvent, start (ISO UTC), market, noWinner?, stake (ETH),
 //           settle (ISO UTC), classId, threshold, jury: [{ provider, model, weight, runs }],
 //           iterations?, oracle: { maxOracleFeeEth, estimatedBaseCostEth, maxFeeBasedScaling, alpha,
-//           minOracleFeeEth, withBeacons }, decision: { jury, quota, forfeitLine, bondWei: '0' },
+//           minOracleFeeEth, withBeacons }, decision: { jury: { K, M, N, P, timeout }, quota, forfeitLine, bondWei: '0' },
 //           site, escrow, chain, criteria?: [id] }
 // v4 terms replace event, shortEvent and market with question, resolvesAt, claimsOpen, yes, no and
 // sources ([https URL]); their `start` is the Bets close time (both bounties exist before it).
@@ -292,7 +292,7 @@ const QUESTION_WAGER_V5_TEMPLATE = deepFreeze({
 });
 
 // v6 (games) and v7 (questions): v3 and v5 for the v2 escrow. Each bounty also carries decision settings
-// (the jury index, pass quota Q, forfeit line R, hunter bond) and a fee floor and beacon flag, which
+// (the jury K/M/N/P and timeout, pass quota Q, forfeit line R, hunter bond) and a fee floor and beacon flag, which
 // decide whether a claim passes as much as the oracle settings do, so the jury checks the counter's
 // against the terms. Only counter_bounty_onchain and the title change.
 const DECISION_CHECK = 'every oracleSettings value equals the oracle settings in the terms; every decisionSettings value equals the decision settings in the terms;';
@@ -479,36 +479,60 @@ function parseOracleLine(line) {
   return m[5] === undefined ? o : { ...o, minOracleFeeEth: m[5], withBeacons: m[6] === 'true' };
 }
 
+const JURY_KEYS = ['K', 'M', 'N', 'P', 'timeout'];
+
 /**
- * "jury 0, quota 3, forfeitLine 1, bondWei 0": the v2 escrow's decision settings in onchain-status's
- * decisionSettings names. jury is the escrow's aggregator index, quota (Q) the arbiter scores at or
- * above the threshold a claim needs, forfeitLine (R) the count below which it fails outright.
+ * "jury (K 6, M 5, N 4, P 3, timeout 300), quota 3, forfeitLine 1, bondWei 0": the v2 escrow's
+ * decision settings in onchain-status's decisionSettings names. jury is the bounty's own jury (K
+ * drawn, M promoted, N counted, P clustered, the round timeout in seconds; item 15), quota (Q) the
+ * arbiter scores at or above the threshold a claim needs, forfeitLine (R) the count below which it
+ * fails outright.
  */
 function formatDecision(d) {
   if (!d) return '<decision settings>';
   // A create-page skeleton keeps its <placeholders>; everything else reads as an integer.
   const n = (v) => (/^<[^<>]*>$/.test(String(v)) ? String(v) : Number(v));
-  return `jury ${n(d.jury)}, quota ${n(d.quota)}, forfeitLine ${n(d.forfeitLine)}, bondWei ${String(d.bondWei ?? d.bond ?? WAGER_BOND_WEI)}`;
+  const j = d.jury;
+  const jury = j && typeof j === 'object'
+    ? `(${JURY_KEYS.map((k) => `${k} ${n(j[k])}`).join(', ')})`
+    : (/^<[^<>]*>$/.test(String(j)) ? String(j) : `(${String(j)})`);
+  return `jury ${jury}, quota ${n(d.quota)}, forfeitLine ${n(d.forfeitLine)}, bondWei ${String(d.bondWei ?? d.bond ?? WAGER_BOND_WEI)}`;
 }
 
 /** The decision settings a Decision settings line names, or null. */
 function parseDecisionLine(line) {
-  const m = /^jury (\d+), quota (\d+), forfeitLine (\d+), bondWei (\d+)\.?$/.exec(norm(line));
-  return m ? { jury: Number(m[1]), quota: Number(m[2]), forfeitLine: Number(m[3]), bondWei: m[4] } : null;
+  const m = /^jury \(K (\d+), M (\d+), N (\d+), P (\d+), timeout (\d+)\), quota (\d+), forfeitLine (\d+), bondWei (\d+)\.?$/.exec(norm(line));
+  if (!m) return null;
+  const jury = { K: Number(m[1]), M: Number(m[2]), N: Number(m[3]), P: Number(m[4]), timeout: Number(m[5]) };
+  return { jury, quota: Number(m[6]), forfeitLine: Number(m[7]), bondWei: m[8] };
+}
+
+/** Why a jury { K, M, N, P, timeout } is not one the escrow takes (BountyEscrow.createBounty's rule), or null. */
+function juryProblem(j) {
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return 'decision.jury must be the bounty\'s jury { K, M, N, P, timeout } (an aggregator index is no longer used; GET /api/classes/presets lists one per size class).';
+  const int = (v, lo, hi) => Number.isInteger(Number(v)) && String(v ?? '').trim() !== '' && Number(v) >= lo && Number(v) <= hi;
+  for (const k of ['K', 'M', 'N', 'P']) if (!int(j[k], 1, 255)) return `decision.jury.${k} must be an integer from 1 to 255.`;
+  if (!int(j.timeout, 1, 2 ** 40 - 1)) return 'decision.jury.timeout must be a positive whole number of seconds.';
+  const [K, M, N, P] = ['K', 'M', 'N', 'P'].map((k) => Number(j[k]));
+  if (!(P <= N && N <= M && M <= K && N <= 40 && (P !== 1 || N === 1))) return `decision.jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury").`;
+  return null;
 }
 
 /** Why decision settings are not ones a wager may use (the contract's rules, and no bond), or null. */
 function decisionProblem(d) {
-  if (!d || typeof d !== 'object') return 'decision must be { jury, quota, forfeitLine }: the escrow\'s jury index, the pass quota Q and the forfeit line R (GET /api/classes/presets lists them per size class).';
+  if (!d || typeof d !== 'object') return 'decision must be { jury: { K, M, N, P, timeout }, quota, forfeitLine }: the bounty\'s jury, the pass quota Q and the forfeit line R (GET /api/classes/presets lists them per size class).';
   const int = (v, lo, hi) => Number.isInteger(Number(v)) && String(v).trim() !== '' && Number(v) >= lo && Number(v) <= hi;
-  if (!int(d.jury, 0, 255)) return 'decision.jury must be the escrow\'s aggregator index, an integer from 0.';
+  const juryWhy = juryProblem(d.jury);
+  if (juryWhy) return juryWhy;
   if (!int(d.quota, 1, 255)) return 'decision.quota (Q) must be an integer of at least 1.';
+  if (Number(d.quota) > Number(d.jury.N)) return `decision.quota (Q) must be at most the jury's N (${Number(d.jury.N)}) (contract: "bad quota").`;
   if (!int(d.forfeitLine, 0, 255) || Number(d.forfeitLine) > Number(d.quota)) return 'decision.forfeitLine (R) must be an integer from 0 to quota.';
   const bond = d.bondWei ?? d.bond;
   if (bond !== undefined && bond !== null && String(bond) !== WAGER_BOND_WEI && !(toWei(bond) === 0n)) return 'A wager has no hunter bond: leave decision.bond out, or set it to 0.';
   return null;
 }
-const decisionOf = (d) => ({ jury: Number(d.jury), quota: Number(d.quota), forfeitLine: Number(d.forfeitLine), bondWei: WAGER_BOND_WEI });
+const juryOf = (j) => Object.fromEntries(JURY_KEYS.map((k) => [k, Number(j[k])]));
+const decisionOf = (d) => ({ jury: juryOf(d.jury), quota: Number(d.quota), forfeitLine: Number(d.forfeitLine), bondWei: WAGER_BOND_WEI });
 
 const bothLine = (threshold, classId, ids = MUTUAL_WAGER_CRITERIA, rubric = MUTUAL_WAGER_RUBRIC) => `rubric ${rubric} (must-pass criteria ${ids.join(', ')}), threshold ${threshold}, class ${classId}, approval window 0.`;
 const siteLine = (terms) => `${terms.site}; escrow ${terms.escrow} on ${terms.chain}; no cancel or edit.`;
@@ -690,7 +714,10 @@ function mutualWagerTermsSkeleton({ posterWallet, claimantWallet, stake, thresho
 /** The form's decision settings, with the wager's bond (always 0); placeholders for what it lacks. */
 const skeletonDecision = (d) => {
   const v = (x, hint) => (x === undefined || x === null || x === '' ? `<${hint}>` : Number(x));
-  return { jury: v(d?.jury, 'jury index'), quota: v(d?.quota, 'quota Q'), forfeitLine: v(d?.forfeitLine, 'forfeit line R'), bondWei: WAGER_BOND_WEI };
+  // Without a class the whole jury is one short placeholder (the wager query is near its tested budget).
+  const j = d?.jury && typeof d.jury === 'object' ? d.jury : null;
+  const jury = j ? Object.fromEntries(JURY_KEYS.map((k) => [k, v(j[k], `jury ${k}`)])) : '<jury>';
+  return { jury, quota: v(d?.quota, 'quota Q'), forfeitLine: v(d?.forfeitLine, 'forfeit line R'), bondWei: WAGER_BOND_WEI };
 };
 
 /** True when a description already carries a terms block. */
@@ -867,7 +894,7 @@ function wagerTextProblems(t, text) {
  * problems is empty. Codes: WAGER_TERMS (the block itself), WAGER_TARGET (who can claim),
  * WAGER_MISMATCH (terms vs the bounty's fields), WAGER_TIMING, WAGER_RUBRIC.
  * expect = { posterWallet, targetHunter, stake, threshold, classId, jury, iterations, oracle,
- *            decision: { jury, quota, forfeitLine, bondWei } (v6, v7: the bounty's decision settings),
+ *            decision: { jury: { K, M, N, P, timeout }, quota, forfeitLine, bondWei } (v6, v7: the bounty's decision settings),
  *            approvalWindow, deadline (unix), now (unix), site, escrow, chain,
  *            rubric: { title, description, criteria, forbiddenContent }  (or criteria +
  *            forbiddenContent at the top level), template? (default: the mutual-wager template) }
@@ -1182,7 +1209,7 @@ function textProblem(field, value, { max = 400 } = {}) {
  * input = { creator, opponent, wagerId, event, start, market?, noWinner?,
  *           sides: { creator, opponent }, stake, settle, classId?, threshold?, jury?, iterations?,
  *           oracle?, decision?, submissionDeadline?, publicSubmissions? }
- * decision = { jury, quota, forfeitLine } (the escrow's jury index, pass quota Q, forfeit line R); a
+ * decision = { jury: { K, M, N, P, timeout }, quota, forfeitLine } (the bounty's jury, pass quota Q, forfeit line R); a
  * wager's bond is always 0. oracle may carry minOracleFeeEth and withBeacons.
  * ctx = { site, escrow, chain, defaults: { oracle, jury?, decision? } }: the server fills oracle and
  * decision from the size-class preset for the stake (shared/classPresets.js).
@@ -1271,7 +1298,7 @@ function bountyParams(input, ctx, bad, template) {
   if (!oracleOk) bad('oracle', 'oracle must be { maxOracleFeeEth, estimatedBaseCostEth, minOracleFeeEth? (decimal ETH strings), maxFeeBasedScaling, alpha (integers), withBeacons? (boolean) }.');
   const decision = input.decision ?? ctx.defaults?.decision;
   const decisionWhy = decision === undefined
-    ? (ctx.defaults?.decisionUnavailable || 'decision is required: { jury, quota, forfeitLine } (GET /api/classes/presets lists them per size class).')
+    ? (ctx.defaults?.decisionUnavailable || 'decision is required: { jury: { K, M, N, P, timeout }, quota, forfeitLine } (GET /api/classes/presets lists them per size class).')
     : decisionProblem(decision);
   if (decisionWhy) bad('decision', decisionWhy);
   const settleUnix = unixOf(input.settle);
@@ -1435,7 +1462,7 @@ function createBodyFor({ terms, poster, claimant, title, description, submission
     // v2 escrow: every value the terms fix is sent, so no size-class preset or ETH price can change it.
     oracleMinOracleFee: eth(terms.oracle.minOracleFeeEth ?? '0'),
     oracleWithBeacons: beaconFlag(terms.oracle.withBeacons) === 'true',
-    jury: terms.decision.jury,
+    jury: { ...terms.decision.jury },
     quota: terms.decision.quota,
     forfeitLine: terms.decision.forfeitLine,
     bond: WAGER_BOND_WEI,

@@ -354,9 +354,10 @@ function RoundDetail({ sample }) {
         </tbody>
       </table>
       <div className="spread-detail-links">
+        {sample.jury && <span>Jury K/M/N/P {sample.jury.K}/{sample.jury.M}/{sample.jury.N}/{sample.jury.P} · pass {sample.passCount ?? '—'} of Q {sample.quota ?? '?'} (of N {sample.jury.N})</span>}
         <span>SD all counted <strong>{fmtSd(sample.sd)}</strong> · cluster {sample.clusterKnown ? <strong>{fmtSd(sample.clusterSd)}</strong> : 'unknown'} · range {fmtScore(sample.range)}{sample.lateReveals ? ` · ${sample.lateReveals} late reveal${sample.lateReveals === 1 ? '' : 's'} (scored, not counted)` : ''}</span>
         <Link to={`/bounty/${sample.jobId}`}>Bounty #{sample.jobId}</Link>
-        <Link to={`/agg-history/${sample.aggId}?bountyId=${sample.jobId}`}>Round history</Link>
+        <Link to={`/agg-history/${sample.aggId}`}>Round history</Link>
       </div>
     </div>
   );
@@ -364,6 +365,8 @@ function RoundDetail({ sample }) {
 
 const sampleKey = (s) => `${s.jobId}:${s.submissionId}:${s.round ?? 1}`;
 const passLabel = (r) => (r.passCount == null ? '—' : `${r.passCount} / ${r.quota ?? '?'}`);
+// The round's own jury (getJury; the bounty's when unread): "Q of N, K drawn".
+const juryLabel = (r) => (r.jury ? `Q ${r.quota ?? '?'} of N ${r.jury.N} · K ${r.jury.K} drawn` : null);
 
 // ---------------------------------------------------------------------------
 // Section
@@ -422,7 +425,7 @@ export default function ScoreSpreadSection({ refreshKey }) {
   };
 
   const header = (
-    <h2 title="For each evaluation round, re-runs included: the standard deviation of the arbiters' FUND scores across the round's N counted reveals (4, 13 or 27 by jury). A late reveal arrives after the round finalized; it is scored by quality but stores no scores, so it is not in the spread.">
+    <h2 title="For each evaluation round, re-runs included: the standard deviation of the arbiters' FUND scores across the round's N counted reveals (its own jury's N: 4 for Small and Medium, 13 Large, 27 Jumbo). A late reveal arrives after the round finalized; it is scored by quality but stores no scores, so it is not in the spread.">
       <Sigma size={20} className="inline-icon" /> Arbiter Score Spread · Last {days} days
     </h2>
   );
@@ -596,7 +599,7 @@ export default function ScoreSpreadSection({ refreshKey }) {
                                   <td className="num">{r.submissionId}{r.rounds > 1 ? <span className="spread-muted"> r{r.round}</span> : null}</td>
                                   <td title={fmtDateTime(r.ts)}>{fmtDate(r.ts)}</td>
                                   <td><ScoreStrip reveals={r.reveals} threshold={r.threshold} /></td>
-                                  <td className="num">{passLabel(r)}</td>
+                                  <td className="num" title={juryLabel(r) || undefined}>{passLabel(r)}</td>
                                   <td className={r.outcome === 'pass' ? 'text-success' : ''}>{outcomeLabel(r)}</td>
                                 </tr>
                                 {open && (

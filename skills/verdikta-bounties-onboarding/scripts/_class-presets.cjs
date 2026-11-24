@@ -14,8 +14,11 @@
  * colluding, ETH at $2,287): "offeredUpToUsd" is the bounty a class is sold for, and "maxBountyUsd" is
  * the model's break-even, with no safety margin.
  *
- * jury: the BountyEscrow aggregator index (deploy order: small, medium, large, jumbo). Bondless Small
- * uses the small jury. K/M/N/P are the aggregator's own config and shown for information only.
+ * jury: the bounty's own jury, sent with every request to the one v2 aggregator (item 15): K drawn,
+ * M promoted, N counted, P clustered, and the round timeout in seconds (counted from the draw). The
+ * aggregator checks it per request (K <= its maxJury and the keeper's shortlist, T+ < timeout <=
+ * maxTimeout); the escrow checks the ordering at createBounty. Stake-attestation listings use the
+ * same presets (a synced copy, stake-attestation/shared/classPresets.js, held equal by a parity test).
  *
  * Money is in USD; toBountyParams converts at a given ETH price. The fee is a fee floor
  * (minOracleFee): every juror (and beacon) is paid at least that, so an attempt costs at least
@@ -24,32 +27,35 @@
  * Plain CommonJS with no dependencies: the server requires it and the client imports it.
  */
 
-const JURIES = Object.freeze(['small', 'medium', 'large', 'jumbo']);
-
 const CLASS_PRESETS = Object.freeze([
   Object.freeze({
-    key: 'bondless-small', name: 'Bondless Small', jury: 0,
-    K: 6, M: 5, N: 4, P: 3, quota: 3, forfeitLine: 1, withBeacons: false,
+    key: 'bondless-small', name: 'Bondless Small',
+    jury: Object.freeze({ K: 6, M: 5, N: 4, P: 3, timeout: 300 }),
+    quota: 3, forfeitLine: 1, withBeacons: false,
     feeFloorUsd: 0, bondUsd: 0, costPerRoundUsd: 0.83, offeredUpToUsd: 25, maxBountyUsd: 29,
   }),
   Object.freeze({
-    key: 'small', name: 'Small', jury: 0,
-    K: 6, M: 5, N: 4, P: 3, quota: 3, forfeitLine: 1, withBeacons: false,
+    key: 'small', name: 'Small',
+    jury: Object.freeze({ K: 6, M: 5, N: 4, P: 3, timeout: 300 }),
+    quota: 3, forfeitLine: 1, withBeacons: false,
     feeFloorUsd: 0, bondUsd: 5, costPerRoundUsd: 0.83, offeredUpToUsd: 100, maxBountyUsd: 101,
   }),
   Object.freeze({
-    key: 'medium', name: 'Medium', jury: 1,
-    K: 8, M: 5, N: 4, P: 3, quota: 3, forfeitLine: 2, withBeacons: false,
+    key: 'medium', name: 'Medium',
+    jury: Object.freeze({ K: 8, M: 5, N: 4, P: 3, timeout: 300 }),
+    quota: 3, forfeitLine: 2, withBeacons: false,
     feeFloorUsd: 0.25, bondUsd: 50, costPerRoundUsd: 4.6, offeredUpToUsd: 1000, maxBountyUsd: 1005,
   }),
   Object.freeze({
-    key: 'large', name: 'Large', jury: 2,
-    K: 21, M: 16, N: 13, P: 10, quota: 10, forfeitLine: 8, withBeacons: false,
+    key: 'large', name: 'Large',
+    jury: Object.freeze({ K: 21, M: 16, N: 13, P: 10, timeout: 300 }),
+    quota: 10, forfeitLine: 8, withBeacons: false,
     feeFloorUsd: 0.25, bondUsd: 100, costPerRoundUsd: 13.19, offeredUpToUsd: 10000, maxBountyUsd: 18600,
   }),
   Object.freeze({
-    key: 'jumbo', name: 'Jumbo', jury: 3,
-    K: 50, M: 38, N: 27, P: 17, quota: 17, forfeitLine: 12, withBeacons: true,
+    key: 'jumbo', name: 'Jumbo',
+    jury: Object.freeze({ K: 50, M: 38, N: 27, P: 17, timeout: 600 }),
+    quota: 17, forfeitLine: 12, withBeacons: true,
     feeFloorUsd: 0.25, bondUsd: 200, costPerRoundUsd: 26.39, offeredUpToUsd: 100000, maxBountyUsd: 165000,
   }),
 ]);
@@ -82,7 +88,7 @@ function usdToWei(usd, ethUsd) {
 }
 
 /**
- * The createBounty fields a class sets, in wei at `ethUsd`: { jury, quota, forfeitLine, bond,
+ * The createBounty fields a class sets, in wei at `ethUsd`: { jury: {K, M, N, P, timeout}, quota, forfeitLine, bond,
  * minOracleFee, withBeacons } (bond and minOracleFee as decimal strings, BigInt-safe in JSON).
  * `overrides` replaces any of them (the creator's choice); values are not validated here — the
  * escrow checks R <= Q <= N and the rest at createBounty.
@@ -91,7 +97,7 @@ function toBountyParams(key, ethUsd, overrides = {}) {
   const c = presetByKey(key);
   if (!c) throw new Error(`unknown bounty class: ${key}`);
   const out = {
-    jury: c.jury,
+    jury: { ...c.jury },
     quota: c.quota,
     forfeitLine: c.forfeitLine,
     bond: usdToWei(c.bondUsd, ethUsd).toString(),
@@ -113,11 +119,10 @@ function minAttemptCostWei(key, minOracleFeeWei) {
   const c = presetByKey(key);
   if (!c) throw new Error(`unknown bounty class: ${key}`);
   const floor = BigInt(minOracleFeeWei || 0);
-  return floor * BigInt(c.K + (c.withBeacons ? 2 : 0));
+  return floor * BigInt(c.jury.K + (c.withBeacons ? 2 : 0));
 }
 
 module.exports = {
-  JURIES,
   CLASS_PRESETS,
   MAX_ROUNDS,
   RERUN_WINDOW_SECONDS,

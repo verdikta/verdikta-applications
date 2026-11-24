@@ -21,7 +21,7 @@ const { normalizeBountyPayments, parseFeeToWei } = require('../../../server/util
 const ALICE = '0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D';
 const BOB = '0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9';
 const ctx = { site: 'https://bounties-testnet.verdikta.org', escrow: '0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f', chain: 'Base Sepolia Testnet (chain ID 84532)',
-  defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, decision: { jury: 0, quota: 3, forfeitLine: 1 } } };
+  defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1 } } };
 const NOW = Date.parse('2026-10-20T12:00:00Z') / 1000;
 const input = {
   creator: ALICE, opponent: BOB, wagerId: 'VW-TEST-BOS-DET-1', start: '2026-10-20T19:00:00Z', settle: '2026-10-21T19:00:00Z', stake: '0.0001',
@@ -67,7 +67,7 @@ function scenario(m) {
     arbiterDeterminationPaymentEth: '0.0001', creatorAssessmentWindowSize: 0, classId: 128, threshold: 80, createdAt: NOW - 60, createdAtIso: new Date((NOW - 60) * 1000).toISOString(),
     submissionDeadline: Date.parse(body.submissionDeadline) / 1000, submissionDeadlineIso: new Date(body.submissionDeadline).toISOString(), evaluationCid: 'QmA',
     oracleSettings: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500, minOracleFeeEth: '0.0', withBeacons: false },
-    decisionSettings: { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' }, linkage: { state: 'linked' } };
+    decisionSettings: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bondWei: '0' }, linkage: { state: 'linked' } };
   const job = { description: body.description, evaluationCid: 'QmA', juryNodes: body.juryNodes, iterations: 1, rubricContent: body.rubricJson };
   const answer = m.answerMutualWager({ number: 18, status, job }, { creator: BOB });
   const answerTerms = m.parseMutualWagerTerms(answer.description);
@@ -119,7 +119,7 @@ function pageSubmission(over = {}) {
     jury: createBody.juryNodes, iterations: 1, submissionWindowHours: 32, approval: false,
     oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: false },
     // The size class's jury and the form's Q and R; a wager's bond is 0 (CreateBounty.jsx wagerDecision).
-    decision: { jury: 0, quota: '3', forfeitLine: '1', bondWei: '0' },
+    decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: '3', forfeitLine: '1', bondWei: '0' },
     rubric: shared.mutualWagerRubricJson(), ...over,
   };
   const body = {
@@ -169,9 +169,9 @@ test('the create page and the server refuse the same wagers, for the same reason
     { oracle: { maxOracleFeeEth: '0.00003', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: false } },
     { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0.0001', withBeacons: false } },
     { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: '3', alpha: '500', minOracleFeeEth: '0', withBeacons: true } },
-    { decision: { jury: 0, quota: '4', forfeitLine: '1', bondWei: '0' } },
-    { decision: { jury: 1, quota: '3', forfeitLine: '1', bondWei: '0' } },
-    { decision: { jury: 0, quota: '3', forfeitLine: '1', bondWei: '1000' } },
+    { decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: '4', forfeitLine: '1', bondWei: '0' } },
+    { decision: { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: '3', forfeitLine: '1', bondWei: '0' } },
+    { decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: '3', forfeitLine: '1', bondWei: '1000' } },
     { submissionWindowHours: 24 },
     { approval: true },
     { rubric: edited },

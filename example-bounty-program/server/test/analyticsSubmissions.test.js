@@ -63,15 +63,15 @@ test('buckets submissions by the Q-of-N outcome, not acceptance against the thre
   expect(d.v2).toMatchObject({ rerunSubmissions: 1, bondsReturned: 2, bondReturnedEth: '0.01', bondsForfeited: 1, bondForfeitedEth: '0.005' });
 });
 
-test('/system sends every configured aggregator and its config', async () => {
-  const cfg = (jury) => ({ jury, K: 6, M: 5, N: 4, P: 3, mPlus: 6, tPlus: 155, responseTimeoutSeconds: 300 });
+test('/system sends the escrow\'s one aggregator and its config (jury limits, not a jury)', async () => {
+  const cfg = { aggregator: '0xa0', maxJury: 50, maxTimeout: 3600, tPlus: 155, revealWindow: 120 };
   mockVerdikta = {
-    healthCheck: async () => ({ healthy: true, aggregatorAddress: '0xa0', aggregators: ['0xa0', '0xa1'], keeperAddress: '0xk', config: cfg(0) }),
-    getAllAggregatorConfigs: async () => [cfg(0), cfg(1)],
+    healthCheck: async () => ({ healthy: true, aggregatorAddress: '0xa0', keeperAddress: '0xk', config: cfg }),
   };
   const res = await request(app).get('/api/analytics/system');
   expect(res.status).toBe(200);
-  expect(res.body.data.verdikta.aggregators).toEqual(['0xa0', '0xa1']);
-  expect(res.body.data.aggregatorConfigs.map((c) => c.jury)).toEqual([0, 1]);
-  expect(res.body.data.aggregatorConfigs[0]).toMatchObject({ mPlus: 6, tPlus: 155 });
+  expect(res.body.data.verdikta.aggregatorAddress).toBe('0xa0');
+  expect(res.body.data.verdikta.aggregators).toBeUndefined();
+  expect(res.body.data.aggregatorConfigs).toBeUndefined();
+  expect(res.body.data.aggregatorConfig).toMatchObject({ maxJury: 50, maxTimeout: 3600, tPlus: 155 });
 });

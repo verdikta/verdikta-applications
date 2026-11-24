@@ -14,8 +14,8 @@
  *  - any class: refused only on a chain fact. When no arbiter is eligible to serve
  *    the class at the bounty's fee limit, ReputationKeeper.selectArbiters reverts
  *    (NoEligibleArbiters) at every draw, so the bounty could never be evaluated.
- *    Fewer than K (the jury's draw size) is a warning: the draw fails
- *    (NotEnoughEligible, refunded) only while that lasts.
+ *    Fewer than K (the bounty's jury's draw size) is a warning: the keeper then
+ *    repeats arbiters to fill the jury's K slots.
  */
 
 const { ethers } = require('ethers');
@@ -128,9 +128,10 @@ const shortAddr = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
  * exiting or under-staked, not blocked or frozen, fee <= the bounty's ceiling, registered for
  * the class).
  *
- * A v2 draw needs K DISTINCT eligible arbiters for the bounty's jury (K per jury: the aggregator's
- * K). With fewer, the keeper reverts NotEnoughEligible and every draw fails (EvaluationFailed in
- * the draw phase, the prepay refunded), so such a class is unservable for that jury.
+ * A v2 draw fills K slots for the bounty's jury (K is the bounty's own, or its class preset's).
+ * With fewer than K distinct eligible arbiters the keeper repeats arbiters (slot k holds pick
+ * k mod m); only with none does every draw fail (EvaluationFailed in the draw phase, the prepay
+ * refunded), so only then is the class unservable.
  *
  * Returns { coverage, refusal, warnings }:
  *  - coverage: summary for API responses (coverage.checked=false when the chain
@@ -138,7 +139,7 @@ const shortAddr = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`;
  *  - refusal: set only when no arbiter is eligible (no jury can be drawn at all)
  *  - warnings: fewer than K eligible (or a beacon bounty's quorum short), a single operator, priced-out arbiters, and arbiters owned by the creator's own address
  */
-async function checkClassCoverage(classId, oracleSettings, { creator, jury = 0 } = {}) {
+async function checkClassCoverage(classId, oracleSettings, { creator, jury = null } = {}) {
   const cls = Number(classId);
   if (!isVerdiktaServiceAvailable()) {
     return {
@@ -165,7 +166,7 @@ async function checkClassCoverage(classId, oracleSettings, { creator, jury = 0 }
     ? (r.eligibleArbiters || []).filter(a => a.owner && String(a.owner).toLowerCase() === creatorLc).length
     : 0;
   const maxFeeEth = r.oracleSettings?.maxOracleFeeEth ?? ethers.formatEther(BigInt(String(oracleSettings?.maxOracleFee ?? 0)));
-  const K = Number(r.oraclesToPoll) || 0;
+  const K = Number(r.drawSize ?? r.oraclesToPoll) || 0;
 
   const coverage = {
     checked: true,
@@ -175,9 +176,10 @@ async function checkClassCoverage(classId, oracleSettings, { creator, jury = 0 }
     eligibleCount: r.eligibleCount,
     pricedOutCount: r.pricedOutCount,
     distinctOwnersEligible: r.distinctOwnersEligible,
-    // K: the distinct eligible arbiters a draw needs for this jury
+    // K: the slots a draw fills for this jury (the bounty's or its preset's)
     oraclesToPoll: r.oraclesToPoll,
     juryDrawSize: K,
+    ...(r.jury ? { jury: r.jury } : {}),
     ...(r.beaconQuorum != null ? { beaconQuorum: r.beaconQuorum, beaconsServable: r.beaconsServable } : {}),
     ...(r.scansAll != null ? { scansAll: r.scansAll } : {}),
     maxOracleFeeEth: maxFeeEth,
@@ -203,9 +205,9 @@ async function checkClassCoverage(classId, oracleSettings, { creator, jury = 0 }
         'so no jury could be drawn. Try again once they are back, or pick another class.';
     }
   } else if (r.eligibleCount < K) {
-    warnings.push(`Only ${r.eligibleCount} eligible arbiter(s) in class ${cls}, and this jury draws ${K} distinct arbiters: ` +
-      'until more are eligible at the time of a request, its draw fails (the round fails in the draw phase and the ' +
-      'prepay is refunded).');
+    warnings.push(`Only ${r.eligibleCount} eligible arbiter(s) in class ${cls}, and this jury draws ${K}: ` +
+      `until more are eligible at the time of a request, the draw repeats arbiters to fill its ${K} slots, so the ` +
+      `jury holds only ${r.eligibleCount} independent arbiter(s).`);
   }
   if (!refusal && r.beaconsServable === false) {
     warnings.push(`This bounty uses beacons: the beacon stage needs ${r.beaconQuorum} selectable arbiter(s) in class ${cls} ` +
@@ -227,8 +229,8 @@ async function checkClassCoverage(classId, oracleSettings, { creator, jury = 0 }
         `arbiter(s) in class ${cls}. Hunters will see this on the bounty page.`);
     }
     if (r.scansAll === false && r.beaconQuorum != null) {
-      warnings.push(`Class ${cls} is longer than one selection walk covers: whether a draw finds ${K} eligible arbiters ` +
-        'depends on the seed, and after a beacon stage a failed draw sends the unspent prepay to the treasury.');
+      warnings.push(`Class ${cls} is longer than one selection walk covers: how many eligible arbiters a draw finds ` +
+        'depends on the seed, and after a beacon stage a draw that finds none sends the unspent prepay to the treasury.');
     }
   }
 

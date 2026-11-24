@@ -93,7 +93,7 @@ function fixture() {
       reveals: [reveal(0, 85), reveal(1, 84), reveal(2, 86), reveal(3, 20)] })
   };
   const jobs = [
-    { jobId: 7, title: 'Essay', threshold: 80, decisionSettings: { jury: 0, quota: 3, forfeitLine: 1 }, submissions: [
+    { jobId: 7, title: 'Essay', threshold: 80, decisionSettings: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1 }, submissions: [
       { submissionId: 0, verdiktaAggId: id(1), submittedAt: NOW - DAY - 120, onChainStatus: 'PassedPaid', acceptance: 91 },
       { submissionId: 1, aggIds: [id(3), id(7)], verdiktaAggId: id(7), submittedAt: NOW - 2 * DAY, onChainStatus: 'PassedUnpaid' },
       // Creator approval: no arbiter round.
@@ -118,7 +118,7 @@ describe('buildReport', () => {
     expect(rep.samples.map((s) => [s.jobId, s.submissionId, s.round])).toEqual([[7, 1, 1], [7, 1, 2], [7, 0, 1], [9, 0, 1]]);
     const worst = rep.samples.find((s) => s.aggId === id(1));
     expect(worst).toMatchObject({ threshold: 80, quota: 3, finalScore: 91, n: 4, status: 'PassedPaid', passCount: 3, outcome: 'pass',
-      clusterKnown: true, clusterN: 3, lateReveals: 1 });
+      clusterKnown: true, clusterN: 3, lateReveals: 1, jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 } });
     expect(worst.sd).toBeCloseTo(sd([90, 92, 91, 40]), 2);
     expect(worst.clusterSd).toBeCloseTo(1, 2);
     expect(worst.reveals.map((r) => [r.accept, r.inCluster])).toEqual([[90, true], [92, true], [91, true], [40, false]]);
@@ -273,6 +273,7 @@ describe('fetchRound (v2)', () => {
             return ret('getOutcomeScores', o === aggregated.length - 1 && phase >= 6 && phase <= 7 ? [fundScores, true] : [[], false]);
           }
           case 'getEvaluation': return ret('getEvaluation', [aggregated, 'QmA,QmB', true]);
+          case 'getJury': return ret('getJury', [6, 5, 3, 2, 300]);
           case 'keeper': return ret('keeper', [KEEPER]);
           case 'treasury': return ret('treasury', [TREASURY]);
           case 'getSlot': {
@@ -296,7 +297,8 @@ describe('fetchRound (v2)', () => {
   test('reads the counted FUND scores in reveal order, the arbiters, their jobIds, the cluster and late reveals', async () => {
     const rec = await ss.fetchRound(ctx(provider()), AGG, id(5), NOW - 3600);
     expect(rec).toMatchObject({ finalized: true, settled: true, finalAccept: 85, outcomes: 2, badShape: false,
-      arbitersKnown: true, startTs: NOW - 3600, reqBlock: 1000, cluster: [4, 1], beacons: 0, toTreasuryWei: '0' });
+      arbitersKnown: true, startTs: NOW - 3600, reqBlock: 1000, cluster: [4, 1], beacons: 0, toTreasuryWei: '0',
+      jury: { K: 6, M: 5, N: 3, P: 2, timeout: 300 } });
     expect(rec.reveals.map((r) => [r.slot, r.operator, r.fund])).toEqual([
       [4, slotOracle(4), '900000'], [1, slotOracle(1), '920000'], [0, slotOracle(0), '400000']
     ]);

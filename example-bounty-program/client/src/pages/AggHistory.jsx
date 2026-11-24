@@ -2,10 +2,10 @@
  * Aggregation History Page
  * Shows one v2 aggregator round (a Verdikta aggregation ID): its phase and timing
  * (getRoundInfo), each drawn juror's slot (getSlot: committed, reveal requested, revealed,
- * counted, quality, late) and the round's events. Round ids are sequential per aggregator:
- * `?bountyId=<jobId>` (the server reads that bounty's aggregator), `?jury=<index>` or
- * `?aggregator=<address>` names it; the server's first aggregator is assumed otherwise.
- * Times are measured from the draw (the round's deadline and T+ run from it).
+ * counted, quality, late) and the round's events, on the escrow's one aggregator (it serves every
+ * jury size). The round's own jury (K, M, N, P, timeout) comes from getJury. `?aggregator=<address>`
+ * may name the aggregator; it must be the escrow's. Times are measured from the draw (the round's
+ * deadline and T+ run from it).
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -31,9 +31,7 @@ const networkConfig = config.networks[config.network] || config.networks['base-s
 function AggHistory() {
   const { aggId } = useParams();
   const [searchParams] = useSearchParams();
-  const jury = searchParams.get('jury');
   const aggregator = searchParams.get('aggregator');
-  const bountyId = searchParams.get('bountyId');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -44,7 +42,7 @@ function AggHistory() {
       setLoading(true);
       setError(null);
       try {
-        const result = await apiService.getAggHistory(aggId, { jury, aggregator, bountyId });
+        const result = await apiService.getAggHistory(aggId, { aggregator });
         setData(result.data);
       } catch (err) {
         setError(err.response?.data?.error || err.message);
@@ -53,7 +51,7 @@ function AggHistory() {
       }
     }
     fetchHistory();
-  }, [aggId, jury, aggregator, bountyId]);
+  }, [aggId, aggregator]);
 
   const handleCopy = async (text, key = 'aggId') => {
     try {
@@ -106,8 +104,8 @@ function AggHistory() {
           <p>{data?.message || 'No round found for this aggregation ID.'}</p>
           {data?.aggregator && (
             <p className="timing-hint">
-              Looked on aggregator {data.aggregator}. Each jury has its own aggregator and round ids are
-              sequential per aggregator, so a round of another jury is not found here.
+              Looked on aggregator {data.aggregator}, the escrow&apos;s. Round ids are sequential per
+              aggregator, so a round of an older aggregator is not found here.
             </p>
           )}
           <div className="agg-id-display" style={{ marginTop: '1rem', display: 'inline-block' }}>
@@ -172,11 +170,6 @@ function AggHistory() {
               >
                 {data.aggregator} <ExternalLink size={10} style={{ verticalAlign: 'middle' }} />
               </a>
-              {!bountyId && !jury && !aggregator && (
-                <span className="timing-hint" style={{ marginLeft: '0.5rem' }}>
-                  (no bounty given: the server&apos;s default aggregator; round ids are per aggregator)
-                </span>
-              )}
             </div>
           )}
         </div>
@@ -322,6 +315,12 @@ function AggHistory() {
               <span className="req-actual-label">Cluster size (P)</span>
               <span className="req-actual-value">{contractParams.P}</span>
             </div>
+            {contractParams.timeout > 0 && (
+              <div className="req-actual-row">
+                <span className="req-actual-label" title="The round's deadline runs this long from the draw">Round timeout</span>
+                <span className="req-actual-value">{contractParams.timeout}s</span>
+              </div>
+            )}
           </div>
         </div>
 

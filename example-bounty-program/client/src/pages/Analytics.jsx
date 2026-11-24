@@ -107,8 +107,6 @@ const BOUNTY_STATUS_DESCRIPTIONS = {
   Orphaned: 'Bounty has no associated work products or submissions'
 };
 
-// The escrow's juries, by aggregator index (shared/classPresets.js JURIES)
-const JURY_NAMES = ['small', 'medium', 'large', 'jumbo'];
 
 // Submission status descriptions for tooltips
 // Outcomes follow the escrow's Q-of-N rule: a round passes when at least Q arbiter scores reach
@@ -948,19 +946,12 @@ function Analytics() {
               <div className="health-details">
                 {data?.system?.verdikta?.configured ? (
                   <div className="contract-addresses">
-                    {Array.isArray(data.system.verdikta.aggregators) && data.system.verdikta.aggregators.length > 0
-                      ? data.system.verdikta.aggregators.map((addr, i) => (
-                        <div className="contract-row" key={addr}>
-                          <span className="contract-label">Verdikta Aggregator (jury {i}{JURY_NAMES[i] ? `, ${JURY_NAMES[i]}` : ''}):</span>
-                          <code className="address">{addr}</code>
-                        </div>
-                      ))
-                      : data.system.verdikta.aggregatorAddress && (
-                        <div className="contract-row">
-                          <span className="contract-label">Verdikta Aggregator (jury 0):</span>
-                          <code className="address">{data.system.verdikta.aggregatorAddress}</code>
-                        </div>
-                      )}
+                    {data.system.verdikta.aggregatorAddress && (
+                      <div className="contract-row">
+                        <span className="contract-label" title="One aggregator serves every jury size: each bounty carries its own jury">Verdikta Aggregator:</span>
+                        <code className="address">{data.system.verdikta.aggregatorAddress}</code>
+                      </div>
+                    )}
                     {data.system.verdikta.keeperAddress && (
                       <div className="contract-row">
                         <span className="contract-label">Reputation Keeper:</span>
@@ -1016,40 +1007,33 @@ function Analytics() {
               </div>
             </div>
 
-            {/* Aggregator Config: every aggregator the server is configured with */}
-            {(data?.system?.aggregatorConfigs || (data?.system?.aggregatorConfig ? [data.system.aggregatorConfig] : [])).map((c) => (
-              <div className="health-card wide" key={c.aggregator || c.jury || 0}>
+            {/* Aggregator Config: the one aggregator; the jury (K/M/N/P, timeout) is each bounty's */}
+            {[data?.system?.aggregatorConfig].filter(Boolean).map((c) => (
+              <div className="health-card wide" key={c.aggregator || 'aggregator'}>
                 <div className="health-header">
                   <span className="health-status healthy"><Zap size={16} /></span>
-                  <span className="health-title">
-                    Aggregator Configuration (jury {c.jury ?? 0}
-                    {JURY_NAMES[c.jury ?? 0] ? `, ${JURY_NAMES[c.jury ?? 0]}` : ''})
-                  </span>
+                  <span className="health-title">Aggregator Configuration</span>
                 </div>
                 <div className="health-details config-grid">
-                  <div className="config-item" title="Distinct eligible arbiters drawn per round; with fewer eligible in the class, every draw fails">
-                    <span className="config-label">Jurors Drawn (K)</span>
-                    <span className="config-value">{c.K ?? c.commitOraclesToPoll}</span>
+                  <div className="config-item" title="Each bounty carries its own jury: K drawn, M promoted (the commit window closes at M+ commits, or after T+ with at least M), N counted, P clustered, and the round timeout. With fewer than K eligible arbiters the draw repeats arbiters; it fails only when none is eligible.">
+                    <span className="config-label">Jury (K/M/N/P, timeout)</span>
+                    <span className="config-value">per bounty</span>
                   </div>
-                  <div className="config-item" title="The commit window closes at M+ commits, or after T+ (from the draw) with at least M; M of the commits are promoted to reveal">
-                    <span className="config-label">Promoted (M) · Closes at (M+)</span>
-                    <span className="config-value">{c.M ?? c.oraclesToPoll} · {c.mPlus ?? '-'}</span>
-                  </div>
-                  <div className="config-item" title="The N-th counted reveal finalizes the round; later reveals are scored, not counted">
-                    <span className="config-label">Reveals Counted (N)</span>
-                    <span className="config-value">{c.N ?? c.requiredResponses}</span>
-                  </div>
-                  <div className="config-item" title="The P nearest reveals set the score and earn the bonus">
-                    <span className="config-label">Cluster (P)</span>
-                    <span className="config-value">{c.P ?? c.clusterSize}</span>
-                  </div>
+                  {c.maxJury != null && (
+                    <div className="config-item" title="The largest K a request may ask for (each request also checks the keeper's shortlist)">
+                      <span className="config-label">Max Jury (K)</span>
+                      <span className="config-value">{c.maxJury}</span>
+                    </div>
+                  )}
+                  {c.maxTimeout != null && (
+                    <div className="config-item" title="The longest round timeout a request may ask for; every timeout must exceed T+. The timeout runs from the draw.">
+                      <span className="config-label">Max Round Timeout</span>
+                      <span className="config-value">{c.maxTimeout}s</span>
+                    </div>
+                  )}
                   <div className="config-item">
                     <span className="config-label">Bonus Multiplier</span>
                     <span className="config-value">{c.bonusMultiplier}x</span>
-                  </div>
-                  <div className="config-item" title="The round deadline, from the draw (not the request)">
-                    <span className="config-label">Round Timeout (from the draw)</span>
-                    <span className="config-value">{c.responseTimeoutSeconds}s</span>
                   </div>
                   {c.tPlus != null && (
                     <div className="config-item" title="After T+ from the draw the window closes once M commits are in">

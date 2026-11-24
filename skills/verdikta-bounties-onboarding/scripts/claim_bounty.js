@@ -53,12 +53,12 @@ export async function runClaim(lib, { contract = (address, abi, provider) => new
       method = 'rerunSubmission';
       review = [`Re-run submission ${submissionId}: a new round with a fresh jury, attaching the prepay ${formatEther(value)} ETH (${value} wei); the unspent part comes back`, `Round ${Number(submission.rounds) + 1} of at most 6; the bond stays held`];
     } else if (next === 'CLOSE_COMMITS' || next === 'PROMOTE') {
-      // The bounty's aggregator, with the round's aggregation id; the executor re-reads both from the escrow.
-      const [aggregator, submission] = await Promise.all([escrow.aggregatorOf(jobId), escrow.getSubmission(jobId, submissionId)]);
+      // The escrow's aggregator (one for every jury size), with the round's aggregation id; the executor re-reads both from the escrow.
+      const [aggregator, submission] = await Promise.all([escrow.aggregator(), escrow.getSubmission(jobId, submissionId)]);
       tx = { to: aggregator, chainId, value: '0', data: aggregatorIface.encodeFunctionData(method, [submission.verdiktaAggId]) };
       args.splice(0, 2, submission.verdiktaAggId);
       round = { bountyId: BigInt(jobId), submissionId: BigInt(submissionId) };
-      review = [`${method} on the bounty's aggregator ${aggregator} (gas only; anyone may send it)`];
+      review = [`${method} on the escrow's aggregator ${aggregator} (gas only; anyone may send it)`];
     } else if (next === 'FINALIZE') {
       const result = await escrow.getOracleResult(jobId, submissionId), outcome = outcomeName(result.outcome);
       review = [`Round result: ${outcome}, ${result.passCount} juror score(s) at or above the threshold`, `Effect: ${EFFECT[outcome] ?? 'see the escrow'}`];

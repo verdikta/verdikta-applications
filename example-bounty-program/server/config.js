@@ -12,19 +12,19 @@ const networks = {
     name: 'Base Sepolia',
     rpcUrl: 'https://sepolia.base.org',
     explorer: 'https://sepolia.basescan.org',
-    // The v2 aggregators (one per jury size) are the escrow's approved list, read from the escrow
-    // at startup; VERDIKTA_AGGREGATORS_BASE_SEPOLIA (comma-separated, jury order) overrides it.
-    verdiktaAggregatorsEnv: 'VERDIKTA_AGGREGATORS_BASE_SEPOLIA',
-    // lower bound for analytics event scans: the earliest v2 aggregator's deploy block
-    verdiktaAggregatorDeployBlockEnv: 'VERDIKTA_AGGREGATORS_DEPLOY_BLOCK_BASE_SEPOLIA',
+    // The v2 aggregator (one serves every jury size) is the escrow's, read with escrow.aggregator()
+    // at startup; VERDIKTA_AGGREGATOR_BASE_SEPOLIA overrides it.
+    verdiktaAggregatorEnv: 'VERDIKTA_AGGREGATOR_BASE_SEPOLIA',
+    // lower bound for analytics event scans: the v2 aggregator's deploy block
+    verdiktaAggregatorDeployBlockEnv: 'VERDIKTA_AGGREGATOR_DEPLOY_BLOCK_BASE_SEPOLIA',
   },
   'base': {
     chainId: 8453,
     name: 'Base',
     rpcUrl: 'https://mainnet.base.org',
     explorer: 'https://basescan.org',
-    verdiktaAggregatorsEnv: 'VERDIKTA_AGGREGATORS_BASE',
-    verdiktaAggregatorDeployBlockEnv: 'VERDIKTA_AGGREGATORS_DEPLOY_BLOCK_BASE',
+    verdiktaAggregatorEnv: 'VERDIKTA_AGGREGATOR_BASE',
+    verdiktaAggregatorDeployBlockEnv: 'VERDIKTA_AGGREGATOR_DEPLOY_BLOCK_BASE',
   },
 };
 
@@ -81,10 +81,9 @@ const config = {
   // Contract addresses
   // BountyEscrow address selected based on NETWORK
   bountyEscrowAddress: bountyEscrowAddresses[networkKey] || '',
-  // The v2 aggregators (jury order), when set for this network; otherwise server.js reads the
-  // escrow's approved list. Deploy block: the lower bound for analytics event scans.
-  verdiktaAggregators: String(process.env[networkDefaults.verdiktaAggregatorsEnv] || '')
-    .split(',').map((a) => a.trim()).filter(Boolean),
+  // The v2 aggregator, when set for this network; otherwise server.js reads escrow.aggregator().
+  // Deploy block: the lower bound for analytics event scans.
+  verdiktaAggregator: String(process.env[networkDefaults.verdiktaAggregatorEnv] || '').trim(),
   verdiktaAggregatorDeployBlock: parseInt(process.env[networkDefaults.verdiktaAggregatorDeployBlockEnv]) || 0,
   verdiktaRpcUrl: getVerdiktaRpcUrl(),
 
@@ -161,8 +160,8 @@ config.rpcProviderUrl = config.rpcUrl;
 // two come from the size-class presets in shared/classPresets.js, not from here).
 // Hunters pass none of them to prepareSubmission. At start the escrow clamps the
 // fee ceiling to the aggregator's live maxOracleFee (effectiveOracleParams) and
-// sizes the prepay as aggregator.maxTotalFee(maxOracleFee, minOracleFee, withBeacons):
-// juror x (K + bonusMultiplier x P [+ the beacon quorum]) + eff x (drawRewardFees +
+// sizes the prepay as aggregator.maxTotalFee(maxOracleFee, minOracleFee, withBeacons, K, P) for
+// the bounty's own jury: juror x (K + bonusMultiplier x P [+ the beacon quorum]) + eff x (drawRewardFees +
 // promoteRewardFees), where eff = min(maxOracleFee, the aggregator's ceiling) and
 // juror = max(eff, minOracleFee).
 //

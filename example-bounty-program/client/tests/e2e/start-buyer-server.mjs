@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 Object.assign(process.env, {
   VITE_NETWORK: 'base-sepolia',
   VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA: '0x1111111111111111111111111111111111111111',
-  // No aggregator address: v2 reads each bounty's aggregator from the escrow (aggregatorOf),
-  // which the specs' fake chain answers.
+  // No aggregator address: v2 reads the one aggregator from the escrow (aggregator()), which the
+  // specs' fake chain answers.
 });
 const server = await createServer({
   root: fileURLToPath(new URL('../../', import.meta.url)),

@@ -66,7 +66,7 @@ npm run deploy:sepolia     # deploy to Base Sepolia
 npm run deploy:base        # deploy to Base mainnet
 ```
 
-Deployment scripts: `deploy/01_deploy_bounty.js` (needs `VERDIKTA_AGGREGATORS_<NETWORK>`, see [Smart contracts](#smart-contracts) under Deployment). Convenience wrappers: `deploy_testnet.sh`, `deploy_mainnet.sh`.
+Deployment scripts: `deploy/01_deploy_bounty.js` (needs `VERDIKTA_AGGREGATOR_<NETWORK>`, see [Smart contracts](#smart-contracts) under Deployment). Convenience wrappers: `deploy_testnet.sh`, `deploy_mainnet.sh`.
 
 ---
 
@@ -90,7 +90,7 @@ Start from the `server/.env.example` template and fill in the values. Required k
 Optional, for v2:
 
 - `KEEPER_PRIVATE_KEY` — a funded hot wallet for the [round keeper](#round-keeper). Keep only a little ETH on it. Empty: no keeper; every round step is then left to hunters and others (the calldata endpoints).
-- `VERDIKTA_AGGREGATORS_BASE_SEPOLIA` / `VERDIKTA_AGGREGATORS_BASE` — the v2 aggregators, comma-separated, in jury order (0 small, 1 medium, 2 large, 3 jumbo). Normally read from the escrow (`aggregators(i)`) at startup; set these only to override. `VERDIKTA_AGGREGATORS_DEPLOY_BLOCK_*` gives the block event scans start at.
+- `VERDIKTA_AGGREGATOR_BASE_SEPOLIA` / `VERDIKTA_AGGREGATOR_BASE` — the v2 aggregator (one serves every jury size). Normally read from the escrow (`aggregator()`) at startup; set these only to override. `VERDIKTA_AGGREGATOR_DEPLOY_BLOCK_*` gives the block event scans start at.
 
 See `server/.env.example` for the complete set including archival, rate-limiting, and oracle config.
 
@@ -101,7 +101,7 @@ Start from `client/.env.example` and fill in the values. Required:
 - `VITE_NETWORK` — `base-sepolia` or `base`
 - `VITE_CLIENT_KEY` — must match `FRONTEND_CLIENT_KEY` on the server
 - `VITE_BOUNTY_ESCROW_ADDRESS_BASE_SEPOLIA` and `VITE_BOUNTY_ESCROW_ADDRESS_BASE` — **current values from the Analytics page** (`/analytics` → System Health → Contract Addresses)
-- `VITE_VERDIKTA_AGGREGATOR_ADDRESS_*` — optional and display-only: v2 bounties run on one aggregator per jury, read from the escrow (`aggregatorOf` / `aggregators(i)`). Leave empty, or set a v2 aggregator address (never a v1 one); the v2 aggregators are not deployed yet
+- `VITE_VERDIKTA_AGGREGATOR_ADDRESS_*` — optional and display-only: v2 bounties run on the escrow's one aggregator, read from the escrow (`aggregator()`). Leave empty, or set the v2 aggregator address (never a v1 one); the v2 aggregator is not deployed yet
 
 ### Contracts (`onchain/.env`)
 
@@ -110,10 +110,10 @@ PRIVATE_KEY=<deployer-private-key>      # NEVER commit
 BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
 BASE_MAINNET_RPC_URL=https://mainnet.base.org
 BASESCAN_API_KEY=<for-source-verification>
-# The v2 aggregators the escrow is bound to, comma-separated, in jury order
-# (small, medium, large, jumbo). Not deployed yet: fill in after the v2 aggregator deploy.
-VERDIKTA_AGGREGATORS_BASE_SEPOLIA=<V2_AGGREGATOR_SMALL>,<V2_AGGREGATOR_MEDIUM>,<V2_AGGREGATOR_LARGE>,<V2_AGGREGATOR_JUMBO>
-VERDIKTA_AGGREGATORS_BASE=<same, for mainnet>
+# The v2 aggregator the escrow is bound to (one serves every jury size: each bounty carries its
+# own jury). Not deployed yet: fill in after the v2 aggregator deploy.
+VERDIKTA_AGGREGATOR_BASE_SEPOLIA=<V2_AGGREGATOR>
+VERDIKTA_AGGREGATOR_BASE=<same, for mainnet>
 ```
 
 ---
@@ -126,7 +126,7 @@ Browser  ──HTTP──▶  server (Express)  ──RPC──▶  Base Sepolia
    │                     ├──▶  IPFS (Pinata)
    │                     └──▶  jobs.json (per-network local storage)
    │
-   └──MetaMask──▶  BountyEscrow contract  ──▶  v2 aggregators (one per jury size)
+   └──MetaMask──▶  BountyEscrow contract  ──▶  v2 aggregator (one for every jury size)
                             ▲
    server round keeper ─────┘  (drawJury, closeCommits, promote, closeFailedRound, expireRerun)
 ```
@@ -192,13 +192,13 @@ npm run deploy:sepolia     # or deploy:base
 # Deployer key from .env, RPC from hardhat.config.js
 ```
 
-The escrow is bound at deployment to the v2 aggregators, one per jury size, and the list can never change (there is no setter). Deploy the aggregators first (verdikta-dispatcher, `reputationBasedAggregator/deploy`, once per jury size with `AGG_CLASS=small|medium|large|jumbo`), then list them in `onchain/.env` as `VERDIKTA_AGGREGATORS_BASE_SEPOLIA` / `VERDIKTA_AGGREGATORS_BASE`: comma-separated, in jury order (index 0 small, 1 medium, 2 large, 3 jumbo — the order `shared/classPresets.js` assumes), 1 to 8 addresses, no duplicates. `deploy/01_deploy_bounty.js` refuses to run without the list and prints each jury's address.
+The escrow is bound at deployment to one v2 aggregator, and it can never change (there is no setter). One aggregator serves every jury size: each bounty carries its own jury (K, M, N, P, timeout; `shared/classPresets.js` holds the presets), sent with every request, and the aggregator's owner bounds it with `setLimits(maxJury, maxTimeout, tPlus)` (defaults 50 / 3600 / 155). Deploy the aggregator first (verdikta-dispatcher, `reputationBasedAggregator/deploy`), then set `VERDIKTA_AGGREGATOR_BASE_SEPOLIA` / `VERDIKTA_AGGREGATOR_BASE` in `onchain/.env` to its address. `deploy/01_deploy_bounty.js` refuses to run without it (and refuses an old `VERDIKTA_AGGREGATORS_*` list of more than one address).
 
 For a **breaking** contract revision (any ABI change) do not deploy in isolation — follow a cutover runbook (the last one is `deploy/CUTOVER-2026-09-12.md`; a v2-specific runbook has not been written yet): close out the old contract's open bounties, deploy testnet then mainnet, stop services, flip the addresses and `deploymentBlocks`, archive and reset `jobs.json` (bounty IDs restart at 0 on a new contract and `jobId == bountyId`), restart, smoke-test. The September runbook has a rollback section.
 
 After deployment:
 1. Note the new BountyEscrow address from console output. The deploy script also auto-writes it to `onchain/deployments/{chainId}-{network}.json`.
-2. Update `BOUNTY_ESCROW_ADDRESS_*` in `server/.env` and `VITE_BOUNTY_ESCROW_ADDRESS_*` in `client/.env` to the new address for this network. The server reads the aggregator list from the escrow.
+2. Update `BOUNTY_ESCROW_ADDRESS_*` in `server/.env` and `VITE_BOUNTY_ESCROW_ADDRESS_*` in `client/.env` to the new address for this network. The server reads the aggregator from the escrow (`aggregator()`).
 3. Set `KEEPER_PRIVATE_KEY` in `server/.env` to a funded hot wallet if this server should run the [round keeper](#round-keeper).
 4. Restart the server (`cd server && ./restartServer.sh`) and rebuild the client (`cd client && ./rebuildClient.sh` or `npm run build`).
 5. **Update `README.md`** — the "Contract Addresses" section holds the escrow and aggregator addresses (placeholders until the v2 deploy). **Do not leave this stale** — the running website's `/analytics` page is the live source of truth, and the README should agree with it.
@@ -225,9 +225,9 @@ Identical ABI means internal-logic-only changes: safe to deploy against the exis
 
 | Piece | v0.5.0 | v2 |
 |---|---|---|
-| Constructor | one aggregator address | `(IVerdiktaAggregator[] aggregators)`: 1–8, one per jury size, fixed (`aggregators(i)`, `aggregatorCount()`, `aggregatorOf(bountyId)`) |
-| `createBounty` struct | `oracle: {maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling}` | `oracle` adds `minOracleFee`, `withBeacons`; the struct adds `jury`, `quota` (Q), `forfeitLine` (R), `bond` |
-| `getBounty` tuple | 15 fields | the same with the longer `oracle`, plus `jury, quota, forfeitLine, bond` |
+| Constructor | one aggregator address | one v2 aggregator, fixed (`aggregator()`), serving every jury size |
+| `createBounty` struct | `oracle: {maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling}` | `oracle` adds `minOracleFee`, `withBeacons`; the struct adds `jury` (a struct: K, M, N, P, timeout), `quota` (Q), `forfeitLine` (R), `bond` |
+| `getBounty` tuple | 15 fields | the same with the longer `oracle`, plus the jury flat (`juryK, juryM, juryN, juryP, juryTimeout`) and `quota, forfeitLine, bond` |
 | `getSubmission` tuple | 12 fields | + `bondFunder, bondHeld, rerunDeadline, rounds, passCount` |
 | `SubmissionStatus` | 0–5 | + `AwaitingRerun` (6) |
 | Starting | `msg.value == requiredPrepay` | `msg.value == startValue(bountyId)` = `requiredPrepay` + bond |
@@ -237,21 +237,21 @@ Identical ABI means internal-logic-only changes: safe to deploy against the exis
 | Events | — | `RerunAwaited`, `BondReturned`, `BondForfeited` |
 | Concurrency | 256 evaluations per bounty | `MAX_ACTIVE_EVALUATIONS = 64` rounds in flight (submissions awaiting a re-run don't count) |
 | Lens | `getOracleResult` → `started, hasResult, settled, failed, scores, justificationCids, startTimestamp` | `started, hasResult, phase, outcome, rounds, passCount, deadline, requestTime, scores, justificationCids`; `nextAction` values in [Driving the contract without the API](#driving-the-contract-without-the-api) |
-| Aggregator interface | v1 | v2: 9-argument request, `maxTotalFee(maxFee, minFee, withBeacons)`, `drawJury`, `closeCommits`, `promote`, `settle`, `cancelUnsealed`, `getRoundInfo`, `getOutcomeScores`, `N()` |
+| Aggregator interface | v1 | v2: 10-argument request (the last is the jury), `maxTotalFee(maxFee, minFee, withBeacons, K, P)`, `drawJury`, `closeCommits`, `promote`, `settle`, `cancelUnsealed`, `getRoundInfo`, `getJury`, `getOutcomeScores`; no `K()`/`M()`/`N()`/`P()`/`responseTimeoutSeconds()` |
 
 Exact fragments (copy verbatim into ABI lists):
 
 ```
-function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)
+function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)
 function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)
-function getBounty(uint256 bountyId) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 jury, uint8 quota, uint8 forfeitLine, uint128 bond))
+function getBounty(uint256 bountyId) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 juryK, uint8 juryM, uint8 juryN, uint8 juryP, uint40 juryTimeout, uint8 quota, uint8 forfeitLine, uint128 bond))
 function getSubmission(uint256 bountyId, uint256 submissionId) view returns ((address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint8 acceptance, uint8 rejection, uint64 submittedAt, uint64 finalizedAt, uint96 ethMaxBudget, uint64 creatorWindowEnd, address funder, address bondFunder, uint96 bondHeld, uint64 rerunDeadline, uint8 rounds, uint8 passCount))
 function startValue(uint256 bountyId) view returns (uint256)
 function drawJury(uint256 bountyId, uint256 submissionId)
 function closeFailedRound(uint256 bountyId, uint256 submissionId)
 function rerunSubmission(uint256 bountyId, uint256 submissionId) payable
 function expireRerun(uint256 bountyId, uint256 submissionId)
-function aggregatorOf(uint256 bountyId) view returns (address)
+function aggregator() view returns (address)
 event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, bool paid, uint256 acceptance, uint256 rejection, string justificationCids)
 event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)
 event RerunAwaited(uint256 indexed bountyId, uint256 indexed submissionId, uint8 round, uint256 passCount, bool noResult, uint64 rerunDeadline)
@@ -434,7 +434,7 @@ These are enforced by `BountyEscrow.sol` and are the source of truth for every l
 **The round (v2 aggregator).** `startPreparedSubmission` (and `rerunSubmission`) only requests the round: the aggregator escrows the prepay and nothing else happens until the jury is drawn.
 
 - `drawJury(bountyId, submissionId)` — anyone, from two blocks after the start. It calls the aggregator through the submission's EvaluationWallet, so the wallet is the requester and the draw reward (2 × the fee ceiling, the requester's alone for the first 30 seconds, then whoever draws) goes back to the round's funder with the leftover. A beacon bounty (`withBeacons`, the Jumbo preset) draws twice: the first call starts the beacon stage, the second draws once 2 beacon values are in.
-- Commits: the window closes by itself at enough commits, or `closeCommits(aggId)` on the bounty's aggregator (`aggregatorOf(bountyId)`) closes it once *T*+ (155 s by default) has passed with at least *M* commits. `promote(aggId)` is due from two blocks after the close; its caller earns 1 × the fee ceiling.
+- Commits: the window closes by itself at enough commits, or `closeCommits(aggId)` on the escrow's aggregator (`aggregator()`) closes it once *T*+ (155 s by default) has passed with at least *M* commits. `promote(aggId)` is due from two blocks after the close; its caller earns 1 × the fee ceiling.
 - The *N*-th reveal produces the result; `finalizeSubmission` can run from then on.
 - There is no fixed timeout. A drawn round has a deadline counted from the draw (300 s at Small to Large, 600 s at Jumbo by default, extended when the close or promotion came late); an undrawn round can be cancelled a day after its start. A round that ends without a result is closed with `closeFailedRound`. If nobody draws within about 27 minutes, the round can no longer be drawn and is cancelled with its whole prepay going to the aggregator's treasury, as are rounds whose commit phase was never closed or promoted: the keeper, or anyone, should send these steps promptly. See the aggregator's [user guide](../docs/user-guide.md#failure-and-refund-paths).
 
@@ -465,7 +465,7 @@ When a passing `finalizeSubmission` on any bounty is blocked by another hunter's
 
 **Why index priority and not "first to complete".** The work CID is public from the moment `prepareSubmission` lands, so on an open bounty anyone can prepare and start a copy of it at a higher index. Two oracle rounds over identical content complete in random order; a "first to complete wins" rule would hand the copier the bounty about half the time (more, with several copies). Index priority makes the earlier submitter win whenever their own round passes. The cost is that a later passing submission may have to retry finalize while an earlier round finishes or its re-run window runs out.
 
-**Oracle and decision settings belong to the creator** (`Bounty.oracle`, `jury`, `quota`, `forfeitLine`, `bond`, set in `createBounty`; validated by `MAX_ALPHA = 1000`, `MAX_FEE_SCALING_FACTOR = 1000`, fee ≤ the jury's `maxOracleFee()`, base cost < fee, scaling ≥ 1, `jury < aggregatorCount()`, `1 ≤ quota ≤ N()` of that aggregator, `forfeitLine ≤ quota`). Size-class presets (`shared/classPresets.js`) fill them in; the creator may override every value. They are used verbatim for every evaluation of the bounty; `prepareSubmission` takes only the two CIDs and the addendum forwarded to the aggregator is the constant `ADDENDUM = ""`. Why the creator and not the hunter: the aggregator's keeper treats `maxOracleFee` as an eligibility filter (an arbiter is selectable only if its fee ≤ the request's ceiling), and `estimatedBaseCost` / `maxFeeBasedScaling` weight selection by price — whoever sets them can shrink or tilt the jury toward nodes they run. The fee floor (`minOracleFee`) prices every juror at least at that amount; it may exceed the ceiling. A hunter can see a bounty's settings before committing work and walk away (the website's validate check warns on a small eligible pool, a dominant operator, an enabled price boost or an extreme alpha); a creator cannot inspect a hunter. `ethMaxBudget = maxTotalFee(maxOracleFee, minOracleFee, withBeacons)` on the bounty's aggregator is identical for every submission to a bounty. The residual lever is the class itself (a class served by one operator is that operator's private jury) — visible on the bounty.
+**Oracle and decision settings belong to the creator** (`Bounty.oracle`, `jury`, `quota`, `forfeitLine`, `bond`, set in `createBounty`; validated by `MAX_ALPHA = 1000`, `MAX_FEE_SCALING_FACTOR = 1000`, fee ≤ the aggregator's `maxOracleFee()`, base cost < fee, scaling ≥ 1, a jury with K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40 and P ≥ 2 unless N = 1, `1 ≤ quota ≤` the jury's N, `forfeitLine ≤ quota`; the aggregator's live limits — K ≤ `maxJury()` and the keeper's shortlist, T+ < timeout ≤ `maxTimeout()` — are checked by each request). Size-class presets (`shared/classPresets.js`) fill them in; the creator may override every value. They are used verbatim for every evaluation of the bounty; `prepareSubmission` takes only the two CIDs and the addendum forwarded to the aggregator is the constant `ADDENDUM = ""`. Why the creator and not the hunter: the aggregator's keeper treats `maxOracleFee` as an eligibility filter (an arbiter is selectable only if its fee ≤ the request's ceiling), and `estimatedBaseCost` / `maxFeeBasedScaling` weight selection by price — whoever sets them can shrink or tilt the jury toward nodes they run. The fee floor (`minOracleFee`) prices every juror at least at that amount; it may exceed the ceiling. A hunter can see a bounty's settings before committing work and walk away (the website's validate check warns on a small eligible pool, a dominant operator, an enabled price boost or an extreme alpha); a creator cannot inspect a hunter. `ethMaxBudget = maxTotalFee(maxOracleFee, minOracleFee, withBeacons, K, P)` on the aggregator, for the bounty's jury, is identical for every submission to a bounty. The residual lever is the class itself (a class served by one operator is that operator's private jury) — visible on the bounty.
 
 **Prepay refreshed at start, settings clamped to the live ceiling** (`requiredPrepay`, `startValue`, `effectiveOracleParams`, `_effectiveOracle`). The aggregator's fee ceiling, jury size, bonus multiplier and rewards are owner-settable and may change after a bounty is created; creation validates the creator's settings only against the ceiling of that moment. At every start and re-run the escrow reads the live ceiling and clamps the bounty's settings to what the aggregator will accept: `maxOracleFee → min(fee, ceiling)` (mirroring the aggregator's own clamp), and `estimatedBaseCost → effectiveFee − 1` if it no longer sits strictly below the effective fee. `alpha`, `maxFeeBasedScaling`, the fee floor and the beacon flag pass through unchanged. `requiredPrepay()` is quoted from the effective fee, `startValue()` adds the bond, the start requires `msg.value` to match exactly (`wrong eth amount`) and stores what was actually prepaid, and `effectiveOracleParams(bountyId)` shows what will be forwarded; the stored `Bounty.oracle` is never modified. A start also re-checks that the quota still fits the aggregator's N (`quota above jury size`). `prepareSubmission`'s `ethMaxBudget` is therefore only an estimate.
 
@@ -489,7 +489,8 @@ Agents can run the whole lifecycle against `BountyEscrow` alone, plus the bounty
 | Read a bounty's submissions | `getSubmissionsPage(bountyId, start, count)` (≤ 100 per call; page with `start += result.length`) — `getSubmissions(bountyId)` returns all at once, fine for a handful, risky on a junk-flooded non-windowed bounty; `pendingSubmissionIds(bountyId)` lists the ids in evaluation or awaiting a re-run |
 | Can I still prepare? | `prepareCutoff(bountyId)` — last unix second `prepareSubmission` succeeds (windowed: `deadline − window − 2`); `isAcceptingSubmissions(bountyId)` |
 | How much to attach | `startValue(bountyId)` at start (prepay + bond), `requiredPrepay(bountyId)` for a re-run — read right before sending; `effectiveOracleParams(bountyId)` shows the fee block actually forwarded |
-| Which aggregator | `aggregatorOf(bountyId)` (for `closeCommits` / `promote`), `aggregators(i)`, `aggregatorCount()` |
+| Which aggregator | `aggregator()` (for `closeCommits` / `promote`; one for every bounty) |
+| A bounty's jury | `getBounty(bountyId)`: `juryK`, `juryM`, `juryN`, `juryP`, `juryTimeout`; a round's: the aggregator's `getJury(aggId)` |
 | Is the oracle done? | `getOracleResult(bountyId, submissionId)` → `started, hasResult, phase, outcome (0 not ready, 1 no result, 2 pass, 3 soft fail, 4 hard fail), rounds, passCount, deadline, requestTime, scores, justificationCids` — no aggregator ABI needed |
 | What should I do now? | `nextAction(bountyId, submissionId)` → `START` \| `AWAIT_SLOT` \| `AWAIT_CREATOR` \| `DRAW` \| `CLOSE_COMMITS` \| `PROMOTE` \| `AWAIT_ORACLE` \| `AWAIT_EARLIER` \| `FINALIZE` \| `CLOSE_FAILED` \| `RERUN` \| `AWAIT_EXPIRY` \| `EXPIRE_RERUN` \| `RECOVER_REFUND` \| `DONE` \| `DEAD` (the on-chain equivalent of `/diagnose`). Every label names the call that will SUCCEED now: `DRAW` = `escrow.drawJury`; `CLOSE_COMMITS` / `PROMOTE` = the aggregator's `closeCommits(aggId)` / `promote(aggId)`; `AWAIT_SLOT` = a start or re-run would hit the 64-round cap; `AWAIT_EARLIER` = a passing result that must wait for an earlier submission (payout priority); `AWAIT_EXPIRY` = a re-run would revert because another round already passes; `DEAD` also covers "an in-flight submission already passes" (start would revert) |
 | Bounty state | `getEffectiveBountyStatus(bountyId)` → `OPEN` \| `EXPIRED` \| `AWARDED` \| `CLOSED`; `canBeClosed(bountyId)`. `EXPIRED` (Open past the deadline) still **pays** a passing in-flight submission on finalize — only `AWARDED`/`CLOSED` are terminal |
@@ -564,7 +565,7 @@ The `linkage` field is a structured verdict — `state` is one of:
 - `startPreparedSubmission(uint256 bountyId, uint256 submissionId)` is **payable** — the funder attaches `startValue(bountyId)` (the round's prepay, `requiredPrepay(bountyId)`, plus the bounty's bond) as `msg.value`, read live from the escrow. A re-run (`rerunSubmission`) attaches `requiredPrepay` only. There is no LINK token, ERC-20 approval, or allowance step.
 - The value must match exactly: anything else reverts `wrong eth amount`. Any unspent prepay is automatically refunded when the round resolves (finalize or `closeFailedRound`); the bond when the submission resolves, unless a hard fail forfeits it.
 - **The event value is an estimate, and excludes the bond.** `ethMaxBudget` in `SubmissionPrepared` (second data word, before the dynamic `string evaluationCid`) is the aggregator's `maxTotalFee` for the bounty's settings *at prepare time*. `startPreparedSubmission` recomputes it live, so a change in aggregator parameters between prepare and start never strands a prepared submission. Read `startValue(bountyId)` right before starting — the `/start` calldata endpoint's `transaction.value` and the website do exactly that. It is the same for every submission to a bounty at any given moment.
-- The prepay is `maxTotalFee(maxOracleFee, minOracleFee, withBeacons)` on the bounty's aggregator: `max(ceiling, floor) × (K + 3 × P [+ 2 beacons]) + ceiling × 3` with the default bonus and rewards. At the API's default ceiling of 0.00002 ETH, no floor and a Small jury (K = 6, P = 3) that is 18 × 0.00002 = 0.00036 ETH; larger juries and a fee floor cost more.
+- The prepay is `maxTotalFee(maxOracleFee, minOracleFee, withBeacons, K, P)` on the aggregator, for the bounty's jury: `max(ceiling, floor) × (K + 3 × P [+ 2 beacons]) + ceiling × 3` with the default bonus and rewards. At the API's default ceiling of 0.00002 ETH, no floor and a Small jury (K = 6, P = 3) that is 18 × 0.00002 = 0.00036 ETH; larger juries and a fee floor cost more.
 
 ### Finding the SubmissionPrepared log (topic0)
 To pull the event off a step-1 receipt you first have to match the log by `topic0`:

@@ -660,8 +660,10 @@ function CreateBounty({ walletState }) {
     const d = parseDecisionLine(t.fields?.decision);
     const o = parseOracleLine(t.fields?.oracle);
     if (!d) return false;
-    // The jury index picks the class; jury 0 is Bondless Small (a wager has no bond either way).
-    const key = (CLASS_PRESETS.find((c) => c.jury === d.jury && c.bondUsd === 0) || CLASS_PRESETS.find((c) => c.jury === d.jury))?.key;
+    // The jury { K, M, N, P, timeout } picks the class; Small's is also Bondless Small's, which a
+    // wager prefers (it has no bond either way). A jury no preset uses is not adopted.
+    const sameJury = (c) => ['K', 'M', 'N', 'P', 'timeout'].every((k) => Number(c.jury[k]) === Number(d.jury[k]));
+    const key = (CLASS_PRESETS.find((c) => sameJury(c) && c.bondUsd === 0) || CLASS_PRESETS.find(sameJury))?.key;
     if (!key) return false;
     setPickedClassKey(key);
     setDecisionOverrides({
@@ -1673,13 +1675,14 @@ function CreateBounty({ walletState }) {
                       <tr>
                         <th>Jury</th>
                         <td>
-                          {bountyClass.K} arbiters drawn, the first {bountyClass.M} commits kept, {bountyClass.N} scores counted
-                          (K/M/N = {bountyClass.K}/{bountyClass.M}/{bountyClass.N}; cluster P = {bountyClass.P})
+                          {bountyClass.jury.K} arbiters drawn, the first {bountyClass.jury.M} commits kept, {bountyClass.jury.N} scores counted
+                          (K/M/N = {bountyClass.jury.K}/{bountyClass.jury.M}/{bountyClass.jury.N}; cluster P = {bountyClass.jury.P});
+                          the round times out {Math.round(bountyClass.jury.timeout / 60)} minutes after the draw
                         </td>
                       </tr>
                       <tr>
                         <th>Pass rule</th>
-                        <td>Q = {decisionForm.quota} of {bountyClass.N}; forfeit line R = {decisionForm.forfeitLine}</td>
+                        <td>Q = {decisionForm.quota} of {bountyClass.jury.N}; forfeit line R = {decisionForm.forfeitLine}</td>
                       </tr>
                       <tr>
                         <th>Hunter bond</th>
@@ -1731,7 +1734,7 @@ function CreateBounty({ walletState }) {
 
                 <div className="class-picker-explain">
                   <p>
-                    <strong>Q (quota):</strong> a submission passes when at least Q of the jury's {bountyClass?.N ?? 'N'} counted
+                    <strong>Q (quota):</strong> a submission passes when at least Q of the jury's {bountyClass?.jury.N ?? 'N'} counted
                     arbiters each score it at or above your threshold. Then the hunter is paid and gets the bond back.
                   </p>
                   <p>
@@ -1760,12 +1763,12 @@ function CreateBounty({ walletState }) {
                   <>
                     <div className="form-row">
                       <div className="form-group">
-                        <label htmlFor="classQuota">Quota Q (1–{bountyClass?.N})</label>
+                        <label htmlFor="classQuota">Quota Q (1–{bountyClass?.jury.N})</label>
                         <input
                           type="number"
                           id="classQuota"
                           min="1"
-                          max={bountyClass?.N}
+                          max={bountyClass?.jury.N}
                           value={decisionForm.quota}
                           onChange={(e) => setDecisionField('quota', e.target.value)}
                         />

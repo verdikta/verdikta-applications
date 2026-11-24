@@ -21,8 +21,8 @@ const GET_LOGS_MAX_BLOCKS = 10_000;
 const rawEscrowAbi = require('../../onchain/abi/BountyEscrow.json');
 const BOUNTY_ESCROW_ABI = rawEscrowAbi.abi || rawEscrowAbi;
 
-// The v2 aggregator (see aggregatorAbi.js). Each bounty's rounds run on the aggregator its jury
-// names (BountyEscrow.aggregatorOf).
+// The v2 aggregator (see aggregatorAbi.js). One aggregator (BountyEscrow.aggregator()) runs every
+// bounty's rounds; the jury is the bounty's own, sent with each request.
 const VERDIKTA_AGGREGATOR_ABI = AGGREGATOR_ABI;
 
 /**
@@ -48,13 +48,28 @@ function normalizeOracleSettings(oracle) {
 }
 
 /**
- * The v2 decision settings of a getBounty() tuple: the jury (approved aggregator index), item 12's
- * pass quota Q and forfeit line R, and the hunter bond (wei string).
+ * A getBounty() tuple's jury (its flat juryK..juryTimeout fields) as { K, M, N, P, timeout }, or
+ * null when the tuple has none (a pre-item-15 record).
+ */
+function normalizeJury(bounty) {
+  if (!bounty || bounty.juryK == null) return null;
+  return {
+    K: Number(bounty.juryK),
+    M: Number(bounty.juryM),
+    N: Number(bounty.juryN),
+    P: Number(bounty.juryP),
+    timeout: Number(bounty.juryTimeout)
+  };
+}
+
+/**
+ * The v2 decision settings of a getBounty() tuple: the bounty's jury ({ K, M, N, P, timeout }),
+ * item 12's pass quota Q and forfeit line R, and the hunter bond (wei string).
  */
 function normalizeDecisionSettings(bounty) {
   try {
     return {
-      jury: Number(bounty.jury),
+      jury: normalizeJury(bounty),
       quota: Number(bounty.quota),
       forfeitLine: Number(bounty.forfeitLine),
       bondWei: (bounty.bond ?? 0n).toString()
@@ -141,10 +156,9 @@ class ContractService {
     this.contract = new ethers.Contract(contractAddress, BOUNTY_ESCROW_ABI, this.provider);
     this.contractAddress = contractAddress;
     this._iface = new ethers.Interface(BOUNTY_ESCROW_ABI);
-    // The escrow's approved aggregators never change; a bounty's jury never changes either.
+    // The escrow's aggregator is immutable (BountyEscrow.aggregator()).
     this._aggregatorAt = new Map();      // address (lowercase) -> Contract
-    this._aggregatorOfBounty = new Map(); // bountyId -> address
-    this._aggregatorList = null;
+    this._aggregatorAddress = null;
   }
 
   /** A v2 aggregator contract (read-only) at `address`, cached. */
@@ -158,26 +172,15 @@ class ContractService {
     return c;
   }
 
-  /** The aggregator a bounty's rounds run on (its jury's), cached. */
-  async getAggregatorFor(bountyId) {
-    const id = String(bountyId);
-    let addr = this._aggregatorOfBounty.get(id);
-    if (!addr) {
-      addr = await this.contract.aggregatorOf(bountyId);
-      this._aggregatorOfBounty.set(id, addr);
-    }
-    return this.getAggregatorAt(addr);
+  /** The escrow's aggregator address (BountyEscrow.aggregator(), immutable), cached. */
+  async getAggregatorAddress() {
+    if (!this._aggregatorAddress) this._aggregatorAddress = await this.contract.aggregator();
+    return this._aggregatorAddress;
   }
 
-  /** The escrow's approved aggregators, in jury order (fixed at deployment), cached. */
-  async getAggregators() {
-    if (!this._aggregatorList) {
-      const n = Number(await this.contract.aggregatorCount());
-      const list = [];
-      for (let i = 0; i < n; i++) list.push(await this.contract.aggregators(i));
-      this._aggregatorList = list;
-    }
-    return this._aggregatorList;
+  /** The aggregator every bounty's rounds run on (read-only contract), cached. */
+  async getAggregator() {
+    return this.getAggregatorAt(await this.getAggregatorAddress());
   }
 
   // ---------------------------------------------------------------------------
@@ -649,6 +652,7 @@ module.exports = {
   ContractService,
   normalizeOracleSettings,
   normalizeDecisionSettings,
+  normalizeJury,
   scoresToPercent,
   BOUNTY_ESCROW_ABI,
   VERDIKTA_AGGREGATOR_ABI

@@ -1,14 +1,16 @@
 /**
  * Verdikta Service
- * Reads the v2 ReputationAggregators (one per jury size) and their shared ReputationKeeper
- * (verdikta-dispatcher `beacon` branch) for analytics: the arbiter registry, class eligibility
- * for a bounty's settings, jury configuration, and one round's history.
+ * Reads the v2 ReputationAggregator and its ReputationKeeper (verdikta-dispatcher `beacon` branch)
+ * for analytics: the arbiter registry, class eligibility for a bounty's settings and jury, the
+ * aggregator's configuration, and one round's history. One aggregator serves every jury size: the
+ * jury (K, M, N, P, timeout) is each request's, read back per round with getJury(aggId).
  *
  * v2 differences that shape this file:
  *  - The keeper has no index-able registry: arbiters are found from ArbiterRegistered logs and read
  *    by key (getArbiter, arbiterClasses, jobIdOf). Status comes from the arbiter's flags, its block
  *    and its health-call freeze (callCount, recent scores and the mild/severe thresholds are gone).
- *  - Round ids are sequential PER AGGREGATOR, so a round is named by (aggregator, aggId).
+ *  - Round ids are sequential PER AGGREGATOR, so a round is named by (aggregator, aggId); this
+ *    service reads the escrow's one aggregator.
  *  - A round's state is getRoundInfo's phase; each juror is a slot (getSlot). The v1 reveal
  *    diagnostics are replaced by each counted reveal's quality code.
  */
@@ -16,6 +18,13 @@
 const { ethers } = require('ethers');
 const logger = require('./logger');
 const { AGGREGATOR_ABI, PHASES } = require('./aggregatorAbi');
+const { presetByKey } = require('../../shared/classPresets');
+
+/** A bounty jury's draw size K ({K, ...}); the Small preset's when the jury is unknown. */
+function juryK(jury) {
+  const k = Number(jury && typeof jury === 'object' ? jury.K : NaN);
+  return Number.isInteger(k) && k > 0 ? k : presetByKey('small').jury.K;
+}
 
 // Event-scan tuning. Public RPCs (e.g. mainnet.base.org) reject eth_getLogs over a >10,000-block
 // range, so every scan is chunked and bounded to a window after the round's request block.
@@ -100,18 +109,15 @@ function arbiterStatus(a, { now = Math.floor(Date.now() / 1000), start = 500 } =
 class VerdiktaService {
   /**
    * @param {string} providerUrl
-   * @param {string|string[]} aggregators  the approved aggregators, in jury order (one per jury size);
-   *   the first answers jury-independent reads (the keeper, which every jury shares)
-   * @param {number} deployBlock  lower bound for event scans (the earliest aggregator's deploy block)
+   * @param {string} aggregator  the escrow's aggregator (BountyEscrow.aggregator(); serves every jury)
+   * @param {number} deployBlock  lower bound for event scans (the aggregator's deploy block)
    */
-  constructor(providerUrl, aggregators, deployBlock = 0) {
+  constructor(providerUrl, aggregator, deployBlock = 0) {
     this._treasuries = {};               // aggregator -> treasury() (owner-settable; cached 10 min)
     this.provider = new ethers.JsonRpcProvider(providerUrl);
-    this.aggregatorAddresses = (Array.isArray(aggregators) ? aggregators : [aggregators]).filter(Boolean);
-    this.aggregatorAddress = this.aggregatorAddresses[0];
+    this.aggregatorAddress = aggregator;
     this.aggregatorDeployBlock = Number(deployBlock) || 0;
-    this.aggregators = this.aggregatorAddresses.map((a) => new ethers.Contract(a, AGGREGATOR_ABI, this.provider));
-    this.aggregator = this.aggregators[0];
+    this.aggregator = new ethers.Contract(aggregator, AGGREGATOR_ABI, this.provider);
     this.keeper = null;
     this.keeperAddress = null;
     this._oraclesCache = null;          // { data, ts }
@@ -119,16 +125,18 @@ class VerdiktaService {
     this._jobIds = {};                  // key -> jobId (static)
   }
 
-  /** The aggregator contract of jury `jury`, or at `address` (one of the approved ones). */
-  aggregatorFor({ jury, address } = {}) {
-    if (address) {
-      const i = this.aggregatorAddresses.findIndex((a) => a.toLowerCase() === String(address).toLowerCase());
-      if (i < 0) throw new Error(`not an approved aggregator: ${address}`);
-      return this.aggregators[i];
-    }
-    const j = Number(jury ?? 0);
-    if (!this.aggregators[j]) throw new Error(`no aggregator for jury ${j}`);
-    return this.aggregators[j];
+  /**
+   * A round's jury as the aggregator stores it (getJury): { K, M, N, P, timeout }, or null for an
+   * unknown round (getJury returns zeros). Fixed at the request, so cached.
+   */
+  async getRoundJury(aggId) {
+    if (!this._juries) this._juries = new Map();
+    const id = String(aggId).toLowerCase();
+    if (this._juries.has(id)) return this._juries.get(id);
+    const [K, M, N, P, timeout] = (await this._withRetry(() => this.aggregator.getJury(aggId), 'getJury')).map(Number);
+    const jury = K > 0 ? { K, M, N, P, timeout } : null;
+    if (jury) this._juries.set(id, jury);
+    return jury;
   }
 
   // Retry a read against transient RPC errors (public/load-balanced endpoints intermittently fail
@@ -178,7 +186,7 @@ class VerdiktaService {
     return out;
   }
 
-  /** The ReputationKeeper every jury's aggregator shares (lazy-loaded). */
+  /** The aggregator's ReputationKeeper (lazy-loaded). */
   async getReputationKeeper() {
     if (!this.keeper) {
       this.keeperAddress = await this.aggregator.keeper();
@@ -189,18 +197,17 @@ class VerdiktaService {
   }
 
   /**
-   * One jury's configuration. K arbiters are drawn; the commit window closes at M+ commits, or after
-   * T+ (from the draw) with at least M; M of the commits are promoted; the N-th reveal finalizes; the
-   * P nearest reveals cluster for the bonus. The round deadline (responseTimeoutSeconds) runs from
-   * the draw. The v1 names are kept as aliases for older clients (commitOraclesToPoll = K,
-   * oraclesToPoll = M, requiredResponses = N, clusterSize = P).
+   * The aggregator's configuration. The jury (K, M, N, P, timeout) is not here: it is each
+   * request's (the bounty's), read per round with getRoundJury. The owner bounds it: K <= maxJury
+   * (and the keeper's shortlist), T+ < timeout <= maxTimeout. A round's commit window closes at M+
+   * commits, or after T+ (from the draw) with at least M; the round deadline (its timeout) runs
+   * from the draw.
    */
-  async getAggregatorConfig(jury = 0) {
-    const agg = this.aggregatorFor({ jury });
-    const [K, M, N, P, bonusMultiplier, responseTimeoutSeconds, maxOracleFee, tPlus, revealWindow] =
+  async getAggregatorConfig() {
+    const agg = this.aggregator;
+    const [bonusMultiplier, maxOracleFee, tPlus, revealWindow, maxJury, maxTimeout] =
       await this._withRetry(() => Promise.all([
-        agg.K(), agg.M(), agg.N(), agg.P(), agg.bonusMultiplier(), agg.responseTimeoutSeconds(),
-        agg.maxOracleFee(), agg.tPlus(), agg.revealWindow()
+        agg.bonusMultiplier(), agg.maxOracleFee(), agg.tPlus(), agg.revealWindow(), agg.maxJury(), agg.maxTimeout()
       ]), 'aggregator-config');
     // Newer reads: optional, so an older deployment still answers the core config.
     const opt = async (fn) => { try { return await this._withRetry(fn, 'aggregator-config-opt', 2); } catch { return null; } };
@@ -214,19 +221,11 @@ class VerdiktaService {
       const jb = new ethers.Contract(beaconsAddr, BEACONS_ABI, this.provider);
       [beaconQuorum, beaconPolled] = await Promise.all([opt(() => jb.quorum()), opt(() => jb.polled())]);
     }
-    const k = Number(K), m = Number(M), n = Number(N), p = Number(P);
     return {
-      jury: Number(jury),
-      aggregator: this.aggregatorAddresses[jury],
-      K: k, M: m, N: n, P: p,
-      // the commit window closes at once at M+ commits (ReputationAggregator.drawJury)
-      mPlus: m + Math.floor((k - m + 1) / 2),
-      commitOraclesToPoll: k,
-      oraclesToPoll: m,
-      requiredResponses: n,
-      clusterSize: p,
+      aggregator: this.aggregatorAddress,
       bonusMultiplier: Number(bonusMultiplier),
-      responseTimeoutSeconds: Number(responseTimeoutSeconds),
+      maxJury: Number(maxJury),
+      maxTimeout: Number(maxTimeout),
       tPlus: Number(tPlus),
       revealWindow: Number(revealWindow),
       maxOracleFee: ethers.formatEther(maxOracleFee),
@@ -239,13 +238,6 @@ class VerdiktaService {
       beaconPolled: beaconPolled == null ? null : Number(beaconPolled),
       treasury: treasury || null
     };
-  }
-
-  /** Every jury's configuration, in jury order. */
-  async getAllAggregatorConfigs() {
-    const out = [];
-    for (let j = 0; j < this.aggregators.length; j++) out.push(await this.getAggregatorConfig(j));
-    return out;
   }
 
   /** Registered arbiters (excludes exited ones). */
@@ -365,17 +357,18 @@ class VerdiktaService {
    * draw under its settings. Eligible (the keeper's own rule, _eligibleAt): registered, not paused,
    * banned, exiting or under-staked, not blocked, not frozen, and posting a fee at or below the
    * bounty's fee ceiling. A fee below the bounty's floor is paid the floor (it doesn't exclude).
-   * The draw needs K DISTINCT eligible arbiters (the keeper reverts NotEnoughEligible otherwise and
-   * the round fails with a refund).
+   * The draw fills the jury's K slots from the eligible arbiters: with fewer than K, the keeper
+   * repeats arbiters (slot k holds pick k mod m), and it fails (refunded) only when none is eligible.
    *
    * A beacon bounty also needs the JuryBeacons quorum from the same class, checked separately:
    * beacons have no fee cap (ReputationKeeper.pickBeacons: registered and selectable only).
    *
    * @param {number} classId
    * @param {{maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling, minOracleFee?, withBeacons?}} oracleSettings (wei strings)
-   * @param {{jury?: number}} [opts]  the bounty's jury (its aggregator's K is the draw size)
+   * @param {{jury?: {K, M, N, P, timeout}}} [opts]  the bounty's jury (its K is the draw size; the
+   *   Small preset's K when not given)
    */
-  async getClassOracleEligibility(classId, oracleSettings, { jury = 0 } = {}) {
+  async getClassOracleEligibility(classId, oracleSettings, { jury = null } = {}) {
     const cls = Number(classId);
     const maxFeeWei = BigInt(String(oracleSettings?.maxOracleFee ?? '0'));
     const minFeeWei = BigInt(String(oracleSettings?.minOracleFee ?? '0'));
@@ -385,16 +378,13 @@ class VerdiktaService {
     const withBeacons = Boolean(oracleSettings?.withBeacons);
 
     const [oracles, start] = await Promise.all([this.getAllOracles(), this._startScore()]);
-    let K = 6;
-    try {
-      K = Number(await this._withRetry(() => this.aggregatorFor({ jury }).K(), 'K')) || K;
-    } catch (_) { /* keep default */ }
+    const K = juryK(jury);
     // Beacon quorum (JuryBeacons.quorum) and whether a draw walks the whole class list.
     let beaconQuorum = null;
     let scansAll = null;
     if (withBeacons) {
       try {
-        const addr = await this._withRetry(() => this.aggregatorFor({ jury }).beacons(), 'beacons');
+        const addr = await this._withRetry(() => this.aggregator.beacons(), 'beacons');
         if (addr && addr !== ethers.ZeroAddress) {
           beaconQuorum = Number(await this._withRetry(() => new ethers.Contract(addr, BEACONS_ABI, this.provider).quorum(), 'quorum'));
         }
@@ -418,9 +408,10 @@ class VerdiktaService {
     });
     const pricedOut = selectable.length - eligible.length;
     const frozen = inClass.filter(o => arbiterStatus(o, { now, start }) === 'frozen').length;
-    // distinct keys: the keeper never draws one arbiter twice
+    // distinct keys: with fewer than K the keeper repeats arbiters, so only none is unservable
     const eligibleCount = new Set(eligible.map(o => o.key)).size;
-    const juryServable = eligibleCount >= K;
+    const juryServable = eligibleCount > 0;
+    const juryDistinct = eligibleCount >= K;
     const beaconsServable = !withBeacons || (beaconQuorum != null ? selectable.length >= beaconQuorum : null);
 
     // Owner concentration among the eligible pool.
@@ -444,7 +435,9 @@ class VerdiktaService {
     if (inClass.length === 0) {
       warnings.push(`No arbiters are registered for class ${cls}. Evaluations for this bounty cannot be drawn until at least ${K} join the class.`);
     } else if (!juryServable) {
-      warnings.push(`Only ${eligibleCount} distinct arbiter(s) in class ${cls} are selectable and priced at or below this bounty's fee ceiling (${ethers.formatEther(maxFeeWei)} ETH), but this jury draws ${K}. Every draw would fail (EvaluationFailed in the draw phase; the prepay is refunded) until more join, unfreeze, or the ceiling is raised.`);
+      warnings.push(`No arbiter in class ${cls} is selectable and priced at or below this bounty's fee ceiling (${ethers.formatEther(maxFeeWei)} ETH). Every draw would fail (EvaluationFailed in the draw phase; the prepay is refunded) until one joins, unfreezes, or the ceiling is raised.`);
+    } else if (!juryDistinct) {
+      warnings.push(`Only ${eligibleCount} distinct arbiter(s) in class ${cls} are selectable and priced at or below this bounty's fee ceiling (${ethers.formatEther(maxFeeWei)} ETH), but this jury draws ${K}. The draw repeats arbiters to fill its ${K} slots, so the jury holds only ${eligibleCount} independent arbiter(s).`);
     }
     if (withBeacons) {
       if (beaconQuorum == null) {
@@ -453,7 +446,7 @@ class VerdiktaService {
         warnings.push(`This bounty uses beacons: the beacon stage needs ${beaconQuorum} selectable arbiter(s) in class ${cls} (beacons have no fee cap), but only ${selectable.length} are. The draw would fail at the beacon stage (pool shortage; the prepay is refunded).`);
       }
       if (scansAll === false) {
-        warnings.push(`Class ${cls} is longer than one selection walk covers, so whether a draw finds ${K} eligible arbiters depends on the seed. After a beacon stage such a failed draw sends the unspent prepay to the treasury, not back to the requester.`);
+        warnings.push(`Class ${cls} is longer than one selection walk covers, so how many eligible arbiters a draw finds depends on the seed. After a beacon stage a draw that finds none sends the unspent prepay to the treasury, not back to the requester.`);
       }
     }
     if (pricedOut > 0) {
@@ -480,7 +473,7 @@ class VerdiktaService {
     return {
       available: true,
       classId: cls,
-      jury: Number(jury),
+      jury: jury && typeof jury === 'object' ? jury : null,
       oracleSettings: {
         maxOracleFee: maxFeeWei.toString(),
         maxOracleFeeEth: ethers.formatEther(maxFeeWei),
@@ -496,6 +489,7 @@ class VerdiktaService {
       frozenInClass: frozen,
       eligibleCount,
       juryServable,
+      juryDistinct,
       beaconQuorum,
       beaconsServable,
       scansAll,
@@ -599,15 +593,19 @@ class VerdiktaService {
 
   /**
    * One round's history: its phase and timing (getRoundInfo), each juror's slot (getSlot) and the
-   * round's events. Round ids are sequential per aggregator, so name the aggregator (or the jury);
-   * the first approved aggregator is assumed otherwise.
+   * round's events. Round ids are sequential per aggregator; this reads the escrow's aggregator
+   * (`where.aggregator`, when given, must be it). The round's jury (K, M, N, P, timeout) is its own,
+   * from getJury.
    *
    * @param {string} aggId  bytes32
-   * @param {{aggregator?: string, jury?: number}} [where]
+   * @param {{aggregator?: string}} [where]
    */
   async getAggHistory(aggId, where = {}) {
-    const agg = this.aggregatorFor({ jury: where.jury, address: where.aggregator });
+    const agg = this.aggregator;
     const aggAddress = await agg.getAddress();
+    if (where.aggregator && String(where.aggregator).toLowerCase() !== String(aggAddress).toLowerCase()) {
+      throw new Error(`not the escrow's aggregator: ${where.aggregator}`);
+    }
     const currentBlock = await this.provider.getBlockNumber();
 
     const info = await this._withRetry(() => agg.getRoundInfo(aggId), 'getRoundInfo');
@@ -615,8 +613,8 @@ class VerdiktaService {
     if (phase === 0) {
       return { found: false, aggId, aggregator: aggAddress, message: 'No round found on-chain for this ID on this aggregator' };
     }
-    const [K, M, N, P] = (await this._withRetry(() => Promise.all([agg.K(), agg.M(), agg.N(), agg.P()]), 'KMNP')).map(Number);
-    const contractParams = { K, M, N, P };
+    const [K, M, N, P, timeout] = (await this._withRetry(() => agg.getJury(aggId), 'getJury')).map(Number);
+    const contractParams = { K, M, N, P, timeout };
     const aggregationStatus = {
       phase,
       phaseName: PHASES[phase] || 'unknown',
@@ -890,12 +888,12 @@ class VerdiktaService {
   }
 
   /**
-   * Check the service is configured: the aggregators, their keeper and its token.
+   * Check the service is configured: the aggregator, its keeper and its token.
    */
   async healthCheck() {
     try {
       const keeper = await this.getReputationKeeper();
-      const config = await this.getAggregatorConfig(0);
+      const config = await this.getAggregatorConfig();
       let wvdkaAddress = null;
       try {
         wvdkaAddress = await keeper.verdiktaToken();
@@ -905,7 +903,6 @@ class VerdiktaService {
       return {
         healthy: true,
         aggregatorAddress: this.aggregatorAddress,
-        aggregators: this.aggregatorAddresses,
         keeperAddress: this.keeperAddress,
         wvdkaAddress,
         config
@@ -914,7 +911,6 @@ class VerdiktaService {
       return {
         healthy: false,
         aggregatorAddress: this.aggregatorAddress,
-        aggregators: this.aggregatorAddresses,
         error: error.message
       };
     }
@@ -926,17 +922,16 @@ let verdiktaService = null;
 
 /**
  * @param {string} providerUrl
- * @param {string|string[]} aggregators  the approved aggregators, in jury order
+ * @param {string} aggregator  the escrow's aggregator (serves every jury)
  * @param {number} deployBlock
  */
-function initializeVerdiktaService(providerUrl, aggregators, deployBlock = 0) {
-  const list = (Array.isArray(aggregators) ? aggregators : [aggregators]).filter(Boolean);
-  if (list.length === 0) {
-    logger.warn('Verdikta service not initialized: no aggregator addresses');
+function initializeVerdiktaService(providerUrl, aggregator, deployBlock = 0) {
+  if (!aggregator) {
+    logger.warn('Verdikta service not initialized: no aggregator address');
     return null;
   }
-  verdiktaService = new VerdiktaService(providerUrl, list, deployBlock);
-  logger.info('Verdikta service initialized', { aggregators: list });
+  verdiktaService = new VerdiktaService(providerUrl, aggregator, deployBlock);
+  logger.info('Verdikta service initialized', { aggregator });
   return verdiktaService;
 }
 

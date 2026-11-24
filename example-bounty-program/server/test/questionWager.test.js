@@ -12,7 +12,7 @@ const { maxEvaluationQueryChars } = require('../utils/bountyValidator');
 const ALICE = '0x7ACbdBC2bB6e4fF8b705d695F77144eA619C0e2D';   // YES
 const BOB = '0x75fAc210bF1Dcd0BA3FaC294de7c50C5763Da6d9';     // NO
 const ctx = { site: 'https://bounties-testnet.verdikta.org', escrow: '0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f', chain: 'Base Sepolia Testnet (chain ID 84532)',
-  defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, decision: { jury: 0, quota: 3, forfeitLine: 1 } } };
+  defaults: { oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500 }, decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1 } } };
 const unix = (iso) => Date.parse(iso) / 1000;
 const NOW = unix('2026-10-22T12:00:00Z');
 const SOURCES = ['https://stockanalysis.com/stocks/msft/history/', 'https://www.fool.com/quote/nasdaq/msft/', 'https://www.investing.com/equities/microsoft-corp-historical-data'];
@@ -220,7 +220,7 @@ describe('answer, mirror and the counter check', () => {
     creatorAssessmentWindowSize: 0, classId: 128, threshold: 80, createdAt: unix('2026-10-22T12:00:00Z'), createdAtIso: '2026-10-22T12:00:00.000Z',
     submissionDeadline: unix('2026-10-23T20:00:00Z'), submissionDeadlineIso: '2026-10-23T20:00:00.000Z', evaluationCid: 'QmOffer',
     oracleSettings: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500, minOracleFeeEth: '0.0', withBeacons: false },
-    decisionSettings: { jury: 0, quota: 3, forfeitLine: 1, bondWei: '0' }, linkage: { state: 'linked' }, ...over,
+    decisionSettings: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bondWei: '0' }, linkage: { state: 'linked' }, ...over,
   });
   const job = (over = {}) => ({ evaluationCid: 'QmOffer', description: p.description, title: p.title, workProductType: 'Wager settlement claim',
     juryNodes: w.DEFAULT_WAGER_JURY, iterations: 1, rubricContent: w.mutualWagerRubricJson({ kind: 'question' }), ...over });

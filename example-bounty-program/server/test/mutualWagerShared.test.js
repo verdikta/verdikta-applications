@@ -81,13 +81,21 @@ describe('v2 escrow settings (mutual-wager-v6, -v7)', () => {
     expect(w.parseOracleLine(`${w.formatOracle(v1)}.`)).toEqual(v1);
     // A v1 record (no floor, no flag) formats as no floor and no beacons, as onchain-status serves it.
     expect(w.formatOracle(v1, { full: true })).toMatch(/minOracleFeeEth 0\.0, withBeacons false$/);
-    const d = { jury: 1, quota: 3, forfeitLine: 2, bondWei: '0' };
-    expect(w.formatDecision(d)).toBe('jury 1, quota 3, forfeitLine 2, bondWei 0');
+    const MEDIUM = { K: 8, M: 5, N: 4, P: 3, timeout: 300 };
+    const d = { jury: MEDIUM, quota: 3, forfeitLine: 2, bondWei: '0' };
+    expect(w.formatDecision(d)).toBe('jury (K 8, M 5, N 4, P 3, timeout 300), quota 3, forfeitLine 2, bondWei 0');
     expect(w.parseDecisionLine(`${w.formatDecision(d)}.`)).toEqual(d);
     // Job records name the bond `bond`, onchain-status `bondWei`: the same line either way.
-    expect(w.formatDecision({ jury: 1, quota: 3, forfeitLine: 2, bond: '0' })).toBe(w.formatDecision(d));
-    expect(w.parseDecisionLine('jury 1, quota 3, forfeitLine 2.')).toBeNull();
+    expect(w.formatDecision({ jury: MEDIUM, quota: 3, forfeitLine: 2, bond: '0' })).toBe(w.formatDecision(d));
+    expect(w.parseDecisionLine('jury (K 8, M 5, N 4, P 3, timeout 300), quota 3, forfeitLine 2.')).toBeNull();
+    // the pre-item-15 jury index is no longer read
+    expect(w.parseDecisionLine('jury 1, quota 3, forfeitLine 2, bondWei 0.')).toBeNull();
     expect(w.wagerDecisionProblem(d)).toBeNull();
+    expect(w.wagerDecisionProblem({ ...d, jury: 1 })).toMatch(/aggregator index is no longer used/);
+    expect(w.wagerDecisionProblem({ ...d, jury: { ...MEDIUM, M: 9 } })).toMatch(/bad jury/);
+    expect(w.wagerDecisionProblem({ ...d, jury: { ...MEDIUM, N: 1, P: 1 } })).toMatch(/bad jury|quota/);
+    expect(w.wagerDecisionProblem({ ...d, jury: { ...MEDIUM, timeout: 0 } })).toMatch(/timeout/);
+    expect(w.wagerDecisionProblem({ ...d, quota: 5, forfeitLine: 1 })).toMatch(/at most the jury's N \(4\)/);
     expect(w.wagerDecisionProblem({ ...d, bondWei: '1' })).toMatch(/no hunter bond/);
     expect(w.wagerDecisionProblem({ ...d, quota: 0 })).toMatch(/quota/);
     expect(w.wagerDecisionProblem({ ...d, forfeitLine: 4 })).toMatch(/forfeitLine/);
@@ -110,7 +118,7 @@ describe('v2 escrow settings (mutual-wager-v6, -v7)', () => {
 
   it('a create-page skeleton keeps placeholders for decision settings the form lacks, and the bond at 0', () => {
     const sk = w.mutualWagerTermsSkeleton({ stake: '0.001', threshold: 80, classId: 128, oracle: { maxOracleFeeEth: '0.00002', estimatedBaseCostEth: '0.00001', maxFeeBasedScaling: 3, alpha: 500, minOracleFeeEth: '0', withBeacons: false } });
-    expect(sk).toMatch(/\nDecision settings \(both bounties\): jury <jury index>, quota <quota Q>, forfeitLine <forfeit line R>, bondWei 0\.\n/);
-    expect(w.mutualWagerTermsSkeleton({ decision: { jury: 1, quota: '3', forfeitLine: 2, bond: '0.5' } })).toMatch(/Decision settings \(both bounties\): jury 1, quota 3, forfeitLine 2, bondWei 0\./);
+    expect(sk).toMatch(/\nDecision settings \(both bounties\): jury <jury>, quota <quota Q>, forfeitLine <forfeit line R>, bondWei 0\.\n/);
+    expect(w.mutualWagerTermsSkeleton({ decision: { jury: { K: 8, M: 5, N: 4, P: 3, timeout: 300 }, quota: '3', forfeitLine: 2, bond: '0.5' } })).toMatch(/Decision settings \(both bounties\): jury \(K 8, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 2, bondWei 0\./);
   });
 });

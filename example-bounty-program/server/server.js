@@ -164,28 +164,28 @@ const initializeBlockchainSync = async () => {
         config.bountyEscrowAddress
       );
 
-      // Initialize Verdikta service for analytics: the escrow's approved v2 aggregators (one per
-      // jury size), unless VERDIKTA_AGGREGATORS_<NETWORK> names them.
-      let aggregators = config.verdiktaAggregators;
-      if (aggregators.length === 0) {
+      // Initialize Verdikta service for analytics: the escrow's v2 aggregator (one serves every
+      // jury size), unless VERDIKTA_AGGREGATOR_<NETWORK> names it.
+      let aggregator = config.verdiktaAggregator;
+      if (!aggregator) {
         try {
-          aggregators = await getContractService().getAggregators();
+          aggregator = await getContractService().getAggregatorAddress();
         } catch (err) {
-          logger.warn('Could not read the escrow\'s aggregators', { msg: err.message });
+          logger.warn('Could not read the escrow\'s aggregator', { msg: err.message });
         }
       }
-      if (aggregators.length > 0) {
+      if (aggregator) {
         initializeVerdiktaService(
           config.verdiktaRpcUrl,
-          aggregators,
+          aggregator,
           config.verdiktaAggregatorDeployBlock
         );
         logger.info('✅ Verdikta analytics service initialized', {
-          aggregators,
+          aggregator,
           rpc: config.verdiktaRpcUrl.replace(/\/v3\/.*$/, '/v3/***') // mask Infura key
         });
       } else {
-        logger.info('ℹ️  Verdikta analytics disabled - no aggregator addresses');
+        logger.info('ℹ️  Verdikta analytics disabled - no aggregator address');
       }
 
       // Initialize and start sync service
@@ -329,22 +329,20 @@ const startServer = async () => {
     // ====================================================
 
     // Arbiter score spread per evaluation round (RPC; background, cached on disk)
-    // v2 round ids are per aggregator, so each target names its bounty's aggregator (cached per bounty).
-    const spreadAggregatorOf = new Map();
+    // v2 round ids are per aggregator: every target names the escrow's one aggregator.
+    let spreadAggregator = null;
     startScoreSpreadService(async () => {
       const r = await jobStorage.listJobs({});
       const jobs = (r.jobs || r).filter((j) => (j.submissions || []).length);
-      for (const j of jobs) {
-        if (spreadAggregatorOf.has(j.jobId)) continue;
+      if (!spreadAggregator) {
         try {
-          const agg = await getContractService().getAggregatorFor(j.jobId);
-          spreadAggregatorOf.set(j.jobId, await agg.getAddress());
-        } catch { /* not on-chain yet, or RPC down: retried next pass */ }
+          spreadAggregator = await getContractService().getAggregatorAddress();
+        } catch { /* RPC down: retried next pass */ }
       }
       // every round of a submission, re-runs included (sub.aggIds; older records only verdiktaAggId)
       return jobs.flatMap((j) => (j.submissions || [])
         .flatMap((sub) => submissionRoundIds(sub)
-          .map((aggId) => ({ jobId: j.jobId, aggId, ts: sub.submittedAt, aggregator: spreadAggregatorOf.get(j.jobId) }))));
+          .map((aggId) => ({ jobId: j.jobId, aggId, ts: sub.submittedAt, aggregator: spreadAggregator || undefined }))));
     }, getVerdiktaService);
 
     // Hunter connection analysis (RPC-heavy; runs in the background, results cached on disk)

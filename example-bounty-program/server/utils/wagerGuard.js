@@ -47,12 +47,12 @@ async function wagerContextFor(input = {}, { priceUsd = getEthPriceUsd } = {}) {
   let usd = null;
   try { usd = Number((await priceUsd()).usd); } catch { /* reported below */ }
   if (!(usd > 0)) {
-    ctx.defaults.decisionUnavailable = 'The ETH price is unavailable, so the size-class preset for this stake cannot be chosen: pass decision { jury, quota, forfeitLine } (GET /api/classes/presets) and, for a fee floor, oracle.minOracleFeeEth.';
+    ctx.defaults.decisionUnavailable = 'The ETH price is unavailable, so the size-class preset for this stake cannot be chosen: pass decision { jury: { K, M, N, P, timeout }, quota, forfeitLine } (GET /api/classes/presets) and, for a fee floor, oracle.minOracleFeeEth.';
     return ctx;
   }
   const preset = presetForBounty(stake * usd);
   ctx.defaults.bountyClass = preset.key;
-  ctx.defaults.decision = { jury: preset.jury, quota: preset.quota, forfeitLine: preset.forfeitLine };
+  ctx.defaults.decision = { jury: { ...preset.jury }, quota: preset.quota, forfeitLine: preset.forfeitLine };
   ctx.defaults.oracle = { ...ctx.defaults.oracle, minOracleFeeEth: wager.formatEthWei(usdToWei(preset.feeFloorUsd, usd)), withBeacons: preset.withBeacons };
   return ctx;
 }

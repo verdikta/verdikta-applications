@@ -118,8 +118,8 @@ test('answer: preview, then post once with the owner\'s line; a second post is r
   assert.equal(c.targetHunter, alice); assert.equal(c.procurementMode, 'TARGETED'); assert.equal(c.submissionDeadline, '2026-10-21T19:00:00Z');
   assert.equal(c.publicSubmissions, true); assert.deepEqual(c.juryNodes.map((n) => n.provider), ['OpenAI', 'Anthropic']);
   assert.match(c.description, /^Counter bounty: #18, verified/m); assert.equal(c.workProductType, 'Wager settlement claim');
-  assert.match(c.description, /^Decision settings \(both bounties\): jury 0, quota 3, forfeitLine 1, bondWei 0\.$/m);
-  assert.deepEqual([c.jury, c.quota, c.forfeitLine, c.bond, c.oracle.minOracleFee, c.oracle.withBeacons], [0, 3, 1, '0', '0', false]);
+  assert.match(c.description, /^Decision settings \(both bounties\): jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 1, bondWei 0\.$/m);
+  assert.deepEqual([c.jury, c.quota, c.forfeitLine, c.bond, c.oracle.minOracleFee, c.oracle.withBeacons], [{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }, 3, 1, '0', '0', false]);
   assert.match(h.text(), /Posted bounty #26/);
   await assert.rejects(h.run('answer', '18', '--approval', line, '--yes'), /already posted as bounty #26/);
   assert.equal(h.created.length, 1);
@@ -220,13 +220,13 @@ test('propose --defaults: an operator\'s decision settings, fee floor and beacon
   const input = path.join(h.dir, 'proposal.json'), defaults = path.join(h.dir, 'wager-defaults.json');
   await writeFile(input, JSON.stringify(proposal));
   const file = (extra) => writeFile(defaults, JSON.stringify({ classId: 128, jury: W.WAGER_DEFAULTS.jury, ...extra }));
-  await file({ oracle: { ...W.WAGER_DEFAULTS.oracle, minOracleFeeEth: '0.000001', withBeacons: true }, decision: { jury: 0, quota: 2, forfeitLine: 1 } });
+  await file({ oracle: { ...W.WAGER_DEFAULTS.oracle, minOracleFeeEth: '0.000001', withBeacons: true }, decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 2, forfeitLine: 1 } });
   await h.run('propose', '--input', input, '--defaults', defaults);
   const line = lineFrom(h.text());
   await h.run('propose', '--input', input, '--defaults', defaults, '--approval', line, '--yes');
   const c = h.created[0];
-  assert.match(c.description, /^Oracle settings \(both bounties\): maxOracleFeeEth 0\.00002, estimatedBaseCostEth 0\.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0\.000001, withBeacons true\.\nDecision settings \(both bounties\): jury 0, quota 2, forfeitLine 1, bondWei 0\.$/m);
-  assert.deepEqual([c.jury, c.quota, c.forfeitLine, c.bond, c.oracle.minOracleFee, c.oracle.withBeacons], [0, 2, 1, '0', '1000000000000', true]);
+  assert.match(c.description, /^Oracle settings \(both bounties\): maxOracleFeeEth 0\.00002, estimatedBaseCostEth 0\.00001, maxFeeBasedScaling 3, alpha 500, minOracleFeeEth 0\.000001, withBeacons true\.\nDecision settings \(both bounties\): jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 2, forfeitLine 1, bondWei 0\.$/m);
+  assert.deepEqual([c.jury, c.quota, c.forfeitLine, c.bond, c.oracle.minOracleFee, c.oracle.withBeacons], [{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }, 2, 1, '0', '1000000000000', true]);
   const p = creationTerms(c).params;
   assert.deepEqual([p.quota, p.bond, p.oracle.minOracleFee, p.oracle.withBeacons], [2n, 0n, 1000000000000n, true]);
   // Without a decision the file keeps the default (Bondless Small); a bond, or settings the escrow cannot take, are refused.
@@ -234,12 +234,12 @@ test('propose --defaults: an operator\'s decision settings, fee floor and beacon
   await file({ oracle: W.WAGER_DEFAULTS.oracle });
   await g.run('propose', '--input', input, '--defaults', defaults);
   await g.run('propose', '--input', input, '--defaults', defaults, '--approval', lineFrom(g.text()), '--yes');
-  assert.match(g.created[0].description, /^Decision settings \(both bounties\): jury 0, quota 3, forfeitLine 1, bondWei 0\.$/m);
+  assert.match(g.created[0].description, /^Decision settings \(both bounties\): jury \(K 6, M 5, N 4, P 3, timeout 300\), quota 3, forfeitLine 1, bondWei 0\.$/m);
   for (const [extra, re] of [
-    [{ decision: { jury: 0, quota: 3, forfeitLine: 1, bond: '5000' } }, /wager-defaults\.json: A wager has no hunter bond/],
-    [{ decision: { jury: 0, quota: 3, forfeitLine: 1, bondWei: '1' } }, /A wager has no hunter bond/],
-    [{ decision: { jury: 0, quota: 1, forfeitLine: 2 } }, /decision\.forfeitLine \(R\) must be an integer from 0 to quota/],
-    [{ decision: null }, /decision must be \{ jury, quota, forfeitLine \}/],
+    [{ decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: '5000' } }, /wager-defaults\.json: A wager has no hunter bond/],
+    [{ decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bondWei: '1' } }, /A wager has no hunter bond/],
+    [{ decision: { jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 1, forfeitLine: 2 } }, /decision\.forfeitLine \(R\) must be an integer from 0 to quota/],
+    [{ decision: null }, /decision must be \{ jury: \{ K, M, N, P, timeout \}, quota, forfeitLine \}/],
     [{ oracle: { ...W.WAGER_DEFAULTS.oracle, withBeacons: 'yes' } }, /withBeacons true or false/],
     [{ oracle: { ...W.WAGER_DEFAULTS.oracle, minOracleFeeEth: 'lots' } }, /minOracleFeeEth \(decimal ETH\)/],
   ]) {
@@ -529,7 +529,7 @@ test('question: propose posts the shared builder\'s bytes; the answer mirrors th
   const shared = W.shared.proposeMutualWager({ ...question, creator: alice, classId: 128, threshold: 80, jury: W.WAGER_DEFAULTS.jury, iterations: 1, oracle: W.WAGER_DEFAULTS.oracle, decision: W.WAGER_DEFAULTS.decision }, W.siteContext({ network: 'base-sepolia', origin: 'https://bounties-testnet.verdikta.org', deployment: { address: '0x1B4F0e43256d435DfcD5C0883799F0Eb3943e08f', chainId: 84532 } }));
   const c = h.created[0];
   assert.equal(c.description, shared.description); assert.match(c.description, /\(mutual-wager-v7\) ===/); assert.equal(c.title, shared.title);
-  assert.deepEqual([c.jury, c.quota, c.forfeitLine, c.bond, c.oracle.minOracleFee, c.oracle.withBeacons], [0, 3, 1, '0', '0', false]);
+  assert.deepEqual([c.jury, c.quota, c.forfeitLine, c.bond, c.oracle.minOracleFee, c.oracle.withBeacons], [{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }, 3, 1, '0', '0', false]);
   assert.deepEqual(c.rubricJson, W.wagerRubricJson('question')); assert.equal(c.submissionDeadline, '2026-10-23T22:00:00Z'); assert.equal(c.targetHunter, bob);
   assert.match(h.text(), /Answer it by number by 2026-10-22T12:50:00Z \(10 minutes before the Bets close time 2026-10-22T13:00:00Z\): with the Verdikta onboarding skill, node wager\.js answer 26; on the website, the Question Wager template's answer field takes #26/);
   h.as(bob);

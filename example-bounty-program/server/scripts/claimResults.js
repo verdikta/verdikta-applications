@@ -334,7 +334,7 @@ async function sendStep(contract, wallet, sub, dryRun) {
   const overrides = {};
 
   if (spec.target === 'aggregator') {
-    const aggAddr = await contract.aggregatorOf(sub.bountyId);
+    const aggAddr = await contract.aggregator();   // one aggregator serves every bounty
     target = new ethers.Contract(aggAddr, AGGREGATOR_ABI, wallet);
     args = [sub.aggId];
   }
@@ -740,7 +740,7 @@ async function main() {
   console.log(`Wallet:      ${wallet.address}`);
   console.log(`Contract:    ${CONFIG.contractAddress}`);
   try {
-    console.log(`Aggregators: ${await contract.aggregatorCount()} approved (one per jury size)\n`);
+    console.log(`Aggregator:  ${await contract.aggregator()} (one for every jury size)\n`);
   } catch {
     console.log('');
   }

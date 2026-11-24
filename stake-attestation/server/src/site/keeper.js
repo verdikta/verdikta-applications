@@ -164,6 +164,15 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     return { to: chain.address, data: stakeAttestation.encodeFunctionData(action, [claimId]) };
   }
 
+  /**
+   * Whether a call the keeper would send simulates: every one returns nothing, so it passes only when
+   * the node answers "0x". A node that answers a revert with its error data instead of an error (Hardhat
+   * with throwOnCallFailures off; a proxy that flattens errors) then still reads as a revert.
+   */
+  async function simulates(to, data) {
+    return (await provider.call(tx(to, data))) === '0x';
+  }
+
   async function claimState(claimId) {
     const c = await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData('getClaim', [claimId])));
     const [claim] = stakeAttestation.decodeFunctionResult('getClaim', c);
@@ -190,8 +199,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
       if (deadline === 0n || now < opensAt || now + margin >= deadline) return false;
     }
     try {
-      await provider.call(tx(chain.address, stakeAttestation.encodeFunctionData(action, [claimId])));
-      return true;
+      return await simulates(chain.address, stakeAttestation.encodeFunctionData(action, [claimId]));
     } catch {
       return false; // "evaluation not ready", a window still open, or done by someone else
     }
@@ -212,8 +220,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     }
     const call = await callOf(action, claimId, requestId);
     try {
-      await provider.call(tx(call.to, call.data));
-      return requestId;
+      return (await simulates(call.to, call.data)) ? requestId : null;
     } catch {
       return null; // too early (B+2, T+, C+2), wrong phase, or done by someone else
     }
@@ -226,8 +233,7 @@ export function createKeeper({ provider, store, chain, cfg, wallet, projection, 
     if (owed === 0n || owed < min) return false;
     const call = await callOf('withdraw');
     try {
-      await provider.call(tx(call.to, call.data));
-      return true;
+      return await simulates(call.to, call.data);
     } catch {
       return false;
     }

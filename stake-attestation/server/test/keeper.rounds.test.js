@@ -140,3 +140,43 @@ describe('the v2 round in flight', () => {
     assert.equal(config.oracle.withBeacons, false);
   });
 });
+
+describe('a node that answers a revert with its data, not an error', () => {
+  // Hardhat with throwOnCallFailures off (the local round's chain did), or a proxy that flattens JSON-RPC
+  // errors, answers eth_call on a reverting call with the revert's Error(string) bytes. Every call the
+  // keeper simulates returns nothing, so only "0x" passes: a finalize that would revert "evaluation not
+  // ready" is not due, and the draw behind it is sent.
+  test('reads Error(string) data as a revert, so an undrawn round is drawn, not finalized forever', async () => {
+    const ctx = await chainContext();
+    const { listingId } = await listing(ctx);
+    const claimId = await revealedClaim(ctx, ctx.hunters[0], listingId);
+    const flattening = new Proxy(ctx.provider, {
+      get(target, prop) {
+        if (prop !== 'call') {
+          const v = Reflect.get(target, prop, target);
+          return typeof v === 'function' ? v.bind(target) : v;
+        }
+        return async (req) => {
+          try {
+            return await target.call(req);
+          } catch (err) {
+            if (typeof err?.data === 'string' && err.data.startsWith('0x') && err.data.length > 2) return err.data;
+            throw err;
+          }
+        };
+      },
+    });
+    // the wrapper really answers a revert with data
+    const finalizeData = ctx.sa.interface.encodeFunctionData('finalize', [claimId]);
+    assert.match(await flattening.call({ to: ctx.address, data: finalizeData }), /^0x08c379a0/);
+    const site = siteFor(ctx, { env: ROUNDS_ON, provider: flattening });
+    try {
+      await mine(ctx, 2);
+      const r = await cycle(site);
+      assert.deepEqual(actions(r), [['drawJury', String(claimId)]]);
+      assert.equal((await roundOf(ctx, (await ctx.sa.getClaim(claimId)).requestId)).phase, 3n, 'drawn: the commit phase');
+    } finally {
+      await site.close?.();
+    }
+  });
+});

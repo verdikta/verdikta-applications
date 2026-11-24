@@ -5,7 +5,7 @@ import { LISTING_STATES } from '../chain/abi.js';
 import { chainReader, eventOf, stakeAttestation } from '../chain/wallet.js';
 import { ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
-import { holdTerms, readHold } from '../lib/hold.js';
+import { NO_HOLD, holdTerms, readHold } from '../lib/hold.js';
 import { closeTerms, renewTerms, topUpEffect, topUpTerms } from '../lib/listingActions.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
@@ -242,7 +242,7 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
  * before the hold (`hold.supported` false) nothing is drawn: no section, no action. On a listing that is on hold the
  * section says since when and what is left; a hold ends in a roll forward or a close, and with it the section.
  */
-export function HoldListing({ listingId, listing, hold, onHeld = () => {}, onChanged = () => {} }) {
+export function HoldListing({ listingId, listing, hold = NO_HOLD, onHeld = () => {}, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const H = STRINGS.hold;
@@ -279,9 +279,9 @@ export function HoldListing({ listingId, listing, hold, onHeld = () => {}, onCha
       }
       const tx = await stakeAttestation(signer).hold(BigInt(listingId));
       const receipt = await tx.wait();
-      // the hold's time is its block's, as the Held event says it; a receipt it cannot be read from, from the chain
+      // the hold's time is its block's (ClaimLogic.hold), as the Held event says it
       const held = eventOf(reader, receipt, 'Held');
-      const heldAt = held ? held.args.heldAt : (await readHold(reader, listingId, { blockTag: receipt.blockNumber })).heldAt;
+      const heldAt = held ? held.args.heldAt : BigInt((await provider.getBlock(receipt.blockNumber)).timestamp);
       setDone({ tx: tx.hash, heldAt });
       setAsking(false);
       onHeld(heldAt);

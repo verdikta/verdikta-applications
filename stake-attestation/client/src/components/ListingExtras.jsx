@@ -4,6 +4,7 @@ import { ArrowRight, FileText } from 'lucide-react';
 import { LISTING_STATES } from '../chain/abi.js';
 import { chainReader, stakeAttestation } from '../chain/wallet.js';
 import { getFeed, getRecord } from '../lib/api.js';
+import { NO_HOLD } from '../lib/hold.js';
 import { listingQueue } from '../lib/listingActions.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { otherListingsOfRecord } from '../lib/sameRepository.js';
@@ -94,9 +95,10 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
  * listing's state and its hold), so the panel shows for every Open or Depleted listing: `record`
  * (useListingRecord's answer) is null while the site's record is read and { failed } when it
  * cannot be, and only the picker waits for it. A listing on hold rolls forward as any other.
- * `onChanged`: the listing rolled, so the page reads it again (a hold ends in the roll).
+ * Without a `hold` the panel is the one for a contract with none. `onChanged`: the listing rolled,
+ * so the page reads it again (a hold ends in the roll).
  */
-export function RollForward({ listingId, listing, record, hold, onChanged = () => {} }) {
+export function RollForward({ listingId, listing, record, hold = NO_HOLD, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const state = LISTING_STATES[Number(listing.state)];
@@ -233,7 +235,7 @@ function CommitOffer({ data, held = false }) {
  * that has not opened has no record yet. `hold`: the listing's hold as the page read it from the chain
  * (lib/hold.js holdView); `onHeld`, `onChanged`: a hold, or a roll, this page sent was mined.
  */
-export function ListingMore({ listingId, listing, hold, onHeld = () => {}, onChanged = () => {} }) {
+export function ListingMore({ listingId, listing, hold = NO_HOLD, onHeld = () => {}, onChanged = () => {} }) {
   const state = LISTING_STATES[Number(listing.state)];
   const opened = state !== 'Listed';
   const data = useListingRecord(listingId, listing.artifactHash, opened);

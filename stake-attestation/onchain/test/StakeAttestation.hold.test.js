@@ -7,7 +7,9 @@
 // pending claim alone.
 //   - hold(listingId): the maker only, on an Open or a Depleted listing, once. It records the time
 //     (heldAt) and emits Held. No delay and no resume: a hold ends in rollForward or in close,
-//     whose conditions are what they were.
+//     whose conditions are what they were. Its refusals use reasons the contract already had:
+//     "not maker", "not rollable" (neither Open nor Depleted: where a roll forward is refused
+//     too) and "not accepting commits" (held already).
 //   - While held the listing takes no commit (acceptsCommits is false) and takes a late claim, as a
 //     Rolled listing does (decision D6: judged, recorded under `later`, no award).
 //   - Nothing else reads the hold, so a claim committed before it keeps every path: its fix
@@ -344,7 +346,7 @@ describe("StakeAttestation: the maker's hold (P39)", function () {
       const neverOpened = await listAs(sa, maker, fresh());
       await sa.connect(maker).close(neverOpened);
       for (const [state, id] of Object.entries({ listed, rolled, closed, neverOpened })) {
-        await expect(sa.connect(maker).hold(id), state).to.be.revertedWith("not holdable");
+        await expect(sa.connect(maker).hold(id), state).to.be.revertedWith("not rollable");
         expect(await sa.heldAt(id), state).to.equal(0n);
       }
       await expect(sa.connect(maker).hold(0n)).to.be.revertedWith("bad listingId");
@@ -361,29 +363,30 @@ describe("StakeAttestation: the maker's hold (P39)", function () {
       const at = {};
       for (const id of [open, depleted]) {
         at[id] = await blockTime(await (await sa.connect(maker).hold(id)).wait());
-        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("already held");
+        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("not accepting commits");
       }
       await sa.connect(maker).renew(open, { value: LISTING_FEE });
       await sa.connect(maker).fund(open, 0n, { value: 1n });
       await expect(sa.connect(maker).fund(depleted, 0n, { value: TOP })).to.emit(sa, "Reopened");
       expect((await sa.getListing(depleted)).state).to.equal(ListingState.Open);
       for (const id of [open, depleted]) {
-        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("already held");
+        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("not accepting commits");
         expect(await sa.heldAt(id)).to.equal(at[id]);
       }
       const successor = await openListing(sa, maker, fresh());
       await sa.connect(maker).rollForward(open, successor);
       await sa.connect(maker).close(depleted);
       for (const id of [open, depleted]) {
-        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("not holdable");
+        await expect(sa.connect(maker).hold(id)).to.be.revertedWith("not rollable");
         expect(await sa.heldAt(id)).to.equal(at[id]);
       }
-      // No other function writes the time: `hold` is the only one this node adds that changes state.
-      const added = sa.interface.fragments
-        .filter((x) => x.type === "function" && /hold|held|resume|release/i.test(x.name))
+      // No function lifts a hold: of the names one could have, only hold, its view and release exist,
+      // and release is a claim's fix window (P2b).
+      const named = sa.interface.fragments
+        .filter((x) => x.type === "function" && /^(hold|held|unhold|resume|release|lift|reopen)/i.test(x.name))
         .map((x) => `${x.name}:${x.stateMutability}`)
         .sort();
-      expect(added).to.deep.equal(["heldAt:view", "hold:nonpayable", "release:nonpayable"]); // release is a claim's fix window (P2b)
+      expect(named).to.deep.equal(["heldAt:view", "hold:nonpayable", "release:nonpayable"]);
     });
 
     it("takes no ETH and moves none", async function () {
@@ -483,16 +486,22 @@ describe("StakeAttestation: the maker's hold (P39)", function () {
 
     it("only hold writes the time, and only acceptsCommits, lateClaim and the lens's acceptsLateClaims read it", function () {
       const source = (...p) => fs.readFileSync(path.join(__dirname, "..", "contracts", ...p), "utf8");
+      // The functions of a source, by name, whose body names `word`.
       const functionsNaming = (text, word) => [...text.matchAll(/\n {4}function (\w+)\([\s\S]*?\n {4}\}/g)]
         .filter((m) => new RegExp(`\\b${word}\\b`).test(m[0]))
         .map((m) => m[1]);
       const host = source("StakeAttestation.sol");
-      expect(functionsNaming(host, "heldAt")).to.deep.equal(["hold", "lateClaim", "acceptsCommits"]);
-      expect(host.match(/heldAt\[listingId\] = /g)).to.have.lengthOf(1); // written once, in hold
-      // lateClaim hands ClaimLogic.commit whether the listing is held; no other function there takes it.
       const logic = source("libraries", "ClaimLogic.sol");
+      // The contract: hold hands the mapping to ClaimLogic.hold, lateClaim reads it for
+      // ClaimLogic.commit's `listingHeld`, acceptsCommits reads it. commit passes `false`.
+      expect(functionsNaming(host, "heldAt")).to.deep.equal(["hold", "lateClaim", "acceptsCommits"]);
+      expect(host).to.match(/msg\.value, false,\s*false\s*\);/);
+      // The library: hold is the one function that takes the mapping, and writes it once; commit
+      // is the one that takes `listingHeld`, and reads it only under `if (late)`.
+      expect(functionsNaming(logic, "heldAt")).to.deep.equal(["hold"]);
+      expect(`${host}\n${logic}`.match(/heldAt\[listingId\] = /g)).to.have.lengthOf(1);
       expect(functionsNaming(logic, "listingHeld")).to.deep.equal(["commit"]);
-      expect(functionsNaming(logic, "heldAt")).to.deep.equal([]);
+      expect(logic.match(/\blistingHeld\b(?=[,\n])/g)).to.have.lengthOf(2); // the parameter, and the late-claim check
       expect(functionsNaming(source("StakeAttestationLens.sol"), "heldAt")).to.deep.equal(["acceptsLateClaims"]);
       for (const lib of ["ClaimRules.sol", "RecordLogic.sol"]) expect(source("libraries", lib), lib).to.not.match(/\bheldAt\b|\blistingHeld\b/);
     });
@@ -839,7 +848,7 @@ describe("StakeAttestation: the maker's hold (P39)", function () {
         await w.finalize(a);
       });
       const finalizes = open.same.steps.filter(([l]) => l === `finalize ${a}`).map(([, events]) => events.map(([name]) => name));
-      expect(finalizes).to.deep.equal([["EvaluationFailed"], ["Judged", "LeftoverRefunded"]]);
+      expect(finalizes).to.deep.equal([["EvaluationFailed", "LeftoverRefunded"], ["Judged", "LeftoverRefunded"]]);
       expect(eventNames(open, `retrigger ${a}`)).to.deep.equal(["Retriggered", "EvaluationRequested"]);
       const c = await f.sa.getClaim(a);
       expect([c.state, c.outcome, [...c.vector]]).to.deep.equal([ClaimState.Judged, Outcome.HIGH, V.HIGH.map(BigInt)]);
@@ -914,8 +923,8 @@ describe("StakeAttestation: the maker's hold (P39)", function () {
         await w.settle(a);
       });
       expect(eventsIn(open, `settle ${a}`)).to.deep.equal([
-        ["Settled", plain([a, id, f.hunters[0].address, Outcome.CRITICAL, TOP, 0n])],
         ["Depleted", plain([id, 0n])],
+        ["Settled", plain([a, id, f.hunters[0].address, Outcome.CRITICAL, TOP, 0n])],
       ]);
       // The contract's balance fell by the bond and the award at that step: both left it, paid directly.
       const at = open.same.steps.findIndex(([l]) => l === `settle ${a}`);
@@ -1149,7 +1158,7 @@ describe("StakeAttestation: the maker's hold (P39)", function () {
         await w.renew(); // a Depleted listing renews too
         await w.topUp(AWARDS[2]); // back at the top award: Open
       });
-      expect(eventNames(open, `settle ${a}`)).to.deep.equal(["Settled", "Depleted"]);
+      expect(eventNames(open, `settle ${a}`)).to.deep.equal(["Depleted", "Settled"]);
       expect(eventNames(open, "top-up 1")).to.deep.equal(["Funded"]);
       expect(eventNames(open, `top-up ${AWARDS[2]}`)).to.deep.equal(["Funded", "Reopened"]);
       expect(open.same.steps.filter(([l]) => l === "renew").map(([, e]) => e.map(([n]) => n))).to.deep.equal([

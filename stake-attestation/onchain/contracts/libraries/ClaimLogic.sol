@@ -31,7 +31,9 @@ import {ClaimRules} from "./ClaimRules.sol";
 ///      finalize serving both kinds of round, and topUp, through which fund and a confirmation's
 ///      leftover both reach a listing (owed awards first, then the escrow).
 ///
-///      list's oracle check (checkOracle) is here too, for the size limit (P16).
+///      list's oracle check (checkOracle) is here too, for the size limit (P16), and so is the
+///      maker's hold (hold, P39), which no claim's path reads: only commit's late-claim check
+///      takes it, as `listingHeld`, from StakeAttestation.lateClaim.
 ///
 ///      The hunter's appeal (P16, erratum E7) is appeal, retrigger's second branch (the appeal's
 ///      one re-trigger), the third kind of round in finalize's dispute-panel branch, and settle's
@@ -42,7 +44,9 @@ library ClaimLogic {
     ///         listing's commit-order queue (erratum E5, decision D5). The caller has checked
     ///         acceptsCommits and isAllowed for a commit; `late` (lateClaim, decision D6) needs
     ///         instead a listing whose stake ended: Rolled, or Closed after it opened (closed
-    ///         unfunded, it never had one). No allowlist.
+    ///         unfunded, it never had one); or one its maker has held (P39), which takes no commit
+    ///         any more. No allowlist. The lens's acceptsLateClaims states the same rule.
+    /// @param listingHeld the listing's maker has held it (StakeAttestation.hold); read only when `late`
     function commit(
         mapping(uint256 => StakeAttestation.Claim) storage claims,
         StakeAttestation.Listing storage l,
@@ -52,13 +56,15 @@ library ClaimLogic {
         bytes32 archiveHash,
         bytes32 ciphertextSha256,
         uint256 value,
-        bool late
+        bool late,
+        bool listingHeld
     ) external {
         if (late) {
             StakeAttestation.ListingState s = l.state;
             require(
                 s == StakeAttestation.ListingState.Rolled
-                    || (s == StakeAttestation.ListingState.Closed && l.openedAt != 0),
+                    || (s == StakeAttestation.ListingState.Closed && l.openedAt != 0)
+                    || listingHeld,
                 "not accepting late claims"
             );
         }
@@ -90,8 +96,9 @@ library ClaimLogic {
         }
         l.tailClaim = id;
         if (late) {
-            // Behind every pending claim in the queue, but never one of pendingClaims: no award
-            // rides on it, so it holds neither close() nor the escrow.
+            // Behind every pending claim in the queue (on a held listing: the claims committed
+            // before the hold), but never one of pendingClaims: no award rides on it, so it holds
+            // neither close() nor the escrow.
             c.late = true;
             l.lateClaims += 1;
             emit StakeAttestation.LateClaim(claimId, listingId, msg.sender, archiveHash, ciphertextSha256, bond, prepay);
@@ -100,6 +107,24 @@ library ClaimLogic {
             l.claimsCommitted += 1;
             emit StakeAttestation.Committed(claimId, listingId, msg.sender, archiveHash, ciphertextSha256, bond, prepay);
         }
+    }
+
+    /// @notice The maker's hold (see StakeAttestation.hold; P39; here for the size limit): once,
+    ///         on an Open or a Depleted listing. It records the time; nothing else is written.
+    /// @dev No revert string of its own: each refusal gives the reason the contract already has
+    ///      for that condition. "not rollable" is rollForward's for a listing that is neither Open
+    ///      nor Depleted (a hold is the first half of a roll forward, taken where one is), and
+    ///      "not accepting commits" is commit's: a held listing takes none already.
+    /// @param heldAt StakeAttestation.heldAt
+    function hold(StakeAttestation.Listing storage l, mapping(uint256 => uint64) storage heldAt, uint256 listingId)
+        external
+    {
+        require(msg.sender == l.maker, "not maker");
+        StakeAttestation.ListingState s = l.state;
+        require(s == StakeAttestation.ListingState.Open || s == StakeAttestation.ListingState.Depleted, "not rollable");
+        require(heldAt[listingId] == 0, "not accepting commits");
+        heldAt[listingId] = uint64(block.timestamp);
+        emit StakeAttestation.Held(listingId, uint64(block.timestamp));
     }
 
     /// @notice StakeAttestation.list's check of the oracle settings (here for the size limit, P16):

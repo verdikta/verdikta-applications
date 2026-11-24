@@ -1748,7 +1748,7 @@ Three files name one verdikta-arbiter commit: `builder/action/pins.json` (the ru
 `builder/test/docker/code-runner.pin.json` (P3a's Docker tests) and `e2e/arbiter.pin.json` (this round). `builder/test/unit/pins.test.js` fails if they
 differ, or if a fourth file names a commit of its own. None of them follows the branch. To move it:
 
-1. Choose a commit on the arbiter's `main`, the branch its releases land on, and name that branch in all three files. It must have nodes A2c and A3c, which `e2e/test/grammar.test.js`
+1. Choose a commit on the arbiter's `main`, the branch its releases land on, and name that branch in all three files (on this repository's `beacon` branch, until the arbiter's `beacon` is released: a commit of the arbiter's `beacon`, as above). It must have nodes A2c and A3c, which `e2e/test/grammar.test.js`
    checks by calling them, and A26, the class time floors, which `e2e/test/timeFloors.test.js` checks the same way.
 2. Put the whole commit in all three files, in one change.
 3. If the arbiter at that commit pins another release of `@verdikta/common` (its `code-runner/package.json`), move the six packages that read it to that release in the same change:
@@ -1763,7 +1763,7 @@ differ, or if a fourth file names a commit of its own. None of them follows the 
 
 **It must move before launch to whatever arbiter commit the canaries run.** The site's listing check and the arbiters must hold listings to one rule, and nothing can check that from here: a runner's
 version does not move with each commit (`0.3.0` at this pin, as at the one before it), so nothing it answers names its commit. The builder's own check is a floor (a shell in front of a command refused, the image's compilers read), not a commit. A site's runner (`runner.url` in its `builder.json`) is its operator's to keep at that commit.
-The pin is on the arbiter's `main` at the merge of its G3 pull request, the same tree as the commit the canaries were upgraded to, and its runner raises the defaults a listing
+On `main` the pin is the merge of the arbiter's G3 pull request, the same tree as the commit the canaries were upgraded to; on `beacon` it is the arbiter's `beacon` at `529b94b`, which holds G3. Either runner raises the defaults a listing
 check derives to the class time floors of `@verdikta/common` (60 s build, 30 s test, 180 s run), as every arbiter does for a claim's run. The builder writes those defaults into
 `code_review.json`, unless the draft states its own time limits.
 

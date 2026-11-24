@@ -1394,6 +1394,8 @@ async function signedThenRolledBack({ unrelated = false, claim = true, finalized
   assert.equal(saved.late, true);
   const was = await blockId(saved.startBlock);
   await w.rpc('evm_revert', [snapshot]);
+  // (the chain as it is before the other client's claim, for a test that takes that claim out again)
+  const before = await w.rpc('evm_snapshot');
   let other = null;
   if (claim) {
     other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
@@ -1403,7 +1405,7 @@ async function signedThenRolledBack({ unrelated = false, claim = true, finalized
     await (await w.signers[8].sendTransaction({ to: w.signers[8].address, value: 0n })).wait();
   }
   assert.equal(await w.provider.getTransactionReceipt(saved.commitTx.hash), null, 'the saved late claim was never sent');
-  return { l, dir, saved, other, finalizedBlock, was };
+  return { l, dir, saved, other, finalizedBlock, was, before };
 }
 
 test('preparing a claim saves an anchor before any key is drawn: the head and the finalized block, by number and hash, in a file of its own', async () => {
@@ -1583,6 +1585,91 @@ test('saved late-claim bytes are sent again only on the proof they were signed o
     assert.equal(r.stage, 'disclosed');
     assert.equal(r.commitTx, c.saved.commitTx.hash, 'the saved bytes');
     assert.equal(await w.claimCount(), count + 1n);
+  }
+});
+
+test('the claim that makes saved late-claim bytes unneeded is gone again before it is deep enough: the bytes stay saved, and nothing is signed in their place (R12-F2)', async () => {
+  const c = await signedThenRolledBack({ unrelated: true });
+  await pastStart(c);
+  // The run finds the other client's claim, at the nonce below the saved one, and does not send the saved bytes. Then
+  // a reorganization takes that claim out, before the run reads the head to measure its depth: the saved bytes' nonce
+  // was never used, so they are still what this folder resumes.
+  let reorganized = false;
+  const provider = injecting('send', async () => {
+    await w.rpc('evm_revert', [c.before]);
+    await (await w.signers[8].sendTransaction({ to: w.signers[8].address, value: 0n })).wait();
+    reorganized = true;
+  }, (method) => method === 'eth_blockNumber');
+  const m = { claims: await w.claimCount() - 1n, uploads: w.ipfs.uploads.length };
+  const err = await w.hunter({ provider, waitMs: 200 }).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, acknowledge: true }).catch((e) => e);
+  assert.ok(reorganized, 'the claim was taken out while the run waited on it');
+  assert.equal(err.code, 'TX_PENDING', `${err.code}: ${err.message}`);
+  assert.deepEqual(readJson(statePath(c.dir)), c.saved, 'the folder still holds the bytes it signed');
+  assert.equal(await w.claimCount(), m.claims, 'the other claim is gone, and none was made in its place');
+  assert.equal(w.ipfs.uploads.length, m.uploads, 'nothing was pinned');
+  assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), c.saved.commitTx.nonce - 1, 'nothing was sent: the nonce below the saved one is free again');
+  // a run again waits behind that free nonce, as any does
+  const again = await late({ claimDir: c.dir, listingId: c.l.listingId }).catch((e) => e);
+  assert.equal(again.code, 'WALLET_BUSY', again.message);
+  assert.deepEqual(readJson(statePath(c.dir)), c.saved);
+});
+
+test('--restart looks for the old claim again once the new one may go out, and the new late claim is signed at the nonce that look read or not at all (R12-F1)', async () => {
+  const filesOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => !n.startsWith('lock.')).sort();
+  const prepared = async () => {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    const crash = (step) => { if (step === 'prepare:saved') throw new Error('crash'); };
+    await w.hunter({ onStep: crash }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch(() => {});
+    const saved = readJson(statePath(dir));
+    assert.equal(saved.stage, 'prepared');
+    const sendOld = async () => (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    return { l, dir, saved, sendOld };
+  };
+  // The old hashes are mined while --restart reads the listing and its price, after its first look for them: the look
+  // just before the files are set aside finds the claim, so they stay the active ones and the claim is disclosed.
+  {
+    const c = await prepared();
+    const files = filesOf(c.dir);
+    const keys = fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8');
+    const count = await w.claimCount();
+    const heldNow = await w.provider.getBalance(w.address);
+    let other = null;
+    const priceRead = (tx) => String(tx?.data ?? '').startsWith(iface.getFunction('commitPrice').selector);
+    const provider = injecting('call', async () => { other = await c.sendOld(); }, priceRead);
+    const err = await w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, restart: true, acknowledge: true }).catch((e) => e);
+    assert.ok(other, 'the old claim was mined during the preflight');
+    assert.equal(err.code, 'RESTART_REFUSED', `${err.code}: ${err.message}`);
+    assert.deepEqual(filesOf(c.dir), files, 'nothing was set aside');
+    assert.equal(fs.readFileSync(statePath(c.dir, 'keys.json'), 'utf8'), keys, 'the old keys are the active ones');
+    assert.equal(await w.claimCount(), count + 1n, 'the one claim: no second one');
+    assert.equal(await w.provider.getBalance(w.address) - heldNow, await w.sa.commitPrice(c.l.listingId), 'one bond');
+    assert.deepEqual(readJson(statePath(c.dir)).commitTx, { hash: other.hash });
+    const r = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.ciphertextSha256, c.saved.ciphertextSha256, 'the claim disclosed is the old one');
+  }
+  // The old hashes are mined after that look, while the new claim is prepared: the new late claim would go out at the
+  // nonce the look read, and that nonce is used now, so none is signed. The text names the files that were set aside.
+  {
+    const c = await prepared();
+    const count = await w.claimCount();
+    const nonce = await w.provider.getTransactionCount(w.hunterWallet.address);
+    let other = null;
+    const onStep = async (step) => { if (step === 'prepare:saved') other = await c.sendOld(); };
+    const err = await w.hunter({ onStep }).commit({ claimDir: c.dir, listingId: c.l.listingId, late: true, restart: true, acknowledge: true }).catch((e) => e);
+    assert.ok(other, 'the old claim was mined after the files were set aside');
+    assert.equal(err.code, 'COMMIT_REPLACED', `${err.code}: ${err.message}`);
+    assert.match(err.message, /\.set-aside-\d+-[0-9a-f]{4}/, 'it names the files that were set aside');
+    assert.equal(await w.claimCount(), count + 1n, 'the old claim alone: none was signed beside it');
+    assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), nonce + 1, 'one transaction, the other client\'s');
+    const now = readJson(statePath(c.dir));
+    assert.equal(now.stage, 'prepared');
+    assert.equal(now.commitTx ?? null, null, 'nothing was signed for the new files');
+    assert.notEqual(now.ciphertextSha256, c.saved.ciphertextSha256);
+    const aside = filesOf(c.dir).find((n) => n.startsWith('state.json.set-aside-'));
+    assert.equal(readJson(statePath(c.dir, aside)).ciphertextSha256, c.saved.ciphertextSha256, 'the old claim\'s files are whole, under one stamp');
+    assert.ok(err.message.includes(aside.slice('state.json'.length)), 'and that stamp is the one named');
   }
 });
 

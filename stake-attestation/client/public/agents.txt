@@ -337,11 +337,12 @@ of `commit`. `verdikta-attest commit` files one with --late.
   --restart has set a claim's files aside (LATE_NEEDS_NEW_FOLDER): such a folder knows nothing
   of the earlier files, and a claim of their hashes that is mined afterwards would be followed
   by a second bond. Its text names every set of files set aside: before a new folder pays, look
-  among your wallet's transactions, mined or pending, for a claim of any of their hashes, and
-  of the hashes the folder holds prepared. Then prepare the late claim in a new folder (copy
-  finding.json, report.md and the patches there), and keep the old folder as it is: its keys
-  stay where they are, and any run of `commit` in it still finds and discloses a claim of the
-  hashes it holds prepared.
+  for a claim of each, and of the claim the folder holds prepared. Every state.json there, set
+  aside or not, names the wallet (`hunter`), the chain, the contract, the listing and the two
+  hashes of one claim: look among that wallet's transactions, mined or pending. Then prepare
+  the late claim in a new folder (copy finding.json, report.md and the patches there), and keep
+  the old folder as it is: its keys stay where they are, and any run of `commit` in it still
+  finds and discloses a claim of the hashes it holds prepared.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).

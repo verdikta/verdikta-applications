@@ -272,7 +272,7 @@ async function anchoredClaim(ctx, ws, state, upTo = null) {
     }
   }
   const existing = await findCommitted(ctx, state, upTo);
-  return { existing, from: state.startBlock, unproven: existing ? null : start.unproven ?? null };
+  return { existing, from: state.startBlock, unproven: existing ? null : withSetAside(ws, start.unproven ?? null) };
 }
 
 /**
@@ -541,23 +541,37 @@ function lateNeedsNewFolder(ws, state = null) {
   const stamps = ws.setAsideClaims();
   if (stamps.length === 0) return;
   // every claim this folder has held is named, the prepared one with them: any of them may be the one that is paid
-  const own = state ? ', and state.json those of the prepared claim' : '';
-  throw fail('LATE_NEEDS_NEW_FOLDER', `This folder holds files that --restart set aside (${asideNames(stamps)}). Before a new folder pays for a late claim, look among this wallet's transactions, mined or pending, for a claim of any of their hashes: each state.json.set-aside-* has the two hashes of one${own}. A claim that exists is paid and needs its files, and a late claim from a new folder would pay a second bond beside it.`);
+  const own = state ? ', and of the prepared claim in state.json' : '';
+  throw fail('LATE_NEEDS_NEW_FOLDER', `This folder holds files that --restart set aside (${asideNames(stamps)}). Before a new folder pays for a late claim, look for a claim of each of them${own}: ${SAVED_STATE_NAMES} Look among that wallet's transactions, mined or pending. A claim that exists is paid and needs its files, and a late claim from a new folder would pay a second bond beside it.`);
 }
 
 const asideNames = (stamps) => stamps.map((stamp) => `*.set-aside-${stamp}`).join(', ');
+// Whose claim a saved state is: the wallet that prepared it, which need not be the one a later run has.
+const SAVED_STATE_NAMES = 'every one of those state.json files names the wallet (hunter), the chain, the contract, the listing and the two hashes of one claim.';
+
+/**
+ * What START_UNPROVEN adds where it sends the hunter to a new folder and the folder holds files that --restart set
+ * aside: the claim that is paid may be of one of those, so each is to be looked for too. Where it says to read the
+ * logs through another RPC, it sends nobody to a new folder, and nothing is added.
+ */
+function withSetAside(ws, unproven) {
+  const stamps = ws.setAsideClaims();
+  if (!unproven || !unproven.endsWith(NEW_FOLDER) || stamps.length === 0) return unproven;
+  return `${unproven} This folder also holds files that --restart set aside (${asideNames(stamps)}): look for a claim of each of those too, before a new folder pays. And ${SAVED_STATE_NAMES}`;
+}
 
 /**
  * What COMMIT_REPLACED adds in a folder where --restart set files aside: the transaction that took the nonce may be a
  * claim of those files' hashes, sent some other way. That claim is paid, and another signature here would pay again
  * while its disclosure window runs. So the run does not say to sign again before that transaction is looked at, and
- * says how the claim gets its files: a set-aside claim's five files, under their plain names, are a prepared folder,
- * and commit there finds the claim and discloses it.
+ * says how the claim gets its files: a set-aside claim's files, under their plain names in a private folder, are a
+ * prepared folder, and commit there finds the claim and discloses it. A set that an earlier version of the tool
+ * prepared has no anchor, and needs none for that.
  */
 function replacedAfterRestart(ws) {
   const stamps = ws.setAsideClaims();
   if (stamps.length === 0) return undefined;
-  return `Before that, look at the transaction that took the nonce. This folder holds files that --restart set aside (${asideNames(stamps)}): if that transaction is a claim of the two hashes in one of those state.json files, that claim is paid, its disclosure window is running, and it needs those files. Then do not run commit here again: copy that stamp's archive.zip, keys.json, ciphertext.age, anchor.json and state.json into the .verdikta-claim folder of a new claim folder, under those plain names and with their modes (cp -a), and run commit there, which finds the claim and discloses it.`;
+  return `Before that, look at the transaction that took the nonce. This folder holds files that --restart set aside (${asideNames(stamps)}): if that transaction is a claim of the two hashes in one of those state.json files, that claim is paid, its disclosure window is running, and it needs those files. Then do not run commit here again. Make a new claim folder with a .verdikta-claim folder in it, of mode 0700; copy that stamp's archive.zip, keys.json, ciphertext.age and state.json there under those plain names, and anchor.json too where the stamp has one, each with its mode (cp -p); and run commit on the new folder, which finds the claim and discloses it.`;
 }
 
 /**
@@ -777,7 +791,12 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
     if ((!state || startOver) && (listingId === undefined || listingId === null)) throw fail('USAGE', 'A first commit needs --listing <id>.');
     const id = BigInt(state ? state.listingId : listingId);
 
+    const wasSigned = state?.stage === 'commit-signed';
     if (state?.stage === 'commit-signed') state = await settleCommit(ctx, ws, state);
+    // The saved bytes' nonce went to another transaction and no claim of these hashes came of it. Where --restart
+    // set files aside, that transaction may be a claim of those, paid already: said here, before this run goes on to
+    // sign anew (replacedAfterRestart). With nothing set aside the run signs anew, as it always did.
+    if (wasSigned && state.stage === 'prepared' && ws.setAsideClaims().length > 0) throw fail('COMMIT_REPLACED', replacedAfterRestart(ws));
     // (--restart's new claim is checked as a first one is, with no state: its files may be other files)
     if (!state || state.stage === 'prepared') {
       const { listing, inputs, price } = await readyToCommit(ctx, ws, startOver ? null : state, id, hunter, acknowledge, late);

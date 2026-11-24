@@ -1447,9 +1447,12 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   of the new commit, and a refusal after that point leaves the new prepared claim the active one. If the new commit
   then loses its nonce to another transaction (`COMMIT_REPLACED`), that transaction may be a claim of the files set
   aside, sent some other way: it is paid, and its disclosure window runs. So in a folder that holds set-aside files
-  the text does not say to sign again before that transaction is looked at; it names every set, and says how such a
-  claim gets its files (that stamp's five files, under their plain names, in the `.verdikta-claim` of a new claim
-  folder: `commit` there finds the claim and discloses it).
+  the text does not say to sign again before that transaction is looked at, and a run that finds saved commit bytes
+  gone there ends with it before it signs anything else. It names every set, and says how such a claim gets its
+  files: a new claim folder with a `.verdikta-claim` of mode 0700 in it, that stamp's `archive.zip`, `keys.json`,
+  `ciphertext.age` and `state.json` there under those plain names (and `anchor.json` where the stamp has one: a set
+  an earlier version prepared has none, and needs none), each with its mode; `commit` on that folder finds the claim
+  and discloses it.
 - **No late claim in a folder that set a claim aside.** `--restart` starts a commit over, not a late claim, and a
   late claim is never signed in a folder where `--restart` has set a claim's files aside: `LATE_NEEDS_NEW_FOLDER`,
   before the terms are said and before any key is drawn, and again at the one place a late claim is signed. Such a
@@ -1460,8 +1463,10 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   new folder has neither problem. The late claim is prepared there (the same `finding.json`, `report.md` and patches),
   and the old folder stays whole: its keys do not move, and any run of `commit` in it still finds and discloses a
   claim of the hashes it holds prepared. The refusal names every set of files the folder set aside, and the prepared
-  claim with them: before a new folder pays, a claim of any of those hashes, mined or pending, is to be looked for
-  among the wallet's transactions. A commit in such a folder is signed as it always was.
+  claim with them: before a new folder pays, a claim of each is to be looked for, mined or pending, among the
+  transactions of the wallet its `state.json` names (`hunter`, beside the chain, the contract, the listing and the
+  two hashes), which need not be the wallet of the run. `START_UNPROVEN` names the sets too wherever it sends the
+  hunter to a new folder. A commit in such a folder is signed as it always was.
 - **A fee that moved, a nonce that went.** A live fee that moved between the terms and the signature is said before
   it is signed, for either kind. And a signed commit whose
   nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was

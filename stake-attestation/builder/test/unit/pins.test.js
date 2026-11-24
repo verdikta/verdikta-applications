@@ -21,9 +21,13 @@ test('the three pin files name one commit of verdikta-arbiter', () => {
 });
 
 // Node P34: the pin is the arbiter release the arbiters run, on its main branch (G3 landed the build there), and each
-// of the three files says so, so a pin that drifts back to a work branch shows here.
-test('each of the three names the branch its commit is on, the arbiter\'s main', () => {
-  for (const pin of readArbiterPins()) assert.equal(pin.branch, 'main', `${pin.file} names branch ${pin.branch}`);
+// of the three files says so, so a pin that drifts back to a work branch shows here. The one exception is the v2
+// aggregator's integration line: this repository's beacon branch runs the arbiter's beacon, the only arbiter that
+// speaks v2 (its commits, reveals and service tokens), and the pin moves back to the arbiter's main when beacon is
+// released. No other branch passes.
+const PIN_BRANCHES = ['main', 'beacon'];
+test('each of the three names the branch its commit is on: the arbiter\'s main, or its beacon (the v2 line)', () => {
+  for (const pin of readArbiterPins()) assert.ok(PIN_BRANCHES.includes(pin.branch), `${pin.file} names branch ${pin.branch}`);
 });
 
 test('the rule fails when one of them moves alone: a commit, a repository, a branch or a short id', () => {

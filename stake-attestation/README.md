@@ -1738,6 +1738,12 @@ credential helper, which on a locked keychain waits for ever before a push reach
 
 ### Moving the arbiter pin
 
+**On the `beacon` branch** (the v2 aggregator's integration line) the pin is a commit of the arbiter's `beacon` branch:
+the round runs the v2 aggregator's rounds (keccak256 commits, `2:<64 hex>` reveals, a reveal only to the job that
+committed) and the arbiter's service tokens, which only the arbiter's `beacon` serves. It moves back to a commit on
+the arbiter's `main`, by the steps below, when `beacon` is released; `builder/test/unit/pins.test.js` accepts those two
+branches and no other.
+
 Three files name one verdikta-arbiter commit: `builder/action/pins.json` (the runner the reusable workflow starts),
 `builder/test/docker/code-runner.pin.json` (P3a's Docker tests) and `e2e/arbiter.pin.json` (this round). `builder/test/unit/pins.test.js` fails if they
 differ, or if a fourth file names a commit of its own. None of them follows the branch. To move it:

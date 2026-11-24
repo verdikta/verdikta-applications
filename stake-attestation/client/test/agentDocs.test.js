@@ -1187,8 +1187,12 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.equal(new ToolError('LATE_NEEDS_NEW_FOLDER').exitCode, 1);
   // a prepared late claim's files are held to the archive it was prepared from before anything else is said of them
   const ready = /async function readyToCommit[\s\S]*?\n\}/.exec(commit)[0];
-  const lateChanged = ready.indexOf('if (late && state && !sameInputs(inputs, state)) throw fail(\'LATE_INPUTS_CHANGED\');');
+  const lateChanged = ready.indexOf('const inputs = late && state ? preparedLateInputs(ws.claimDir, state) : readClaimInputs(ws.claimDir);');
   assert.ok(lateChanged >= 0 && lateChanged < ready.indexOf('checkClaimInputs('), 'before the texts that say to fix a file in place');
+  const held = /function preparedLateInputs[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(held, 'tool/src/commit.js: preparedLateInputs');
+  assert.equal(held.split('throw fail(\'LATE_INPUTS_CHANGED\')').length - 1, 3, 'too large or no file, a required one missing, another archive: each is a changed file');
+  assert.match(held, /if \(err\.code !== 'ARCHIVE_TOO_LARGE'\) throw err;/, 'a file that could not be read is said as that');
   assert.match(ready, /throw fail\('INPUTS_CHANGED'\);/, 'and a commit\'s refusal, in its place, is as it was');
   assert.equal(new ToolError('LATE_INPUTS_CHANGED').exitCode, 1);
   assert.doesNotMatch(ERROR_TEXTS.LATE_INPUTS_CHANGED, /--restart/);
@@ -1204,7 +1208,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.ok(block.includes('A prepared late claim whose two hashes already have a claim on the chain, sent some other way, is found first and disclosed, --yes or not.'));
   // section 4 (R4-F1): a first run of commit --late is a dry run, but a folder that holds a signed late claim, or a
   // prepared one whose hashes already have a claim on the chain, is not one to read a price from: the run goes on
-  assert.match(section(4), /`commit --late` is a dry run in the same way, on a folder that holds no late claim yet\. A folder that holds one is not: a signed late claim is resumed on every run, with --late or without it, and a prepared one whose two hashes already have a claim on the chain is disclosed, --yes or not \(section 3, "Late claims"\)\. Read the price for such a folder with cast too\./);
+  assert.match(section(4), /`commit --late` is a dry run in the same way, in a folder where `commit` has saved nothing yet \(no state\.json: section 9\)\. In a folder that holds a prepared or a signed claim, of either kind, it may not be: a signed late claim is resumed on every run, with --late or without it, and with --late a prepared folder whose two hashes already have a claim on the chain, a commit's or a late claim's, has that claim disclosed, --yes or not \(section 3, "Late claims"\)\. Read the price for such a folder with cast too\./);
   assert.match(runCommit, /if \(late && state\?\.stage === 'prepared'\) \{\s*const existing = await findCommitted\(ctx, state, EITHER_KIND\);\s*if \(existing\) state = await adoptLogged\(ctx, ws, state, existing\);/, 'the lookup that makes it so, before any terms');
   // and the price is held to the quote at the estimate too: the contract's refusal of the quoted value is said as the new price
   assert.match(commit, /if \(late && err\.code === 'CONTRACT_REFUSED' && err\.detail === 'payment below bond \+ fee'\) \{\s*const now = await ctx\.read\('commitPrice', \[listingId\]\);\s*if \(now !== quoted\) throw latePriceChanged\(now, quoted\);/);

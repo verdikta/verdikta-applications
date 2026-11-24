@@ -27,6 +27,7 @@ import { wordingProblems } from '@verdikta/stake-attestation-shared';
 import { STAKE_ATTESTATION_ABI } from '../src/abi.js';
 import { run } from '../src/cli.js';
 import { COMMIT_STEPS, ERROR_TEXTS, KNOWN_REVERTS, USAGE, buildClaimArchive, commitNotice, readClaimInputs } from '../src/index.js';
+import { MAX_ARCHIVE_BYTES } from '../src/archive.js';
 import * as notices from '../src/notices.js';
 import { closeRpc, readJson, rpcOf, runCli, statePath } from './helpers/cli.js';
 import { JUSTIFICATION_CID, codeReview, makeClaimDir, makeWorld, sha256, vectorOf } from './helpers/world.js';
@@ -637,6 +638,10 @@ test('a late claim whose files changed is told to use a new folder, and nothing 
     ['poc.patch removed', (d) => fs.rmSync(`${d}/poc.patch`)],
     ['finding.json no longer JSON', (d) => fs.writeFileSync(`${d}/finding.json`, '{')],
     ['poc.patch no longer a patch', (d) => fs.writeFileSync(`${d}/poc.patch`, 'not a patch\n')],
+    // what the reader of the files itself refuses, before any comparison: over the archive's size, or no file (R4-F2, round 5)
+    ['poc.patch over the size this tool reads', (d) => fs.truncateSync(`${d}/poc.patch`, MAX_ARCHIVE_BYTES + 1)],
+    ['report.md replaced by a folder', (d) => { fs.rmSync(`${d}/report.md`); fs.mkdirSync(`${d}/report.md`); }],
+    ['a fix.patch added, over the size', (d) => { fs.writeFileSync(`${d}/fix.patch`, ''); fs.truncateSync(`${d}/fix.patch`, MAX_ARCHIVE_BYTES + 1); }],
   ]) {
     const p = await preparedLate();
     const kept = filesOf(p.dir);
@@ -653,6 +658,9 @@ test('a late claim whose files changed is told to use a new folder, and nothing 
   const fresh = await rolled();
   const bad = makeClaimDir({ report: '' });
   await assert.rejects(late({ claimDir: bad, listingId: fresh.listingId }), (e) => e.code === 'REPORT_INVALID');
+  const big = makeClaimDir();
+  fs.truncateSync(`${big}/poc.patch`, MAX_ARCHIVE_BYTES + 1);
+  await assert.rejects(late({ claimDir: big, listingId: fresh.listingId }), (e) => e.code === 'ARCHIVE_TOO_LARGE');
   // an ordinary commit's refusal is the one it was, code and text
   assert.equal(ERROR_TEXTS.INPUTS_CHANGED, 'The claim files changed since this commit was prepared, and nothing has been signed. Restore them, or pass --restart to draw new keys for the new files.');
   const o = await w.listing();
@@ -666,6 +674,10 @@ test('a late claim whose files changed is told to use a new folder, and nothing 
   fs.writeFileSync(`${odir}/report.md`, '');
   const first = await w.hunter().commit({ claimDir: odir, listingId: o.listingId, acknowledge: true }).catch((e) => e);
   assert.equal(first.code, 'REPORT_INVALID');
+  // and one whose patch is over the size is told that, as it was
+  fs.truncateSync(`${odir}/poc.patch`, MAX_ARCHIVE_BYTES + 1);
+  const large = await w.hunter().commit({ claimDir: odir, listingId: o.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(large.code, 'ARCHIVE_TOO_LARGE');
 });
 
 // ------------------------------------------------------------------------------------------- the price it signs
@@ -1517,6 +1529,7 @@ test('the README\'s hunter section shows the command and says what a late claim 
   const flat = section.replace(/\s+/g, ' ');
   assert.match(flat, /`commit --late`/);
   assert.match(flat, /`--late` is taken only as the bare flag and only by `commit`: with a value \(`--late=false` too\) or on another command it is a usage error \(exit 2\) before anything is read or sent\./);
+  assert.match(flat, /A rise between that read and the gas estimate makes the estimate refuse the quoted value, and is said the same way\. One that comes after the estimate is not seen before the transaction is sent: it reverts on the chain, as a commit's does \(`COMMIT_REVERTED`\), and the next run prices it afresh\./);
   assert.match(flat, /`lateClaim`/);
   assert.match(flat, /`acceptsLateClaims`/);
   assert.match(flat, /no award/);

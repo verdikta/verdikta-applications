@@ -10,7 +10,6 @@ export const ERROR_TEXTS = Object.freeze({
   ARCHIVE_NOT_CID: 'The gateway answered bytes that are not this CID.',
   ARCHIVE_TOO_LARGE: 'The archive is larger than this tool reads.',
   ARCHIVE_UNAVAILABLE: 'A listing archive could not be read from the gateway. Nothing was sent; try again.',
-  CHAIN_REORGANIZED: 'The chain was reorganized below the block this folder was prepared at, so its logs cannot show that no late claim of these hashes was made since. Nothing was signed: run commit again with --restart, which draws new keys.',
   CIPHERTEXT_CID_DIFFERS: 'The pin target answered a CID other than the one disclosed. Nothing was sent.',
   CLAIM_ENDED: 'This claim has ended.',
   CLAIM_MISMATCH: 'The claim on-chain is not the one this folder committed. Nothing was pinned or sent.',

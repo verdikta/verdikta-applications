@@ -160,10 +160,7 @@ test('an ordinary commit sends what it sent before: commit(listingId, archiveHas
   assert.equal(r.late, false);
   assert.equal((await w.sa.getClaim(r.claimId)).late, false);
   // state.json is an ordinary commit's, key for key
-  // (one key more than before node P43, for either kind: startBlockHash, the hash of the block at startBlock)
-  const saved = readJson(statePath(dir));
-  assert.deepEqual(Object.keys(saved), ['version', 'stage', 'chainId', 'contract', 'hunter', 'listingId', 'archiveSha256', 'ciphertextSha256', 'disclosureKey', 'startBlock', 'startBlockHash', 'commitTx', 'claimId', 'ciphertextCid', 'discloseTx', 'told']);
-  assert.equal(saved.startBlockHash, (await w.provider.getBlock(saved.startBlock)).hash);
+  assert.deepEqual(Object.keys(readJson(statePath(dir))), ['version', 'stage', 'chainId', 'contract', 'hunter', 'listingId', 'archiveSha256', 'ciphertextSha256', 'disclosureKey', 'startBlock', 'commitTx', 'claimId', 'ciphertextCid', 'discloseTx', 'told']);
   // and what it says before it pays names no late claim
   const text = notices.join('\n');
   assert.match(text, /^Awards: /m);
@@ -844,89 +841,100 @@ test('a head that is behind the chain is behind for the nonce and the logs alike
   assert.equal(await w.claimCount(), count + 1n, 'one claim, one bond');
 });
 
-// Round 7: nor is a height a time. A reorganization can roll the chain back below the height the folder was prepared
-// at, and a claim sent since can then be mined in a block under it. The folder saves that block's hash: when the
-// height holds another block, the logs are read from a page below it, and a late claim is not signed on them.
-test('the chain rolled back below the block the folder was prepared at, and no claim of its hashes in the page below: a late claim is not signed, --restart draws new keys, and a commit is signed as it always was', async () => {
-  const rollBackUnder = async (make, lateClaim) => {
-    const l = await make();
+// Rounds 7 and 8: nor is a height a time. A reorganization can roll the chain back below the height the folder was
+// prepared at, and a claim sent since can then be mined in a block under it, where the log scan never looks. Before a
+// late claim is signed, and before --restart, the listing's own queue of open claims is read: the contract's state
+// holds every open claim, whatever block made it. Nothing is saved for this: state.json is what it was.
+test('a claim mined below the height the folder was prepared at, after a reorganization: it is found in the listing\'s queue, adopted, and not paid for again', async () => {
+  // the chain is rolled back under a prepared folder, and the same hashes' late claim is mined in the new fork's first block
+  const below = async () => {
+    const l = await rolled();
     const dir = makeClaimDir();
     const snapshot = await w.rpc('evm_snapshot');
+    const rolledBackTo = await w.provider.getBlockNumber();
     await w.mine(3);
-    const crash = (step) => { if (step === 'prepare:saved') throw new Error('crash'); };
-    await w.hunter({ onStep: crash }).commit({ claimDir: dir, listingId: l.listingId, late: lateClaim, acknowledge: true }).catch(() => {});
+    assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
     const saved = readJson(statePath(dir));
-    assert.equal(saved.stage, 'prepared');
-    // another fork from there: its first block holds a transaction the old one did not (nothing of this wallet's)
+    assert.equal(saved.startBlock, rolledBackTo + 3, 'prepared three blocks later: that height is what the folder saves');
+    assert.equal(Object.hasOwn(saved, 'startBlockHash'), false, 'and nothing else about it');
     await w.rpc('evm_revert', [snapshot]);
-    await (await w.signers[8].sendTransaction({ to: w.signers[8].address, value: 0n })).wait();
-    await w.mine(5);
-    assert.notEqual((await w.provider.getBlock(saved.startBlock)).hash, saved.startBlockHash, 'that height holds another block');
-    return { l, dir, saved };
+    const other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    assert.ok(other.blockNumber < saved.startBlock, 'the claim is below the height the folder was prepared at');
+    return { l, dir, saved, other };
   };
-  // a late claim: the logs cannot show that none was made, so nothing is signed
+  // commit --late --yes, the chain past the old height again: adopted from the queue, no second bond
   {
-    const { l, dir, saved } = await rollBackUnder(rolled, true);
-    const m = await mark();
-    const err = await late({ claimDir: dir, listingId: l.listingId }).catch((e) => e);
-    assert.equal(err.code, 'CHAIN_REORGANIZED', err.message);
-    assert.match(err.message, /--restart/);
-    assert.equal(readJson(statePath(dir)).commitTx ?? null, null, 'nothing was signed');
-    await assertNothingSent(m, null, 'a late claim');
-    const r = await late({ claimDir: dir, listingId: l.listingId, restart: true });
-    assert.equal(r.stage, 'disclosed');
-    assert.notEqual(r.ciphertextSha256, saved.ciphertextSha256, 'new keys, new hashes');
-    assert.equal(await w.claimCount(), m.claims + 1n);
-  }
-  // a commit: signed as it always was
-  {
-    const { l, dir, saved } = await rollBackUnder(() => w.listing(), false);
+    const { l, dir, saved } = await below();
+    await w.mine(5);
+    assert.ok(await w.provider.getBlockNumber() > saved.startBlock);
     const count = await w.claimCount();
-    const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+    const heldNow = await w.provider.getBalance(w.address);
+    const r = await late({ claimDir: dir, listingId: l.listingId });
     assert.equal(r.stage, 'disclosed');
-    assert.equal(r.ciphertextSha256, saved.ciphertextSha256, 'the prepared hashes');
-    assert.equal(await w.claimCount(), count + 1n);
+    assert.equal(r.claimId, count, 'the claim that was there');
+    assert.equal(r.commitTx, null, 'the state does not say which transaction made it');
+    assert.equal(await w.claimCount(), count, 'no second claim');
+    assert.equal(await w.provider.getBalance(w.address), heldNow, 'no second bond');
+  }
+  // the same while the chain is still shorter than it was when the folder was prepared
+  {
+    const { l, dir, saved } = await below();
+    assert.ok(await w.provider.getBlockNumber() < saved.startBlock, 'the head is below the saved height');
+    const count = await w.claimCount();
+    const r = await late({ claimDir: dir, listingId: l.listingId });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.claimId, count);
+    assert.equal(await w.claimCount(), count);
+  }
+  // --restart: refused, with the keys of the claim on the chain in place
+  {
+    const { l, dir } = await below();
+    const count = await w.claimCount();
+    const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
+    for (const flag of [true, false]) {
+      await assert.rejects(w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: flag, restart: true, acknowledge: true }), (e) => e.code === 'RESTART_REFUSED', `late ${flag}`);
+      assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys);
+    }
+    assert.equal(await w.claimCount(), count);
+    assert.equal(readJson(statePath(dir)).claimId, String(count));
+  }
+  // without --yes, and from a wallet that could not pay for a second claim: it is read before anything is asked
+  {
+    const { l, dir } = await below();
+    const count = await w.claimCount();
+    const cli = await runCli(w, ['commit', dir, '--listing', String(l.listingId)]);
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /^Late claim \d+ on listing \d+: disclosed\.$/m);
+    assert.equal(await w.claimCount(), count);
+  }
+  // as deep as one of ours must be before the ciphertext is pinned: its depth is read from the state too
+  {
+    const { l, dir } = await below();
+    const uploads = w.ipfs.uploads.length;
+    let waits = 0;
+    const r = await w.hunter({ confirmations: 3, sleep: async () => { waits += 1; assert.equal(w.ipfs.uploads.length, uploads, 'no pin while it waits'); await w.mine(); } }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
+    assert.equal(r.stage, 'disclosed');
+    assert.ok(waits >= 2, `it waited (${waits})`);
   }
 });
 
-test('a folder prepared before the start block\'s hash was saved is read as it always was', async () => {
-  const l = await rolled();
+test('an ordinary commit\'s prepared folder is read the same way: its commit, mined below the height it was prepared at, is adopted', async () => {
+  const l = await w.listing();
   const dir = makeClaimDir();
-  const count = await w.claimCount();
-  assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
-  const { startBlockHash, ...older } = readJson(statePath(dir));
-  assert.match(startBlockHash, /^0x[0-9a-f]{64}$/);
-  fs.writeFileSync(statePath(dir), `${JSON.stringify(older, null, 2)}\n`, { mode: 0o600 });
-  const r = await late({ claimDir: dir, listingId: l.listingId });
-  assert.equal(r.stage, 'disclosed');
-  assert.equal(await w.claimCount(), count + 1n);
-  assert.equal(Object.hasOwn(readJson(statePath(dir)), 'startBlockHash'), false);
-});
-
-test('a claim mined below the height the folder was prepared at, after a reorganization: it is found, adopted, and not paid for again', async () => {
-  const l = await rolled();
-  const dir = makeClaimDir();
-  const count = await w.claimCount();
-  const price = await w.sa.commitPrice(l.listingId);
   const snapshot = await w.rpc('evm_snapshot');
-  const rolledBackTo = await w.provider.getBlockNumber();
   await w.mine(3);
-  // prepared three blocks later: that height is what the folder saves
-  assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+  assert.equal((await child(dir, l.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
   const saved = readJson(statePath(dir));
-  assert.equal(saved.startBlock, rolledBackTo + 3);
-  // the chain is rolled back under it, and the same hashes' late claim is mined in the first block of the new fork
   await w.rpc('evm_revert', [snapshot]);
-  const other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price })).wait();
-  assert.ok(other.blockNumber < saved.startBlock, 'the claim is below the height the folder was prepared at');
+  const other = await (await w.sa.connect(w.hunterWallet).commit(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+  assert.ok(other.blockNumber < saved.startBlock);
   await w.mine(5);
-  assert.ok(await w.provider.getBlockNumber() > saved.startBlock, 'and the chain is past that height again');
-  const heldNow = await w.provider.getBalance(w.address);
-  const r = await late({ claimDir: dir, listingId: l.listingId });
+  const count = await w.claimCount();
+  const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId });
   assert.equal(r.stage, 'disclosed');
-  assert.equal(r.commitTx, other.hash);
-  assert.equal(await w.claimCount(), count + 1n, 'one claim');
-  assert.equal(await w.provider.getBalance(w.address), heldNow, 'no second bond');
+  assert.equal(r.late, false);
+  assert.equal(r.claimId, count);
+  assert.equal(await w.claimCount(), count, 'no second commit');
 });
 
 // Round 7: a run without --yes on a prepared folder is a dry run only while no claim of its hashes is on the chain.

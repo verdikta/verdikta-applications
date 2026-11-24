@@ -1723,7 +1723,7 @@ test('a folder where --restart set files aside, and whose new commit then lost i
       assert.equal(err.exitCode, 1);
       assert.match(err.message, SIGNS_NOTHING_MORE, label);
       assert.ok(err.message.includes(`*.set-aside-${c.stamp}`), `${label}: it names the files that were set aside`);
-      assert.match(err.message, /Look at that transaction first/, label);
+      assert.match(err.message, /Before a new folder pays, look for a claim of each of them, and of this folder's own two hashes \(state\.json\), mined or pending/, label);
       assert.match(err.message, /prepare the commit in a new folder: copy finding\.json, report\.md and the patches there, and run commit on it/, label);
       assert.doesNotMatch(err.message, /Run commit again: it signs a new one/, label);
     }
@@ -1826,6 +1826,76 @@ test('the process stops just as a run finds the saved commit replaced: nothing i
   assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), nonce);
 });
 
+// Round 17 (R14-F2 again): "signs nothing more" is said only once it cannot be undone. A nonce that another
+// transaction took in a block that is not final can be free again after a reorganization, and the saved commit would
+// then go out: so until the node's finalized block holds that transaction, the run says the commit is not mined and
+// to run again, and a folder it has reported as stopped is one whose saved bytes can never be sent.
+test('a folder is said to sign nothing more only once the transaction that took its nonce is final: before that the run is to be made again, and a reorganization that takes that transaction out lets the saved commit go (R14-F2)', async () => {
+  // not final yet, and then taken out by a reorganization
+  {
+    const c = await restartedAndSigned();
+    const finalizedBlock = await w.provider.getBlockNumber();
+    const snapshot = await w.rpc('evm_snapshot');
+    const other = await c.sendOld();
+    assert.ok(other.blockNumber > finalizedBlock);
+    const provider = finalizedAt(() => finalizedBlock);
+    for (const label of ['a run', 'a run again']) {
+      const err = await signsNothing(c, () => w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', label);
+      assert.equal(err.exitCode, 4, 'to be run again');
+      assert.match(err.message, /in a block that is not final yet/);
+      assert.doesNotMatch(err.message, SIGNS_NOTHING_MORE, 'nothing is said to be for good while it can be undone');
+      assert.ok(err.message.includes(c.signed.commitTx.hash));
+    }
+    // the reorganization: the other client's commit is gone, the saved nonce is free, and this folder's commit goes out
+    await w.rpc('evm_revert', [snapshot]);
+    await (await w.signers[8].sendTransaction({ to: w.signers[8].address, value: 0n })).wait();
+    const count = await w.claimCount();
+    const r = await w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.commitTx, c.signed.commitTx.hash, 'the saved bytes: the folder was never said to be stopped');
+    assert.equal(await w.claimCount(), count + 1n, 'its one claim');
+  }
+  // final: the finalized block holds the transaction that took the nonce, and the folder signs nothing more
+  {
+    const c = await restartedAndSigned();
+    const other = await c.sendOld();
+    const before = finalizedAt(() => other.blockNumber - 1);
+    const at = finalizedAt(() => other.blockNumber);
+    await signsNothing(c, () => w.hunter({ provider: before }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', 'one block short of final');
+    const err = await signsNothing(c, () => w.hunter({ provider: at }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', 'final');
+    assert.match(err.message, SIGNS_NOTHING_MORE);
+  }
+  // a node that names no finalized block cannot show it: the run is to be made again, through one that does
+  {
+    const c = await restartedAndSigned();
+    await c.sendOld();
+    const err = await signsNothing(c, () => w.hunter({ provider: finalizedAt(() => null) }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', 'no finalized block');
+    assert.match(err.message, /this node names no finalized block/);
+  }
+});
+
+// Round 17 (R17-F1): the transaction that took the nonce is not the only one to look at. A transfer can take it, and a
+// commit of the files set aside be mined right behind it: the text sends the hunter through every claim the folder
+// has held before a new folder pays.
+test('an unrelated transaction took the nonce and a claim of the files set aside was mined behind it: the text says to look for a claim of every set and of the folder\'s own hashes before a new folder pays (R17-F1)', async () => {
+  const c = await restartedAndSigned();
+  await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n })).wait();
+  const other = await c.sendOld();
+  assert.equal((await w.provider.getTransaction(other.hash)).nonce, c.signed.commitTx.nonce + 1, 'the paid claim is at the next nonce');
+  const err = await signsNothing(c, () => w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', 'the run');
+  assert.match(err.message, SIGNS_NOTHING_MORE);
+  assert.match(err.message, /Before a new folder pays, look for a claim of each of them, and of this folder's own two hashes \(state\.json\), mined or pending: every one of those state\.json files names the wallet \(hunter\), the chain, the contract, the listing and the two hashes of one claim\./);
+  assert.match(err.message, /Look among that wallet's transactions: the one that took the nonce, and those after it\./);
+  assert.match(err.message, /If no such claim exists, prepare the commit in a new folder: copy finding\.json, report\.md and the patches there, and run commit on it\./);
+  assert.doesNotMatch(err.message, /If the transaction is no such claim/);
+  // the claim that is paid is disclosed from its files, as the text says, and nothing more is paid
+  const count = await w.claimCount();
+  const r = await w.hunter().commit({ claimDir: restoredFrom(c.dir, c.stamp), listingId: c.l.listingId });
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(r.commitTx, other.hash);
+  assert.equal(await w.claimCount(), count, 'one claim, one bond');
+});
+
 // The owner's decision of 2026-11-24 on R16-F1: the text says what the restored files' run finds, and what it does
 // not. No way out is promised for the case it does not cover.
 test('what COMMIT_REPLACED says the restored files find is what the search covers: a claim below the old height is found from the finalized block the set\'s anchor saved, and not for a set with no anchor (R16-F1)', async () => {
@@ -1850,7 +1920,7 @@ test('what COMMIT_REPLACED says the restored files find is what the search cover
   // (and the text promises no command the tool does not have, and names no issue)
   const promises = /#\d+|--adopt|a later version|will be able/;
   const says = [
-    /run commit on that folder\. That run looks for the claim in the logs from the block the set was prepared at \(startBlock in its state\.json\)/,
+    /run commit on that folder, without --yes\. That run looks for the claim in the logs from the block the set was prepared at \(startBlock in its state\.json\)/,
     /where the chain was reorganized below that block and the set's anchor\.json holds a finalized block that still stands, from that block/,
     /It does not find a claim below that: for a set with no anchor\.json, one that a reorganization put below startBlock/,
   ];
@@ -1860,7 +1930,19 @@ test('what COMMIT_REPLACED says the restored files find is what the search cover
     for (const re of says) assert.match(err.message, re);
     assert.doesNotMatch(err.message, promises);
     const count = await w.claimCount();
-    const r = await w.hunter().commit({ claimDir: restoredFrom(c.dir, c.stamp), listingId: c.l.listingId });
+    // Round 17 (R17-F2): the same restored folder through a node that gives only the logs from the old height on.
+    // The search from the finalized block cannot be read, the run reads from startBlock, finds nothing, and asks for
+    // --yes: what the text says that means, and what not to do then. Nothing is signed without --yes.
+    const fresh = restoredFrom(c.dir, c.stamp);
+    assert.match(err.message, /from that block, which needs an RPC that serves the logs from there/);
+    assert.match(err.message, /If it prints a commit's terms and asks for --yes instead, it did not find the claim: do not give --yes there, which would pay for a second one\./);
+    const nonce = await w.provider.getTransactionCount(w.hunterWallet.address);
+    const short = await w.hunter({ provider: noLogsBelow(() => c.old.startBlock) }).commit({ claimDir: fresh, listingId: c.l.listingId }).catch((e) => e);
+    assert.equal(short.code, 'NEEDS_ACKNOWLEDGEMENT', `${short.code}: ${short.message}`);
+    assert.equal(readJson(statePath(fresh)).stage, 'prepared');
+    assert.equal(await w.provider.getTransactionCount(w.hunterWallet.address), nonce, 'nothing was signed');
+    // and through a node that serves the whole range, the claim is found and disclosed
+    const r = await w.hunter().commit({ claimDir: fresh, listingId: c.l.listingId });
     assert.equal(r.stage, 'disclosed');
     assert.equal(r.commitTx, other.hash);
     assert.equal(r.ciphertextSha256, c.old.ciphertextSha256);

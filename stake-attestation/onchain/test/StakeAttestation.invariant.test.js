@@ -48,6 +48,15 @@
 // covers its wallets; the record is checked for the appeals by result; and no claim gets a
 // second dispute-panel verdict. Skipped under solidity-coverage, as P17's are:
 // StakeAttestation.appeal.test.js covers every line they reach.
+//
+// P39 adds the maker's hold, on two seeds of its own and a sixth stream: holds (now and then by
+// someone else, or of a listing that cannot be held, to be refused), late claims on held listings
+// that are still Open or Depleted, and commits there, which must be refused. A hold moves no ETH
+// and a late claim's bond and prepay are held as any claim's, so the equation is unchanged. After
+// every step a held listing takes no commit and its heldAt is the time it had; at the end every
+// claim made on a listing after its hold is a late claim, and the sequences must have paid awards
+// to claims committed before a hold and settled after it. Skipped under solidity-coverage:
+// StakeAttestation.hold.test.js covers every line they reach.
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers } = hre;
@@ -66,6 +75,7 @@ const REACHED = [
 ];
 const REACHED_P17 = ["ConfirmationRequested", "NarrowInvalid", "ConfirmationRefunded", "ConfirmationNoVerdict"];
 const REACHED_P16 = ["Appealed"];
+const REACHED_P39 = ["Held"];
 const UNRESOLVED = new Set([ClaimState.Committed, ClaimState.Revealed, ClaimState.Judged, ClaimState.Disputed, ClaimState.RoundFailed]);
 
 async function setup() {
@@ -102,15 +112,19 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
   const reached = {}; // events emitted, over every seed
   const reachedP17 = {}; // the safeguards' events, over the P17 seeds
   const reachedP16 = {}; // the appeal's events and results, over the P16 seeds
+  const reachedP39 = {}; // the hold's event and what followed it, over the P39 seeds
 
   const SEEDS = [
     [11, false], [2026, false], [0xbeef, false], [7, false], [424242, false], [1710, true], [17, true], [0x10ad, true],
     [1616, true, true], [0xa99e, true, true], [70707, true, true],
+    [3939, false, false, true], [0x401d, true, true, true],
   ];
-  for (const [seed, safeguards, appeals = false] of SEEDS) {
-    const label = appeals ? " with the safeguards and the appeal (P16)" : safeguards ? " with the safeguards (P17)" : "";
+  for (const [seed, safeguards, appeals = false, holds = false] of SEEDS) {
+    const label = holds
+      ? (appeals ? " with the safeguards, the appeal and the hold (P39)" : " with the hold (P39)")
+      : appeals ? " with the safeguards and the appeal (P16)" : safeguards ? " with the safeguards (P17)" : "";
     it(`seed ${seed}${label}: balance == escrow + held bonds + held prepays + withdrawable credits + fee balance after every step`, async function () {
-      if (safeguards && hre.__SOLIDITY_COVERAGE_RUNNING) this.skip();
+      if ((safeguards || holds) && hre.__SOLIDITY_COVERAGE_RUNNING) this.skip();
       const { sa, aggregator, owner, feeRecipient, makers, hunters, contracts } = await loadFixture(setup);
       const r = rng(seed);
       // P2d's actions draw from their own stream and run as extra steps, so the P2c sequence
@@ -122,6 +136,9 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       const r4 = rng(seed ^ 0x1717);
       // P16's (the appeal) a fifth, used on the appeal's seeds only.
       const r5 = rng(seed ^ 0x1616);
+      // P39's (the hold) a sixth, used on the hold's seeds only.
+      const r6 = rng(seed ^ 0x3939);
+      const heldSeen = new Map(); // listing id => { at: its heldAt, claims: claimCount when it was first seen held }
       const listings = []; // { id, maker }
       const claims = []; // { id, listingId, hunter }
       const accounts = [...new Set([...makers, ...hunters].map((a) => a.target ?? a.address))];
@@ -173,6 +190,13 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           expect(l.owedWei, `${at}: owedWei`).to.equal(owedBy.get(id) || 0n);
           if (l.owedWei > 0n) expect(l.escrowWei, `${at}: owing with escrow`).to.equal(0n);
           expect(l.pendingClaims, `${at}: pendingClaims`).to.equal(pendingBy.get(id) || 0n);
+          if (!holds) continue;
+          // The hold (P39): one-way, and no commit from it on.
+          const heldAt = await sa.heldAt(id);
+          const seen = heldSeen.get(id);
+          if (seen) expect(heldAt, `${at}: heldAt`).to.equal(seen.at);
+          else if (heldAt !== 0n) heldSeen.set(id, { at: heldAt, claims: await sa.claimCount() });
+          if (heldAt !== 0n) expect(await sa.acceptsCommits(id), `${at}: a held listing takes no commit`).to.equal(false);
         }
         let credits = 0n;
         for (const a of accounts) credits += await sa.withdrawable(a);
@@ -581,6 +605,53 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         },
       };
       const bag5 = Object.entries({ drive: 5, appeal: 3, judgeAppeal: 6, retriggerAppeal: 2, settleInvalid: 3 }).flatMap(([k, w]) => Array(w).fill(k));
+      // The held listings that have neither rolled nor closed: the P2e stream makes late claims on those.
+      const heldListings = async () => {
+        const out = [];
+        for (const x of listings) {
+          const st = (await sa.getListing(x.id)).state;
+          if ((st === ListingState.Open || st === ListingState.Depleted) && (await sa.heldAt(x.id)) !== 0n) out.push(x);
+        }
+        return out;
+      };
+      const holdActions = {
+        // The maker holds one of its listings. Now and then someone else tries; and a listing that
+        // is Listed, Rolled, Closed or held already refuses its maker too.
+        async hold() {
+          if (!listings.length) return;
+          const x = r6.pick(listings);
+          const who = r6.next() < 0.85 ? x.maker : r6.pick([...makers, ...hunters]);
+          await attempt("hold", () => send(who, "hold", [x.id]));
+        },
+        // A late claim on a held listing: no award, never one of pendingClaims.
+        async lateOnHeld() {
+          if (claims.length >= 64) return;
+          const heldNow = await heldListings();
+          if (!heldNow.length) return;
+          const { id } = r6.pick(heldNow);
+          const hunter = r6.pick(hunters);
+          const price = await sa.commitPrice(id);
+          const before = await sa.claimCount();
+          await attempt("lateOnHeld", () =>
+            send(hunter, "lateClaim", [id, ethers.sha256(ethers.toBeHex(before + 1n, 32)), H.CT], price + BigInt(r6.pick([0, 0, 1000]))));
+          if ((await sa.claimCount()) === before) return;
+          const claim = { id: before + 1n, listingId: id, hunter, late: true };
+          claims.push(claim);
+          if (r6.next() < 0.8) await attempt("disclose", () => send(hunter, "disclose", [claim.id, H.CT_CID]));
+        },
+        // A commit on a held listing, at its price: refused.
+        async commitOnHeld() {
+          const heldNow = await heldListings();
+          if (!heldNow.length) return;
+          const { id } = r6.pick(heldNow);
+          const hunter = r6.pick(hunters);
+          const price = await sa.commitPrice(id);
+          const before = await sa.claimCount();
+          await attempt("commitOnHeld", () => send(hunter, "commit", [id, ethers.sha256(ethers.toBeHex(before + 1n, 32)), H.CT], price));
+          expect(await sa.claimCount(), `seed ${seed}: a commit on held listing ${id}`).to.equal(before);
+        },
+      };
+      const bag6 = Object.entries({ hold: 1, lateOnHeld: 5, commitOnHeld: 1 }).flatMap(([k, w]) => Array(w).fill(k));
 
       if (safeguards) await safeguardActions.program(true); // the first listing takes these values
       await actions.list();
@@ -608,6 +679,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           const extra = r5.pick(bag5);
           await appealActions[extra]();
           await checkInvariant(step, `appeal ${extra}`);
+        }
+        if (holds && r6.next() < 0.25) {
+          const extra = r6.pick(bag6);
+          await holdActions[extra]();
+          await checkInvariant(step, `hold ${extra}`);
         }
       }
       // Drain: every round finalized, every wallet recovered, then refund attribution.
@@ -744,6 +820,28 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         // The other seeds make no appeal.
         for (const ev of REACHED_P16) expect((await sa.queryFilter(sa.filters[ev]())).length, `seed ${seed}: ${ev}`).to.equal(0);
       }
+      if (holds) {
+        const bump = (k, n) => { reachedP39[k] = (reachedP39[k] || 0) + n; };
+        for (const ev of REACHED_P39) bump(ev, (await sa.queryFilter(sa.filters[ev]())).length);
+        expect((await sa.queryFilter(sa.filters.Held())).length, `seed ${seed}: one Held per held listing`).to.equal(heldSeen.size);
+        expect(stats.ok.commitOnHeld || 0, `seed ${seed}: a commit on a held listing`).to.equal(0);
+        bump("commitRefused", stats.reverted.commitOnHeld || 0);
+        bump("holdRefused", stats.reverted.hold || 0);
+        bump("lateOnHeld", stats.ok.lateOnHeld || 0);
+        for (const [id, seen] of heldSeen) {
+          for (const c of claims.filter((x) => x.listingId === id)) {
+            const k = await sa.getClaim(c.id);
+            // Every claim made on the listing after its hold is a late claim; none before it is.
+            expect(k.late, `seed ${seed} listing ${id} claim ${c.id}: late`).to.equal(c.id > seen.claims);
+            if (k.late && k.state === ClaimState.Settled) bump("lateSettled", 1);
+            // A claim committed before the hold and settled after it, with its award.
+            if (!k.late && k.state === ClaimState.Settled && k.settledAt > seen.at && k.paidWei + k.owedWei > 0n) bump("awardAfterHold", 1);
+          }
+        }
+      } else {
+        // The other seeds hold nothing.
+        for (const ev of REACHED_P39) expect((await sa.queryFilter(sa.filters[ev]())).length, `seed ${seed}: ${ev}`).to.equal(0);
+      }
       if (safeguards) {
         for (const ev of REACHED_P17) reachedP17[ev] = (reachedP17[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
       } else {
@@ -763,6 +861,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
     // The appeal's seeds made appeals and re-triggers, and their results: held, overturned, no verdict.
     for (const k of [...REACHED_P16, "appeal", "appealRetrigger", "result2", "result3", "result4"]) {
       expect(reachedP16[k] || 0, `${k} ${JSON.stringify(reachedP16)}`).to.be.greaterThan(0);
+    }
+    // The hold's seeds held listings, refused holds and commits, took late claims on held listings
+    // and settled them, and paid awards to claims committed before a hold and settled after it.
+    for (const k of [...REACHED_P39, "holdRefused", "commitRefused", "lateOnHeld", "lateSettled", "awardAfterHold"]) {
+      expect(reachedP39[k] || 0, `${k} ${JSON.stringify(reachedP39)}`).to.be.greaterThan(0);
     }
   });
 });

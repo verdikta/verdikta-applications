@@ -179,6 +179,26 @@ test.describe('maker actions', () => {
     await expect(page.getByRole('button', { name: fill(STRINGS.roll.button, { id: successor.listingId }) })).toHaveCount(0);
   });
 
+  test('roll forward: the lines about a fix stay on the page when the site\'s record cannot be read', async ({ page, stack, chain }) => {
+    // an open listing the chain answers for, and a record mirror that does not answer: the listing still takes commits
+    // and can still be closed from this page, so what a maker does before publishing a fix is still said
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.route('**/api/records/**', (route) => route.abort());
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Open);
+    const panel = page.getByTestId('roll-forward');
+    await expect(panel.getByTestId('roll-record-failed')).toContainText(STRINGS.roll.recordFailed.replace('{reason}', ''));
+    expect(await panel.getByTestId('roll-fix-keep').innerText()).toBe(STRINGS.roll.fix.keep);
+    expect((await panel.getByTestId('roll-fix-order').innerText()).split('\n')).toEqual([STRINGS.roll.fix.noClaim, STRINGS.roll.fix.claimPending]);
+    // nothing to pick and nothing to send: the picker is the record's
+    await expect(panel.getByRole('combobox')).toHaveCount(0);
+    await expect(panel.getByRole('button')).toHaveCount(0);
+    // and the close the first two lines send the maker to is on the same page
+    await expect(page.getByTestId('close').getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) })).toBeVisible();
+    expect(wordingProblems(await panel.innerText())).toEqual([]);
+  });
+
   test('dispute: the escalation prepay is shown, the statement pinned and named by CID in the request', async ({ page, stack, chain }) => {
     test.setTimeout(180_000);
     const { listingId } = await chain.openListing({ recipient: key.recipient, stake: { fixWindowDays: 0, disclosureGraceHours: 0 } });

@@ -988,19 +988,23 @@ export const STRINGS = {
     // Node P38: what a maker does before publishing a fix. A version is validated from its public repository, so a
     // fixed commit is public before it can be listed, and commit() is taken on an Open listing until close() or
     // rollForward(). close() is refused while a claim is pending or an award is owed; rollForward() needs a successor
-    // that is already Open. Each is one line of the page's text (test/rollGuidance.test.js).
+    // that is already Open, so a close can come before the push and a roll cannot. The first line is the rule a maker
+    // can keep (a close first, where the contract allows one); the third says what a roll costs where it does not.
+    // Each is one line of the page's text (test/rollGuidance.test.js).
     fix: {
       keep:
-        'Keep a fix private until the stake has left this commit, by a close or a roll forward. The site validates a ' +
-        'version from its public repository, so a fixed commit is public before it can be listed, and a hunter who ' +
-        'reads the fix can claim the bug here for as long as this listing takes claims.',
+        'Keep a fix private until this listing is closed, when it can be closed: the stake has then left this commit ' +
+        'before anyone reads the fix. A roll forward cannot come before the push: the site validates a version from ' +
+        'its public repository, so a fixed commit is public before it can be listed. A hunter who reads the fix can ' +
+        'claim the bug here for as long as this listing takes claims.',
       noClaim:
-        'If no claim on this listing is pending (each is settled or expired), close it first, then push the fix and ' +
-        'list the fixed commit. A close is refused while an award is owed: a top-up pays what is owed first.',
+        'If no claim on this listing is pending (each is settled or expired), close it first. Once it is closed, push ' +
+        'the fix and list the fixed commit. A close is refused while an award is owed: a top-up pays what is owed first.',
       claimPending:
-        'If a claim is pending, this listing cannot be closed, so the fix is public before the roll: push it, then ' +
-        'validate, list and fund the fixed commit, and roll forward, all in one sitting. Until the roll, this listing ' +
-        'takes claims as before.',
+        'If a claim is pending, this listing cannot be closed until every pending claim is settled or expired. To roll ' +
+        'forward before then, the fix has to be public first: push it, then validate, list and fund the fixed commit, ' +
+        'and roll forward, all in one sitting. From the push until this listing has rolled forward, it takes claims ' +
+        'as before.',
     },
     loading: 'Looking for your open listings of this repository…',
     pick: 'Successor listing',
@@ -1009,6 +1013,8 @@ export const STRINGS = {
       'You have no open listing of this repository to roll to. A roll needs the fixed version listed and funded ' +
       'first: read the order above before you push it.',
     noIdentity: 'This listing\'s repository is not in the site\'s record yet, so its successors cannot be found here.',
+    // the record's read failed: the panel still shows, with the lines above, and only the picker is missing
+    recordFailed: 'This listing\'s record could not be read, so its successors cannot be found here: {reason}',
     feedFailed: 'The open listings could not be read: {reason}',
     button: 'Roll forward to listing {id}',
     sending: 'Sending rollForward()…',

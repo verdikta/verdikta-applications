@@ -84,14 +84,17 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
  * rollForward() (design §7.1, §13.2): the maker picks a successor among their own open listings
  * of the same repository, from the feed, each confirmed on-chain as the contract requires. Just
  * before sending, both listings are read again at one block through the wallet. Above the picker,
- * whatever it holds, the panel says what a maker does before publishing a fix (node P38): a fixed
- * commit is public before it can be listed, and this listing takes commits until it is closed or
- * rolled forward.
+ * the panel says what a maker does before publishing a fix (node P38): a fixed commit is public
+ * before it can be listed, and this listing takes commits until it is closed or rolled forward.
+ * That text depends on the listing's state on-chain and on nothing else, so the panel shows for
+ * every Open or Depleted listing: `record` (useListingRecord's answer) is null while the site's
+ * record is read and { failed } when it cannot be, and only the picker waits for it.
  */
-export function RollForward({ listingId, listing, identity }) {
+export function RollForward({ listingId, listing, record }) {
   const w = useWalletContext();
   const id = useId();
   const state = LISTING_STATES[Number(listing.state)];
+  const identity = record && !record.failed ? record.identity : null;
   const [options, setOptions] = useState(null); // [{ id, commit, escrowWei, openedAt }] | { failed }
   const [pick, setPick] = useState('');
   const [busy, setBusy] = useState(false);
@@ -152,7 +155,9 @@ export function RollForward({ listingId, listing, identity }) {
   };
 
   let body;
-  if (!identity) body = <p className="hint">{RF.noIdentity}</p>;
+  if (!record) body = <p className="hint">{RF.loading}</p>;
+  else if (record.failed) body = <p className="hint" data-testid="roll-record-failed">{fill(RF.recordFailed, { reason: record.failed })}</p>;
+  else if (!identity) body = <p className="hint">{RF.noIdentity}</p>;
   else if (options === null) body = <p className="hint">{RF.loading}</p>;
   else if (options.failed) body = <p className="error">{fill(RF.feedFailed, { reason: options.failed })}</p>;
   else if (!options.length) body = <p>{RF.none}</p>;
@@ -216,7 +221,8 @@ export function ListingMore({ listingId, listing }) {
         <ListingClaims artifactHash={listing.artifactHash} data={data} listing={listing} />
       </div>
       <SameRepositorySection data={data} />
-      {data && !data.failed && <RollForward listingId={listingId} listing={listing} identity={data.identity} />}
+      {/* whatever the record's read came to: what the panel says before a fix is the chain's, and only its picker is the record's */}
+      <RollForward listingId={listingId} listing={listing} record={data} />
     </>
   );
 }

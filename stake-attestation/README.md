@@ -1402,9 +1402,10 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
     neither is refused as before), `LISTING_TAKES_COMMITS` and `NO_LATE_CLAIMS` for `--late`.
   - The price it signs is the price its terms named. The price is read again as it signs, before the wallet's
     balance is asked, and one that changed in between ends the run with `LATE_PRICE_CHANGED` and the new amount,
-    nothing signed; the next run prints the terms again. A rise that comes after that read is met at the gas
-    estimate, where the contract refuses the quoted value, and is said the same way. A commit signs the live price,
-    as it always did.
+    nothing signed; the next run prints the terms again. A rise between that read and the gas estimate makes the
+    estimate refuse the quoted value, and is said the same way. One that comes after the estimate is not seen before
+    the transaction is sent: it reverts on the chain, as a commit's does (`COMMIT_REVERTED`), and the next run prices
+    it afresh. A commit signs the live price, as it always did.
   - A folder a late run prepared, or took over from a commit that was never signed, says so in `state.json`
     (`late: true`) before anything is signed, and a later run goes on with what the folder holds, with `--late` or
     without it: a signed one is sent again as it was saved, and a prepared one still asks for `--yes`. `--late`
@@ -1418,8 +1419,8 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   - `--restart` never starts a late claim over, signed or not (`LATE_NEEDS_NEW_FOLDER`; owner, 2026-11-24): a
     changed late claim goes in a new folder, and the old folder's files stay as they are. A prepared late claim
     whose files changed says the same, with no word of `--restart` (`LATE_INPUTS_CHANGED`): its files are held to
-    the archive it was prepared from before any other check of them, so one that is spoiled or missing is said as
-    changed, never as a file to fix in place.
+    the archive it was prepared from before any other check of them, so one that is spoiled, missing, over the size
+    the tool reads or no file at all is said as changed, never as a file to fix in place.
   - `--late` is taken only as the bare flag and only by `commit`: with a value (`--late=false` too) or on another
     command it is a usage error (exit 2) before anything is read or sent. Every other flag is read as it was.
   - `status`, `reveal`, `claim` and `appeal` then work as on any claim: `commit`, `status` and `claim` print "Late

@@ -450,14 +450,27 @@ async function resultOf(ctx, state) {
   };
 }
 
-/** Whether the claim's files still make the archive the folder was prepared from. A missing file makes none. */
-function sameInputs(inputs, state) {
-  if (!inputs.finding || !inputs.report || !inputs.pocPatch) return false;
+/**
+ * A prepared late claim's files, held to the archive the folder was prepared from before anything else is said of
+ * them (node P43). Changed, spoiled, missing, over the size this tool reads or no file at all: each is said as a
+ * changed file, since the texts that say to fix a file in place or to pass --restart are no way on for a late claim.
+ * A file that could not be read is said as that.
+ */
+function preparedLateInputs(claimDir, state) {
+  let inputs;
   try {
-    return sha256Hex0x(buildClaimArchive(inputs)) === state.archiveSha256;
-  } catch {
-    return false;
+    inputs = readClaimInputs(claimDir);
+  } catch (err) {
+    if (err.code !== 'ARCHIVE_TOO_LARGE') throw err;
+    throw fail('LATE_INPUTS_CHANGED');
   }
+  if (!inputs.finding || !inputs.report || !inputs.pocPatch) throw fail('LATE_INPUTS_CHANGED');
+  let archive = null;
+  try {
+    archive = buildClaimArchive(inputs);
+  } catch { /* over the size as a whole: no archive, so not the one prepared */ }
+  if (archive === null || sha256Hex0x(archive) !== state.archiveSha256) throw fail('LATE_INPUTS_CHANGED');
+  return inputs;
 }
 
 /**
@@ -466,11 +479,8 @@ function sameInputs(inputs, state) {
  */
 async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge, late = false) {
   const listing = await readListing(ctx, listingId);
-  const inputs = readClaimInputs(ws.claimDir);
-  // A prepared late claim's files are held to the archive it was prepared from before anything else is said of them
-  // (node P43): the texts below say to fix a file in place or to pass --restart, and neither is a way on for a late
-  // claim. A commit is checked in the order it was.
-  if (late && state && !sameInputs(inputs, state)) throw fail('LATE_INPUTS_CHANGED');
+  // a prepared late claim's files are held to its archive first (preparedLateInputs); a commit's are read as they were
+  const inputs = late && state ? preparedLateInputs(ws.claimDir, state) : readClaimInputs(ws.claimDir);
   const { finding, warnings } = checkClaimInputs(inputs, listing.spec);
   if (state) {
     if (sha256Hex0x(buildClaimArchive(inputs)) !== state.archiveSha256) throw fail('INPUTS_CHANGED');

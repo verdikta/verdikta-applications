@@ -86,7 +86,8 @@ test('line 3: with a claim pending, a roll before the claims are settled has the
   assert.match(roll, /s\.maker == msg\.sender && s\.state == ListingState\.Open/);
   // and a commit is taken on an Open listing until then: the roll is what sets it Rolled
   assert.match(roll, /l\.state = ListingState\.Rolled;/);
-  assert.match(solidity('acceptsCommits'), /return l\.state == ListingState\.Open\s*&& block\.timestamp < l\.fundedUntil\s*&& l\.escrowWei >= l\.awards\[3\];/);
+  // (since the maker's hold, node P39, acceptsCommits has a fourth condition: the maker has not held the listing)
+  assert.match(solidity('acceptsCommits'), /return l\.state == ListingState\.Open\s*&& block\.timestamp < l\.fundedUntil\s*&& l\.escrowWei >= l\.awards\[3\]\s*&& _heldAt\[listingId\] == 0;/);
 });
 
 test('the panel renders the three lines once each, after its intro and before the successor picker', () => {
@@ -163,14 +164,14 @@ test('the README says the same, and why: the builder fetches the fixed commit fr
   assert.match(bullet, /A `close` can come before the push; a roll cannot\./);
   assert.match(bullet, /`rollForward` needs a successor that is the same maker's own listing, already Open/);
   assert.match(bullet, /the builder fetches a listed commit from the public repository, with no credentials, so the fix is public before the roll/);
-  // acceptsCommits as the contract has it: the escrow is a lower bound
-  assert.match(bullet, /for as long as that listing takes commits \(`acceptsCommits`: Open, its paid period not over, its escrow at least the top award\)/);
+  // acceptsCommits as the contract has it: the escrow is a lower bound, and the fourth condition is the maker's hold
+  assert.match(bullet, /for as long as that listing takes commits \(`acceptsCommits`: Open, its paid period not over, its escrow at least the top award, and not held by its maker with `hold`\)/);
   inOrder(bullet, ['with no claim pending', '`close` the old listing first', 'once that is mined', 'push the fix', 'list the fixed commit']);
   assert.match(bullet, /`close` is refused while a claim is pending or an award is owed/);
   inOrder(bullet, ['with a claim pending', '`close` is refused until every pending claim is settled or expired', 'publishes first', 'push', 'validate', 'list', 'fund', 'roll forward', 'in one sitting']);
   // the exposure, as the contract decides it: commits are taken only while acceptsCommits' conditions are met, so a
   // Depleted listing, or one whose paid period is over, takes none, with a claim pending or without
-  assert.match(bullet, /The fix is public from the push, and until the roll is mined the old listing takes commits as before, for as long as it meets the three conditions of `acceptsCommits` above \(a Depleted listing, or one whose paid period is over, takes none\)\./);
+  assert.match(bullet, /The fix is public from the push, and until the roll is mined the old listing takes commits as before, for as long as it meets the four conditions of `acceptsCommits` above \(a Depleted listing, or one whose paid period is over, takes none\)\./);
   assert.doesNotMatch(bullet, /expect the old listing to take commits/);
   // what a roll does to the claims already there, in the contract's terms
   assert.match(bullet, /those claims still settle against the old listing's escrow/);

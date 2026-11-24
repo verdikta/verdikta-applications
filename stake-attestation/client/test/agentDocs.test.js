@@ -849,12 +849,22 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   assert.match(feed, /claimsSoFar: Number\(onchain\.claimsCommitted\)/);
   assert.match(flat, /`claimsSoFar` counts every claim ever committed there, open or not\./);
   // and, since batch 2, the queue itself: the contract's count of open claims and the earliest of them, null for none.
-  // A feed entry is an Open listing and a late claim is taken only on a Rolled or Closed one, so on an entry every
-  // claim in the queue is one of pendingClaims: each is ahead of a claim committed now.
+  // A feed entry is an Open listing, and a late claim is taken on a Rolled or Closed one or, since the maker's hold
+  // (node P39), on one its maker has held. So on an entry that is not held every claim in the queue is one of
+  // pendingClaims: each is ahead of a claim committed now. A held listing stays Open and takes no commit; until the
+  // feed leaves it out (node P40) an entry can be one, with late claims in its queue that pendingClaims does not count.
   assert.match(feed, /pendingClaims: Number\(onchain\.pendingClaims\),\s*headClaim: onchain\.headClaim === '0' \? null : onchain\.headClaim,/);
   assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\|/, 'only an Open listing is an entry');
   const commitBody = /function commit\([\s\S]*?\n {4}\}/.exec(logic)[0];
-  assert.match(commitBody, /s == StakeAttestation\.ListingState\.Rolled\s*\|\| \(s == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\),\s*"not accepting late claims"/, 'a late claim needs a Rolled or Closed listing');
+  assert.match(commitBody, /s == StakeAttestation\.ListingState\.Rolled\s*\|\| \(s == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\)\s*\|\| listingHeld,\s*"not accepting late claims"/, 'a late claim needs a listing that is Rolled, Closed after it opened, or held');
+  // held is the contract's own record of a hold (_heldAt, read through heldAt): lateClaim hands it to commit, only
+  // the maker's hold sets it, on an Open or a Depleted listing, and a listing where it is set takes no commit
+  assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /msg\.value, true, _heldAt\[listingId\] != 0\s*\);/, 'lateClaim reads the hold');
+  const holdBody = /function hold\([\s\S]*?\n {4}\}/.exec(logic)[0];
+  assert.match(holdBody, /require\(msg\.sender == l\.maker, "not maker"\);/);
+  assert.match(holdBody, /require\(s == StakeAttestation\.ListingState\.Open \|\| s == StakeAttestation\.ListingState\.Depleted, "not rollable"\);/);
+  assert.match(holdBody, /require\(heldAt\[listingId\] == 0, "already held"\);\s*heldAt\[listingId\] = uint64\(block\.timestamp\);/);
+  assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /&& l\.escrowWei >= l\.awards\[3\]\s*&& _heldAt\[listingId\] == 0;/, 'acceptsCommits is false on a held listing');
   assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /uint256 pendingClaims; +\/\/ claims neither settled nor expired \(P2b\); never a late claim \(P2e\)/);
   assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /uint64 +headClaim; +\/\/ the earliest claim neither settled nor expired \(0 = none\)/);
   assert.match(flat, /`pendingClaims` is how many claims are open there now, every one of them ahead of a claim you commit, and `headClaim` is the first of them: 0 and null on a listing where yours would be first\./);
@@ -862,8 +872,12 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   assert.deepEqual(table.slice(table.indexOf('claimsSoFar'), table.indexOf('claimsSoFar') + 3), ['claimsSoFar', 'pendingClaims', 'headClaim'], 'the feed table lists both beside claimsSoFar');
   assert.match(flat, /pendingClaims claims on it that are open now: neither settled nor expired headClaim the earliest of those, by its claim id, a string of digits; null when none is open/);
   // and no listing comes back to Open from Rolled or Closed: the two places that set Open start from Listed (the
-  // opening fund) and from Depleted (a top-up), so an entry never holds a late claim from an earlier life
+  // opening fund) and from Depleted (a top-up), so an entry that is not held never holds a late claim from an earlier
+  // life. A Depleted listing can be held, take late claims and be topped up to Open: it is held still, for the hold
+  // is written in one place and nothing clears it
   const host = read('onchain', 'contracts', 'StakeAttestation.sol');
+  assert.equal(`${host}\n${logic}`.split('heldAt[listingId] = ').length - 1, 1, 'the hold is set in one place only');
+  assert.doesNotMatch(`${host}\n${logic}`, /delete _?heldAt|heldAt\[[^\]]*\] = 0\b/, 'and never cleared');
   const opens = [...`${host}\n${logic}`.matchAll(/l\.state = (?:StakeAttestation\.)?ListingState\.Open;/g)];
   assert.equal(opens.length, 2, 'a listing becomes Open in two places only');
   assert.match(host, /if \(s == ListingState\.Listed\) \{[\s\S]{0,600}?l\.state = ListingState\.Open;/);

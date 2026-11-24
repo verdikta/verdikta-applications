@@ -371,8 +371,10 @@ Or let the tool say it: `commit` on a folder with no commit signed yet, `reveal`
 (exit 3). The amount printed is the amount sent; a reveal reads its top-up again as it signs.
 Once a commit is signed, `commit` resumes it on every run, --yes or not: it sends the saved
 commit and then the disclose. So read a price for a claim already under way with cast, not with
-`commit`. `commit --late` is a dry run in the same way, and once a late claim is signed a later
-run resumes it, with --late or without it.
+`commit`. `commit --late` is a dry run in the same way, on a folder that holds no late claim yet.
+A folder that holds one is not: a signed late claim is resumed on every run, with --late or
+without it, and a prepared one whose two hashes already have a claim on the chain is disclosed,
+--yes or not (section 3, "Late claims"). Read the price for such a folder with cast too.
 
 A dry run needs the wallet key (for your address, the balance and the allowlist: it signs
 nothing), the gateway and VERDIKTA_PIN_BACKEND, not VERDIKTA_PIN_TOKEN, which is read only when

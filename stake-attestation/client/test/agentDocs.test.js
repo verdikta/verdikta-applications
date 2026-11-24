@@ -1169,8 +1169,9 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // the price it signs is the price its terms named: read again as it signs, and a price that changed stops the run
   // before the signature, and before the wallet's balance is asked. Only a late claim asks this; a commit signs the
   // live price as it did
-  assert.match(preflight, /const price = await ctx\.read\('commitPrice', \[listingId\]\);\s*if \(late && quoted !== null && price !== quoted\) throw fail\('LATE_PRICE_CHANGED', /, 'held to the quote as soon as it is read');
-  assert.ok(preflight.indexOf('LATE_PRICE_CHANGED') < preflight.indexOf('getBalance('), 'before the balance is asked');
+  assert.match(commit, /const latePriceChanged = \(now, quoted\) => fail\('LATE_PRICE_CHANGED', /);
+  assert.match(preflight, /const price = await ctx\.read\('commitPrice', \[listingId\]\);\s*if \(late && quoted !== null && price !== quoted\) throw latePriceChanged\(price, quoted\);/, 'held to the quote as soon as it is read');
+  assert.ok(preflight.indexOf('latePriceChanged(') >= 0 && preflight.indexOf('latePriceChanged(') < preflight.indexOf('getBalance('), 'before the balance is asked');
   assert.match(commit, /if \(late && typeof quoted !== 'bigint'\) throw fail\('INTERNAL', [^\n]*\);\s*const price = await commitPreflight\(ctx, listingId, state\.hunter, late, quoted\);/, 'and a late claim is never signed without a quote');
   assert.equal(new ToolError('LATE_PRICE_CHANGED').exitCode, 1);
   assert.ok(block.includes('The price it signs is the price its terms named: if the live price changed in between, it signs nothing and says the new amount (LATE_PRICE_CHANGED), and the next run prints the terms again.'));

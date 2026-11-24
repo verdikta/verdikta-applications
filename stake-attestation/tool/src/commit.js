@@ -263,6 +263,9 @@ async function revertedReason(ctx, hash, state) {
   }
 }
 
+/** A late claim's price is no longer the one its terms named: said with the price as it is now (node P43). */
+const latePriceChanged = (now, quoted) => fail('LATE_PRICE_CHANGED', `It is ${formatEther(now)} ETH now, not ${formatEther(quoted)} ETH.`);
+
 /**
  * Which refusal a commit gets on a listing that takes none: whether the listing takes late claims, and no more. A
  * lens that cannot say leaves the refusal a commit always had; an RPC that did not answer is said as that.
@@ -287,7 +290,7 @@ async function takesLateClaimsOnly(ctx, listingId) {
  */
 async function commitPreflight(ctx, listingId, hunter, late = false, quoted = null) {
   const price = await ctx.read('commitPrice', [listingId]);
-  if (late && quoted !== null && price !== quoted) throw fail('LATE_PRICE_CHANGED', `It is ${formatEther(price)} ETH now, not ${formatEther(quoted)} ETH.`);
+  if (late && quoted !== null && price !== quoted) throw latePriceChanged(price, quoted);
   if (late && !await ctx.read('acceptsLateClaims', [listingId])) throw fail(await ctx.read('acceptsCommits', [listingId]) ? 'LISTING_TAKES_COMMITS' : 'NO_LATE_CLAIMS', `Listing ${listingId}.`);
   if (!late && !await ctx.read('acceptsCommits', [listingId])) throw fail(await takesLateClaimsOnly(ctx, listingId) ? 'LATE_CLAIMS_ONLY' : 'LISTING_NOT_ACCEPTING', `Listing ${listingId}.`);
   if (!late && !await ctx.read('isAllowed', [listingId, hunter])) throw fail('NOT_ALLOWED');
@@ -318,6 +321,11 @@ async function sendCommit(ctx, ws, state, listingId, late = false, quoted = null
     if (err.code === 'CONTRACT_REFUSED' && !late) throw fail('LISTING_NOT_ACCEPTING', err.detail);
     // lateClaim's own refusal is said as the late claim's; any other reason of the contract's is passed on as it is
     if (err.code === 'CONTRACT_REFUSED' && err.detail === 'not accepting late claims') throw fail('NO_LATE_CLAIMS', `Listing ${listingId}.`);
+    // the fee rose after the price was read just above: the quoted value no longer covers it, and that is a changed price
+    if (late && err.code === 'CONTRACT_REFUSED' && err.detail === 'payment below bond + fee') {
+      const now = await ctx.read('commitPrice', [listingId]);
+      if (now !== quoted) throw latePriceChanged(now, quoted);
+    }
     throw err;
   }
   const rec = await ctx.sign({ data, value: price, gasLimit: (estimate * 5n) / 4n + 10000n });
@@ -442,6 +450,16 @@ async function resultOf(ctx, state) {
   };
 }
 
+/** Whether the claim's files still make the archive the folder was prepared from. A missing file makes none. */
+function sameInputs(inputs, state) {
+  if (!inputs.finding || !inputs.report || !inputs.pocPatch) return false;
+  try {
+    return sha256Hex0x(buildClaimArchive(inputs)) === state.archiveSha256;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The steps before a commit, or with `late` a late claim, may be sent: the listing, the claim's files, the warning,
  * the acknowledgement. A late claim's listing comes back with `quotedWei`, the price its terms named.
@@ -449,10 +467,13 @@ async function resultOf(ctx, state) {
 async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge, late = false) {
   const listing = await readListing(ctx, listingId);
   const inputs = readClaimInputs(ws.claimDir);
+  // A prepared late claim's files are held to the archive it was prepared from before anything else is said of them
+  // (node P43): the texts below say to fix a file in place or to pass --restart, and neither is a way on for a late
+  // claim. A commit is checked in the order it was.
+  if (late && state && !sameInputs(inputs, state)) throw fail('LATE_INPUTS_CHANGED');
   const { finding, warnings } = checkClaimInputs(inputs, listing.spec);
   if (state) {
-    // (a late claim has a text of its own: INPUTS_CHANGED's names --restart, which never starts a late claim over)
-    if (sha256Hex0x(buildClaimArchive(inputs)) !== state.archiveSha256) throw fail(late ? 'LATE_INPUTS_CHANGED' : 'INPUTS_CHANGED');
+    if (sha256Hex0x(buildClaimArchive(inputs)) !== state.archiveSha256) throw fail('INPUTS_CHANGED');
     if (archiveDisclosureKeyHex(listing.spec) !== state.disclosureKey) throw fail('ARCHIVE_MISMATCH');
   }
   const price = await commitPreflight(ctx, listingId, hunter, late);

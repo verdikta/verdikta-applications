@@ -2097,6 +2097,79 @@ test('a receipt for the saved commit that names a block which does not hold it i
   assert.equal(await w.claimCount(), count, 'one claim, one bond');
 });
 
+// Round 21 (R14-F2 again): the same holds for a receipt the wait itself brings back, by the provider's own method. A
+// revert reopens the folder, so in a folder with files set aside it is believed only as the chain bears it out now.
+test('a reverted receipt of the saved commit that the provider remembers from an orphaned block does not reopen the folder: the signed bytes stay, and a run again pays nothing (R14-F2)', async () => {
+  const c = await restartedAndSigned();
+  const other = await c.sendOld();
+  await w.mine(2);
+  // the provider's receipt method answers with a revert of the saved commit, as it was on a fork that is gone; on the
+  // chain, the block at that height holds the other client's commit of the files set aside, at the saved nonce
+  const orphaned = { hash: c.signed.commitTx.hash, status: 0, blockNumber: other.blockNumber, blockHash: `0x${'ab'.repeat(32)}`, logs: [] };
+  const provider = new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'getTransactionReceipt') return async (hash) => (hash === c.signed.commitTx.hash ? orphaned : target.getTransactionReceipt(hash));
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  for (const label of ['a run', 'a run again with --yes']) {
+    const err = await signsNothing(c, () => w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', label);
+    assert.match(err.message, /the node answered with a receipt for this transaction that the chain does not bear out/);
+  }
+  const count = await w.claimCount();
+  const r = await w.hunter().commit({ claimDir: restoredFrom(c.dir, c.stamp), listingId: c.l.listingId });
+  assert.equal(r.commitTx, other.hash);
+  assert.equal(await w.claimCount(), count, 'one claim, one bond');
+});
+
+// Round 21 (R21-F2): a nonce used for good, and no receipt of the saved commit: before that is the end, the node is
+// asked whether it knows the saved transaction as mined. If it does, the receipt is only not there yet, and the
+// saved commit itself used the nonce: nothing is said that the next run would take back.
+test('the saved commit itself was mined and reverted, and the node has no receipt of it for a moment: the folder is not said to sign nothing more, and the next run says it reverted (R21-F2)', async () => {
+  const c = await restartedAndSigned();
+  await (await asMaker().hold(c.l.listingId)).wait();
+  await w.rpc('eth_sendRawTransaction', [c.signed.commitTx.raw]).catch(() => {});
+  await w.mine(2);
+  assert.equal((await w.provider.getTransactionReceipt(c.signed.commitTx.hash)).status, 0, 'mined, and reverted');
+  // a node that, for now, gives no receipt of it by either way of asking; it still knows the transaction and its block
+  const noReceipt = new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'getTransactionReceipt') return async (hash) => (hash === c.signed.commitTx.hash ? null : target.getTransactionReceipt(hash));
+      if (prop === 'send') {
+        return async (method, params) => (method === 'eth_getTransactionReceipt' && params[0] === c.signed.commitTx.hash ? null : target.send(method, params));
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  for (const options of [{}, { waitMs: 5, receiptGraceMs: 60_000 }]) {
+    const err = await signsNothing(c, () => w.hunter({ ...options, provider: noReceipt }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', `no receipt yet ${JSON.stringify(options)}`);
+    assert.doesNotMatch(err.message, SIGNS_NOTHING_MORE);
+    assert.match(err.message, /the node knows this transaction as mined and has no receipt of it yet/);
+  }
+  // the receipt is there on the next run: the commit reverted, as the folder then says, and as nothing contradicted
+  const err = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(err.code, 'COMMIT_REVERTED', `${err.code}: ${err.message}`);
+});
+
+// Round 21 (R21-F1): the short wait's way to the end goes through the look for the folder's own claim, as the long
+// wait's does: a claim of the active hashes that another transaction made at the saved nonce is adopted at once, with
+// the finalized block still behind it.
+test('another transaction made the folder\'s own claim at the saved nonce: a run with a short wait adopts and discloses it before finality (R21-F1)', async () => {
+  const c = await restartedAndSigned();
+  const finalizedBlock = await w.provider.getBlockNumber();
+  const other = await (await w.sa.connect(w.hunterWallet).commit(c.l.listingId, c.signed.archiveSha256, c.signed.ciphertextSha256, { value: await w.sa.commitPrice(c.l.listingId) })).wait();
+  assert.equal((await w.provider.getTransaction(other.hash)).nonce, c.signed.commitTx.nonce);
+  const count = await w.claimCount();
+  const r = await w.hunter({ waitMs: 5, receiptGraceMs: 60_000, provider: finalizedAt(() => finalizedBlock) }).commit({ claimDir: c.dir, listingId: c.l.listingId }).catch((e) => e);
+  assert.equal(r.stage, 'disclosed', `${r.code}: ${r.message}`);
+  assert.equal(r.commitTx, other.hash, 'the claim another transaction made');
+  assert.equal(r.ciphertextSha256, c.signed.ciphertextSha256);
+  assert.equal(await w.claimCount(), count, 'one claim, one bond');
+  assert.ok(finalizedBlock < other.blockNumber, 'with the finalized block still behind it');
+});
+
 // Round 19 (R18-F1 again): a run whose wait is shorter than the time it gives a receipt to appear never comes to say
 // whether the nonce is gone. It has seen the nonce used, though, and that is enough to say at once what a claim of the
 // files set aside needs.

@@ -14,9 +14,11 @@
 // differs from a commit's: it sends lateClaim where a commit sends commit, with the same two hashes and commitPrice,
 // on a listing the lens says takes late claims (acceptsLateClaims; no allowlist). A folder a late run prepared, or
 // took over from a commit that was never signed, says so in its state (`late: true`) before anything is signed, and
-// a run goes on with what the folder holds, whatever flag it has. Three things are a late claim's alone:
+// a run goes on with what the folder holds, whatever flag it has: --late takes over only a folder that has nothing
+// signed when the run starts, and a signed commit stays a commit for the whole run. Three things are a late claim's alone:
 //
-//   - The price it signs is the price its terms named: a price that changed in between stops the run before it signs.
+//   - The price it signs is the price its terms named: a price that changed in between stops the run before it signs,
+//     and before the wallet's balance is asked, so the new price is said even when the wallet cannot pay it.
 //   - A prepared late claim's two hashes are looked for on the chain, as a commit's or a late claim's, before the
 //     listing is asked and before --restart is weighed: a claim sent some other way has its bond, and is disclosed.
 //   - --restart never starts a late claim over (owner, 2026-11-24): a changed late claim goes in a new folder.
@@ -30,7 +32,7 @@ import { codeReview } from './common.js';
 import { fail, ToolError } from './errors.js';
 import { rawCid, isRawSha256Cid, isStorableCid, sha256Hex0x, gatewayGet } from './ipfs.js';
 import { archiveDisclosureKeyHex, lateTermsForNotice, readListing, runnerFilesOf, termsForNotice } from './listing.js';
-import { commitHereNotice, commitNotice, lateClaimNotice } from './notices.js';
+import { COMMIT_HERE, commitNotice, lateClaimNotice } from './notices.js';
 import { requirementWarnings } from './report.js';
 import { lintObservable } from './observable.js';
 import { openWorkspace } from './workspace.js';
@@ -279,10 +281,13 @@ async function takesLateClaimsOnly(ctx, listingId) {
  * says takes late claims (acceptsLateClaims, ClaimLogic.commit's own rule) and no allowlist; the price is commitPrice's
  * for both. The wrong kind for the listing is refused here, before anything is drawn, pinned or signed, with a text
  * that names the other kind.
+ * @param {bigint|null} [quoted] the price a late claim's terms named on this run, when it is about to be signed: a
+ *   live price that is another is said here, before the wallet's balance is asked, and nothing is signed
  * @returns {Promise<bigint>} the live price
  */
-async function commitPreflight(ctx, listingId, hunter, late = false) {
+async function commitPreflight(ctx, listingId, hunter, late = false, quoted = null) {
   const price = await ctx.read('commitPrice', [listingId]);
+  if (late && quoted !== null && price !== quoted) throw fail('LATE_PRICE_CHANGED', `It is ${formatEther(price)} ETH now, not ${formatEther(quoted)} ETH.`);
   if (late && !await ctx.read('acceptsLateClaims', [listingId])) throw fail(await ctx.read('acceptsCommits', [listingId]) ? 'LISTING_TAKES_COMMITS' : 'NO_LATE_CLAIMS', `Listing ${listingId}.`);
   if (!late && !await ctx.read('acceptsCommits', [listingId])) throw fail(await takesLateClaimsOnly(ctx, listingId) ? 'LATE_CLAIMS_ONLY' : 'LISTING_NOT_ACCEPTING', `Listing ${listingId}.`);
   if (!late && !await ctx.read('isAllowed', [listingId, hunter])) throw fail('NOT_ALLOWED');
@@ -301,9 +306,10 @@ async function sendCommit(ctx, ws, state, listingId, late = false, quoted = null
   if (existing) return adoptLogged(ctx, ws, state, existing);
 
   readProvenFiles(ctx, ws, state);
-  const price = await commitPreflight(ctx, listingId, state.hunter, late); // read just before signing: the live fee
-  // A late claim signs the price its terms named (node P43). A commit signs the live price, as it always did.
-  if (late && price !== quoted) throw fail('LATE_PRICE_CHANGED', `It is ${formatEther(price)} ETH now, not ${formatEther(quoted)} ETH.`);
+  // A late claim signs the price its terms named, or nothing (node P43): commitPreflight holds the live price to
+  // `quoted`. A commit signs the live price, as it always did.
+  if (late && typeof quoted !== 'bigint') throw fail('INTERNAL', 'A late claim is signed only at a price its terms named.');
+  const price = await commitPreflight(ctx, listingId, state.hunter, late, quoted); // read just before signing: the live fee
   const data = ctx.encode(late ? 'lateClaim' : 'commit', [listingId, state.archiveSha256, state.ciphertextSha256]);
   let estimate;
   try {
@@ -445,8 +451,8 @@ async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge, lat
   const inputs = readClaimInputs(ws.claimDir);
   const { finding, warnings } = checkClaimInputs(inputs, listing.spec);
   if (state) {
-    // (the text names --restart, which starts a commit over and never a late claim: LATE_NEEDS_NEW_FOLDER)
-    if (sha256Hex0x(buildClaimArchive(inputs)) !== state.archiveSha256) throw fail('INPUTS_CHANGED', late ? '--restart is refused for a late claim: restore the files, or prepare the changed claim in a new folder.' : undefined);
+    // (a late claim has a text of its own: INPUTS_CHANGED's names --restart, which never starts a late claim over)
+    if (sha256Hex0x(buildClaimArchive(inputs)) !== state.archiveSha256) throw fail(late ? 'LATE_INPUTS_CHANGED' : 'INPUTS_CHANGED');
     if (archiveDisclosureKeyHex(listing.spec) !== state.disclosureKey) throw fail('ARCHIVE_MISMATCH');
   }
   const price = await commitPreflight(ctx, listingId, hunter, late);
@@ -470,17 +476,21 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
   return ws.withLock(async () => {
     let state = ws.loadState();
     if (state) checkBinding(state, { ...bindingOf(ctx, hunter), listingId: listingId ?? undefined });
-    // A late claim's run: asked for with --late, or the folder's own once it was prepared or signed as one.
-    const late = lateFlag === true || state?.late === true;
+    // The run's kind. A folder with something signed, or with a claim, keeps its own for the whole run, whatever
+    // the flag says and even if its signed transaction turns out to be gone: --late takes over only a folder that
+    // has nothing signed when the run starts. A folder a late run prepared or took over is a late claim's without it.
+    const unsigned = !state || state.stage === 'prepared';
+    const late = unsigned ? lateFlag === true || state?.late === true : state.late === true;
+    if (lateFlag === true && !late) ctx.notice(COMMIT_HERE);
     // A prepared late claim's two hashes may have a claim on the chain already, sent some other way. That is asked
     // first: before the listing or the wallet's balance can refuse the run, and before --restart is weighed.
     if (late && state?.stage === 'prepared') {
       const existing = await findCommitted(ctx, state, EITHER_KIND);
       if (existing) state = await adoptLogged(ctx, ws, state, existing);
     }
+    // --restart starts a commit over, never a late claim, signed or not: refused before anything is removed
+    if (late && restart) throw fail('LATE_NEEDS_NEW_FOLDER', !state || state.stage === 'prepared' ? undefined : 'This folder\'s late claim is signed or on the chain: run commit again without --restart to go on with that one.');
     if (state && restart && state.stage !== 'prepared') throw fail('RESTART_REFUSED');
-    // --restart starts a commit over, never a late claim: refused before anything is removed
-    if (late && restart) throw fail('LATE_NEEDS_NEW_FOLDER');
     if (state && restart) {
       ws.removePrepared();
       state = null;
@@ -496,8 +506,8 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
       else if (late && state.late !== true) ws.saveState(state = withKind(state, true));
       state = await sendCommit(ctx, ws, state, id, late, listing.quotedWei);
     }
-    // --late on a folder whose claim is an ordinary commit: the run goes on with that commit, and says so
-    if (lateFlag === true && state.claimId !== undefined && state.late !== true) ctx.notice(commitHereNotice(state.claimId));
+    // a late run that found the folder's hashes on the chain as an ordinary commit goes on with that commit, and says so
+    if (late && lateFlag === true && state.late !== true) ctx.notice(COMMIT_HERE);
     while (state.stage !== 'disclosed') state = await disclose(ctx, ws, state, { acceptUnreadPin });
     const result = await resultOf(ctx, state);
     // What this run says of the reveal, recorded (node P32): status compares the chain's deadline with it, and says

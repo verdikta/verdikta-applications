@@ -1080,7 +1080,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   const view = ABI.find((f) => f.name === 'acceptsLateClaims');
   assert.deepEqual([view.inputs.map((i) => `${i.type} ${i.name}`), view.outputs.map((o) => o.type)], [['uint256 listingId'], ['bool']]);
   // such a listing is not in the feed, and no entry's queue holds a late claim (the bounty 400 test holds feed.js to it)
-  assert.ok(block.includes('Such a listing is not in the feed (section 2)'));
+  assert.ok(block.includes('A listing that takes late claims is not in the feed (section 2).'));
   assert.match(section(2), /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\./);
 
   // open to every wallet: commit asks isAllowed, lateClaim does not, and the tool's check follows
@@ -1159,25 +1159,35 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.match(section(3), /A listing that takes none may take a late claim instead \("Late claims", after step 8\)\./);
 
   // the price it signs is the price its terms named: read again as it signs, and a price that changed stops the run
-  // before the signature. Only a late claim asks this; a commit signs the live price as it did
-  assert.match(commit, /if \(late && price !== quoted\) throw fail\('LATE_PRICE_CHANGED', [^\n]*\);\s*const data = ctx\.encode\(/);
+  // before the signature, and before the wallet's balance is asked. Only a late claim asks this; a commit signs the
+  // live price as it did
+  assert.match(preflight, /const price = await ctx\.read\('commitPrice', \[listingId\]\);\s*if \(late && quoted !== null && price !== quoted\) throw fail\('LATE_PRICE_CHANGED', /, 'held to the quote as soon as it is read');
+  assert.ok(preflight.indexOf('LATE_PRICE_CHANGED') < preflight.indexOf('getBalance('), 'before the balance is asked');
+  assert.match(commit, /if \(late && typeof quoted !== 'bigint'\) throw fail\('INTERNAL', [^\n]*\);\s*const price = await commitPreflight\(ctx, listingId, state\.hunter, late, quoted\);/, 'and a late claim is never signed without a quote');
   assert.equal(new ToolError('LATE_PRICE_CHANGED').exitCode, 1);
   assert.ok(block.includes('The price it signs is the price its terms named: if the live price changed in between, it signs nothing and says the new amount (LATE_PRICE_CHANGED), and the next run prints the terms again.'));
   assert.match(section(4), /The tool reads it again just before it signs, and signs only the amount its terms named\./);
 
-  // --restart never starts a late claim over: refused before the one place that removes a prepared folder's files
+  // --restart never starts a late claim over, signed or not: refused before the one place that removes a prepared
+  // folder's files, and before a commit's own refusal, whose text is not true of a late claim
   const runCommit = /export async function runCommit[\s\S]*$/.exec(commit)[0];
-  const refusal = runCommit.indexOf('if (late && restart) throw fail(\'LATE_NEEDS_NEW_FOLDER\');');
+  const refusal = runCommit.indexOf('if (late && restart) throw fail(\'LATE_NEEDS_NEW_FOLDER\'');
   assert.ok(refusal >= 0 && refusal < runCommit.indexOf('ws.removePrepared()'), 'refused before anything is removed');
+  assert.ok(refusal < runCommit.indexOf('throw fail(\'RESTART_REFUSED\')'));
   assert.equal(commit.split('removePrepared()').length - 1, 1, 'and nothing else removes them');
   assert.equal(new ToolError('LATE_NEEDS_NEW_FOLDER').exitCode, 1);
-  assert.ok(block.includes('--restart does not start a late claim over (LATE_NEEDS_NEW_FOLDER): if its files changed, prepare the changed claim in a new folder (copy finding.json, report.md and the patches there) and keep the old folder as it is.'));
+  assert.match(/async function readyToCommit[\s\S]*?\n\}/.exec(commit)[0], /throw fail\(late \? 'LATE_INPUTS_CHANGED' : 'INPUTS_CHANGED'\);/);
+  assert.equal(new ToolError('LATE_INPUTS_CHANGED').exitCode, 1);
+  assert.doesNotMatch(ERROR_TEXTS.LATE_INPUTS_CHANGED, /--restart/);
+  assert.ok(block.includes('--restart does not start a late claim over, signed or not (LATE_NEEDS_NEW_FOLDER). If its files changed before it was signed, `commit` stops (LATE_INPUTS_CHANGED): restore them, or prepare the changed claim in a new folder (copy finding.json, report.md and the patches there) and keep the old folder as it is.'));
   assert.match(section(9), /Before that, a change stops `commit` with INPUTS_CHANGED \(--restart starts over with new keys; a late claim is not started over: section 3, "Late claims"\)\./);
 
-  // a resume: a signed one is settled before anything else is asked, and the folder's kind is the run's kind
+  // a resume: a signed one is settled before anything else is asked, and the folder's kind is the run's kind. --late
+  // takes over only a folder with nothing signed when the run starts
   assert.match(commit, /if \(state\?\.stage === 'commit-signed'\) state = await settleCommit\(ctx, ws, state\);/, 'a signed one is settled as it was saved');
-  assert.match(commit, /const late = lateFlag === true \|\| state\?\.late === true;/, 'a folder that holds a late claim says so, whatever the flag');
+  assert.match(commit, /const unsigned = !state \|\| state\.stage === 'prepared';\s*const late = unsigned \? lateFlag === true \|\| state\?\.late === true : state\.late === true;/, 'a folder with something signed keeps its kind, whatever the flag');
   assert.ok(block.includes('A stopped run goes on with what the folder holds, with --late or without it: a signed commit or late claim is sent again as it was saved, and a folder prepared for a late claim stays a late claim\'s.'));
+  assert.ok(block.includes('--late changes nothing in a folder whose commit is signed: that run goes on as a commit\'s.'));
   assert.ok(block.includes('A prepared late claim whose two hashes already have a claim on the chain, sent some other way, is found first and disclosed, --yes or not.'));
   assert.match(section(4), /`commit --late` is a dry run in the same way, and once a late claim is signed a later run resumes it, with --late or without it\./);
 

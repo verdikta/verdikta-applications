@@ -30,7 +30,10 @@ export function createHunter(options = {}) {
     check: (o) => runCheck(ctx, o),
     /**
      * commit; with `late` a late claim (node P43): lateClaim in commit's place, on a listing that takes no commit any
-     * more, for no award. Either says its terms through onNotice and sends only with `acknowledge`.
+     * more, for no award. `acknowledge` is what a new commit or late claim is signed on, after its terms were said
+     * through onNotice. It is no dry-run switch for a folder that holds more: a commit or late claim already signed
+     * there is sent again and disclosed on any call, and so is a prepared late claim whose two hashes already have a
+     * claim on the chain, with no terms said.
      * @param {{ claimDir: string, listingId?: bigint, late?: boolean, acknowledge?: boolean, restart?: boolean, acceptUnreadPin?: boolean }} o
      */
     commit: (o) => runCommit(ctx, o),

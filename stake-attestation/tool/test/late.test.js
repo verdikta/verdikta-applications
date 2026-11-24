@@ -543,14 +543,33 @@ test('commit --late --restart is refused before anything is deleted, pinned or s
     await assertNothingSent(m, null, 'a commit\'s prepared folder');
   }
 
-  // once something is signed, --restart is refused as it always was
+  // a signed late claim: the same refusal, which says how to go on with it (a commit's RESTART_REFUSED says
+  // "--restart only works before that", which is not so for a late claim)
   {
     const l = await rolled();
     const dir = makeClaimDir();
     assert.equal((await child(dir, l.listingId, 'commit:signed')).signal, 'SIGKILL');
     const kept = filesOf(dir);
     for (const lateFlag of [true, false]) {
-      await assert.rejects(w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: lateFlag, acknowledge: true, restart: true }), (e) => e.code === 'RESTART_REFUSED');
+      const err = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: lateFlag, acknowledge: true, restart: true }).catch((e) => e);
+      assert.equal(err.code, 'LATE_NEEDS_NEW_FOLDER', `late ${lateFlag}`);
+      assert.match(err.message, /a changed late claim goes in a new folder/);
+      assert.match(err.message, /This folder's late claim is signed or on the chain: run commit again without --restart to go on with that one\.$/);
+      assert.deepEqual(filesOf(dir), kept);
+    }
+    assert.equal((await w.hunter().commit({ claimDir: dir, listingId: l.listingId })).late, true, 'and without --restart it goes on');
+  }
+
+  // a signed commit, with --late or without it: --restart is refused as it always was
+  {
+    const l = await w.listing();
+    const dir = makeClaimDir();
+    assert.equal((await child(dir, l.listingId, 'commit:signed', { ordinary: true })).signal, 'SIGKILL');
+    const kept = filesOf(dir);
+    for (const lateFlag of [true, false]) {
+      const err = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: lateFlag, acknowledge: true, restart: true }).catch((e) => e);
+      assert.equal(err.code, 'RESTART_REFUSED', `late ${lateFlag}`);
+      assert.equal(err.message, ERROR_TEXTS.RESTART_REFUSED);
       assert.deepEqual(filesOf(dir), kept);
     }
   }
@@ -603,12 +622,23 @@ test('a late claim whose files changed is told to use a new folder, and nothing 
   const { l, dir } = await preparedLate();
   const m = await mark();
   fs.appendFileSync(`${dir}/report.md`, '\nOne more line.\n');
-  const err = await late({ claimDir: dir, listingId: l.listingId }).catch((e) => e);
-  assert.equal(err.code, 'INPUTS_CHANGED');
-  assert.match(err.message, /--restart is refused for a late claim[^\n]*new folder/);
+  for (const lateFlag of [true, false]) {
+    const err = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: lateFlag, acknowledge: true }).catch((e) => e);
+    assert.equal(err.code, 'LATE_INPUTS_CHANGED', `late ${lateFlag}`);
+    assert.equal(err.exitCode, 1);
+    assert.match(err.message, /Restore them, or prepare the changed claim in a new folder/);
+    assert.doesNotMatch(err.message, /--restart/, 'no word of --restart, which never starts a late claim over');
+  }
   await assertNothingSent(m, null, 'changed files');
-  // an ordinary commit's text is the one it was
+  // an ordinary commit's refusal is the one it was, code and text
   assert.equal(ERROR_TEXTS.INPUTS_CHANGED, 'The claim files changed since this commit was prepared, and nothing has been signed. Restore them, or pass --restart to draw new keys for the new files.');
+  const o = await w.listing();
+  const odir = makeClaimDir();
+  assert.equal((await child(odir, o.listingId, 'prepare:saved', { ordinary: true })).signal, 'SIGKILL');
+  fs.appendFileSync(`${odir}/report.md`, '\nOne more line.\n');
+  const oerr = await w.hunter().commit({ claimDir: odir, listingId: o.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(oerr.code, 'INPUTS_CHANGED');
+  assert.equal(oerr.message, ERROR_TEXTS.INPUTS_CHANGED);
 });
 
 // ------------------------------------------------------------------------------------------- the price it signs
@@ -656,6 +686,32 @@ test('the price a late claim signs is the price its notice quoted: a price that 
       if (step === 'prepare:saved') await (await w.aggregator.setFeeMultiplier(4n)).wait();
     };
     await assert.rejects(w.hunter({ onStep: down }).commit({ claimDir: makeClaimDir(), listingId: l2.listingId, late: true, acknowledge: true }), (e) => e.code === 'LATE_PRICE_CHANGED');
+  } finally {
+    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+  }
+});
+
+test('a price that rose beyond what the wallet holds is still said as the new price: the quote is held before the balance is asked', async () => {
+  try {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    const quoted = await w.sa.commitPrice(l.listingId);
+    // a wallet that can pay the quoted price and its gas, and not the price after the rise
+    const poor = ethers.Wallet.createRandom().connect(w.provider);
+    const { maxFeePerGas } = await w.provider.getFeeData();
+    await (await w.signers[8].sendTransaction({ to: poor.address, value: quoted + 600_000n * maxFeePerGas + 10n ** 14n })).wait();
+    const onStep = async (step) => {
+      if (step === 'prepare:saved') await (await w.aggregator.setFeeMultiplier(5n)).wait();
+    };
+    const err = await w.hunter({ signer: poor, onStep }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
+    const price = await w.sa.commitPrice(l.listingId);
+    const fee = await w.provider.getFeeData();
+    assert.ok(await w.provider.getBalance(poor.address) < price + 600_000n * fee.maxFeePerGas, 'the wallet cannot pay the new price and its gas');
+    assert.equal(err.code, 'LATE_PRICE_CHANGED', err.message);
+    assert.ok(err.message.includes(`It is ${eth(price)} now, not ${eth(quoted)}.`), err.message);
+    assert.equal(readJson(statePath(dir)).commitTx ?? null, null, 'nothing was signed');
+    // the next run, on the new terms, says what it lacks
+    await assert.rejects(w.hunter({ signer: poor }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }), (e) => e.code === 'INSUFFICIENT_FUNDS');
   } finally {
     await (await w.aggregator.setFeeMultiplier(3n)).wait();
   }
@@ -928,7 +984,8 @@ test('--late on a folder whose ordinary commit is signed or on the chain changes
     assert.equal(Object.hasOwn(r, 'late'), false, step);
     assert.equal(await w.claimCount(), count + 1n, step);
     assert.equal((await w.sa.getClaim(r.claimId)).late, false, step);
-    assert.deepEqual(said, [`Claim ${r.claimId} in this folder is an ordinary commit, made before this run: --late changes nothing now, and this run goes on with it.`], step);
+    assert.deepEqual(said, [notices.COMMIT_HERE], step);
+    assert.match(notices.COMMIT_HERE, /an ordinary commit, not a late claim: --late changes nothing here/);
     assert.equal(Object.hasOwn(readJson(statePath(dir)), 'late'), false, step);
     // and without the flag it says nothing of it, as before
     const quiet = [];
@@ -1024,13 +1081,13 @@ test('a prepared late claim whose two hashes already have a claim on the chain: 
     assert.equal(r.claimId, count + 1n);
     assert.equal(await w.claimCount(), count + 1n);
   }
-  // --restart: the claim is found first, so the refusal is the one for a folder with a claim, and its keys stay
+  // --restart: the claim is found first, so the refusal says the folder has a claim to go on with, and its keys stay
   {
     const { l, dir, saved } = await preparedLate();
     const count = await w.claimCount();
     const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
     await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
-    await assert.rejects(late({ claimDir: dir, listingId: l.listingId, restart: true }), (e) => e.code === 'RESTART_REFUSED');
+    await assert.rejects(late({ claimDir: dir, listingId: l.listingId, restart: true }), (e) => e.code === 'LATE_NEEDS_NEW_FOLDER' && /signed or on the chain: run commit again without --restart/.test(e.message));
     assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys, 'the keys of the claim on the chain');
     assert.equal(readJson(statePath(dir)).stage, 'committed');
     assert.equal((await late({ claimDir: dir, listingId: l.listingId })).stage, 'disclosed');
@@ -1052,8 +1109,57 @@ test('a prepared late claim whose two hashes already have a claim on the chain: 
     assert.equal(Object.hasOwn(r, 'late'), false);
     assert.equal(await w.claimCount(), count + 1n, 'no late claim was filed beside it');
     assert.equal((await w.sa.getListing(l.listingId)).lateClaims, 0n);
-    assert.match(said.join('\n'), /is an ordinary commit, made before this run: --late changes nothing now/);
+    assert.deepEqual(said, [notices.COMMIT_HERE]);
     assert.equal(Object.hasOwn(readJson(statePath(dir)), 'late'), false);
+  }
+});
+
+// Round 1 of the review (R1-F1): the flag must not change the kind of a folder that had something signed when the run
+// started, even when that signed transaction turns out to be gone and the folder is prepared again within the run.
+test('--late on a folder whose signed commit lost its nonce: the run goes on as a commit\'s does, never as a late claim\'s', async () => {
+  // the listing still takes commits: the commit is signed anew, as a commit, after the run has said what it holds
+  {
+    const l = await w.listing();
+    const dir = makeClaimDir();
+    const count = await w.claimCount();
+    assert.equal((await child(dir, l.listingId, 'commit:signed', { ordinary: true })).signal, 'SIGKILL');
+    await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n })).wait();
+    const said = [];
+    const r = await w.hunter({ onNotice: (t) => said.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(Object.hasOwn(r, 'late'), false);
+    assert.deepEqual(await eventsOf(r.commitTx), ['Committed']);
+    assert.equal((await w.sa.getClaim(r.claimId)).late, false);
+    assert.equal(await w.claimCount(), count + 1n);
+    assert.equal(said[0], notices.COMMIT_HERE, 'said first, before any terms');
+    assert.match(said[1], /^This commit sends /m);
+    assert.doesNotMatch(said.join('\n'), /This late claim sends/);
+    assert.equal(Object.hasOwn(readJson(statePath(dir)), 'late'), false);
+  }
+  // the maker held the listing meanwhile: no late claim is paid for on this run, whatever the flag and --yes say
+  {
+    const l = await w.listing();
+    const dir = makeClaimDir();
+    assert.equal((await child(dir, l.listingId, 'commit:signed', { ordinary: true })).signal, 'SIGKILL');
+    await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n })).wait();
+    await (await asMaker().hold(l.listingId)).wait();
+    const m = await mark();
+    const said = [];
+    const err = await w.hunter({ onNotice: (t) => said.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
+    assert.equal(err.code, 'LATE_CLAIMS_ONLY', err.message);
+    assert.deepEqual(said, [notices.COMMIT_HERE]);
+    await assertNothingSent(m, null, 'a commit that lost its nonce, on a held listing');
+    const saved = readJson(statePath(dir));
+    assert.equal(saved.stage, 'prepared');
+    assert.equal(Object.hasOwn(saved, 'late'), false, 'the folder is a commit\'s still');
+    // the folder has nothing signed now: a run with --late takes it over, says a late claim's terms, and asks for --yes
+    const terms = [];
+    await assert.rejects(w.hunter({ onNotice: (t) => terms.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: true }), (e) => e.code === 'NEEDS_ACKNOWLEDGEMENT');
+    assert.match(terms.join('\n'), /^This late claim sends /m);
+    await assertNothingSent(m, null, 'the late claim\'s dry run');
+    const r = await late({ claimDir: dir, listingId: l.listingId });
+    assert.equal(r.late, true);
+    assert.equal(await w.claimCount(), m.claims + 1n);
   }
 });
 
@@ -1190,8 +1296,10 @@ test('--help describes the late claim: the flag on commit\'s own line, when a li
   assert.match(flat, /its stake has rolled forward, or closed after it opened, or its maker holds it/);
   assert.match(flat, /pays no award/);
   assert.match(flat, /costs what a commit costs/);
-  assert.match(flat, /the bond is forfeited on INVALID/);
+  assert.match(flat, /the bond is forfeited on INVALID, unless the INVALID is narrow/);
   assert.match(flat, /the prepay is spent on the evaluation/);
+  assert.match(flat, /--late changes nothing in a folder that holds a signed commit/);
+  assert.match(flat, /A prepared late claim whose two hashes already have a claim on the chain is disclosed on any run, --yes or not, as a signed one is/);
   assert.match(flat, /a later run goes on with that one, with --late or without it/);
   assert.match(flat, /--restart does not start a late claim over: a changed one goes in a new folder/);
   // and what the help said of a commit, it says still
@@ -1219,9 +1327,10 @@ test('the late claim\'s notice and the new refusals pass the wording check, and 
     notices.appealNotice({ action: 'appeal', claimId: 1n, valueWei: 1n, deadline: 2n, revealWindow: 3n, late: true }),
     notices.appealNotice({ action: 'retrigger', claimId: 1n, valueWei: 1n, deadline: 2n, revealWindow: 3n, late: true }),
     notices.LATE_CLAIM_NOTE,
+    notices.COMMIT_HERE,
   ];
   for (const text of texts) assert.deepEqual(wordingProblems(text), [], text);
-  for (const code of ['LATE_CLAIMS_ONLY', 'LISTING_TAKES_COMMITS', 'NO_LATE_CLAIMS', 'LATE_NEEDS_NEW_FOLDER', 'LATE_PRICE_CHANGED']) {
+  for (const code of ['LATE_CLAIMS_ONLY', 'LISTING_TAKES_COMMITS', 'NO_LATE_CLAIMS', 'LATE_NEEDS_NEW_FOLDER', 'LATE_PRICE_CHANGED', 'LATE_INPUTS_CHANGED']) {
     assert.equal(typeof ERROR_TEXTS[code], 'string', code);
     assert.deepEqual(wordingProblems(ERROR_TEXTS[code]), [], code);
   }
@@ -1238,13 +1347,17 @@ test('the README\'s hunter section shows the command and says what a late claim 
   const readme = fs.readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
   const start = readme.indexOf('\n## The hunter tool\n');
   const section = readme.slice(start, readme.indexOf('\n## ', start + 1));
-  assert.match(section, /^verdikta-attest commit \.\/claim --listing 12 --late --yes\b/m);
+  // the late claim's line stands apart, with a folder and a listing of its own: run after the commit above it, in
+  // that commit's folder, it would only go on with the commit (R1-F8)
+  assert.match(section, /^verdikta-attest commit \.\/late-claim --listing 7 --late --yes\b/m);
+  assert.doesNotMatch(section, /^verdikta-attest commit \.\/claim [^\n]*--late/m);
+  assert.match(section, /a late claim takes the place of the `commit` line, from a folder of its\s+own/);
   const flat = section.replace(/\s+/g, ' ');
   assert.match(flat, /`commit --late`/);
   assert.match(flat, /`lateClaim`/);
   assert.match(flat, /`acceptsLateClaims`/);
   assert.match(flat, /no award/);
-  for (const code of ['LATE_CLAIMS_ONLY', 'LISTING_TAKES_COMMITS', 'NO_LATE_CLAIMS', 'LATE_NEEDS_NEW_FOLDER', 'LATE_PRICE_CHANGED']) assert.ok(flat.includes(`\`${code}\``), code);
+  for (const code of ['LATE_CLAIMS_ONLY', 'LISTING_TAKES_COMMITS', 'NO_LATE_CLAIMS', 'LATE_NEEDS_NEW_FOLDER', 'LATE_PRICE_CHANGED', 'LATE_INPUTS_CHANGED']) assert.ok(flat.includes(`\`${code}\``), code);
   // the guards against a second bond are other work (verdikta-applications#238): none of them is here or described here
   for (const name of ['COMMIT_REPLACED', 'START_UNPROVEN', 'anchor.json']) {
     assert.ok(!readme.includes(name), `the README does not name ${name}`);

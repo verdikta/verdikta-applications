@@ -298,9 +298,9 @@ of `commit`. `verdikta-attest commit` files one with --late.
 - When a listing takes one: while `acceptsLateClaims(listingId)` is true: the listing rolled
   forward (state Rolled), or closed after it opened (state Closed), or its maker holds it
   (`hold(listingId)`: the state stays Open or Depleted, and no commit is taken from then on). A
-  listing that never opened takes neither a commit nor a late claim. Such a listing is not in
-  the feed (section 2). A feed entry's and a record's `sameRepository` give each related
-  listing's state; read the answer itself from the contract:
+  listing that never opened takes neither a commit nor a late claim. A listing that takes late
+  claims is not in the feed (section 2). A feed entry's and a record's `sameRepository` give
+  each related listing's state; read the answer itself from the contract:
       cast call "$VERDIKTA_CONTRACT" "acceptsLateClaims(uint256)(bool)" <listingId> --rpc-url https://sepolia.base.org
 - What it costs: what a commit costs, `commitPrice(listingId)`: the listing's `bondWei` plus the
   live prepay (section 4).
@@ -327,11 +327,13 @@ of `commit`. `verdikta-attest commit` files one with --late.
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
 - A stopped run goes on with what the folder holds, with --late or without it: a signed commit or
   late claim is sent again as it was saved, and a folder prepared for a late claim stays a late
-  claim's. A prepared late claim whose two hashes already have a claim on the chain, sent some
+  claim's. --late changes nothing in a folder whose commit is signed: that run goes on as a
+  commit's. A prepared late claim whose two hashes already have a claim on the chain, sent some
   other way, is found first and disclosed, --yes or not.
-- --restart does not start a late claim over (LATE_NEEDS_NEW_FOLDER): if its files changed,
-  prepare the changed claim in a new folder (copy finding.json, report.md and the patches there)
-  and keep the old folder as it is.
+- --restart does not start a late claim over, signed or not (LATE_NEEDS_NEW_FOLDER). If its files
+  changed before it was signed, `commit` stops (LATE_INPUTS_CHANGED): restore them, or prepare the
+  changed claim in a new folder (copy finding.json, report.md and the patches there) and keep the
+  old folder as it is.
 
 ## 4. Costs, read live
 

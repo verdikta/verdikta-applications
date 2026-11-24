@@ -33,7 +33,7 @@ export const LATE_CLAIM_WARNINGS = Object.freeze([
 export const LATE_CLAIM_NOTE = 'A late claim: it is judged and recorded on the record under "later", and pays no award. When it settles, its bond comes back unless the outcome is INVALID (a narrow INVALID\'s comes back too).';
 
 /** What `commit --late` says when the folder holds an ordinary commit, signed or on the chain: the run goes on with it. */
-export const commitHereNotice = (claimId) => `Claim ${claimId} in this folder is an ordinary commit, made before this run: --late changes nothing now, and this run goes on with it.`;
+export const COMMIT_HERE = 'This folder holds an ordinary commit, not a late claim: --late changes nothing here, and this run goes on with that commit.';
 
 /**
  * How report.md is written (owner, 2026-11-10). Q73 #4: the claim query classes a finding by the consequence the PoC

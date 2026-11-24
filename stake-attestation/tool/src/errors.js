@@ -26,6 +26,7 @@ export const ERROR_TEXTS = Object.freeze({
   INPUTS_CHANGED: 'The claim files changed since this commit was prepared, and nothing has been signed. Restore them, or pass --restart to draw new keys for the new files.',
   INSUFFICIENT_FUNDS: 'This wallet cannot pay for this. Nothing was sent.',
   INTERNAL: 'The tool failed unexpectedly.',
+  LATE_INPUTS_CHANGED: 'The claim files changed since this late claim was prepared, and nothing has been signed. Restore them, or prepare the changed claim in a new folder: a late claim is not started over.',
   LATE_CLAIMS_ONLY: 'This listing takes no commits now, only late claims. A late claim is judged and recorded, and pays no award: commit --late prints its terms and its price, and with --yes files one. Nothing was pinned or sent.',
   LATE_NEEDS_NEW_FOLDER: 'A late claim is not started over: --restart is refused for one, and a changed late claim goes in a new folder. Copy finding.json, report.md and the patches to a new folder and run commit --late there. Keep this folder as it is: nothing in it was deleted, and nothing was pinned or sent.',
   LATE_PRICE_CHANGED: 'The price of this late claim changed after its terms were printed, so nothing was signed or sent. Run the same command again: it prints the terms with the price as it is now.',

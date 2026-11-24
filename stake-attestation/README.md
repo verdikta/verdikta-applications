@@ -1334,13 +1334,19 @@ export VERDIKTA_CONTRACT=0x…  VERDIKTA_IPFS_GATEWAY=https://…  VERDIKTA_PIN_
 export CODE_RUNNER_URL=http://127.0.0.1:8090  CODE_RUNNER_TOKEN=…   # for check
 verdikta-attest check  ./claim --listing 12        # free, and nothing leaves this machine
 verdikta-attest commit ./claim --listing 12 --yes  # bond + prepay; asks for --yes after saying what that means
-verdikta-attest commit ./claim --listing 12 --late --yes  # a late claim, on a listing that takes no commit any more: no award
 verdikta-attest status ./claim                     # the fix window, and what comes next
 verdikta-attest reveal ./claim --yes               # the plaintext and the reveal; asks for --yes after saying what it sends
 verdikta-attest status ./claim --wait              # polls the evaluation, up to 15 minutes; exit 5 for a round with no verdict
 verdikta-attest reveal ./claim --retrigger --yes   # a failed round again, for the live top-up; asks for --yes after saying what it costs
 verdikta-attest claim  ./claim                     # finalize, settle, withdraw: whatever is due
 verdikta-attest appeal ./claim --yes               # an INVALID to the dispute panel, for the live dispute fee
+```
+
+On a listing that takes no commit any more, a late claim takes the place of the `commit` line, from a folder of its
+own (the lines after it are the same):
+
+```bash
+verdikta-attest commit ./late-claim --listing 7 --late --yes  # a late claim: bond + prepay, no award; asks for --yes after its terms
 ```
 
 The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), never from an argument.
@@ -1392,17 +1398,22 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   - The wrong kind for the listing is refused before anything is drawn, pinned or signed: `LATE_CLAIMS_ONLY` for a
     `commit` without `--late` on a listing that takes late claims only (its text names the flag; a listing that takes
     neither is refused as before), `LISTING_TAKES_COMMITS` and `NO_LATE_CLAIMS` for `--late`.
-  - The price it signs is the price its terms named. The price is read again as it signs, and one that changed in
-    between ends the run with `LATE_PRICE_CHANGED` and the new amount, nothing signed; the next run prints the terms
-    again. A commit signs the live price, as it always did.
+  - The price it signs is the price its terms named. The price is read again as it signs, before the wallet's
+    balance is asked, and one that changed in between ends the run with `LATE_PRICE_CHANGED` and the new amount,
+    nothing signed; the next run prints the terms again. A commit signs the live price, as it always did.
   - A folder a late run prepared, or took over from a commit that was never signed, says so in `state.json`
     (`late: true`) before anything is signed, and a later run goes on with what the folder holds, with `--late` or
-    without it: a signed one is sent again as it was saved, and a prepared one still asks for `--yes`. `--late` on a
-    folder whose claim is an ordinary commit, signed or on the chain, changes nothing, and says so.
+    without it: a signed one is sent again as it was saved, and a prepared one still asks for `--yes`. `--late`
+    takes over only a folder that has nothing signed when the run starts: on a folder whose ordinary commit is
+    signed or on the chain it changes nothing, for the whole run, and says so. Should that signed commit's nonce
+    have gone to another transaction, the run goes on as a commit's does, never as a late claim's.
   - A prepared late claim's two hashes are looked for on the chain, as a commit's or a late claim's, before the listing
-    is asked: a claim sent some other way is adopted and disclosed, `--yes` or not.
-  - `--restart` never starts a late claim over (`LATE_NEEDS_NEW_FOLDER`; owner, 2026-11-24): a changed late claim goes
-    in a new folder, and the old folder's files stay as they are.
+    is asked: a claim sent some other way is adopted and disclosed, `--yes` or not. So `--yes` (the library's
+    `acknowledge`) is what a new commit or late claim is signed on, not a dry-run switch for a folder that holds a
+    signed one or such a claim.
+  - `--restart` never starts a late claim over, signed or not (`LATE_NEEDS_NEW_FOLDER`; owner, 2026-11-24): a
+    changed late claim goes in a new folder, and the old folder's files stay as they are. A prepared late claim
+    whose files changed says the same, with no word of `--restart` (`LATE_INPUTS_CHANGED`).
   - `status`, `reveal`, `claim` and `appeal` then work as on any claim: `commit`, `status` and `claim` print "Late
     claim" and that no award rides on it (`late` with `--json`), and `appeal`'s notice says an overturned INVALID
     returns the bond and pays nothing more.

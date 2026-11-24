@@ -41,12 +41,14 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      many claims on the listing are open ahead of yours, and sends nothing
                      --late files a late claim, on a listing that takes no commit any more: its stake has rolled
                      forward, or closed after it opened, or its maker holds it. A late claim is judged and recorded,
-                     and pays no award. It costs what a commit costs; the bond is forfeited on INVALID, and the
-                     prepay is spent on the evaluation. The wrong kind for the listing is refused, with or without
-                     --late, before anything is pinned or sent. Once a folder holds a late claim, prepared or
-                     signed, a later run goes on with that one, with --late or without it; the price it signs is
-                     the price its terms named. --restart does not start a late claim over: a changed one goes in
-                     a new folder
+                     and pays no award. It costs what a commit costs; the bond is forfeited on INVALID, unless
+                     the INVALID is narrow, and the prepay is spent on the evaluation. The wrong kind for the
+                     listing is refused, with or without --late, before anything is pinned or sent. Once a folder
+                     holds a late claim, prepared or signed, a later run goes on with that one, with --late or
+                     without it; --late changes nothing in a folder that holds a signed commit. The price it
+                     signs is the price its terms named. A prepared late claim whose two hashes already have a
+                     claim on the chain is disclosed on any run, --yes or not, as a signed one is. --restart
+                     does not start a late claim over: a changed one goes in a new folder
   reveal <claim-dir> [--retrigger] [--yes]
                      pins the plaintext and pays any top-up the live fee needs; prints it, and sends only with --yes
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes

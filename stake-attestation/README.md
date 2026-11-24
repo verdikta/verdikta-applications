@@ -1462,12 +1462,16 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   the node itself, never of a provider's memory of an earlier answer, and the one that comes back is the one used,
   once it is where it says and as deep as a commit must be: it is not waited for a second time. A receipt is evidence
   only of what its block holds: one that is not this transaction's, or names a block that does not hold it, is acted
-  on by no run, and the signed bytes stay. Logs that a node did not give are no proof that no other transaction made
+  on by no run, and the signed bytes stay. That goes for a revert the wait itself brings back too: a revert reopens
+  the folder, so it is believed only as the chain bears it out now. And no receipt is not yet another transaction: a
+  commit that reverted used its nonce too, so the node is asked whether it knows the saved transaction as mined, and
+  if it does, the run is to be made again for the receipt. Logs that a node did not give are no proof that no other transaction made
   the claim, so then the run is to be made again through an RPC that serves them. An anchor that can never show its
   bound is no reason to run again: the saved commit can never be mined, so the folder signs nothing more, and the
   look for a claim of its own two hashes is the hunter's with the rest. And a run whose wait ended after it saw the
-  nonce used goes on to the same reads, so a wait shorter than the time a receipt is given to appear still comes to
-  the end. The commit goes in a new
+  nonce used goes the same way, the look for the folder's own claim first and then these reads, so a wait shorter
+  than the time a receipt is given to appear still adopts a claim that is there and still comes to the end. The
+  commit goes in a new
   folder, with one copy of the claim's files, and only after a look for a claim of every set of files the folder set
   aside and of its own two hashes, mined or pending, among the transactions of the wallet each `state.json` names,
   whatever their nonce: the transaction that took the nonce, those before it and those after it. The text says so,

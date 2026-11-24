@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
-import { chainReader, stakeAttestation } from '../chain/wallet.js';
+import { chainReader, minedReceipt, stakeAttestation } from '../chain/wallet.js';
 import { FormError, ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
@@ -78,13 +78,14 @@ export function FundListing({ listingId, top, maker, artifactHash, followed = fa
         return;
       }
       const tx = await stakeAttestation(signer).fund(listingId, due, { value: due + escrowWei });
-      const receipt = await tx.wait();
-      setOpened({ tx: tx.hash, until: null });
+      // also when the wallet sent it again at a higher fee (chain/wallet.js minedReceipt): opened once, under that hash
+      const receipt = await minedReceipt(tx);
+      setOpened({ tx: receipt.hash, until: null });
       // the block it was mined in: a page that reads the listing again reads from there
       onOpened(receipt.blockNumber);
       try {
         const l = await stakeAttestation(provider).getListing(listingId);
-        setOpened({ tx: tx.hash, until: l.fundedUntil });
+        setOpened({ tx: receipt.hash, until: l.fundedUntil });
       } catch {
         // the listing is open; only the end of its period is unknown here
       }

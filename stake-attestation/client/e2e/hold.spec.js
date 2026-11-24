@@ -710,6 +710,49 @@ test.describe('the maker\'s hold', () => {
     expect((await chain.sa.getListing(first.listingId)).successor).toBe(0n);
   });
 
+  test('on hold, and closed from elsewhere: a roll from this page sends nothing, and the page stops saying on hold', async ({ page, stack, chain }) => {
+    const first = await chain.openListing({ recipient: key.recipient });
+    await holdOnChain(chain, stack, first.listingId);
+    const successor = await chain.openListing({ recipient: key.recipient });
+    await chain.until(async () => ((await api(stack, '/api/feed'))?.listings ?? []).some((l) => l.listingId === String(successor.listingId)), { what: 'the successor in the feed' });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${first.listingId}`);
+    const pick = field(page, RF.pick);
+    await expect(pick).toBeVisible();
+    await pick.selectOption(String(successor.listingId));
+    const button = page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) });
+    await expect(button).toBeVisible();
+    await expect(page.getByTestId('listing-held')).toBeVisible();
+    // in another tab, the maker closes the listing; this page still shows it on hold, with the roll to send
+    await (await (await chain.as(stack.accounts.maker)).close(first.listingId)).wait();
+    await button.click();
+    // the wallet's own read finds it closed: nothing is sent, and the page reads it from that block
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    for (const id of ['listing-held', 'listing-held-since', 'hold', 'roll-forward', 'rolled']) await expect(page.getByTestId(id)).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText('push the fix');
+    expect((await chain.sa.getListing(successor.listingId)).predecessor).toBe(0n);
+    expect((await chain.sa.getListing(first.listingId)).successor).toBe(0n);
+  });
+
+  test('a renewal that is mined is said as mined, whatever read fails after it: no second payment is invited', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    const renew = page.getByTestId('renew');
+    await expect(renewButton(page, stack)).toBeEnabled();
+    // every read through the wallet fails once the renewal is sent
+    await page.evaluate(() => window.__testWallet.failCallsAfterNextSend(8));
+    await renewButton(page, stack).click();
+    const renewed = renew.getByTestId('renewed');
+    await expect(renewed).toBeVisible({ timeout: 30_000 });
+    const events = await chain.sa.queryFilter(chain.sa.filters.Renewed(listingId));
+    expect(events.length).toBe(1);
+    // the line is the receipt's: its transaction, and the end of the period its Renewed event carries
+    await expect(renewed).toHaveText(fill(STRINGS.renew.done, { tx: events[0].transactionHash, until: at(events[0].args.fundedUntil) }));
+    await expect(renew.getByRole('alert')).toHaveCount(0);
+    await expect(renew.getByTestId('renew-period')).toHaveText(fill(STRINGS.renew.until, { time: at(events[0].args.fundedUntil) }), { timeout: 20_000 });
+  });
+
   test('a hold the chain dates otherwise than the receipt did: one time on the page, the chain\'s, and no transaction named for it', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     await installWallet(page, stack);

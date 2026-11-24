@@ -1088,6 +1088,8 @@ export const STRINGS = {
       'The roll forward sent from this page (transaction {tx}) is not on the chain as this page now reads it: this ' +
       'listing has not rolled forward. Look the transaction up, and roll forward again if it is gone.',
     changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
+    // the read before sending found this listing itself no longer Open or Depleted (rolled or closed elsewhere)
+    sourceChanged: 'Nothing was sent: this listing can no longer roll forward (it is {state}). It has been read again.',
     // node P42: a listing on hold is Open, and the contract would take it as a successor; it takes no commits, for good
     successorOnHold: 'Nothing was sent: listing {id} is on hold and takes no commits, so this listing is not rolled forward to it. Choose another listing.',
     // the fixed version is listed and funded after the hold, often in another tab: the panel looks again when asked
@@ -1160,6 +1162,8 @@ export const STRINGS = {
     buttonNoAmount: 'Top up',
     sending: 'Sending fund()…',
     done: 'Topped up (transaction {tx}). The escrow now holds {eth} ETH.',
+    // mined, and the receipt did not say what the escrow holds: the line above, from the page's read, does
+    doneNoEscrow: 'Topped up (transaction {tx}).',
     doneOwed: 'Topped up (transaction {tx}). {owed} ETH went to hunters who were owed it, and the escrow now holds {eth} ETH.',
     reopened: 'The listing is open again.',
     reopenedHeld: 'The listing\'s state is open again; it stays on hold and takes no new claims.',
@@ -1181,6 +1185,8 @@ export const STRINGS = {
     button: 'Renew for 30 days, paying {fee} ETH',
     sending: 'Sending renew()…',
     done: 'Renewed (transaction {tx}). The listing fee is paid until {until}.',
+    // mined, and the receipt did not say until when: the line above, from the page's read, does
+    doneNoTime: 'Renewed (transaction {tx}).',
     feeChanged: 'Nothing was sent: the listing fee is now {fee} ETH. The figure above is updated; renew again to pay it.',
     changed: 'Nothing was sent: listing {id} can no longer be renewed (it is {state}). It has been read again.',
   },

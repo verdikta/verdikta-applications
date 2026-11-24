@@ -182,11 +182,19 @@ export function RollForward({ listingId, listing, record, recordReading = false,
         onChanged(blockTag);
         return undefined;
       }
+      // This listing rolled forward or was closed elsewhere since the page read it (another tab): nothing is sent, and
+      // the page reads it from the block the wallet saw that at, so its state, its hold and this panel follow.
+      if (!ROLLABLE.has(LISTING_STATES[Number(mine.state)])) {
+        setError(fill(RF.sourceChanged, { state: STRINGS.fund.states[LISTING_STATES[Number(mine.state)]] ?? String(mine.state) }));
+        onChanged(blockTag);
+        return undefined;
+      }
       // the successor too is the version the picker showed, under the id it showed it under
       const chosen = options.find((o) => o.id === pick);
-      if (!ROLLABLE.has(LISTING_STATES[Number(mine.state)]) || !same(mine.maker, account)
-        || successor === null || !chosen || !same(successor.artifactHash, chosen.artifactHash)
+      if (successor === null || !chosen || !same(successor.artifactHash, chosen.artifactHash)
         || !confirmSuccessor(successor, { successorId: BigInt(pick), listingId: BigInt(listingId), account })) {
+        // the successor is no longer one to roll to: the panel looks for successors again
+        setAgain((n) => n + 1);
         return setError(fill(RF.changed, { id: pick }));
       }
       // Open, the maker's, no predecessor: the contract would take it. On hold it takes no commits, and for good.

@@ -13,8 +13,8 @@ import { useSeenMined } from './seenMined.js';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
-/** The Held event of `contract` for the listing in a receipt, or null: another contract's log, or another listing's, is none. */
-function heldEvent(contract, receipt, listingId) {
+/** The event `name` of `contract` for the listing in a receipt, or null: another contract's log, or another listing's, is none. */
+function listingEvent(contract, receipt, name, listingId) {
   for (const log of receipt.logs) {
     if (!same(log.address, contract.target)) continue;
     let event = null;
@@ -23,10 +23,11 @@ function heldEvent(contract, receipt, listingId) {
     } catch {
       // not an event of the client's ABI
     }
-    if (event?.name === 'Held' && event.args.listingId === BigInt(listingId)) return event;
+    if (event?.name === name && event.args.listingId === BigInt(listingId)) return event;
   }
   return null;
 }
+const heldEvent = (contract, receipt, listingId) => listingEvent(contract, receipt, 'Held', listingId);
 const stateWords = (l) => STRINGS.fund.states[LISTING_STATES[Number(l.state)]] ?? String(l.state);
 /** The block the wallet's node is at: a raw eth_blockNumber, since ethers' getBlockNumber() may answer from a cache. */
 const blockNow = async (provider) => Number(await provider.send('eth_blockNumber', []));
@@ -93,7 +94,9 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
         return undefined;
       }
       const tx = await stakeAttestation(signer).fund(BigInt(listingId), 0n, { value: wei });
-      const receipt = await tx.wait();
+      // also when the wallet sent it again at a higher fee (chain/wallet.js minedReceipt): the payment is made once,
+      // and a call reported as failed would invite a second
+      const receipt = await minedReceipt(tx);
       let toOwed = 0n;
       let escrow = null;
       let reopened = false;
@@ -108,8 +111,9 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
         if (event?.name === 'Funded') escrow = event.args.escrowWei;
         if (event?.name === 'Reopened') reopened = true;
       }
-      if (escrow === null) escrow = (await reader.getListing(BigInt(listingId))).escrowWei;
-      setDone({ tx: tx.hash, toOwed, escrow, reopened });
+      // From here the top-up is mined: nothing below reports it as failed. What the escrow holds is the receipt's
+      // Funded event; without one the line says only that it was topped up, and the page's own read says the rest.
+      setDone({ tx: receipt.hash, toOwed, escrow, reopened });
       setAmount('');
       onChanged(receipt.blockNumber);
     } catch (err) {
@@ -134,9 +138,10 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
       )}
       {done && (
         <p className="ok" data-testid="topped-up">
-          {done.toOwed > 0n
+          {done.escrow === null && fill(T.doneNoEscrow, { tx: done.tx })}
+          {done.escrow !== null && (done.toOwed > 0n
             ? fill(T.doneOwed, { tx: done.tx, owed: formatEth(done.toOwed), eth: formatEth(done.escrow) })
-            : fill(T.done, { tx: done.tx, eth: formatEth(done.escrow) })}
+            : fill(T.done, { tx: done.tx, eth: formatEth(done.escrow) }))}
           {/* "open again" is said of the listing as last read: not once it has rolled forward or closed since */}
           {done.reopened && terms.state === 'Open' ? ` ${held ? T.reopenedHeld : T.reopened}` : ''}
         </p>
@@ -222,9 +227,13 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
         return setError(fill(R.feeChanged, { fee: formatEth(due) }));
       }
       const tx = await stakeAttestation(signer).renew(BigInt(listingId), { value: due });
-      const receipt = await tx.wait();
-      const after = await stakeAttestation(provider).getListing(BigInt(listingId));
-      setDone({ tx: tx.hash, until: after.fundedUntil });
+      // also when the wallet sent it again at a higher fee (chain/wallet.js minedReceipt)
+      const receipt = await minedReceipt(tx);
+      // From here the renewal is mined and paid: nothing below reports it as failed, which would invite a second
+      // payment. Until when is the receipt's own Renewed event, so no read stands between the receipt and the line;
+      // without one the line says only that it was renewed, and the page's read says until when.
+      const renewed = listingEvent(reader, receipt, 'Renewed', listingId);
+      setDone({ tx: receipt.hash, until: renewed ? renewed.args.fundedUntil : null });
       onChanged(receipt.blockNumber);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
@@ -244,7 +253,11 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
         </p>
       )}
       {terms.can && held && <p className="hint" data-testid="renew-held">{R.held}</p>}
-      {done && <p className="ok" data-testid="renewed">{fill(R.done, { tx: done.tx, until: formatTime(done.until) })}</p>}
+      {done && (
+        <p className="ok" data-testid="renewed">
+          {done.until === null ? fill(R.doneNoTime, { tx: done.tx }) : fill(R.done, { tx: done.tx, until: formatTime(done.until) })}
+        </p>
+      )}
       {terms.can && (
         <>
           <p className="hint" data-testid="renew-fee">{fee === null ? R.feeLoading : fill(R.fee, { fee: formatEth(fee) })}</p>
@@ -452,7 +465,9 @@ export function CloseListing({ listingId, listing, readBlock = null, onChanged =
         return undefined;
       }
       const tx = await stakeAttestation(signer).close(BigInt(listingId));
-      const receipt = await tx.wait();
+      // also when the wallet sent it again at a higher fee (chain/wallet.js minedReceipt): the page must read the
+      // listing from that block, where it is closed, whichever hash the close was mined under
+      const receipt = await minedReceipt(tx);
       let amount = terms.escrowWei;
       let deferred = false;
       for (const log of receipt.logs) {
@@ -465,7 +480,7 @@ export function CloseListing({ listingId, listing, readBlock = null, onChanged =
         if (event?.name === 'Closed') amount = event.args.amountReturned;
         if (event?.name === 'PaymentDeferred' && same(event.args.to, account)) deferred = true;
       }
-      setDone({ tx: tx.hash, amount, account, deferred, block: receipt.blockNumber });
+      setDone({ tx: receipt.hash, amount, account, deferred, block: receipt.blockNumber });
       // sent: a close that turns out not to be on the chain is offered again from its first step
       setAsking(false);
       onChanged(receipt.blockNumber);
@@ -561,8 +576,8 @@ export function Withdraw({ version = 0 }) {
         return setError(fill(W.changed, { account: sender }));
       }
       const tx = await stakeAttestation(signer).withdraw();
-      await tx.wait();
-      setDone({ tx: tx.hash, amount, account: sender });
+      const receipt = await minedReceipt(tx);
+      setDone({ tx: receipt.hash, amount, account: sender });
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {

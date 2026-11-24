@@ -116,16 +116,6 @@ export function FundPage({ listingId }) {
       } else if (from > 0) setBehind(from);
     });
   }, [listingId]);
-  /** A hold this page sent was mined at `at` (its Held event) in `block`: said at once, then read from that block. */
-  const onHeld = useCallback((at, block) => {
-    setHeldHere({ at, block });
-    refresh(block);
-  }, [refresh]);
-  /** The opening fund() was mined in `block`: its own line stays, and the rest of the page follows the listing. */
-  const onOpened = useCallback((block = 0) => {
-    setOpenedHere({ block });
-    refresh(block);
-  }, [refresh, setOpenedHere]);
   // The listing this page shows, by maker and artifact. On a chain whose blocks were replaced the id can come to name
   // another listing: everything the page kept for the one it showed (a hold or an opening it saw mined, an action's
   // line, the record and the successors found for it) is that listing's, and goes with it.
@@ -138,6 +128,20 @@ export function FundPage({ listingId }) {
     }
     if (identity !== null) shownIdentity.current = identity;
   }, [identity, setOpenedHere]);
+  // A hold or an opening is the listing's it was sent for. Its receipt can arrive after the page has come to show
+  // another listing under the id (the action was still waiting when a read replaced it): each callback is made for
+  // the listing shown when its action was drawn, and one made for another listing sets nothing here. The page still
+  // reads from the receipt's block.
+  /** A hold this page sent was mined at `at` (its Held event) in `block`: said at once, then read from that block. */
+  const onHeld = useCallback((at, block) => {
+    if (identity === shownIdentity.current) setHeldHere({ at, block });
+    refresh(block);
+  }, [refresh, identity]);
+  /** The opening fund() was mined in `block`: its own line stays, and the rest of the page follows the listing. */
+  const onOpened = useCallback((block = 0) => {
+    if (identity === shownIdentity.current) setOpenedHere({ block });
+    refresh(block);
+  }, [refresh, identity, setOpenedHere]);
 
   const header = (
     <>

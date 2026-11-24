@@ -1585,7 +1585,15 @@ goes in a URL.
   artifact the picker showed, and the picker offers a listing only when the feed's entry and the
   chain have the same artifact under its id. When a read finds another listing under the page's
   id, every part of the page starts afresh for it: the record, the successors found, each
-  action's line and the hold or opening the page saw mined were the first listing's.
+  action's line and the hold or opening the page saw mined were the first listing's; a hold or
+  an opening whose receipt arrives after that sets nothing for the listing now shown.
+  **A transaction that is mined is never reported as failed.** Every transaction of the page
+  takes its receipt through `minedReceipt`, so a call the wallet sent again at a higher fee is
+  reported under the hash it was mined under and the page reads from its block. A renewal's and
+  a top-up's lines are the receipt's own events (`Renewed`, `Funded`), with no read between the
+  receipt and the line: a read that fails after a mined payment cannot invite a second one. A
+  roll that the wallet's read refuses because this listing rolled or closed elsewhere has the
+  page read it from that block.
   The commit offer follows the contract's `acceptsCommits`, read with the listing: a listing that
   rolled forward or closed is never said to be offered. A listing opened from its own page is
   followed the same way, so its claims, the hold and the rest are there without a reload; the

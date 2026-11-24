@@ -2154,6 +2154,86 @@ test('a revert the provider remembers as deep, and the chain has at its tip: the
   assert.equal(deep.code, 'COMMIT_REVERTED', `${deep.code}: ${deep.message}`);
 });
 
+// Round 23 (R14-F2 again): the depth is measured against a head read after the receipt, and the block the receipt
+// names is then held to its hash once more, as an adopted claim's is: a reorganization between the two reads cannot
+// make a revert that is gone look deep.
+test('the block that holds the revert is replaced between the look at it and the head read: the revert is not taken as deep, and the signed bytes stay (R14-F2)', async () => {
+  const c = await restartedAndSigned();
+  await (await asMaker().hold(c.l.listingId)).wait();
+  const snapshot = await w.rpc('evm_snapshot');
+  await w.rpc('eth_sendRawTransaction', [c.signed.commitTx.raw]).catch(() => {});
+  const mined = await w.provider.getTransactionReceipt(c.signed.commitTx.hash);
+  assert.equal(mined.status, 0, 'mined, and reverted, at the tip');
+  // the provider's own method remembers the revert as deep; the run then looks at the block the chain has it in, and
+  // as it reads the head, that block is replaced by one that holds a late claim of the files set aside, and one more
+  const remembered = { hash: c.signed.commitTx.hash, status: 0, blockNumber: mined.blockNumber - 3, blockHash: `0x${'cd'.repeat(32)}`, logs: [] };
+  let other = null;
+  const provider = new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'getTransactionReceipt') return async (hash) => (hash === c.signed.commitTx.hash && !other ? remembered : target.getTransactionReceipt(hash));
+      if (prop === 'send') {
+        return async (method, params) => {
+          // the head is asked of the node: before it answers, the chain is reorganized
+          if (method === 'eth_blockNumber' && !other) {
+            await w.rpc('evm_revert', [snapshot]);
+            other = await (await w.sa.connect(w.hunterWallet).lateClaim(c.l.listingId, c.old.archiveSha256, c.old.ciphertextSha256, { value: await w.sa.commitPrice(c.l.listingId) })).wait();
+            await w.mine();
+          }
+          return target.send(method, params);
+        };
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  const err = await w.hunter({ provider, confirmations: 2 }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }).catch((e) => e);
+  assert.ok(other, 'the block was replaced as the head was read');
+  assert.equal(other.blockNumber, mined.blockNumber, 'at the height the revert was at');
+  assert.equal(err.code, 'TX_PENDING', `${err.code}: ${err.message}`);
+  assert.deepEqual(readJson(statePath(c.dir)), c.signed, 'the signed bytes stay');
+  // a run again signs nothing either: the claim of the files set aside took the nonce, and it is the only one paid
+  const count = await w.claimCount();
+  await signsNothing(c, () => w.hunter({ confirmations: 2 }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', 'a run again');
+  assert.equal(await w.claimCount(), count);
+});
+
+// Round 23 (R21-F2 again, R23-F1): what the block where the count passed the nonce shows. A block whose entries are
+// whole and do not hold the saved commit shows that something else used the nonce, whether or not the tool can name
+// a transaction of the wallet for it (an authorization sent by another account uses a nonce too). A block with an
+// entry that has no hash shows nothing.
+test('the block where the wallet\'s count passed the nonce: without the saved commit in it the commit is replaced, named or not; with an entry that has no hash nothing is decided (R21-F2, R23-F1)', async () => {
+  const c = await restartedAndSigned();
+  const other = await c.sendOld();
+  await w.mine(2);
+  const rewriting = (rewrite) => new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'send') {
+        return async (method, params) => {
+          const answer = await target.send(method, params);
+          if (method === 'eth_getBlockByNumber' && params[1] === true && Number(BigInt(answer.number)) === other.blockNumber) return { ...answer, transactions: answer.transactions.map(rewrite) };
+          return answer;
+        };
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  // an entry with the wallet and the nonce, and no hash: it may be the saved commit for all the block says
+  for (const [label, rewrite] of [['no hash', ({ hash: _h, ...t }) => t], ['a hash that is none', (t) => ({ ...t, hash: '0x1234' })]]) {
+    const err = await signsNothing(c, () => w.hunter({ provider: rewriting(rewrite) }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', label);
+    assert.doesNotMatch(err.message, SIGNS_NOTHING_MORE);
+    assert.match(err.message, /this node does not show which transaction used it/);
+  }
+  // the nonce was used by an authorization that another account sent: the block is whole, the saved commit is not
+  // in it, and no transaction of the wallet has that nonce. That is the end all the same, with the files set aside.
+  const sponsor = '0x00000000000000000000000000000000000000aa';
+  const err = await signsNothing(c, () => w.hunter({ provider: rewriting((t) => ({ ...t, from: sponsor })) }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', 'a sponsored authorization');
+  assert.match(err.message, SIGNS_NOTHING_MORE);
+  assert.match(err.message, new RegExp(`its nonce was used in block ${other.blockNumber}, for good, by something other than this transaction: no transaction of this wallet in that block has the nonce \\(an authorization sent by another account uses one too\\)`));
+  assert.ok(err.message.includes(`*.set-aside-${c.stamp}`), 'and the files set aside are named');
+  assert.match(err.message, /If no such claim exists, prepare the commit in a new folder/);
+});
+
 // Round 21 (R21-F2): a nonce used for good, and no receipt of the saved commit: before that is the end, the node is
 // asked whether it knows the saved transaction as mined. If it does, the receipt is only not there yet, and the
 // saved commit itself used the nonce: nothing is said that the next run would take back.

@@ -336,9 +336,12 @@ of `commit`. `verdikta-attest commit` files one with --late.
 - --restart does not start a late claim over, and a late claim is not signed in a folder where
   --restart has set a claim's files aside (LATE_NEEDS_NEW_FOLDER): such a folder knows nothing
   of the earlier files, and a claim of their hashes that is mined afterwards would be followed
-  by a second bond. Prepare the late claim in a new folder (copy finding.json, report.md and
-  the patches there), and keep the old folder as it is: its keys stay where they are, and any
-  run of `commit` in it still finds and discloses a claim of the hashes it holds prepared.
+  by a second bond. Its text names every set of files set aside: before a new folder pays, look
+  among your wallet's transactions, mined or pending, for a claim of any of their hashes, and
+  of the hashes the folder holds prepared. Then prepare the late claim in a new folder (copy
+  finding.json, report.md and the patches there), and keep the old folder as it is: its keys
+  stay where they are, and any run of `commit` in it still finds and discloses a claim of the
+  hashes it holds prepared.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
@@ -656,8 +659,11 @@ each mode 0600, in a folder of mode 0700.
   (--restart starts a commit over with new keys, and sets the old files aside in the same
   folder: it deletes nothing. It sets them aside only once the listing, your balance and --yes
   have let the new commit through: a run refused before that leaves the folder as it was. From
-  then on the old files are under their set-aside names, whatever becomes of the new commit. A
-  late claim is not started over: section 3, "Late claims").
+  then on the old files are under their set-aside names, whatever becomes of the new commit: if
+  a run then says another transaction took the commit's nonce (COMMIT_REPLACED), look at that
+  transaction before you run `commit` again, as its text says. It may be a claim of the files
+  set aside, which is paid and needs them. A late claim is not started over: section 3, "Late
+  claims").
 - Do not run two copies of the tool on one folder (FOLDER_BUSY).
 
 ## 10. The full reference

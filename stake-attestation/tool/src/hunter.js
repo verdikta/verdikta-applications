@@ -28,7 +28,11 @@ export function createHunter(options = {}) {
   return Object.freeze({
     /** @param {{ claimDir: string, listingId?: bigint, listingArchive?: Buffer }} o */
     check: (o) => runCheck(ctx, o),
-    /** @param {{ claimDir: string, listingId?: bigint, acknowledge?: boolean, restart?: boolean, acceptUnreadPin?: boolean }} o */
+    /**
+     * commit; with `late` a late claim (node P43): lateClaim in commit's place, on a listing that takes no commit any
+     * more, for no award. Either says its terms through onNotice and sends only with `acknowledge`.
+     * @param {{ claimDir: string, listingId?: bigint, late?: boolean, acknowledge?: boolean, restart?: boolean, acceptUnreadPin?: boolean }} o
+     */
     commit: (o) => runCommit(ctx, o),
     /**
      * reveal, or with `retrigger` a failed round's re-trigger: that pays the lens's retriggerTopUp, so it says the cost

@@ -9,13 +9,19 @@
 //   - The ciphertext is pinned only once the chain shows the claim, to the required depth. Pinning earlier would let a
 //     maker read a pending commit's finding and front-run it (erratum E5).
 //   - Every hash compared before an upload is the chain's, not this folder's.
+//
+// A late claim (node P43; design §13.2, decision D6) is the same flow with one call changed: `late` sends lateClaim
+// where a commit sends commit, with the same two hashes and the same price, on a listing that takes late claims and
+// no commit. The flag is read only until something is signed: a signed transaction is saved with its kind, a resume
+// sends those bytes whatever flag it has, and a claim that exists is the kind the chain says. Both events are looked
+// for before a signature, a commit's and a late claim's, so neither kind is ever paid for twice.
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { codeReview } from './common.js';
 import { fail, ToolError } from './errors.js';
 import { rawCid, isRawSha256Cid, isStorableCid, sha256Hex0x, gatewayGet } from './ipfs.js';
 import { archiveDisclosureKeyHex, readListing, runnerFilesOf, termsForNotice } from './listing.js';
-import { commitNotice } from './notices.js';
+import { commitNotice, kindNotice } from './notices.js';
 import { requirementWarnings } from './report.js';
 import { lintObservable } from './observable.js';
 import { openWorkspace } from './workspace.js';
@@ -107,21 +113,34 @@ function checkBinding(state, { chainId, contract, hunter, listingId }) {
 export const bindingOf = (ctx, hunter) => ({ chainId: ctx.chainId(), contract: ctx.contract, hunter });
 export { checkBinding };
 
-/** A Committed log of this hunter, listing and these two hashes, since the block the folder was prepared at. */
+/** The two events that say a claim was made: a commit's and a late claim's, with the same fields (StakeAttestation.sol). */
+const CLAIM_MADE = Object.freeze(['Committed', 'LateClaim']);
+
+/**
+ * A Committed or a LateClaim log of this hunter, listing and these two hashes, since the block the folder was prepared
+ * at. Either kind is a claim on these hashes that has its bond: one filter, the two events' topics in its first place.
+ */
 async function findCommitted(ctx, state) {
-  const topics = ctx.topics('Committed', [null, BigInt(state.listingId), state.hunter]);
+  const [first, ...indexed] = ctx.topics('Committed', [null, BigInt(state.listingId), state.hunter]);
+  const topics = [[first, ctx.topics('LateClaim', [])[0]], ...indexed];
   const head = await ctx.rpc(() => ctx.provider.getBlockNumber());
   for (let from = state.startBlock; from <= head; from += ctx.logPageBlocks) {
     const to = Math.min(head, from + ctx.logPageBlocks - 1);
     const logs = await ctx.rpc(() => ctx.provider.getLogs({ address: ctx.contract, topics, fromBlock: from, toBlock: to }));
     for (const log of logs) {
       const parsed = ctx.parseLog(log);
-      if (parsed?.name === 'Committed' && parsed.args.archiveHash === state.archiveSha256 && parsed.args.ciphertextSha256 === state.ciphertextSha256) {
+      if (CLAIM_MADE.includes(parsed?.name) && parsed.args.archiveHash === state.archiveSha256 && parsed.args.ciphertextSha256 === state.ciphertextSha256) {
         return { claimId: parsed.args.claimId, blockNumber: log.blockNumber };
       }
     }
   }
   return null;
+}
+
+/** The state with its kind: `late: true` on a late claim's, and no such key on a commit's, which stays as it was. */
+function withKind(state, late) {
+  const { late: _was, ...rest } = state;
+  return late ? { ...rest, late: true } : rest;
 }
 
 async function prepare(ctx, ws, listing, inputs, hunter, listingId) {
@@ -178,7 +197,8 @@ async function adoptClaim(ctx, ws, state, claimId) {
   const same = claim.hunter.toLowerCase() === state.hunter.toLowerCase() && String(claim.listingId) === state.listingId
     && claim.archiveHash === state.archiveSha256 && claim.ciphertextSha256 === state.ciphertextSha256;
   if (!same) throw fail('CLAIM_MISMATCH', `Claim ${claimId}.`);
-  const next = { ...state, stage: 'committed', claimId: String(claimId), commitTx: state.commitTx ? { hash: state.commitTx.hash } : null };
+  // the kind is the chain's from here on: a claim that went out another way is adopted as what it is
+  const next = { ...withKind(state, claim.late === true), stage: 'committed', claimId: String(claimId), commitTx: state.commitTx ? { hash: state.commitTx.hash } : null };
   ws.saveState(next);
   await ctx.step('commit:saved');
   return next;
@@ -200,18 +220,19 @@ async function finishCommitWait(ctx, ws, state, { receipt, gone }) {
   if (gone) {
     const found = await findCommitted(ctx, state);
     if (found) return adoptLogged(ctx, ws, state, found);
-    const next = { ...state, stage: 'prepared', commitTx: null };
+    // nothing is signed any more, so the folder names no kind: the next run's flag says which is sent
+    const next = { ...withKind(state, false), stage: 'prepared', commitTx: null };
     ws.saveState(next);
     return next;
   }
   if (receipt.status !== 1) {
     const hash = state.commitTx.hash;
-    const next = { ...state, stage: 'prepared', commitTx: null };
+    const next = { ...withKind(state, false), stage: 'prepared', commitTx: null };
     ws.saveState(next);
     throw fail('COMMIT_REVERTED', `${await revertedReason(ctx, hash, state)} Transaction ${hash}.`);
   }
   await ctx.step('commit:mined');
-  const log = receipt.logs.filter((l) => l.address.toLowerCase() === ctx.contract.toLowerCase()).map((l) => ctx.parseLog(l)).find((e) => e?.name === 'Committed');
+  const log = receipt.logs.filter((l) => l.address.toLowerCase() === ctx.contract.toLowerCase()).map((l) => ctx.parseLog(l)).find((e) => CLAIM_MADE.includes(e?.name));
   if (!log) throw fail('CLAIM_MISMATCH', `Transaction ${state.commitTx.hash} made no claim.`);
   return adoptClaim(ctx, ws, state, log.args.claimId);
 }
@@ -228,35 +249,53 @@ async function revertedReason(ctx, hash, state) {
   }
 }
 
-/** The chain's rules for a commit now, and the wallet. @returns {Promise<bigint>} the live price */
-async function commitPreflight(ctx, listingId, hunter) {
+/**
+ * The chain's rules for a commit now, or with `late` for a late claim, and the wallet. The price is commitPrice's for
+ * both. A commit needs a listing that takes commits and allows the hunter; a late claim one that takes late claims,
+ * which the lens says (acceptsLateClaims: ClaimLogic.commit's own rule), and it has no allowlist. The wrong kind for
+ * the listing is refused here, before anything is drawn, pinned or signed, with a text that names the other.
+ * @returns {Promise<bigint>} the live price
+ */
+async function commitPreflight(ctx, listingId, hunter, late = false) {
   const price = await ctx.read('commitPrice', [listingId]);
-  if (!await ctx.read('acceptsCommits', [listingId])) throw fail('LISTING_NOT_ACCEPTING', `Listing ${listingId}.`);
-  if (!await ctx.read('isAllowed', [listingId, hunter])) throw fail('NOT_ALLOWED');
+  if (late) {
+    if (!await ctx.read('acceptsLateClaims', [listingId])) {
+      throw fail(await ctx.read('acceptsCommits', [listingId]) ? 'LISTING_TAKES_COMMITS' : 'NO_LATE_CLAIMS', `Listing ${listingId}.`);
+    }
+  } else {
+    if (!await ctx.read('acceptsCommits', [listingId])) {
+      // which refusal it is, and no more: a lens that cannot say leaves the refusal a commit always had
+      const lateOnly = await ctx.read('acceptsLateClaims', [listingId]).catch(() => false);
+      throw fail(lateOnly ? 'LATE_CLAIMS_ONLY' : 'LISTING_NOT_ACCEPTING', `Listing ${listingId}.`);
+    }
+    if (!await ctx.read('isAllowed', [listingId, hunter])) throw fail('NOT_ALLOWED');
+  }
   const fee = await ctx.feeCap();
   const balance = await ctx.rpc(() => ctx.provider.getBalance(hunter));
   if (balance < price + (COMMIT_GAS_ALLOWANCE + DISCLOSE_GAS_ALLOWANCE) * fee.maxFeePerGas) throw fail('INSUFFICIENT_FUNDS', 'Commit and disclose together need the price and their gas.');
   return price;
 }
 
-/** Signs and sends the commit: never twice, and only with everything on disk. */
-async function sendCommit(ctx, ws, state, listingId) {
+/** Signs and sends the commit, or with `late` the late claim: never twice, and only with everything on disk. */
+async function sendCommit(ctx, ws, state, listingId, late) {
   const existing = await findCommitted(ctx, state);
   if (existing) return adoptLogged(ctx, ws, state, existing);
 
   readProvenFiles(ctx, ws, state);
-  const price = await commitPreflight(ctx, listingId, state.hunter); // read just before signing: the live fee
-  const data = ctx.encode('commit', [listingId, state.archiveSha256, state.ciphertextSha256]);
+  const price = await commitPreflight(ctx, listingId, state.hunter, late); // read just before signing: the live fee
+  const data = ctx.encode(late ? 'lateClaim' : 'commit', [listingId, state.archiveSha256, state.ciphertextSha256]);
   let estimate;
   try {
     estimate = await ctx.estimate({ data, value: price });
   } catch (err) {
-    if (err.code === 'CONTRACT_REFUSED') throw fail('LISTING_NOT_ACCEPTING', err.detail);
+    if (err.code === 'CONTRACT_REFUSED' && !late) throw fail('LISTING_NOT_ACCEPTING', err.detail);
+    // a late claim's own refusal, should the listing have changed since the read above; any other is the contract's, as said
+    if (err.code === 'CONTRACT_REFUSED' && err.detail === 'not accepting late claims') throw fail('NO_LATE_CLAIMS', `Listing ${listingId}.`);
     throw err;
   }
   const rec = await ctx.sign({ data, value: price, gasLimit: (estimate * 5n) / 4n + 10000n });
-  // The files are private and on disk, and these bytes are saved, before any of it can leave.
-  const next = { ...state, stage: 'commit-signed', commitTx: rec };
+  // The files are private and on disk, and these bytes are saved, with their kind, before any of it can leave.
+  const next = { ...withKind(state, late), stage: 'commit-signed', commitTx: rec };
   ws.saveState(next);
   await ctx.step('commit:signed');
   for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) ws.measure(name);
@@ -358,6 +397,8 @@ async function resultOf(ctx, state) {
     stage: state.stage,
     claimId: BigInt(state.claimId),
     listingId: claim.listingId,
+    // a late claim (node P43): the chain's word, whatever flag this run had
+    late: claim.late === true,
     archiveSha256: claim.archiveHash,
     ciphertextSha256: claim.ciphertextSha256,
     ciphertextCid: claim.ciphertextCid,
@@ -375,8 +416,8 @@ async function resultOf(ctx, state) {
   };
 }
 
-/** The steps before a commit may be sent: the listing, the claim's files, the warning, the acknowledgement. */
-async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge) {
+/** The steps before a commit, or a late claim, may be sent: the listing, the claim's files, the warning, the acknowledgement. */
+async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge, late) {
   const listing = await readListing(ctx, listingId);
   const inputs = readClaimInputs(ws.claimDir);
   const { finding, warnings } = checkClaimInputs(inputs, listing.spec);
@@ -384,9 +425,9 @@ async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge) {
     if (sha256Hex0x(buildClaimArchive(inputs)) !== state.archiveSha256) throw fail('INPUTS_CHANGED');
     if (archiveDisclosureKeyHex(listing.spec) !== state.disclosureKey) throw fail('ARCHIVE_MISMATCH');
   }
-  const price = await commitPreflight(ctx, listingId, hunter);
+  const price = await commitPreflight(ctx, listingId, hunter, late);
   // Before any key is drawn, and on every run from which a commit may go out.
-  ctx.notice(commitNotice(termsForNotice(listing, price)));
+  ctx.notice(commitNotice(termsForNotice(listing, price, { late })));
   const { baseline } = runnerFilesOf(listing.listingBytes, listing.spec);
   // report.md's requirement section is advice (owner, 2026-11-10, Q73 #2): said again here, never a refusal
   for (const w of [...warnings, ...lintObservable({ finding, pocPatch: inputs.pocPatch, baseline }), ...requirementWarnings(inputs.report)]) ctx.notice(`${w.code}: ${w.detail}`);
@@ -394,8 +435,11 @@ async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge) {
   return { listing, inputs };
 }
 
-/** commit, or a resume of one. See the top of this file. */
-export async function runCommit(ctx, { claimDir, listingId, acknowledge = false, restart = false, acceptUnreadPin = false }) {
+/**
+ * commit, or a resume of one; with `late` (--late, node P43) a late claim, on a listing that takes those and no
+ * commit. See the top of this file.
+ */
+export async function runCommit(ctx, { claimDir, listingId, late = false, acknowledge = false, restart = false, acceptUnreadPin = false }) {
   const hunter = await ctx.hunterAddress();
   // The warning and the diligence text must reach someone: a library caller gives them somewhere to go.
   if (!ctx.onNotice) throw fail('USAGE', 'commit needs onNotice, for what must be said before anyone pays.');
@@ -414,10 +458,13 @@ export async function runCommit(ctx, { claimDir, listingId, acknowledge = false,
 
     if (state?.stage === 'commit-signed') state = await settleCommit(ctx, ws, state);
     if (!state || state.stage === 'prepared') {
-      const { listing, inputs } = await readyToCommit(ctx, ws, state, id, hunter, acknowledge);
+      const { listing, inputs } = await readyToCommit(ctx, ws, state, id, hunter, acknowledge, late);
       if (!state) state = await prepare(ctx, ws, listing, inputs, hunter, id);
-      state = await sendCommit(ctx, ws, state, id);
+      state = await sendCommit(ctx, ws, state, id, late);
     }
+    // The claim exists, and is the kind it was signed as. A run whose flag says the other kind goes on all the same,
+    // since the bond is paid and only the disclosure keeps it, and says which kind the folder holds.
+    if ((state.late === true) !== (late === true)) ctx.notice(kindNotice({ claimId: state.claimId, late: state.late === true }));
     while (state.stage !== 'disclosed') state = await disclose(ctx, ws, state, { acceptUnreadPin });
     const result = await resultOf(ctx, state);
     // What this run says of the reveal, recorded (node P32): status compares the chain's deadline with it, and says

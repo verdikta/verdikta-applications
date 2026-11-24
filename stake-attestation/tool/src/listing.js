@@ -134,12 +134,23 @@ export function archiveDisclosureKeyHex(spec) {
 }
 
 /**
- * The terms a hunter reads before paying, from the chain. The disclosure key in both its forms (node P35): the bytes32
- * the chain stores and the age recipient of the same bytes, which inspectListing held to the archive's.
+ * The late claims on a listing that are neither settled nor expired (node P43): every one made, less those expired,
+ * less those settled, which the listing counts by outcome. They stand in the listing's commit-order queue with its
+ * pendingClaims, which never count them (ClaimLogic.commit, resolve).
  */
-export function termsForNotice(listing, priceWei) {
+function lateOpenClaimsOf(l) {
+  return l.lateClaims - l.lateExpired - [...l.lateOutcomeCounts].reduce((sum, n) => sum + n, 0n);
+}
+
+/**
+ * The terms a hunter reads before paying, from the chain. The disclosure key in both its forms (node P35): the bytes32
+ * the chain stores and the age recipient of the same bytes, which inspectListing held to the archive's. With `late`
+ * (node P43) they are a late claim's: the listing's successor and the late claims open on it too.
+ */
+export function termsForNotice(listing, priceWei, { late = false } = {}) {
   const l = listing.onChain;
   return {
+    ...(late ? { late: true, successor: l.successor, lateOpenClaims: lateOpenClaimsOf(l) } : {}),
     listingId: listing.listingId,
     state: LISTING_STATES[Number(l.state)],
     maker: l.maker,

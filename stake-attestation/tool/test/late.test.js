@@ -367,7 +367,7 @@ test('status, reveal and claim work on a late claim as on any claim: status says
   assert.equal(cli.code, 0, cli.stderr);
   assert.match(cli.stdout, new RegExp(`^Late claim ${claimId} on listing ${l.listingId}: `, 'm'));
   assert.match(cli.stdout, /A late claim: [^\n]*no award/);
-  assert.match(cli.stdout, /bond comes back unless it settles INVALID/);
+  assert.match(cli.stdout, /When it settles, its bond comes back unless the outcome is INVALID/);
   assert.equal(JSON.parse((await runCli(w, ['status', claimId, '--json'])).stdout).late, true);
 
   // reveal: a dry run first, then the reveal
@@ -642,15 +642,19 @@ test('a saved late claim that may not have gone out is not sent if the keys it n
 
 // --------------------------------------------------------------------------------------- a contract with no hold
 
-// The contract live today has no hold: no heldAt, no hold, and a lens whose acceptsLateClaims says Rolled, or Closed
-// after it opened. A call of either there reaches its fallback, which reverts with "unknown function". This provider
-// answers those two calls as that contract does, and keeps what was asked.
+// The contract live today has no hold. Its ABI differs from this one by exactly what the hold added, heldAt, hold and
+// the Held event (node P39 changed no other function, event or struct), and its lens's acceptsLateClaims says Rolled,
+// or Closed after it opened. A call of heldAt or hold there reaches the fallback, which reverts with "unknown
+// function". This provider answers those two as that contract does, and keeps the name of every function called, so a
+// test can say both that the tool went through it and that it never asked for the hold.
 function withoutHold() {
-  const missing = new Map([[iface.getFunction('heldAt').selector, 'heldAt'], [iface.getFunction('hold').selector, 'hold']]);
+  const missing = new Set(['heldAt', 'hold']);
   const asked = [];
+  const called = new Set();
   const refuse = (target, prop) => async (tx, ...rest) => {
-    const name = missing.get(String(tx?.data ?? '').slice(0, 10));
-    if (!name) return target[prop](tx, ...rest);
+    const name = String(tx?.to ?? '').toLowerCase() === w.address.toLowerCase() ? iface.getFunction(String(tx.data ?? '').slice(0, 10))?.name : null;
+    if (name) called.add(name);
+    if (!missing.has(name)) return target[prop](tx, ...rest);
     asked.push(name);
     throw Object.assign(new Error('execution reverted: unknown function'), { code: 'CALL_EXCEPTION', reason: 'unknown function' });
   };
@@ -661,14 +665,16 @@ function withoutHold() {
       return typeof v === 'function' ? v.bind(target) : v;
     },
   });
-  return { provider, asked };
+  return { provider, asked, called };
 }
 
 test('against a contract with no hold, a late claim works on a Rolled listing and on one Closed after it opened, and the tool never asks for the hold', async () => {
   const old = withoutHold();
   // the stand-in answers as that contract does
   await assert.rejects(old.provider.call({ to: w.address, data: iface.encodeFunctionData('heldAt', [1n]) }), /unknown function/);
+  assert.deepEqual(old.asked, ['heldAt']);
   old.asked.length = 0;
+  old.called.clear();
   const hunter = (o = {}) => w.hunter({ provider: old.provider, ...o });
   for (const [name, make] of [['Rolled', rolled], ['Closed after it opened', closed]]) {
     const l = await make();
@@ -697,6 +703,8 @@ test('against a contract with no hold, a late claim works on a Rolled listing an
   assert.equal(o.late, false);
   await assert.rejects(hunter().commit({ claimDir: makeClaimDir(), listingId: open.listingId, late: true, acknowledge: true }), (e) => e.code === 'LISTING_TAKES_COMMITS');
   assert.deepEqual(old.asked, [], 'no read or call of the hold, which that contract does not have');
+  // and it did go through this provider: the reads and the calls a late claim's life makes
+  for (const name of ['commitPrice', 'acceptsLateClaims', 'acceptsCommits', 'isAllowed', 'getListing', 'lateClaim', 'commit', 'disclose', 'getClaim', 'claimState', 'claimTimes', 'reveal', 'finalize', 'settle']) assert.ok(old.called.has(name), `${name} was called through it`);
 });
 
 // ------------------------------------------------------------------------------------------- the help, the words

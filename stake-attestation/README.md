@@ -1297,6 +1297,7 @@ export VERDIKTA_CONTRACT=0x…  VERDIKTA_IPFS_GATEWAY=https://…  VERDIKTA_PIN_
 export CODE_RUNNER_URL=http://127.0.0.1:8090  CODE_RUNNER_TOKEN=…   # for check
 verdikta-attest check  ./claim --listing 12        # free, and nothing leaves this machine
 verdikta-attest commit ./claim --listing 12 --yes  # bond + prepay; asks for --yes after saying what that means
+verdikta-attest commit ./claim --listing 12 --late --yes  # a late claim, where the listing takes no commit any more: no award
 verdikta-attest status ./claim                     # the fix window, and what comes next
 verdikta-attest reveal ./claim --yes               # the plaintext and the reveal; asks for --yes after saying what it sends
 verdikta-attest status ./claim --wait              # polls the evaluation, up to 15 minutes; exit 5 for a round with no verdict
@@ -1339,6 +1340,22 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   Claims on a listing reveal in commit order, so the terms it prints before it pays say how many claims on the listing
   are open and which is the earliest (`queueNotice`, from the listing's `pendingClaims` and `headClaim`), and its result
   names the claim it is behind (`waitsFor`), with the reveal deadline said as the earliest it can be.
+- **`commit --late`** (node P43; design §13.2, decision D6) files a **late claim**: `lateClaim` in `commit`'s place, with the
+  same two hashes and the same price (`commitPrice`), on a listing that takes no commit any more. The lens says which
+  listing that is (`acceptsLateClaims`: Rolled, Closed after it opened, or held by its maker), so the tool reads no hold
+  and works against a contract that has none. Before it pays it says the listing's warning, the terms, and three
+  warnings in place of what a commit says of its award (`LATE_CLAIM_WARNINGS`, `src/notices.js`): a late claim pays no
+  award at any class; the bond is forfeited on INVALID (to the maker, unless the INVALID is narrow) and comes back on
+  any other outcome; the prepay is spent on the evaluation. Its commit-order line counts the listing's open late claims
+  with its `pendingClaims`, and an invited listing is open to it, as `lateClaim` has no allowlist. The wrong kind for
+  the listing is refused before anything is drawn, pinned or signed: a `commit` without `--late` on a listing that takes
+  late claims only (`LATE_CLAIMS_ONLY`, whose text names the flag), `--late` on one that takes commits
+  (`LISTING_TAKES_COMMITS`) or neither (`NO_LATE_CLAIMS`). `--late` is read until a commit or a late claim is signed:
+  the signed transaction is saved with its kind (`late` in `state.json`, on a late claim's only), a resume sends those
+  bytes whatever its flag, and before any signature the tool looks for a `Committed` and for a `LateClaim` log of the
+  folder's two hashes, so neither kind is paid for twice. `status`, `reveal`, `claim` and `appeal` then work as on any
+  claim: `status` and `claim` print "Late claim" and that no award rides on it (`late` with `--json`), and `appeal`'s
+  notice says an overturned INVALID returns the bond and pays nothing more.
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. Then, as `commit`,

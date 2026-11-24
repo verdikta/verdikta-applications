@@ -240,7 +240,14 @@ export function openWorkspace(claimDir) {
       fsyncDir(dir);
       for (const name of copied) fs.rmSync(pathOf(name), { force: true });
       fsyncDir(dir);
-      return stamp;
+    },
+    /**
+     * The stamps of the claims set aside here: each state.json that setAsidePrepared kept. (keepAside sets aside files
+     * that had no state.json, so no claim that this folder ever named.)
+     */
+    setAsideClaims() {
+      if (!fs.existsSync(dir)) return [];
+      return fs.readdirSync(dir).filter((name) => name.startsWith('state.json.set-aside-')).map((name) => name.slice('state.json.set-aside-'.length)).sort();
     },
   };
 }

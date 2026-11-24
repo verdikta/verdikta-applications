@@ -1180,18 +1180,34 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // leaves the prepared folder whole
   assert.match(commit, /const startOver = Boolean\(state && restart\);/);
   // and the old files' claim is looked for once more, the last thing before they are set aside (the reads before it
-  // take their time); the new late claim is then signed at the nonce that look read, or not at all
-  assert.match(commit, /const \{ listing, inputs, price \} = await readyToCommit\(ctx, ws, startOver \? null : state, id, hunter, acknowledge, late\);\s*let aside = null;\s*if \(startOver\) \{[\s\S]*?const at = await lookFirst\(\);\s*if \(state\.stage !== 'prepared'\) throw fail\('RESTART_REFUSED'\);[\s\S]*?aside = \{ stamp: ws\.setAsidePrepared\(\), nonce: at\.nonce \};\s*state = null;\s*\}\s*if \(!state\) state = await prepare\(ctx, ws, listing, inputs, hunter, id\);\s*state = await sendCommit\(ctx, ws, state, id, late, price, aside\?\.nonce \?\? null\);/);
+  // take their time)
+  assert.match(commit, /const \{ listing, inputs, price \} = await readyToCommit\(ctx, ws, startOver \? null : state, id, hunter, acknowledge, late\);\s*if \(startOver\) \{[\s\S]*?await lookFirst\(\);\s*if \(state\.stage !== 'prepared'\) throw fail\('RESTART_REFUSED'\);[\s\S]*?ws\.setAsidePrepared\(\);\s*state = null;\s*\}\s*if \(!state\) state = await prepare\(ctx, ws, listing, inputs, hunter, id\);\s*state = await sendCommit\(ctx, ws, state, id, late, price\);/);
   assert.equal(commit.split('ws.setAsidePrepared()').length, 2, 'the one place a prepared folder is set aside');
-  assert.match(commit, /if \(late && restartNonce !== null && at\.nonce !== restartNonce\) return state;\s*readProvenFiles\(ctx, ws, state\);/, 'before anything is signed');
-  assert.match(commit, /if \(state\.stage === 'prepared'\) throw fail\('COMMIT_REPLACED', aside \? `[^`]*\(\*\.set-aside-\$\{aside\.stamp\}\)[^`]*` : undefined\);/);
-  assert.match(toolSrc('workspace.js'), /setAsidePrepared\(\) \{\s*const stamp = [^\n]*\n[\s\S]*?fsyncDir\(dir\);\s*return stamp;\s*\},/);
+  // A late claim is signed only in a folder that never set a claim's files aside, and --restart does not start one
+  // over: refused before the terms and before any key is drawn, and again at the one place a late claim is signed.
+  const guard = /function lateNeedsNewFolder\(ws\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(guard, 'tool/src/commit.js: lateNeedsNewFolder');
+  assert.match(guard, /const \[stamp\] = ws\.setAsideClaims\(\);\s*if \(stamp\) throw fail\('LATE_NEEDS_NEW_FOLDER', /);
+  assert.match(toolSrc('workspace.js'), /setAsideClaims\(\) \{[\s\S]*?name\.startsWith\('state\.json\.set-aside-'\)/, 'a claim set aside is a state.json set aside');
+  assert.match(commit, /if \(late && \(!state \|\| state\.stage === 'prepared'\)\) \{\s*lateNeedsNewFolder\(ws\);\s*if \(state && restart\) throw fail\('LATE_NEEDS_NEW_FOLDER', /);
+  {
+    const run = /export async function runCommit[\s\S]*$/.exec(commit)[0];
+    const refused = run.indexOf('lateNeedsNewFolder(ws);');
+    assert.ok(run.indexOf('if (state?.stage === \'prepared\') await lookFirst();') < refused, 'a claim of the folder\'s own hashes is adopted first');
+    assert.ok(refused < run.indexOf('await readyToCommit('), 'refused before the terms');
+    assert.ok(refused < run.indexOf('ws.setAsidePrepared()') && refused < run.indexOf('await prepare('), 'and before anything is set aside or drawn');
+  }
+  assert.match(commit, /async function sendCommit\(ctx, ws, state, listingId, late, quoted\) \{\s*(?:\/\/[^\n]*\n\s*)*if \(late\) lateNeedsNewFolder\(ws\);/, 'and where a late claim is signed');
+  assert.equal(new ToolError('LATE_NEEDS_NEW_FOLDER').exitCode, 1);
+  for (const said of [/--restart does not start one over/, /Nothing was signed, sent, pinned or set aside\./, /Prepare the late claim in a new folder: /, /Keep this folder as it is\.$/]) assert.match(ERROR_TEXTS.LATE_NEEDS_NEW_FOLDER, said);
+  assert.ok(block.includes('--restart does not start a late claim over, and a late claim is not signed in a folder where --restart has set a claim\'s files aside (LATE_NEEDS_NEW_FOLDER): such a folder knows nothing of the earlier files, and a claim of their hashes that is mined afterwards would be followed by a second bond. Prepare the late claim in a new folder (copy finding.json, report.md and the patches there), and keep the old folder as it is: its keys stay where they are, and any run of `commit` in it still finds and discloses a claim of the hashes it holds prepared.'));
+  assert.match(toolSrc('usage.js').replace(/\s+/g, ' '), /--restart starts a commit over, not a late claim: a late claim is prepared in a new folder, and is not signed in one where --restart has set a claim's files aside/);
   const setAside = /setAsidePrepared\(\) \{[\s\S]*?\n {4}\},/.exec(toolSrc('workspace.js'))?.[0];
   assert.ok(setAside, 'tool/src/workspace.js: setAsidePrepared');
   // each file is copied whole under the stamp before any original is removed, and state.json goes first
   assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'anchor\.json', 'state\.json'\]\) \{\s*const bytes = readOptional\(name\);\s*if \(bytes === null\) continue;\s*writePrivate\(`\$\{name\}\.set-aside-\$\{stamp\}`, bytes\);/);
   assert.match(setAside, /copied\.push\(name\);\s*\}[\s\S]*?fs\.rmSync\(pathOf\('state\.json'\), \{ force: true \}\);\s*fsyncDir\(dir\);\s*for \(const name of copied\) fs\.rmSync\(pathOf\(name\), \{ force: true \}\);/, 'every copy is written before an original is removed, and state.json is removed first');
-  assert.match(section(9).replace(/\s+/g, ' '), /--restart starts over with new keys, and sets the old files aside in the same folder: it deletes nothing\. It sets them aside only once the listing, your balance and --yes have let the new claim through: a run refused before that leaves the folder as it was\. From then on the old files are under their set-aside names, whatever becomes of the new claim/);
+  assert.match(section(9).replace(/\s+/g, ' '), /--restart starts a commit over with new keys, and sets the old files aside in the same folder: it deletes nothing\. It sets them aside only once the listing, your balance and --yes have let the new commit through: a run refused before that leaves the folder as it was\. From then on the old files are under their set-aside names, whatever becomes of the new commit\. A late claim is not started over: section 3, "Late claims"/);
 
   // a claim of the folder's hashes that is on the chain already is found before the acknowledgement is read; so a run
   // without --yes is no dry run there
@@ -1253,7 +1269,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.match(commit, /const otherRpc = \(from\) => `Run the same command again through an RPC that serves the logs from block \$\{from\}: [^\n]*A new folder is not the way on here: a claim of these hashes may be in the logs that were not read\.`;/);
   assert.match(commit, /start\.unproven = `[^\n]*the node did not give all the logs since the finalized block saved with it\. \$\{otherRpc\(start\.from\)\}`;/);
   assert.ok(block.includes('When `commit` prepares a folder it saves an anchor there (anchor.json): the block the folder was prepared at and the node\'s finalized block. If the chain is reorganized below the first, the logs are read from the second, and a claim of the folder\'s hashes found there is adopted, not paid for again. The same is asked before a late claim that was signed and saved is sent again.'));
-  assert.ok(block.includes('Where the folder cannot show either, nothing is signed or sent, and --restart with --late sets nothing aside (START_UNPROVEN). Its text says what to do, by the reason. If the node did not give the logs, run the same command again through an RPC that serves them from the block the text names: do not start a new folder, the claim may be in the logs that were not read. If the folder has no anchor, or the reorganization went below the finalized block too, a new folder is the way on, and it is new hashes: if you sent this folder\'s hashes some other way, find that claim among your wallet\'s transactions first, since a claim from a new folder would pay a second bond. Keep the old folder either way: its keys stay where they are.'));
+  assert.ok(block.includes('Where the folder cannot show either, nothing is signed or sent (START_UNPROVEN). Its text says what to do, by the reason. If the node did not give the logs, run the same command again through an RPC that serves them from the block the text names: do not start a new folder, the claim may be in the logs that were not read. If the folder has no anchor, or the reorganization went below the finalized block too, a new folder is the way on, and it is new hashes: if you sent this folder\'s hashes some other way, find that claim among your wallet\'s transactions first, since a claim from a new folder would pay a second bond. Keep the old folder either way: its keys stay where they are.'));
   assert.match(section(9), /`commit` writes `claim\/\.verdikta-claim\/`: archive\.zip, keys\.json, ciphertext\.age, anchor\.json and state\.json, each mode 0600/);
   assert.match(section(4), /A folder that `commit` has prepared and whose two hashes already have a claim on the chain, sent some other way than by this tool, is under way too: any run of `commit` there adopts that claim, pins its ciphertext and sends the disclose, --yes or not/);
   assert.match(toolSrc('usage.js').replace(/\s+/g, ' '), /a claim of the folder's two hashes that is on the chain already, sent some other way, is under way like a signed one: any run adopts it and discloses it, --yes or not/);

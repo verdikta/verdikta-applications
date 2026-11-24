@@ -31,6 +31,7 @@ export const ERROR_TEXTS = Object.freeze({
   LISTING_ARCHIVE_INVALID: 'That is no listing archive this tool can read.',
   LISTING_NOT_ACCEPTING: 'This listing takes no commits now.',
   LISTING_NOT_FOUND: 'No such listing on this contract.',
+  LATE_NEEDS_NEW_FOLDER: 'A late claim is not signed in a folder that has set an earlier claim\'s files aside, and --restart does not start one over. The folder would know nothing of the earlier files, and a claim of their two hashes, sent some other way and mined afterwards, would be left without its keys while the new claim pays a second bond. Nothing was signed, sent, pinned or set aside. Prepare the late claim in a new folder: copy finding.json, report.md and the patches there, and run commit --late on it. Keep this folder as it is.',
   LISTING_TAKES_COMMITS: 'This listing takes commits, so it takes no late claim: --late is for a listing that takes none any more. Run commit without --late. Nothing was pinned or sent.',
   NEEDS_ACKNOWLEDGEMENT: 'Read the above, then run again with --yes. Nothing was sent.',
   NETWORK_NOT_ALLOWED: 'This tool is for Base Sepolia and local nodes for now. Refused.',

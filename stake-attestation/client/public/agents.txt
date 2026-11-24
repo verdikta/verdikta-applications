@@ -325,14 +325,20 @@ of `commit`. `verdikta-attest commit` files one with --late.
   prepared at and the node's finalized block. If the chain is reorganized below the first, the
   logs are read from the second, and a claim of the folder's hashes found there is adopted, not
   paid for again. The same is asked before a late claim that was signed and saved is sent
-  again. Where the folder cannot show either, nothing is signed or sent, and --restart with
-  --late sets nothing aside (START_UNPROVEN). Its text says what to do, by the reason. If the
-  node did not give the logs, run the same command again through an RPC that serves them from
-  the block the text names: do not start a new folder, the claim may be in the logs that were
-  not read. If the folder has no anchor, or the reorganization went below the finalized block
-  too, a new folder is the way on, and it is new hashes: if you sent this folder's hashes some
-  other way, find that claim among your wallet's transactions first, since a claim from a new
-  folder would pay a second bond. Keep the old folder either way: its keys stay where they are.
+  again. Where the folder cannot show either, nothing is signed or sent (START_UNPROVEN). Its
+  text says what to do, by the reason. If the node did not give the logs, run the same command
+  again through an RPC that serves them from the block the text names: do not start a new
+  folder, the claim may be in the logs that were not read. If the folder has no anchor, or the
+  reorganization went below the finalized block too, a new folder is the way on, and it is new
+  hashes: if you sent this folder's hashes some other way, find that claim among your wallet's
+  transactions first, since a claim from a new folder would pay a second bond. Keep the old
+  folder either way: its keys stay where they are.
+- --restart does not start a late claim over, and a late claim is not signed in a folder where
+  --restart has set a claim's files aside (LATE_NEEDS_NEW_FOLDER): such a folder knows nothing
+  of the earlier files, and a claim of their hashes that is mined afterwards would be followed
+  by a second bond. Prepare the late claim in a new folder (copy finding.json, report.md and
+  the patches there), and keep the old folder as it is: its keys stay where they are, and any
+  run of `commit` in it still finds and discloses a claim of the hashes it holds prepared.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
@@ -647,10 +653,11 @@ each mode 0600, in a folder of mode 0700.
   commits again, for a second bond.
 - Once the commit is sent, the claim is the archive.zip saved there: editing the folder's files
   changes nothing that is revealed. Before that, a change stops `commit` with INPUTS_CHANGED
-  (--restart starts over with new keys, and sets the old files aside in the same folder: it
-  deletes nothing. It sets them aside only once the listing, your balance and --yes have let
-  the new claim through: a run refused before that leaves the folder as it was. From then on
-  the old files are under their set-aside names, whatever becomes of the new claim).
+  (--restart starts a commit over with new keys, and sets the old files aside in the same
+  folder: it deletes nothing. It sets them aside only once the listing, your balance and --yes
+  have let the new commit through: a run refused before that leaves the folder as it was. From
+  then on the old files are under their set-aside names, whatever becomes of the new commit. A
+  late claim is not started over: section 3, "Late claims").
 - Do not run two copies of the tool on one folder (FOLDER_BUSY).
 
 ## 10. The full reference

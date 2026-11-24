@@ -1410,9 +1410,8 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   finalized block is not reorganized, so that scan is complete whatever happened above it, and a claim found there is
   adopted from its log, with its transaction and its depth. When neither can be shown (no anchor, as in a folder an
   earlier version prepared; an anchor of another block; no finalized block saved; one that is gone; or a scan that
-  cannot be read through), the logs prove nothing, so a late claim is not signed and `--restart --late` sets nothing
-  aside: `START_UNPROVEN`, which says why, that nothing was signed, sent, pinned or set aside, that the folder's keys
-  stay where they are, and what to do. That differs with the reason. Where a node did not give the logs, the same
+  cannot be read through), the logs prove nothing, so a late claim is not signed: `START_UNPROVEN`, which says why,
+  that nothing was signed, sent, pinned or set aside, that the folder's keys stay where they are, and what to do. That differs with the reason. Where a node did not give the logs, the same
   folder can still show its bound through an RPC that serves them from the block the text names, and a new folder is
   not the way on: the claim may be in the logs that were not read. Where the folder itself cannot show it, the way on
   is a new folder, which is new hashes, so the text says first to look for a claim of the old ones among the wallet's
@@ -1441,16 +1440,23 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   with them, are set aside under one stamp (`*.set-aside-…`), for the one case no read can see, a claim someone holds and has not
   sent yet. They are copied before any original is removed, `state.json` first, so a `--restart` that stops half way
   leaves either the prepared claim whole or no claim with the whole set aside. And it sets them aside only once the
-  listing, the wallet's balance and `--yes` have let the new claim through: a run that is refused before that (a
-  listing that takes no commit, or none of this kind), or that only prints the terms, leaves the prepared folder
-  whole, the active one, with its keys. Those reads take their time, so the old files' claim is looked for once more,
-  the last thing before they are set aside: one mined meanwhile is adopted, and `--restart` is refused. From then on
-  the old files are under their set-aside names whatever becomes of the new claim, and a refusal after that point
-  (the wallet has a transaction pending, the fee or the balance changed) leaves the new prepared claim the active
-  one. The new late claim is signed at the nonce that last look read, or not at all: if a transaction of the wallet
-  was mined in between, it may be a claim of the old files, and the new one must not follow it at the next nonce
-  (`COMMIT_REPLACED`, whose text then names the files that were set aside). A live fee that
-  moved between the terms and the signature is said before it is signed, for either kind. And a signed commit whose
+  listing, the wallet's balance and `--yes` have let the new commit through: a run that is refused before that, or
+  that only prints the terms, leaves the prepared folder whole, the active one, with its keys. Those reads take their
+  time, so the old files' claim is looked for once more, the last thing before they are set aside: one mined meanwhile
+  is adopted, and `--restart` is refused. From then on the old files are under their set-aside names whatever becomes
+  of the new commit, and a refusal after that point leaves the new prepared claim the active one.
+- **No late claim in a folder that set a claim aside.** `--restart` starts a commit over, not a late claim, and a
+  late claim is never signed in a folder where `--restart` has set a claim's files aside: `LATE_NEEDS_NEW_FOLDER`,
+  before the terms are said and before any key is drawn, and again at the one place a late claim is signed. Such a
+  folder knows nothing of the earlier files. What could protect their claim while the new one is signed (the nonce
+  `--restart` read, the block it read it at) is gone when that run ends, a reorganization can change which claim a
+  nonce made, and the reads before a late claim look for the folder's own two hashes alone: a claim of the earlier
+  hashes, sent some other way and mined afterwards, would be followed by a second bond and left without its keys. A
+  new folder has neither problem. The late claim is prepared there (the same `finding.json`, `report.md` and patches),
+  and the old folder stays whole: its keys do not move, and any run of `commit` in it still finds and discloses a
+  claim of the hashes it holds prepared. A commit in such a folder is signed as it always was.
+- **A fee that moved, a nonce that went.** A live fee that moved between the terms and the signature is said before
+  it is signed, for either kind. And a signed commit whose
   nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was
   pinned, and a run again signs anew.
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction

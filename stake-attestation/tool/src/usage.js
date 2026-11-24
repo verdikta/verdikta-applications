@@ -47,6 +47,8 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      prepay is spent on the evaluation. The wrong kind for the listing is refused, with or without
                      --late, before anything is pinned or sent. Once a commit or a late claim is signed, a later
                      run resumes that one, with --late or without it
+                     --restart starts a commit over, not a late claim: a late claim is prepared in a new folder,
+                     and is not signed in one where --restart has set a claim's files aside
   reveal <claim-dir> [--retrigger] [--yes]
                      pins the plaintext and pays any top-up the live fee needs; prints it, and sends only with --yes
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes

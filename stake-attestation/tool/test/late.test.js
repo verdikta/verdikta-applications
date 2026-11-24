@@ -2098,6 +2098,12 @@ test('the late claim\'s notice and the new refusals pass the wording check, and 
     assert.deepEqual(wordingProblems(ERROR_TEXTS[code]), [], code);
     assert.match(ERROR_TEXTS[code], /Nothing was pinned or sent\.$/, code);
   }
+  // the refusals that hold a late claim back, each saying that nothing was signed, sent, pinned or set aside
+  for (const code of ['START_UNPROVEN', 'LATE_NEEDS_NEW_FOLDER']) {
+    assert.deepEqual(wordingProblems(ERROR_TEXTS[code]), [], code);
+    assert.match(ERROR_TEXTS[code], /Nothing was signed, sent, pinned or set aside/, code);
+  }
+  assert.deepEqual(wordingProblems(ERROR_TEXTS.COMMIT_REPLACED), []);
   // an ordinary commit's notice is the one it was, whatever a caller leaves out
   const { late: _late, lateOpenClaims: _n, successor: _s, ...ordinary } = { ...terms, invited: false };
   assert.equal(commitNotice(ordinary), commitNotice({ ...ordinary, late: false }));

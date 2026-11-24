@@ -161,10 +161,14 @@ test.describe('maker actions', () => {
     expect(options).not.toContain(String(elsewhere.listingId));
     expect(options).not.toContain(String(first.listingId));
     await pick.selectOption(String(successor.listingId));
-    // node P38: what a maker does before publishing a fix, above the picker; each line is one line of the page's text
+    // nodes P38 and P42: what a maker does before publishing a fix, above the picker; each line is one line of the
+    // page's text. This contract has the hold, so the lines are the hold's order; e2e/hold.spec.js has the page against a
+    // contract without one, where P38's three lines stand. A listing that is not on hold rolls forward as before.
     const panel = page.getByTestId('roll-forward');
-    expect(await panel.getByTestId('roll-fix-keep').innerText()).toBe(STRINGS.roll.fix.keep);
-    expect((await panel.getByTestId('roll-fix-order').innerText()).split('\n')).toEqual([STRINGS.roll.fix.noClaim, STRINGS.roll.fix.claimPending]);
+    expect(await panel.getByTestId('roll-hold-first').innerText()).toBe(STRINGS.roll.hold.first);
+    expect((await panel.getByTestId('roll-hold-order').innerText()).split('\n')).toEqual([STRINGS.roll.hold.order, STRINGS.roll.hold.close]);
+    await expect(panel.getByTestId('roll-fix-keep')).toHaveCount(0);
+    await expect(panel.getByTestId('roll-fix-order')).toHaveCount(0);
     expect(wordingProblems(await panel.innerText())).toEqual([]);
     await shot(page, 'roll-forward', { target: panel });
     await page.getByRole('button', { name: fill(STRINGS.roll.button, { id: successor.listingId }) }).click();
@@ -181,7 +185,7 @@ test.describe('maker actions', () => {
 
   test('roll forward: the lines about a fix stay on the page when the site\'s record cannot be read', async ({ page, stack, chain }) => {
     // an open listing the chain answers for, and a record mirror that does not answer: the listing still takes commits
-    // and can still be closed from this page, so what a maker does before publishing a fix is still said
+    // and can still be held or closed from this page, so what a maker does before publishing a fix is still said
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     await installWallet(page, stack);
     await page.route('**/api/records/**', (route) => route.abort());
@@ -189,12 +193,16 @@ test.describe('maker actions', () => {
     await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Open);
     const panel = page.getByTestId('roll-forward');
     await expect(panel.getByTestId('roll-record-failed')).toContainText(STRINGS.roll.recordFailed.replace('{reason}', ''));
-    expect(await panel.getByTestId('roll-fix-keep').innerText()).toBe(STRINGS.roll.fix.keep);
-    expect((await panel.getByTestId('roll-fix-order').innerText()).split('\n')).toEqual([STRINGS.roll.fix.noClaim, STRINGS.roll.fix.claimPending]);
+    // the lines are the chain's: with the hold this contract has, the hold's order (node P42)
+    expect(await panel.getByTestId('roll-hold-first').innerText()).toBe(STRINGS.roll.hold.first);
+    expect((await panel.getByTestId('roll-hold-order').innerText()).split('\n')).toEqual([STRINGS.roll.hold.order, STRINGS.roll.hold.close]);
     // nothing to pick and nothing to send: the picker is the record's
     await expect(panel.getByRole('combobox')).toHaveCount(0);
     await expect(panel.getByRole('button')).toHaveCount(0);
-    // and the close the first two lines send the maker to is on the same page
+    // and the hold and the close those lines send the maker to are on the same page: both are read from the chain
+    await expect(page.getByTestId('hold').getByTestId('hold-warning')).toBeVisible();
+    await page.getByRole('button', { name: STRINGS.wallet.connect }).click();
+    await expect(page.getByTestId('hold').getByRole('button', { name: fill(STRINGS.hold.ask, { id: listingId }) })).toBeVisible();
     await expect(page.getByTestId('close').getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) })).toBeVisible();
     expect(wordingProblems(await panel.innerText())).toEqual([]);
   });

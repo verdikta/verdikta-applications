@@ -1,0 +1,370 @@
+// Node P42: the maker's hold on a listing's page (StakeAttestation.hold, node P39). A hold stops new commits on a
+// listing at once, before the fix it rolls forward to is public; it leaves every pending claim alone, and it has no
+// resume. What the page says of it is held here to the contract's source, statement by statement, and the reader of
+// the contract's heldAt view is held to the one rule that keeps the site true against a contract deployed before the
+// hold: a call the contract REFUSES means "no hold here", and a call that fails any other way is a failed read, never
+// "not on hold".
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { Contract, Interface, JsonRpcApiProvider, Network } from 'ethers';
+
+import { wordingProblems } from '../e2e/support/wording.js';
+import { LISTING_STATES, STAKE_ATTESTATION_ABI } from '../src/chain/abi.js';
+import { NO_HOLD, holdTerms, holdView, readHold, refusedByContract } from '../src/lib/hold.js';
+import { STRINGS, fill } from '../src/strings.js';
+
+const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
+const SOURCE = read('../../onchain/contracts/StakeAttestation.sol');
+const LOGIC = read('../../onchain/contracts/libraries/ClaimLogic.sol');
+const LENS = read('../../onchain/contracts/StakeAttestationLens.sol');
+/** One function of a contract source, by name, to its closing brace at the function's indent. */
+const fn = (source, name) => {
+  const m = new RegExp(`\\n {4}function ${name}\\([\\s\\S]*?\\n {4}\\}`).exec(source);
+  assert.ok(m, `function ${name}`);
+  return m[0];
+};
+/** The source with its comments taken out: what the contract does, not what it says it does. */
+const code = (source) => source.replace(/\/\/.*$/gm, '');
+const component = (name) => read(`../src/components/${name}`);
+
+const ADDRESS = '0x00000000000000000000000000000000000000aa';
+const HELD_AT = 1_800_000_123n;
+const word = (n) => `0x${BigInt(n).toString(16).padStart(64, '0')}`;
+
+/**
+ * A node that answers each eth_call with `answer(payload)`: { result } or { error }, as a JSON-RPC node does, or a
+ * throw, as a connection that fails does. Everything between it and the reader is ethers' own: the request it
+ * builds, and the error it makes of what the node said.
+ */
+class StubNode extends JsonRpcApiProvider {
+  constructor(answer) {
+    super(31337, { staticNetwork: Network.from(31337), batchMaxCount: 1, cacheTimeout: -1 });
+    this.answer = answer;
+    this.calls = [];
+    this._start();
+  }
+
+  async _send(payload) {
+    const list = Array.isArray(payload) ? payload : [payload];
+    return Promise.all(list.map(async (p) => {
+      this.calls.push(p);
+      return { jsonrpc: '2.0', id: p.id, ...(await this.answer(p)) };
+    }));
+  }
+}
+async function withNode(answer, run) {
+  const node = new StubNode(answer);
+  try {
+    return await run(new Contract(ADDRESS, STAKE_ATTESTATION_ABI, node), node);
+  } finally {
+    node.destroy();
+  }
+}
+
+// What nodes say of a call to a function the contract does not have (no fallback: the EVM reverts with no data).
+const NO_SUCH_FUNCTION = "Error: Transaction reverted: function selector was not recognized and there's no fallback function";
+const REFUSALS = Object.freeze({
+  // the local development node, as it answered when this was written (the Playwright stack's)
+  'a development node': { code: -32603, message: NO_SUCH_FUNCTION, data: { message: NO_SUCH_FUNCTION, data: '0x' } },
+  'a node that returns the empty revert data': { code: 3, message: 'execution reverted', data: '0x' },
+  'a node that returns no data for an empty revert': { code: -32000, message: 'execution reverted' },
+  'a wallet that wraps its node\'s answer': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: -32000, message: 'execution reverted' } },
+  'a revert with a reason': { code: 3, message: 'execution reverted: no such view', data: '0x08c379a0' + '0'.repeat(62) + '20' + '0'.repeat(62) + '0c' + Buffer.from('no such view').toString('hex').padEnd(64, '0') },
+});
+// What is not a refusal: the node, or the way to it, failed. ethers reports every JSON-RPC error on an eth_call as
+// CALL_EXCEPTION, so the code alone does not tell these from the refusals above.
+const FAILURES = Object.freeze({
+  'a rate limit': { code: -32005, message: 'rate limit exceeded' },
+  'a block the node does not have': { code: -32000, message: 'header not found' },
+  'a block tag it refuses': { code: -32000, message: 'Received invalid block tag 99999999. Latest block number is 5', data: { message: 'Received invalid block tag 99999999. Latest block number is 5', data: null } },
+  'an internal error': { code: -32603, message: 'Internal error' },
+  'a state it has pruned': { code: -32000, message: 'missing trie node 0f (path ) state is not available' },
+});
+
+test('the contract has the view the page reads, and it never reverts there: 0 for no hold, the time while the listing is on hold', () => {
+  const view = fn(SOURCE, 'heldAt');
+  assert.match(view, /function heldAt\(uint256 listingId\) external view returns \(uint64\)/);
+  // no require and no _mustListing: an id that is no listing answers 0 too
+  assert.doesNotMatch(code(view), /require\(|_mustListing/);
+  assert.match(view, /return s == ListingState\.Open \|\| s == ListingState\.Depleted \? _heldAt\[listingId\] : 0;/);
+  const fragment = new Interface(STAKE_ATTESTATION_ABI).getFunction('heldAt');
+  assert.equal(fragment.format('full'), 'function heldAt(uint256 listingId) view returns (uint64)');
+  assert.equal(new Interface(STAKE_ATTESTATION_ABI).getFunction('hold').format('full'), 'function hold(uint256 listingId)');
+  assert.equal(new Interface(STAKE_ATTESTATION_ABI).getEvent('Held').format('full'), 'event Held(uint256 indexed listingId, uint64 heldAt)');
+});
+
+test('readHold: the view\'s answer, at the block it is asked for', async () => {
+  await withNode(() => ({ result: word(0) }), async (sa, node) => {
+    assert.deepEqual(await readHold(sa, 7n, { blockTag: 41 }), { supported: true, heldAt: 0n });
+    // one eth_call, of heldAt(7), at block 41: the block the page read the listing at
+    assert.equal(node.calls.length, 1);
+    assert.equal(node.calls[0].method, 'eth_call');
+    assert.equal(node.calls[0].params[0].data, sa.interface.encodeFunctionData('heldAt', [7n]));
+    assert.equal(node.calls[0].params[1], '0x29');
+  });
+  await withNode(() => ({ result: word(HELD_AT) }), async (sa) => {
+    assert.deepEqual(await readHold(sa, '7'), { supported: true, heldAt: HELD_AT });
+  });
+});
+
+test('readHold: a call the contract refuses means a contract with no hold, whatever shape the node gives the revert', async () => {
+  for (const [name, error] of Object.entries(REFUSALS)) {
+    await withNode(() => ({ error }), async (sa) => {
+      assert.deepEqual(await readHold(sa, 7n, { blockTag: 41 }), { supported: false, heldAt: 0n }, name);
+    });
+  }
+  assert.deepEqual(NO_HOLD, { supported: false, heldAt: 0n });
+  assert.ok(Object.isFrozen(NO_HOLD));
+});
+
+test('readHold: a read that fails another way is a failed read, never "not on hold"', async () => {
+  for (const [name, error] of Object.entries(FAILURES)) {
+    await withNode(() => ({ error }), async (sa) => {
+      await assert.rejects(readHold(sa, 7n, { blockTag: 41 }), (err) => {
+        // ethers calls it a CALL_EXCEPTION all the same: the code is not what the reader goes by
+        assert.equal(err.code, 'CALL_EXCEPTION', name);
+        assert.equal(refusedByContract(err), false, name);
+        return true;
+      }, name);
+    });
+  }
+  // the connection fails, or the wait for it ends
+  for (const thrown of [new TypeError('Failed to fetch'), Object.assign(new Error('request timeout'), { code: 'TIMEOUT' }), Object.assign(new Error('server error'), { code: 'SERVER_ERROR' })]) {
+    await withNode(() => { throw thrown; }, async (sa) => {
+      await assert.rejects(readHold(sa, 7n), (err) => err === thrown && refusedByContract(err) === false, thrown.message);
+    });
+  }
+  // an address with no contract answers with no data: a site set up wrong, which every read of the page says
+  await withNode(() => ({ result: '0x' }), async (sa) => {
+    await assert.rejects(readHold(sa, 7n), (err) => err.code === 'BAD_DATA' && refusedByContract(err) === false);
+  });
+});
+
+test('refusedByContract: only a revert the node reports, by its data or in its own words', () => {
+  assert.equal(refusedByContract(null), false);
+  assert.equal(refusedByContract(new Error('execution reverted')), false, 'not ethers\' CALL_EXCEPTION');
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: '0x' }), true, 'the revert\'s data, empty');
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: -32000, message: 'execution reverted' } } }), true);
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: -32000, message: 'header not found' } } }), false);
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null }), false, 'no word from the node: not a refusal');
+  assert.equal(refusedByContract({ code: 'NETWORK_ERROR', data: '0x' }), false);
+});
+
+const listing = (state, o = {}) => ({ state: BigInt(LISTING_STATES.indexOf(state)), maker: ADDRESS, pendingClaims: 0n, owedWei: 0n, ...o });
+
+test('holdView: a listing is on hold exactly while it is Open or Depleted and the view says a time', () => {
+  for (const s of LISTING_STATES) {
+    const rollable = s === 'Open' || s === 'Depleted';
+    assert.deepEqual(holdView(listing(s), { supported: true, heldAt: 0n }), { supported: true, heldAt: 0n, held: false }, s);
+    assert.deepEqual(holdView(listing(s), { supported: true, heldAt: HELD_AT }), { supported: true, heldAt: rollable ? HELD_AT : 0n, held: rollable }, s);
+    // a contract with no hold: never on hold, whatever the state
+    assert.deepEqual(holdView(listing(s), NO_HOLD), { supported: false, heldAt: 0n, held: false }, s);
+  }
+  // a hold this page sent and saw mined (the Held event's time), over a read from a node that has not seen it yet:
+  // the page does not go back to offering it. A hold has no resume, so the time stands while the state allows one.
+  assert.deepEqual(holdView(listing('Open'), { supported: true, heldAt: 0n }, HELD_AT), { supported: true, heldAt: HELD_AT, held: true });
+  assert.deepEqual(holdView(listing('Depleted'), { supported: true, heldAt: 0n }, HELD_AT), { supported: true, heldAt: HELD_AT, held: true });
+  // the chain's own time wins once a read has it, and a roll forward or a close ends the hold
+  assert.deepEqual(holdView(listing('Open'), { supported: true, heldAt: HELD_AT + 1n }, HELD_AT), { supported: true, heldAt: HELD_AT + 1n, held: true });
+  assert.deepEqual(holdView(listing('Rolled'), { supported: true, heldAt: 0n }, HELD_AT), { supported: true, heldAt: 0n, held: false });
+  assert.deepEqual(holdView(listing('Closed'), { supported: true, heldAt: 0n }, HELD_AT), { supported: true, heldAt: 0n, held: false });
+  // as the contract's view: Open or Depleted, else 0
+  assert.match(fn(SOURCE, 'heldAt'), /s == ListingState\.Open \|\| s == ListingState\.Depleted \? _heldAt\[listingId\] : 0/);
+});
+
+test('holdTerms: the hold is taken once, on an Open or a Depleted listing, as ClaimLogic.hold requires', () => {
+  const hold = fn(LOGIC, 'hold');
+  assert.match(hold, /require\(msg\.sender == l\.maker, "not maker"\);/);
+  assert.match(hold, /require\(s == StakeAttestation\.ListingState\.Open \|\| s == StakeAttestation\.ListingState\.Depleted, "not rollable"\);/);
+  assert.match(hold, /require\(heldAt\[listingId\] == 0, "already held"\);/);
+  assert.match(fn(SOURCE, 'hold'), /ClaimLogic\.hold\(_mustListing\(listingId\), _heldAt, listingId\);/);
+  const on = { supported: true, heldAt: 0n };
+  for (const s of LISTING_STATES) {
+    const rollable = s === 'Open' || s === 'Depleted';
+    assert.deepEqual(holdTerms(listing(s), on), { can: rollable, why: rollable ? null : 'state' }, s);
+    // a contract with no hold offers none, whatever the state
+    assert.deepEqual(holdTerms(listing(s), NO_HOLD), { can: false, why: 'unsupported' }, s);
+  }
+  assert.deepEqual(holdTerms(listing('Open'), { supported: true, heldAt: HELD_AT }), { can: false, why: 'held' });
+  assert.deepEqual(holdTerms(listing('Depleted'), { supported: true, heldAt: HELD_AT }), { can: false, why: 'held' });
+  // pending claims and an owed award hold back a close, never a hold
+  assert.deepEqual(holdTerms(listing('Open', { pendingClaims: 3n, owedWei: 5n }), on), { can: true, why: null });
+  assert.doesNotMatch(code(hold), /pendingClaims|owedWei|escrowWei|fundedUntil/);
+});
+
+// ---------------------------------------------------------------- the warning's three statements
+const H = STRINGS.hold;
+const WARNING = ['stops', 'pending', 'oneWay'];
+const oneLine = (at, text) => {
+  assert.equal(typeof text, 'string', at);
+  assert.ok(text.length > 0, at);
+  assert.doesNotMatch(text, /[\n\r\t]/, at);
+  assert.equal(text, text.trim(), at);
+  assert.doesNotMatch(text, / {2}/, at);
+};
+
+test('the warning has three statements, each one line of page text that takes no value', () => {
+  assert.deepEqual(Object.keys(H.warning ?? {}), WARNING);
+  for (const k of WARNING) {
+    oneLine(`STRINGS.hold.warning.${k}`, H.warning[k]);
+    assert.doesNotMatch(H.warning[k], /[{}]/, `${k} takes no value`);
+    assert.deepEqual(wordingProblems(H.warning[k]), [], k);
+  }
+});
+
+test('statement 1: it stops new claims at once. From the hold\'s block, commit is refused, and nothing delays it', () => {
+  assert.match(H.warning.stops, /^A hold stops new claims at once: /);
+  assert.match(H.warning.stops, /this listing takes no commit\.$/);
+  // commit() takes a claim only while acceptsCommits, whose fourth condition is that the maker has not held the listing
+  assert.match(fn(SOURCE, 'commit'), /require\(acceptsCommits\(listingId\), "not accepting commits"\);/);
+  assert.match(fn(SOURCE, 'acceptsCommits'), /return l\.state == ListingState\.Open\s*&& block\.timestamp < l\.fundedUntil\s*&& l\.escrowWei >= l\.awards\[3\]\s*&& _heldAt\[listingId\] == 0;/);
+  // at once: hold writes the time of its own block, and no other time, delay or window is in it
+  const hold = fn(LOGIC, 'hold');
+  assert.match(hold, /heldAt\[listingId\] = uint64\(block\.timestamp\);\s*emit StakeAttestation\.Held\(listingId, uint64\(block\.timestamp\)\);/);
+  assert.doesNotMatch(code(hold), /\+|Window|DELAY|delay/);
+});
+
+test('statement 2: it does not touch pending claims. hold writes its own time and nothing else, and no claim\'s path reads it', () => {
+  assert.match(H.warning.pending, /^It does not touch pending claims: /);
+  for (const kept of ['its fix window', 'its place in commit order', 'its judging', 'its dispute or appeal', 'its award from this listing\'s escrow']) assert.ok(H.warning.pending.includes(kept), kept);
+  // the whole of hold: three requires, one write (its own mapping), one event. No claim, no listing field.
+  const hold = code(fn(LOGIC, 'hold'));
+  const statements = hold.slice(hold.indexOf('{') + 1, hold.lastIndexOf('}')).split(';').map((s) => s.trim()).filter(Boolean);
+  assert.equal(statements.length, 6, statements.join(' | '));
+  assert.equal(statements.filter((s) => s.startsWith('require(')).length, 3);
+  assert.equal(statements.filter((s) => /=[^=]/.test(s) && !s.startsWith('require(')).map((s) => s.split('=')[0].trim()).join(), 'StakeAttestation.ListingState s,heldAt[listingId]');
+  assert.doesNotMatch(hold, /claims\[|\bl\.\w+\s*(\+|-)?=[^=]/, 'no claim and no field of the listing is written');
+  // who reads the hold: acceptsCommits (a new commit), the heldAt view, and lateClaim (which a hold opens). Nothing
+  // else in the contract or in the claim library's other functions: reveal, finalize, dispute, appeal, settle, expire.
+  const readers = [...code(SOURCE).matchAll(/_heldAt\b/g)].length;
+  assert.equal(readers, 5, 'the declaration, hold, lateClaim, acceptsCommits and heldAt');
+  for (const name of ['hold', 'lateClaim', 'acceptsCommits', 'heldAt']) assert.match(fn(SOURCE, name), /_heldAt/, name);
+  for (const name of ['disclose', 'flagBadDisclosure', 'release', 'reveal', 'retrigger', 'finalize', 'dispute', 'appeal', 'confirm', 'settle', 'expire', 'topUp']) {
+    assert.doesNotMatch(code(fn(LOGIC, name)), /heldAt|listingHeld/, `ClaimLogic.${name} reads no hold`);
+  }
+  // the one place the library reads it: a late claim's check, which a hold opens
+  assert.match(fn(LOGIC, 'commit'), /if \(late\) \{[\s\S]*?\|\| listingHeld,\s*"not accepting late claims"/);
+});
+
+test('statement 3: it cannot be undone. The time is written once and never cleared, and only a roll forward or a close ends the hold', () => {
+  assert.match(H.warning.oneWay, /^It cannot be undone: /);
+  assert.match(H.warning.oneWay, /no resume/);
+  assert.match(H.warning.oneWay, /it ends only when this listing is rolled forward or closed\.$/);
+  // written in one place, once ("already held"), and nowhere cleared
+  const all = code(SOURCE) + code(LOGIC);
+  assert.equal([...all.matchAll(/heldAt\[listingId\] = /g)].length, 1, 'one write of the hold\'s time');
+  assert.doesNotMatch(all, /delete _?heldAt|heldAt\[[^\]]*\] = 0\b/);
+  assert.match(fn(LOGIC, 'hold'), /require\(heldAt\[listingId\] == 0, "already held"\);/);
+  for (const resume of ['resume', 'unhold', 'release' + 'Hold', 'endHold', 'liftHold']) assert.doesNotMatch(all, new RegExp(`function ${resume}\\(`), resume);
+  // the view answers 0 once the listing is neither Open nor Depleted, and a listing leaves those two for good only by
+  // rollForward (Rolled) and close (Closed)
+  assert.equal([...all.matchAll(/\.state = (StakeAttestation\.)?ListingState\.Rolled;/g)].length, 1);
+  assert.equal([...all.matchAll(/\.state = (StakeAttestation\.)?ListingState\.Closed;/g)].length, 1);
+  assert.match(fn(SOURCE, 'rollForward'), /l\.state = ListingState\.Rolled;/);
+  assert.match(fn(SOURCE, 'close'), /l\.state = ListingState\.Closed;/);
+  // and both are open to a listing on hold as to any other: neither reads the hold
+  assert.match(fn(SOURCE, 'rollForward'), /require\(l\.state == ListingState\.Open \|\| l\.state == ListingState\.Depleted, "not rollable"\);/);
+  for (const name of ['rollForward', 'close']) assert.doesNotMatch(code(fn(SOURCE, name)), /_heldAt/, name);
+});
+
+test('the page may say a finding can still be filed as a late claim, with no award: lateClaim\'s own rule', () => {
+  oneLine('STRINGS.hold.late', H.late);
+  assert.match(H.late, /late claim/);
+  assert.match(H.late, /judged and recorded/);
+  assert.match(H.late, /no award/);
+  assert.match(fn(SOURCE, 'lateClaim'), /ClaimLogic\.commit\(\s*_claims, l, verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg\.value, true, _heldAt\[listingId\] != 0\s*\);/);
+  assert.match(fn(LENS, 'acceptsLateClaims'), /\|\| host\.heldAt\(listingId\) != 0;/);
+  // a late claim is never one of pendingClaims, and settle pays a late claim no award
+  assert.match(LOGIC, /if \(late\) \{[\s\S]*?c\.late = true;\s*l\.lateClaims \+= 1;[\s\S]*?\} else \{\s*l\.pendingClaims \+= 1;/);
+});
+
+// ---------------------------------------------------------------- the action, on the page
+const NAMED = Object.freeze([/sepolia/i, /mainnet/i, /testnet/i, /\bbase\b/i, /faucet/i, /https?:/i, /\b0x[0-9a-f]{4,}/i, /github/i, /\.(org|com|io)\b/i, /@/]);
+const holdStrings = () => Object.entries(H).flatMap(([k, v]) => (typeof v === 'string' ? [[`STRINGS.hold.${k}`, v]] : Object.entries(v).map(([k2, v2]) => [`STRINGS.hold.${k}.${k2}`, v2])));
+
+test('every string of the hold is one line, names no network, faucet, host or account, and passes the wording check', () => {
+  const all = holdStrings();
+  assert.ok(all.length >= 14, all.map(([k]) => k).join());
+  for (const [at, text] of all) {
+    oneLine(at, text);
+    assert.deepEqual(wordingProblems(text), [], at);
+    for (const re of NAMED) assert.equal(re.test(text), false, `${at} names ${re}: ${text}`);
+  }
+  // "on hold", as the badge says it: a stake that is "held" could be read as one that is in place
+  for (const [at, text] of all) assert.doesNotMatch(text, /\bheld\b/i, at);
+  assert.equal(fill(H.done, { id: 7, time: 'T', tx: '0xabc' }), 'Listing 7 is on hold since T (transaction 0xabc).');
+  assert.equal(fill(H.since, { time: 'T' }), 'This listing is on hold since T.');
+  assert.equal(fill(H.ask, { id: 7 }), 'Hold listing 7');
+  assert.match(fill(H.confirm, { id: 7 }), /^Hold listing 7 now/);
+});
+
+test('the action is offered to the listing\'s maker only, and to no other wallet', () => {
+  const actions = component('ListingActions.jsx');
+  const body = actions.slice(actions.indexOf('export function HoldListing('), actions.indexOf('\n}\n', actions.indexOf('export function HoldListing(')));
+  assert.ok(body.length > 0, 'HoldListing, in ListingActions.jsx');
+  // the connected wallet, compared with the listing's maker: without one, or with another, there is no button
+  assert.match(body, /const account = w\.wallet\?\.account \?\? null;/);
+  assert.match(body, /const isMaker = account !== null && same\(account, listing\.maker\);/);
+  assert.match(body, /if \(!isMaker\) action = <p className="hint" data-testid="hold-maker-only">\{H\.makerOnly\}<\/p>;/);
+  assert.equal(body.split('<button').length - 1, 3, 'ask, confirm and keep: each inside the maker\'s branch');
+  assert.ok(body.indexOf('if (!isMaker) action =') < body.indexOf('<button'), 'the buttons come after the check');
+  assert.match(H.makerOnly, /^Only this listing's maker can hold it/);
+  // and the wallet that sends is checked again, since it can change between the page and the click
+  assert.match(body, /const \{ signer, provider, account: sender \} = await w\.ensure\(\);\s*if \(!same\(sender, listing\.maker\)\) /);
+  assert.match(body, /fill\(STRINGS\.claim\.notMaker, \{ maker: listing\.maker, account: sender \}\)/);
+  // the contract's own rule
+  assert.match(fn(LOGIC, 'hold'), /require\(msg\.sender == l\.maker, "not maker"\);/);
+});
+
+test('the action asks for confirmation before anything is sent, reads the listing and its hold again at one block, and reports the transaction', () => {
+  const actions = component('ListingActions.jsx');
+  const body = actions.slice(actions.indexOf('export function HoldListing('), actions.indexOf('\n}\n', actions.indexOf('export function HoldListing(')));
+  // two steps before the wallet's own, as close(): the first button only asks
+  assert.match(body, /const \[asking, setAsking\] = useState\(false\);/);
+  assert.match(body, /onClick=\{\(\) => \{ setError\(null\); setAsking\(true\); \}\}>\s*\{fill\(H\.ask, \{ id: listingId \}\)\}/);
+  assert.match(body, /<button type="button" className="danger" onClick=\{send\} disabled=\{busy\}>\s*\{busy \? H\.sending : fill\(H\.confirm, \{ id: listingId \}\)\}/);
+  assert.match(body, /<button type="button" className="secondary" onClick=\{\(\) => setAsking\(false\)\} disabled=\{busy\}>\{H\.keep\}<\/button>/);
+  assert.equal(body.split('.hold(BigInt(listingId))').length, 2, 'hold() is sent in one place');
+  assert.ok(body.indexOf('const send = async') < body.indexOf('.hold(BigInt(listingId))'), 'inside send');
+  // just before sending: the listing and its hold, through the wallet, at one block
+  assert.match(body, /const blockTag = await blockNow\(provider\);\s*const \[mine, now\] = await Promise\.all\(\[reader\.getListing\(BigInt\(listingId\), \{ blockTag \}\), readHold\(reader, listingId, \{ blockTag \}\)\]\);/);
+  assert.match(body, /if \(!holdTerms\(mine, now\)\.can \|\| !same\(mine\.maker, sender\)\) \{\s*setError\(fill\(H\.changed, \{ id: listingId \}\)\);/);
+  // the receipt's Held event is the hold's time, and the page says it with the transaction
+  assert.match(body, /eventOf\(reader, receipt, 'Held'\)/);
+  assert.match(body, /fill\(H\.done, \{ id: listingId, time: formatTime\(done\.heldAt\), tx: done\.tx \}\)/);
+  assert.match(SOURCE, /event Held\(uint256 indexed listingId, uint64 heldAt\);/);
+});
+
+test('against a contract with no hold the page shows no hold action: the section is not drawn at all', () => {
+  const actions = component('ListingActions.jsx');
+  const body = actions.slice(actions.indexOf('export function HoldListing('), actions.indexOf('\n}\n', actions.indexOf('export function HoldListing(')));
+  assert.match(body, /if \(!hold\.supported\) return null;/);
+  assert.ok(body.indexOf('if (!hold.supported) return null;') < body.indexOf('data-testid="hold"'), 'before anything is drawn');
+  // the listing's own page reads the view at the block it reads the listing at, and a refusal is "no hold"
+  const page = component('FundPage.jsx');
+  assert.match(page, /const blockTag = Number\(await provider\.send\('eth_blockNumber', \[\]\)\);\s*const \[listing, hold\] = await Promise\.all\(\[sa\.getListing\(id, \{ blockTag \}\), readHold\(sa, id, \{ blockTag \}\)\]\);\s*return \{ listing, hold \};/);
+  // a read that fails any other way rejects with the rest: the page's "could not be read", never a listing "not on hold"
+  assert.doesNotMatch(page, /readHold\([^)]*\)\.catch/);
+  const lib = read('../src/lib/hold.js');
+  assert.match(lib, /if \(refusedByContract\(err\)\) return NO_HOLD;\s*throw err;/);
+});
+
+test('once on hold, the page says so with the time, and still offers roll forward and close', () => {
+  const page = component('FundPage.jsx');
+  // the state stays the chain's (Open or Depleted): the hold is said beside it, with its time, and the pill is not green
+  assert.match(page, /\{hold\.held && <><dt>\{F\.heldSince\}<\/dt><dd data-testid="listing-held-since">\{formatTime\(hold\.heldAt\)\}<\/dd><\/>\}/);
+  assert.match(page, /\{hold\.held && <p className="warning" data-testid="listing-held">\{fill\(F\.held, \{ id: listingId, time: formatTime\(hold\.heldAt\) \}\)\}<\/p>\}/);
+  // "open until" is said of a listing that takes claims, never of one on hold
+  assert.match(page, /\{state === 'Open' && !hold\.held && <p className="ok">\{fill\(F\.alreadyOpen,/);
+  assert.equal(fill(STRINGS.fund.held, { id: 7, time: 'T' }).startsWith('Listing 7 is on hold since T: it takes no new claims.'), true);
+  assert.match(STRINGS.fund.held, /a late claim/);
+  assert.match(STRINGS.fund.held, /The hold ends when the listing is rolled forward or closed\.$/);
+  // roll forward and close are drawn from the listing's state and its pending claims, as before: a hold changes neither
+  const extras = component('ListingExtras.jsx');
+  const roll = extras.slice(extras.indexOf('export function RollForward('), extras.indexOf('/** Whether the site offers a commit'));
+  assert.match(roll, /if \(!ROLLABLE\.has\(state\)\) return null;/);
+  assert.doesNotMatch(roll, /hold\.held && return|if \(hold\.held\) return/);
+  const close = component('ListingActions.jsx');
+  assert.doesNotMatch(close.slice(close.indexOf('export function CloseListing('), close.indexOf('export function Withdraw(')), /hold/);
+});

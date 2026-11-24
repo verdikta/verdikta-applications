@@ -108,6 +108,32 @@ test('labels: the stake label, then invited and lapsed; no price gives no stake 
   assert.equal(unpriced.valueAtRiskUsd, '1250000');
 });
 
+// Node P42: the server says a listing on hold in its labels (heldAt: unix seconds while it is on hold, else null;
+// node P40), since the record is the lens's answer and its state stays Open or Depleted.
+test('a listing on hold: the label, and the time, from the server\'s labels; null when it is not, or the server says nothing', () => {
+  const HELD_AT = T0 + 5 * DAY;
+  const held = recordView(view({ labels: { 3: { heldAt: HELD_AT, live: false } } })).listings[0];
+  assert.equal(held.heldAt, HELD_AT);
+  assert.equal(held.state, 'Open', 'the state is the chain\'s');
+  assert.deepEqual(held.labels, ['staked', 'held']);
+  // with the others, in the order the page draws them: the stake label, invited, on hold, lapsed
+  const all = recordView(view({ listings: [listing({ state: 'Depleted', invited: true, lapsed: true })], labels: { 3: { stake: 'under-staked', heldAt: HELD_AT } } })).listings[0];
+  assert.deepEqual(all.labels, ['under-staked', 'invited', 'held', 'lapsed']);
+  // not on hold, a server from before the field, and no labels for the listing: null, and no label
+  for (const label of [{ heldAt: null }, {}, null]) {
+    const v = view();
+    if (label === null) delete v.labels.listings['3'];
+    else Object.assign(v.labels.listings['3'], label);
+    const l = recordView(v).listings[0];
+    assert.equal(l.heldAt, null);
+    assert.equal(l.labels.includes('held'), false);
+  }
+  // a listing that does not count carries it in its own row
+  const v = view();
+  v.notCounted = { listings: [{ listingId: '8', maker: listing().maker, state: 'Open', lapsed: false, heldAt: HELD_AT, reason: 'PROOF_NAMES_ANOTHER_MAKER', detail: null }, { listingId: '9', maker: listing().maker, state: 'Open', lapsed: false, reason: 'PROOF_NAMES_ANOTHER_MAKER' }], findings: [], events: [] };
+  assert.deepEqual(recordView(v).notCounted.listings.map((l) => [l.id, l.heldAt]), [['8', HELD_AT], ['9', null]]);
+});
+
 test('each stake carries its control fact as the server states it, and none reads as "no"', () => {
   const fact = { maker: listing().maker, subject: 'repository', proof: 'yes', statement: 'staker controls the repository: yes', reason: null, detail: null, repository: { path: '.verdikta/stake-control.json' }, deployment: null };
   const v = view();

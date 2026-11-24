@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { test as base, expect } from '@playwright/test';
-import { Contract, JsonRpcProvider } from 'ethers';
+import { Contract, Interface, JsonRpcProvider } from 'ethers';
 import disclosure from '@verdikta/common/src/codeReview/disclosure.js';
 import codec from '@verdikta/common/src/codeReview/disclosureCodec.js';
 
@@ -51,7 +51,8 @@ export async function shot(page, name, { target = null } = {}) {
  * A browser wallet for tests: an EIP-1193 provider on window.ethereum that forwards every call to
  * the local Hardhat node, whose accounts are unlocked. No extension and no key in the page.
  * window.__testWallet lets a test switch the account (emitting accountsChanged, as a wallet
- * does) and make the eth_calls that follow the next transaction fail, as a flaky RPC would.
+ * does, or silently, as one that does not announce it) and make the eth_calls that follow the
+ * next transaction fail, as a flaky RPC would.
  */
 export async function installWallet(page, stack, account = stack.accounts.maker) {
   await page.addInitScript(({ rpcUrl, chainId: configured, account: first }) => {
@@ -64,9 +65,10 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
     const listeners = new Map();
     const emit = (event, value) => { for (const fn of listeners.get(event) ?? []) fn(value); };
     window.__testWallet = {
-      setAccount(a) {
+      // `announce: false`: the account changes and the wallet says nothing, as one that does not announce changes
+      setAccount(a, { announce = true } = {}) {
         from = a;
-        emit('accountsChanged', [a]);
+        if (announce) emit('accountsChanged', [a]);
       },
       failCallsAfterNextSend(n) {
         failCallsAfterSend = n;
@@ -120,6 +122,48 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
       },
     };
   }, { rpcUrl: stack.rpcUrl, chainId: stack.chainId, account });
+}
+
+// What the local node answers for a call to a function the contract does not have (measured on the stack's node).
+const NO_SUCH_FUNCTION = "Error: Transaction reverted: function selector was not recognized and there's no fallback function";
+export const REFUSED_CALL = Object.freeze({ code: -32603, message: NO_SUCH_FUNCTION, data: { message: NO_SUCH_FUNCTION, data: '0x' } });
+
+/**
+ * Node P42: this page's calls of the contract's heldAt view, answered with `error` and never sent to the node. With
+ * the default, the page talks to a contract deployed before the hold: the node refuses a call to a function the
+ * contract does not have. With another JSON-RPC error, the read fails as a node's own failure would. Both of the
+ * page's ways to the node are covered, since both are a fetch of the node's URL: the site's reader and the test
+ * wallet. Every other call, alone or in the same batch, reaches the node as it is. Returns { calls }: how many
+ * heldAt calls were answered here.
+ */
+export async function answerHeldAt(page, stack, error = REFUSED_CALL) {
+  const selector = new Interface(['function heldAt(uint256) view returns (uint64)']).getFunction('heldAt').selector;
+  const seen = { calls: 0 };
+  const isHeldAt = (p) => p?.method === 'eth_call' && String(p.params?.[0]?.data ?? p.params?.[0]?.input ?? '').startsWith(selector);
+  const node = new URL(stack.rpcUrl).origin;
+  await page.route((url) => url.origin === node, async (route) => {
+    const request = route.request();
+    let body = null;
+    try {
+      body = request.method() === 'POST' ? JSON.parse(request.postData() ?? '') : null;
+    } catch {
+      // not JSON-RPC
+    }
+    const list = Array.isArray(body) ? body : [body];
+    if (!list.some(isHeldAt)) return route.continue();
+    const answers = [];
+    for (const p of list) {
+      if (isHeldAt(p)) {
+        seen.calls += 1;
+        answers.push({ jsonrpc: '2.0', id: p.id, error });
+      } else {
+        const res = await fetch(stack.rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p) });
+        answers.push(await res.json());
+      }
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(Array.isArray(body) ? answers : answers[0]) });
+  });
+  return seen;
 }
 
 /** Every request the browser context makes (URL, headers, body) and every WebSocket frame. */

@@ -732,12 +732,75 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await checkInvariant(step, `round ${extra}`);
         }
       }
+      // A fixed owed top-up, on the first seed, after the random steps so their sequences are unchanged:
+      // a listing whose escrow is its top award, a HIGH that settles and depletes it, a CRITICAL that
+      // settles short with the rest owed, then the maker's top-up, which pays the owed award first
+      // (OwedPaid) and reopens the listing (StakeAttestation.settlement.test.js, payout-depletes-escrow).
+      // The random streams reach an owed top-up only by chance, and solidity-coverage skips the seeds
+      // that did. Its listing and claims are the test's own, so every check covers them.
+      let fixedListing = null;
+      let reachedFixedPromotion = false;
+      if (seed === SEEDS[0][0]) {
+        const maker = makers[0];
+        const plainHunters = hunters.filter((x) => !x.act);
+        const p = H.params({ artifact: H.atCommit(H.freshCommit()) });
+        await (await send(maker, "list", [p, LISTING_CID, DISPUTE_CID, []])).wait();
+        const id = await sa.listingCount();
+        listings.push({ id, maker });
+        fixedListing = id;
+        const fee = await sa.feeDue(id);
+        await (await send(maker, "fund", [id, fee], fee + p.awards[3])).wait();
+        const fixed = [];
+        for (const [i, hunter] of plainHunters.slice(0, 2).entries()) {
+          const before = await sa.claimCount();
+          await (await send(hunter, "commit", [id, ethers.sha256(ethers.toBeHex(before + 1n, 32)), H.CT], await sa.commitPrice(id))).wait();
+          const claim = { id: before + 1n, listingId: id, hunter, bcid: `Qm${"O".repeat(42)}${String(i).padStart(2, "0")}` };
+          claims.push(claim);
+          fixed.push(claim);
+          await (await send(hunter, "disclose", [claim.id, H.CT_CID])).wait();
+        }
+        for (const [claim, vector] of [[fixed[0], H.V.HIGH], [fixed[1], H.V.CRITICAL]]) {
+          await H.revealAs(sa, claim.hunter, claim.id, { bcid: claim.bcid });
+          await H.judgeAs(sa, aggregator, claim.hunter, claim.id, vector);
+          await H.afterDisputeWindow(sa, claim.id);
+          await (await sa.connect(claim.hunter).settle(claim.id)).wait();
+          await checkInvariant(300, "fixed owed top-up");
+        }
+        const owing = await sa.getListing(id);
+        expect(owing.owedWei, "the CRITICAL settled short: part of its award is owed").to.be.greaterThan(0n);
+        await (await send(maker, "fund", [id, 0n], owing.owedWei + p.awards[3])).wait();
+        expect((await sa.getListing(id)).owedWei).to.equal(0n);
+        await checkInvariant(300, "fixed owed top-up");
+      }
       // A fixed promotion, after the random steps so their sequences are unchanged: one open round
       // still before its deadline (drawn here if need be) gets its M+ commits and is promoted from
       // C+2, as a keeper would. The random streams reach promotion only by chance: since the mock
       // refuses results after a round's deadline (as the real aggregator does), rounds left past it
       // crowd the round stream's picks, and over these seeds it promoted none.
-      for (const c of await claimsIn([ClaimState.Revealed, ClaimState.Disputed])) {
+      // On the first seed, when no open round can be promoted (none is left before its deadline), one more
+      // claim on the fixed listing (reopened by its top-up) gives it one: solidity-coverage skips the seeds
+      // whose rounds did.
+      const promotable = async () => {
+        const out = [];
+        for (const c of await claimsIn([ClaimState.Revealed, ClaimState.Disputed])) {
+          const info = await aggregator.getRoundInfo(openRequestOf(await sa.getClaim(c.id)));
+          if (info.phase <= 2n || ((info.phase === 3n || info.phase === 4n) && info.deadline >= BigInt(await time.latest()) + 60n)) out.push(c);
+        }
+        return out;
+      };
+      let toPromote = await promotable();
+      if (!toPromote.length && fixedListing !== null) {
+        const hunter = hunters.filter((x) => !x.act)[2];
+        const before = await sa.claimCount();
+        await (await send(hunter, "commit", [fixedListing, ethers.sha256(ethers.toBeHex(before + 1n, 32)), H.CT], await sa.commitPrice(fixedListing))).wait();
+        const claim = { id: before + 1n, listingId: fixedListing, hunter };
+        claims.push(claim);
+        await (await send(hunter, "disclose", [claim.id, H.CT_CID])).wait();
+        await H.revealAs(sa, hunter, claim.id, { bcid: `Qm${"O".repeat(42)}02` });
+        await checkInvariant(300, "fixed promotion: its claim");
+        toPromote = await promotable();
+      }
+      for (const c of toPromote) {
         const requestId = openRequestOf(await sa.getClaim(c.id));
         let info = await aggregator.getRoundInfo(requestId);
         if (info.phase === 1n) {
@@ -757,9 +820,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         await attempt("promote", () => aggregator.connect(plainSigners[0]).promote(requestId));
         if ((await phaseOf(requestId)) === 5n) {
           await checkInvariant(300, "fixed promotion");
+          reachedFixedPromotion = true;
           break;
         }
       }
+      if (seed === SEEDS[0][0]) expect(reachedFixedPromotion, 'the fixed promotion promoted a round').to.equal(true);
       // Drain: every round finalized, every wallet recovered, then refund attribution.
       await aggregator.setWithdrawBroken(false);
       if (await aggregator.paused()) await aggregator.setPaused(false);

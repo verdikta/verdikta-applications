@@ -168,7 +168,10 @@ test('the README says the same, and why: the builder fetches the fixed commit fr
   inOrder(bullet, ['with no claim pending', '`close` the old listing first', 'once that is mined', 'push the fix', 'list the fixed commit']);
   assert.match(bullet, /`close` is refused while a claim is pending or an award is owed/);
   inOrder(bullet, ['with a claim pending', '`close` is refused until every pending claim is settled or expired', 'publishes first', 'push', 'validate', 'list', 'fund', 'roll forward', 'in one sitting']);
-  assert.match(bullet, /expect the old listing to take commits from the push until the roll is mined/);
+  // the exposure, as the contract decides it: commits are taken only while acceptsCommits' conditions are met, so a
+  // Depleted listing, or one whose paid period is over, takes none, with a claim pending or without
+  assert.match(bullet, /The fix is public from the push, and until the roll is mined the old listing takes commits as before, for as long as it meets the three conditions of `acceptsCommits` above \(a Depleted listing, or one whose paid period is over, takes none\)\./);
+  assert.doesNotMatch(bullet, /expect the old listing to take commits/);
   // what a roll does to the claims already there, in the contract's terms
   assert.match(bullet, /those claims still settle against the old listing's escrow/);
   assert.doesNotMatch(bullet, /the stake leaves only by a roll/);
@@ -177,5 +180,6 @@ test('the README says the same, and why: the builder fetches the fixed commit fr
   // the panel's own description in "The client" points at it, and says the panel does not wait for the record
   const client = readme.slice(readme.indexOf('\n## The client\n'), readme.indexOf('\n## The local round\n')).replace(/\s+/g, ' ');
   assert.match(client, /what a maker does before publishing a fix \(`STRINGS\.roll\.fix`; "The contract: listings"\)/);
+  assert.match(client, /the listing taking claims as before until it has rolled \(none while it is Depleted or its paid period is over\)/);
   assert.match(client, /the panel shows for every Open or Depleted listing, also while the site's record is read and when it cannot be: only the picker waits for the record/);
 });

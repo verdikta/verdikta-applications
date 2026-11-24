@@ -156,10 +156,13 @@ escrow once no claim is pending and nothing is owed.
   - with a claim pending, `close` is refused until every pending claim is
     settled or expired. A maker who rolls forward before then publishes
     first: push the fix, then validate, list and fund the fixed commit, and
-    roll forward, all in one sitting, and expect the old listing to take
-    commits from the push until the roll is mined. A roll stops new commits
-    on the old listing and ends the fix window of every claim disclosed on
-    it; those claims still settle against the old listing's escrow.
+    roll forward, all in one sitting. The fix is public from the push, and
+    until the roll is mined the old listing takes commits as before, for as
+    long as it meets the three conditions of `acceptsCommits` above (a
+    Depleted listing, or one whose paid period is over, takes none). A roll
+    stops new commits on the old listing and ends the fix window of every
+    claim disclosed on it; those claims still settle against the old
+    listing's escrow.
 
 ## The contract: claims
 
@@ -1472,7 +1475,8 @@ goes in a URL.
   (`STRINGS.roll.fix`; "The contract: listings"): keep it private until the listing is closed,
   when it can be closed; with no claim pending, close first; with one pending, a roll before the
   claims are settled means the fix is public first, so push, validate, list, fund and roll forward
-  in one sitting, the listing taking claims until it has rolled. Those lines depend on the
+  in one sitting, the listing taking claims as before until it has rolled (none while it is
+  Depleted or its paid period is over). Those lines depend on the
   listing's state on-chain alone, so the panel shows for every Open or Depleted listing, also
   while the site's record is read and when it cannot be: only the picker waits for the record.
   `test/rollGuidance.test.js` checks the three lines against `close` and `rollForward` in the

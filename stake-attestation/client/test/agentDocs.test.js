@@ -1160,7 +1160,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // at that nonce: a transaction that takes it afterwards leaves the signature unusable
   const at = /async function nonceAndClaimAt[\s\S]*?\n\}/.exec(commit)?.[0];
   assert.ok(at, 'tool/src/commit.js: nonceAndClaimAt');
-  assert.match(at, /const head = await headNow\(ctx\);\s*const nonce = await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionCount\(state\.hunter, head\)\);\s*const existing = await findCommitted\(ctx, state, head\);\s*const pending = existing \? nonce : await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionCount\(state\.hunter, 'pending'\)\);/, 'the nonce and the logs at one block, then the pending count');
+  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionCount\(state\.hunter, head\.number\)\);\s*const existing = await findCommitted\(ctx, state, head\.number\);\s*const pending = existing \? nonce : await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionCount\(state\.hunter, 'pending'\)\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
   const send = /async function sendCommit[\s\S]*?\n\}/.exec(commit)[0];
   assert.match(send, /const at = late \? await nonceAndClaimAt\(ctx, state\) : \{ existing: await findCommitted\(ctx, state\) \};/, 'a late claim asks; a commit looks for its log as it always did');
   assert.match(send, /if \(late && at\.pending > at\.nonce\) throw fail\('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond\.'\);/);
@@ -1170,6 +1170,15 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // the amount printed is the amount sent: a fee that moved since the terms is said before the signature
   assert.match(commit, /if \(price !== quoted\) ctx\.notice\(priceMovedNotice\(\{ late, quoted, price \}\)\);\s*const data = ctx\.encode\(/);
   assert.match(section(4), /A commit or a late claim whose fee moved between its terms and its signature says the new amount before it signs\./);
+
+  // --restart sets the prepared files aside, state.json with them, and deletes nothing: no read can see a claim of
+  // those hashes that someone holds and has not sent yet
+  assert.match(commit, /if \(state && restart\) \{[\s\S]*?ws\.setAsidePrepared\(\);\s*state = null;\s*\}/);
+  const setAside = /setAsidePrepared\(\) \{[\s\S]*?\n {4}\},/.exec(toolSrc('workspace.js'))?.[0];
+  assert.ok(setAside, 'tool/src/workspace.js: setAsidePrepared');
+  assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'state\.json'\]\) \{\s*if \(readOptional\(name\) !== null\) fs\.renameSync\(/);
+  assert.doesNotMatch(toolSrc('workspace.js'), /fs\.rmSync\(pathOf\(name\), \{ force: true \}\);\s*fsyncDir/, 'nothing of a prepared claim is removed');
+  assert.match(section(9), /--restart starts over with new keys, and sets the old files aside in the same folder: it deletes nothing/);
 
   // a resume: the flag is read until something is signed, and the saved transaction decides from then on
   assert.match(section(4), /Once a commit or a late claim is signed, a later run resumes that one, with --late or without it\./);

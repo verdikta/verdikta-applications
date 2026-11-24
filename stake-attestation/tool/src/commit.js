@@ -22,11 +22,12 @@
 // the log's block is then held to its hash, so one a reorganization moved is looked for again and never pinned early.
 //
 // A late claim is signed only when no claim of its hashes can be on the chain unseen (nonceAndClaimAt): the wallet's
-// nonce and the logs are read at one block, and the pending count after them. A transaction of this wallet mined by
-// that block is in the logs read, so a claim it made is found. One mined or sent later raises the pending count above
-// that nonce, and nothing is signed (WALLET_BUSY). And the late claim is signed at that nonce, so a transaction that
-// takes it afterwards leaves the signature unusable: it is found gone, and the claim adopted. --restart asks the same
-// before the keys are removed, whatever the flag: a prepared folder names no kind.
+// nonce and the logs are read at one block, held to its hash, and the pending count after them. A transaction of
+// this wallet mined by that block is in the logs read, so a claim it made is found. One mined or sent later raises
+// the pending count above that nonce, and nothing is signed (WALLET_BUSY). And the late claim is signed at that nonce,
+// so a transaction that takes it afterwards leaves the signature unusable: it is found gone, and the claim adopted.
+// --restart asks the same, whatever the flag, since a prepared folder names no kind; and it sets the prepared files
+// aside rather than deleting them, for the one case no read can see: a claim someone holds and has not sent yet.
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { codeReview } from './common.js';
@@ -155,9 +156,17 @@ async function headNow(ctx) {
   return Number(BigInt(await ctx.rpc(() => ctx.provider.send('eth_blockNumber', []))));
 }
 
+/** A block's number and hash, asked of the node: the latest, or the one at `number`. Null when there is none. */
+async function blockIdAt(ctx, number = null) {
+  const tag = number === null ? 'latest' : `0x${number.toString(16)}`;
+  const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [tag, false]));
+  return block ? { number: Number(BigInt(block.number)), hash: block.hash } : null;
+}
+
 /**
- * Whether a claim of the folder's two hashes may be on the chain, or on its way there, unseen. Three reads, in this
- * order: the wallet's nonce at one block; the logs up to that same block; the wallet's pending count, after them.
+ * Whether a claim of the folder's two hashes may be on the chain, or on its way there, unseen. The reads, in this
+ * order: the head, by its number and its hash; the wallet's nonce at that block; the logs up to that same block; the
+ * wallet's pending count, after them; and that block again, which must still have that hash.
  *
  *   - `existing`: the claim, when the logs hold one.
  *   - `nonce`: the wallet's next nonce as mined at that block. With no claim in the logs, no transaction below it
@@ -165,14 +174,20 @@ async function headNow(ctx) {
  *   - `pending` above `nonce`: a transaction of this wallet is not mined yet, or was mined after that block, and it
  *     may be the claim. The caller holds back (WALLET_BUSY): a run again finds it once it is mined.
  *
+ * The block is read again because a height is not a block: a reorganization between the nonce and the logs would
+ * have them read on different forks, the nonce counting a claim the logs no longer hold. Then nothing here can be
+ * relied on, and the run ends before anything is signed or set aside (RPC_UNAVAILABLE: run again).
+ *
  * A transaction sent after the last read is not seen by any read. A caller that signs at `nonce` shuts it out all the
  * same: only one transaction can be mined at a nonce.
  */
 async function nonceAndClaimAt(ctx, state) {
-  const head = await headNow(ctx);
-  const nonce = await ctx.rpc(() => ctx.provider.getTransactionCount(state.hunter, head));
-  const existing = await findCommitted(ctx, state, head);
+  const head = await blockIdAt(ctx);
+  if (!head) throw fail('RPC_UNAVAILABLE');
+  const nonce = await ctx.rpc(() => ctx.provider.getTransactionCount(state.hunter, head.number));
+  const existing = await findCommitted(ctx, state, head.number);
   const pending = existing ? nonce : await ctx.rpc(() => ctx.provider.getTransactionCount(state.hunter, 'pending'));
+  if ((await blockIdAt(ctx, head.number))?.hash !== head.hash) throw fail('RPC_UNAVAILABLE', 'The chain was reorganized while it was read, so nothing was signed.');
   return { existing, nonce, pending };
 }
 
@@ -530,7 +545,8 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
     }
     if (state && restart && state.stage !== 'prepared') throw fail('RESTART_REFUSED');
     if (state && restart) {
-      ws.removePrepared();
+      // set aside, never deleted: no read can see a claim of these hashes that someone holds and has not sent yet
+      ws.setAsidePrepared();
       state = null;
     }
     if (!state && (listingId === undefined || listingId === null)) throw fail('USAGE', 'A first commit needs --listing <id>.');

@@ -214,9 +214,17 @@ export function openWorkspace(claimDir) {
       }
       fsyncDir(dir);
     },
-    /** Removes a prepared claim's files: the caller has checked nothing was signed. */
-    removePrepared() {
-      for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) fs.rmSync(pathOf(name), { force: true });
+    /**
+     * Sets a prepared claim's files aside, state.json with them, under one stamp: --restart starts over with new keys
+     * and deletes nothing. The caller has checked that nothing was signed here and that no claim of these hashes is on
+     * the chain or pending, and no check can see a transaction that someone holds and has not sent yet: should a claim
+     * of the old hashes turn up after all, the keys it needs are still on this disk, beside the state that names them.
+     */
+    setAsidePrepared() {
+      const stamp = `${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
+      for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) {
+        if (readOptional(name) !== null) fs.renameSync(pathOf(name), pathOf(`${name}.set-aside-${stamp}`));
+      }
       fsyncDir(dir);
     },
   };

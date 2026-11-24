@@ -810,7 +810,14 @@ test('a head that is behind the chain is behind for the nonce and the logs alike
   const provider = new Proxy(w.provider, {
     get(target, prop) {
       if (prop === 'getBlockNumber') return async () => behind ?? target.getBlockNumber();
-      if (prop === 'send') return async (method, params) => (behind !== null && method === 'eth_blockNumber' ? `0x${behind.toString(16)}` : target.send(method, params));
+      if (prop === 'send') {
+        return async (method, params) => {
+          if (behind === null) return target.send(method, params);
+          if (method === 'eth_blockNumber') return `0x${behind.toString(16)}`;
+          if (method === 'eth_getBlockByNumber' && params[0] === 'latest') return target.send(method, [`0x${behind.toString(16)}`, params[1]]);
+          return target.send(method, params);
+        };
+      }
       const v = target[prop];
       return typeof v === 'function' ? v.bind(target) : v;
     },
@@ -834,7 +841,85 @@ test('a head that is behind the chain is behind for the nonce and the logs alike
   assert.equal(await w.claimCount(), count + 1n, 'one claim, one bond');
 });
 
-// Round 3: --restart removes the keys, so it is held to the same reads.
+// Round 4: a height is not a block. A reorganization between the read of the nonce and the read of the logs has them
+// read on different forks: the nonce counts the claim, the logs no longer hold it, and it is back in the pool. The
+// block both were read at is read again, by its hash, and a run that saw it change signs nothing.
+test('a reorganization between the nonce and the logs: the block they were read at is no longer that block, and nothing is signed', async () => {
+  const l = await rolled();
+  const dir = makeClaimDir();
+  const count = await w.claimCount();
+  const price = await w.sa.commitPrice(l.listingId);
+  const sendOther = async () => {
+    const saved = readJson(statePath(dir));
+    return w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price });
+  };
+  let snapshot = null;
+  let first = null;
+  let pendingAgain = null;
+  // the same late claim is mined right after the folder is prepared: the head the run reads holds it
+  const onStep = async (step) => {
+    if (step !== 'prepare:saved') return;
+    snapshot = await w.rpc('evm_snapshot');
+    first = await (await sendOther()).wait();
+  };
+  // the nonce is read at that block and counts it; then the block is replaced by an empty one, and the claim is back
+  // in the pool, not mined
+  const provider = injecting('getTransactionCount', async () => {
+    await w.rpc('evm_revert', [snapshot]);
+    await w.mine();
+    await w.rpc('evm_setAutomine', [false]);
+    pendingAgain = await sendOther();
+  }, (_address, tag) => typeof tag === 'number');
+  try {
+    const err = await w.hunter({ provider, onStep, waitMs: 300 }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
+    assert.ok(pendingAgain, 'the reorganization happened between the two reads');
+    assert.equal(err.code, 'RPC_UNAVAILABLE', err.message);
+    assert.match(err.message, /reorganized while it was read/);
+    assert.equal(readJson(statePath(dir)).commitTx ?? null, null, 'nothing was signed');
+    assert.equal((await w.rpc('eth_getBlockByNumber', ['pending', false])).transactions.length, 1, 'only the claim that came back to the pool waits');
+    assert.notEqual((await w.provider.getBlock(first.blockNumber)).hash, first.blockHash, 'the block at that height is another block');
+    await w.mine();
+  } finally {
+    await w.rpc('evm_setAutomine', [true]);
+  }
+  const r = await late({ claimDir: dir, listingId: l.listingId });
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(r.commitTx, pendingAgain.hash);
+  assert.equal(await w.claimCount(), count + 1n, 'one claim, one bond');
+});
+
+// Round 4: no read can see a claim that someone holds signed and has not sent yet. So --restart deletes nothing: the
+// prepared files are set aside, and a claim of the old hashes that turns up later still has its keys on this disk.
+test('--restart sets the prepared files aside and deletes nothing: a claim of the old hashes sent afterwards can still be disclosed from them', async () => {
+  const l = await rolled();
+  const dir = makeClaimDir();
+  const count = await w.claimCount();
+  assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+  const folder = `${dir}/.verdikta-claim`;
+  const old = { state: readJson(statePath(dir)) };
+  for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) old[name] = fs.readFileSync(statePath(dir, name));
+  // --restart: new keys, a late claim of the new hashes, and every old file still there under one stamp
+  const r = await late({ claimDir: dir, listingId: l.listingId, restart: true });
+  assert.equal(r.stage, 'disclosed');
+  assert.notEqual(r.ciphertextSha256, old.state.ciphertextSha256, 'new keys, so another ciphertext');
+  const aside = fs.readdirSync(folder).filter((n) => n.includes('.set-aside-'));
+  const stamps = new Set(aside.map((n) => n.split('.set-aside-')[1]));
+  assert.equal(stamps.size, 1, aside.join(', '));
+  for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) {
+    const kept = `${name}.set-aside-${[...stamps][0]}`;
+    assert.ok(aside.includes(kept), kept);
+    assert.ok(fs.readFileSync(statePath(dir, kept)).equals(old[name]), `${name}: byte for byte`);
+    assert.equal(fs.statSync(statePath(dir, kept)).mode & 0o777, 0o600, kept);
+  }
+  // the old hashes' claim, held by another client and sent only now: its keys were not destroyed, and they open it
+  await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, old.state.archiveSha256, old.state.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+  assert.equal(await w.claimCount(), count + 2n);
+  const claim = await w.sa.getClaim(count + 2n);
+  const keys = JSON.parse(old['keys.json'].toString('utf8'));
+  assert.equal(codeReview.verifyDisclosure({ plaintext: new Uint8Array(old['archive.zip']), ciphertext: new Uint8Array(old['ciphertext.age']), archiveSha256: claim.archiveHash, ciphertextSha256: claim.ciphertextSha256, contentKey: keys.contentKey, ephemeralKey: keys.ephemeralKey, disclosureKey: l.recipient }).ok, true, 'the files set aside are the ones that claim needs');
+});
+
+// Round 3: --restart starts over with new keys, so it is held to the same reads.
 test('--restart while the same claim is mined in the middle of its checks: the keys stay', async () => {
   const l = await rolled();
   const dir = makeClaimDir();

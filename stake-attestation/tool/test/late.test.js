@@ -940,8 +940,9 @@ test('a reorganization between the nonce and the logs: the block they were read 
   // the nonce is read at that block and counts it; then the block is replaced by an empty one, and the claim is back
   // in the pool, not mined
   // a provider as a library caller may hand in: ethers answers a repeated request from memory for a while (250 ms
-  // unless told otherwise; a minute here, so that the run again below is sure to be inside it)
-  const remembering = new ethers.BrowserProvider({ request: (call) => w.hre.network.provider.request(call) }, 31337, { cacheTimeout: 60_000, staticNetwork: true });
+  // unless told otherwise; ten seconds here, so that the run again below, a second later at most, is sure to be
+  // inside it; the timers of that memory keep the test process alive until they end, so no longer than that)
+  const remembering = new ethers.BrowserProvider({ request: (call) => w.hre.network.provider.request(call) }, 31337, { cacheTimeout: 10_000, staticNetwork: true });
   const provider = injecting('send', reorganize, atBlock, remembering);
   try {
     const err = await w.hunter({ provider, onStep, waitMs: 300 }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);

@@ -1543,12 +1543,27 @@ goes in a URL.
   as a late claim with no award, and the action, drawn for the connected wallet when it is the
   listing's maker's and for no other: two steps before the wallet's own, as close has; the wallet
   asked again at the click; the listing and its hold read again at one block through the wallet;
-  then `hold`, and the receipt's `Held` event for the time. From then on the page says the
-  listing is on hold, with the time, beside its state (which stays Open or Depleted, and is no
-  longer drawn as taking claims), and in every sentence it has about taking claims: no "open
+  then `hold`, and this contract's `Held` event for this listing in the receipt for the time (the
+  receipt also of the same call sent again at a higher fee, `minedReceipt`). From then on the page
+  says the listing is on hold, with the time, beside its state (which stays Open or Depleted, and is
+  no longer drawn as taking claims), and in every sentence it has about taking claims: no "open
   until", a commit offer that says the site does not offer it, a renewal and a top-up that do not
   make it take claims again. Roll forward stays offered, and close by its own terms. The queue
   line counts the late claims a listing on hold takes with the claims from before the hold.
+  A successor is never a listing that is itself on hold: it is Open, and the contract would take it,
+  but it takes no commits and a hold has no resume, so the picker leaves it out and the read before
+  sending refuses it. The fixed version is listed after the hold, often in another tab, so the panel
+  looks for successors again when asked.
+  **What the page saw mined, against what it reads.** The site's reader can trail the node the
+  wallet sent through. After each transaction sent from the page it reads the listing again until
+  a read is of the block the transaction was mined in (`readFrom` in `client/src/lib/poll.js`), takes
+  no earlier read for the new state, and says so, with a way to read again, when none reached it. A
+  hold the page saw mined stands by its receipt only while the page's read is from before that
+  block; from that block on the read decides, and a hold that is not there (its block was dropped)
+  is said in an alert, never drawn as a hold, and offered again. The commit offer follows the
+  contract's `acceptsCommits`, read with the listing: a listing that rolled forward or closed is
+  never said to be offered. A listing opened from its own page is followed the same way, so its
+  claims, the hold and the rest are there without a reload.
   **How the page knows.** It reads `heldAt(listingId)` at the block it reads the listing at. A
   call the contract refuses means a contract from before the hold: the page then draws no hold
   section, and the roll-forward panel says what it said before the hold existed, character for
@@ -1794,16 +1809,22 @@ field what they were. The site then says it (`labels.heldAt`, `live` false, the 
 pending, the badge "stake on hold since", and no entry in the feed), and so do the pages in Chromium: the listing's own,
 which reads the chain, the record and the feed. **A commit is refused**: the tool, given `--yes` for the folder it priced
 before the hold, exits as it does for a refusal, and what that leaves is checked and not its code or its words: nothing
-pinned, the hunter's nonce and the contract's claim count unmoved, the listing's counts and queue as they were. **The
+pinned, the hunter's nonce and the contract's claim count unmoved, the listing's counts and queue as they were. An
+unrelated failure would leave the same, so that one invocation reaches the chain through a recording proxy, and what it
+asked is read back: whether this listing takes a commit, the chain's answer no, and no transaction sent. **The
 claim from before the hold is judged and paid as before**: the maker releases it, the hunter reveals it, the jury gives
 the first claim's HIGH (the second juror's script answers it so, and the round first checks that juror has answered
 exactly the two claims before), the keeper starts the confirmation after the dispute window and the held listing's
 escrow pays it, the panel holds it, and the award and the bond reach the hunter, to the wei, with the listing on hold
-throughout (Open or Depleted by what the escrow then holds). After the documents listing is validated, **the listing
-rolls forward from the hold**: that listing, at the later commit, goes on the chain and is funded, `rollForward` names
-it, the old listing is Rolled with the lineage both ways, `heldAt` answers 0, the successor takes commits, and the
-site's two records and its feed say the same. A late claim on the listing on hold (`commit --late`, node P43) is not in
-the round yet: `e2e/src/checks.js` holds its checks, each with its test.
+throughout (Open or Depleted by what the escrow then holds). After the documents listing, **the fix is published**:
+a commit in which `deposit` credits exactly the amount, which exists nowhere until then, is pushed to the repository's
+main, whose head had not moved since before the hold. The site validates it (the real builder fetches it), and the
+hunter's `check` of the proof that was paid on the old version, against the new listing's archive, now fails at
+`reproduces`: its test passes there. The fixed version is listed and funded, and **the listing rolls forward from the
+hold** to it: the old listing is Rolled with the lineage both ways, `heldAt` answers 0, the successor takes commits,
+the site's two records and its feed say the same, and the record of the successor is the fixed commit's. A late claim
+on the listing on hold (`commit --late`, node P43) is not in the round yet: `e2e/src/checks.js` holds its checks, each
+with its test.
 
 | Piece | Here |
 |---|---|

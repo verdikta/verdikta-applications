@@ -471,8 +471,10 @@ test('heldSiteChecks: the site says on hold, since when, not live, no feed entry
 const counts = (over = {}) => ({ pins: 12, nonce: 30, claimCount: 9n, claimsCommitted: 7n, pendingClaims: 1n, lateClaims: 0n, tailClaim: 9n, acceptsCommits: false, ...over });
 const refusal = (over = {}) => ({ code: 1, json: null, stdout: '', stderr: 'verdikta-attest: LISTING_NOT_ACCEPTING: This listing takes no commits now.\n', ...over });
 
+const askedAndRefused = { reads: [{ view: 'acceptsCommits', answer: false }], sent: 0 };
+
 test('refusedCommitChecks: by what a refused commit leaves. The tool refused, nothing was pinned, nothing was sent, the counts are what they were', () => {
-  const o = (over = {}) => ({ run: refusal(), before: counts(), after: counts(), ...over });
+  const o = (over = {}) => ({ run: refusal(), before: counts(), after: counts(), asked: askedAndRefused, ...over });
   allPass(refusedCommitChecks('x', o()));
   // whatever code and words the refusal carries: a later node gives a listing on hold its own
   allPass(refusedCommitChecks('x', o({ run: refusal({ stderr: 'verdikta-attest: SOME_LATER_CODE: Whatever it says then.\n' }) })));
@@ -493,6 +495,31 @@ test('refusedCommitChecks: by what a refused commit leaves. The tool refused, no
   }
   fails(refusedCommitChecks('x', o({ after: counts({ acceptsCommits: true }) })), 'x.commit.chainRefuses');
   fails(refusedCommitChecks('x', o({ before: counts({ acceptsCommits: true }) })), 'x.commit.chainRefuses');
+});
+
+test('refusedCommitChecks: an unrelated failure leaves the same things untouched, so the tool\'s own reads must show it reached the chain\'s refusal', () => {
+  const o = (over = {}) => ({ run: refusal(), before: counts(), after: counts(), asked: askedAndRefused, ...over });
+  // the tool may read the listing's eligibility as acceptsCommits, as heldAt, or both; either answer that refuses will do
+  allPass(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'heldAt', answer: HELD_AT }], sent: 0 } })));
+  allPass(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: false }, { view: 'heldAt', answer: HELD_AT }], sent: 0 } })));
+  allPass(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'heldAt', answer: 0n }, { view: 'acceptsCommits', answer: false }], sent: 0 } })));
+  // exit 1 with one of the tool's own errors, and nothing pinned, sent or counted: an archive it could not read, a
+  // folder in use, a file it could not open. It never asked the chain about the listing, and that is what fails it.
+  for (const unrelated of ['ARCHIVE_UNAVAILABLE', 'FOLDER_BUSY', 'FILE_ERROR']) {
+    const run = refusal({ stderr: `verdikta-attest: ${unrelated}: Something else went wrong.\n` });
+    const list = refusedCommitChecks('x', o({ run, asked: { reads: [], sent: 0 } }));
+    assert.deepEqual(failing(list), ['x.commit.stoppedAtTheChainsAnswer'], unrelated);
+  }
+  fails(refusedCommitChecks('x', o({ asked: undefined })), 'x.commit.stoppedAtTheChainsAnswer');
+  // it asked, and the answer did not come: no refusal of the chain's was read
+  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: null }], sent: 0 } })), 'x.commit.stoppedAtTheChainsAnswer');
+  // a hold view that answers 0 refuses nothing
+  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'heldAt', answer: 0n }], sent: 0 } })), 'x.commit.stoppedAtTheChainsAnswer');
+  // the chain said the listing takes a commit: whatever stopped the tool, it was not the listing
+  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: true }], sent: 0 } })), 'x.commit.stoppedAtTheChainsAnswer');
+  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: false }, { view: 'acceptsCommits', answer: true }], sent: 0 } })), 'x.commit.stoppedAtTheChainsAnswer');
+  // and a transaction went out through that node
+  fails(refusedCommitChecks('x', o({ asked: { reads: [{ view: 'acceptsCommits', answer: false }], sent: 1 } })), 'x.commit.stoppedAtTheChainsAnswer');
 });
 
 test('lateClaimChecks: taken on the listing on hold as a late claim, behind the claim from before it, and never one of its pending claims', () => {
@@ -528,10 +555,19 @@ test('laterRecordChecks: the late claim is under the record\'s late claims, by i
   // a late claim counted with the stake's own claims would move these
   fails(laterRecordChecks('x', o({ record: record({ claims: '8' }) })), 'x.record.notAmongTheClaims');
   fails(laterRecordChecks('x', o({ record: record({ outcomes: ['3', '2', '0', '0', '2', '0'] }) })), 'x.record.notAmongTheClaims');
-  // a late finding that is valid is published, and never paid
-  allPass(laterRecordChecks('x', o({ record: record({}, [{ claimId: '10', late: true, paidWei: '0', owedWei: '0' }, { claimId: '2', late: false, paidWei: '4', owedWei: '0' }]) })));
-  fails(laterRecordChecks('x', o({ record: record({}, [{ claimId: '10', late: true, paidWei: '4', owedWei: '0' }]) })), 'x.record.noAward');
-  fails(laterRecordChecks('x', o({ record: record({}, [{ claimId: '10', late: true, paidWei: '0', owedWei: '4' }]) })), 'x.record.noAward');
+  // an outcome that publishes nothing (INVALID, DUPLICATE): no late finding is expected, and none may appear
+  fails(laterRecordChecks('x', o({ record: record({}, [{ claimId: '10', outcome: 'LOW', late: true, paidWei: '0', owedWei: '0' }]) })), 'x.record.lateFindings');
+  // a late finding that is valid is published, with `late` set, and never paid
+  const valid = { lateOutcomes: [0, 0, 1, 0, 0, 0], findings: [{ claimId: '10', outcome: 'LOW' }] };
+  const lateLow = (f = {}) => record({ lateOutcomes: ['0', '0', '1', '0', '0', '0'] }, [{ claimId: '10', outcome: 'LOW', late: true, paidWei: '0', owedWei: '0', ...f }, { claimId: '2', outcome: 'HIGH', late: false, paidWei: '4', owedWei: '0' }]);
+  allPass(laterRecordChecks('x', o({ ...valid, record: lateLow() })));
+  // the verdict is counted, and the finding is not there, or is there without its `late` flag, or by another outcome
+  fails(laterRecordChecks('x', o({ ...valid, record: record({ lateOutcomes: ['0', '0', '1', '0', '0', '0'] }, [{ claimId: '2', outcome: 'HIGH', late: false, paidWei: '4', owedWei: '0' }]) })), 'x.record.lateFindings');
+  fails(laterRecordChecks('x', o({ ...valid, record: lateLow({ late: false }) })), 'x.record.lateFindings');
+  fails(laterRecordChecks('x', o({ ...valid, record: lateLow({ outcome: 'MEDIUM' }) })), 'x.record.lateFindings');
+  fails(laterRecordChecks('x', o({ ...valid, record: lateLow({ claimId: '11' }) })), 'x.record.lateFindings');
+  fails(laterRecordChecks('x', o({ ...valid, record: lateLow({ paidWei: '4' }) })), 'x.record.noAward');
+  fails(laterRecordChecks('x', o({ ...valid, record: lateLow({ owedWei: '4' }) })), 'x.record.noAward');
 });
 
 test('rolledFromHoldChecks: the roll is the maker\'s, the hold ends in it, the lineage links both ways, and the site says both', () => {

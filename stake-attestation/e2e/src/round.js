@@ -7,7 +7,8 @@
 // the tool and settles by the panel's result; and a claim the jury scores just short of valid is a narrow
 // INVALID whose bond comes back. Node P42 adds the maker's hold (StakeAttestation.hold): a claim is committed, the
 // maker holds the listing, a commit is then refused, the claim from before the hold is judged and paid from the held
-// listing's escrow as the first was, and the listing rolls forward from the hold to the version listed after it.
+// listing's escrow as the first was, and only then is the fix published, validated, listed and funded, and the
+// listing rolled forward to it from the hold.
 // The first failed check, a service that will not start, or any
 // error ends the round: exit 1, with everything it started stopped and removed.
 import crypto from 'node:crypto';
@@ -988,9 +989,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
 
     // ---------------------------------------------------------------- the maker's hold (node P42; StakeAttestation.hold)
     // A hold is the first half of a roll forward: it stops new commits at once, before the fix is public, and leaves
-    // every pending claim alone. The maker's order is the round's: a claim is pending; hold; the fixed version is
-    // validated, listed and funded (the documents listing, below); roll forward. Each step is read back from the chain
-    // and from the site.
+    // every pending claim alone. The maker's order is the round's: a claim is pending; hold; and only then the fix is
+    // published, validated, listed and funded, and the listing rolled forward to it (after the documents listing,
+    // below). Each step is read back from the chain and from the site.
     /** A listing at one block: its state by name, its hold, whether it takes a commit or a late claim, and what a hold must leave as it was. */
     const listingOnChain = async (id) => {
       const at = { blockTag: await provider.getBlockNumber() };
@@ -1054,9 +1055,23 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
         claimsCommitted: l.claimsCommitted, pendingClaims: l.pendingClaims, lateClaims: l.lateClaims, tailClaim: l.tailClaim, acceptsCommits: await sa.acceptsCommits(listingId),
       };
     };
+    // An unrelated failure would leave the same things untouched. So this one invocation reaches the chain through a
+    // recording proxy, and what it asked is read back: whether this listing takes a commit (the acceptsCommits view, or
+    // the hold's own), the chain's answer, and that it sent no transaction.
+    const hunterRpc = await owned(h.startRecordingProxy(chain.rpcUrl), (p) => p.close());
+    const watchedTool = createTool({ chain: { ...chain, rpcUrl: hunterRpc.url }, ipfs, runnerUrl: hunterRunner.url, runnerToken, devKey, log });
     const beforeRefusal = await commitCounts();
-    const refusedCommit = await tool('commit', onHoldDir, '--listing', String(listingId), '--yes');
-    expect(refusedCommitChecks('held', { run: refusedCommit, before: beforeRefusal, after: await commitCounts() }));
+    const refusedCommit = await watchedTool('commit', onHoldDir, '--listing', String(listingId), '--yes');
+    const toolRpc = hunterRpc.post('/').filter((c) => c.request && !Array.isArray(c.request));
+    const readsOf = (viewName) => toolRpc
+      .filter((c) => c.request.method === 'eth_call' && String(c.request.params?.[0]?.to).toLowerCase() === chain.contract.toLowerCase() && c.request.params[0].data === sa.interface.encodeFunctionData(viewName, [listingId]))
+      .map((c) => ({ view: viewName, answer: typeof c.response?.result === 'string' && c.response.result !== '0x' ? sa.interface.decodeFunctionResult(viewName, c.response.result)[0] : null }));
+    const asked = {
+      reads: [...readsOf('acceptsCommits'), ...readsOf('heldAt')],
+      sent: toolRpc.filter((c) => ['eth_sendRawTransaction', 'eth_sendTransaction'].includes(c.request.method)).length,
+    };
+    one('held.commit.toolWasWatched', toolRpc.length > 0 && toolRpc.every((c) => c.status === 200), `${toolRpc.length} JSON-RPC calls of this invocation recorded`);
+    expect(refusedCommitChecks('held', { run: refusedCommit, before: beforeRefusal, after: await commitCounts(), asked }));
 
     stage('hold: the earlier claim is judged and paid as before');
     // The jury's script is a sequence by call (fixtures.js): the second juror answers this claim as it answered the
@@ -1153,11 +1168,36 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     // as after the first listing: the image lives in the registry only
     await removeRunImages(h, docker, instance);
 
-    // ---------------------------------------------------------------- roll forward from the hold (node P42)
-    // The fixed version is the listing just validated, at the later commit: built after the hold, as a maker who has
-    // held the old listing publishes a fix. It goes on the chain, is funded, and the old listing rolls forward to it.
-    stage('hold: roll forward to the fixed version');
-    const successorListed = parsedLogs(await mined(makerSa.list(docsView.list.params, docsView.list.listingCid, docsView.list.disputeCid, docsView.list.knownIssueIds))).find((e) => e.name === 'Listed');
+    // ---------------------------------------------------------------- the fix, and the roll forward from the hold (node P42)
+    // Only now, with the old listing on hold, is the fix published: until this line the commit exists nowhere, and the
+    // public repository's main is the commit it was at when the listing went on hold. Then the maker's order: the
+    // fixed commit is validated through the site (the real builder fetches it from the repository), listed and funded,
+    // and the old listing rolls forward to it.
+    stage('hold: the fix is published, validated, listed and funded');
+    const mainBeforeFix = repository.mirrorHead();
+    const fixCommit = repository.publishFix();
+    one('held.fix.publishedAfterTheHold', mainBeforeFix === repository.documentsCommit && repository.mirrorHead() === fixCommit && ![repository.baseCommit, repository.documentsCommit].includes(fixCommit) && (await sa.heldAt(listingId)) === heldAt,
+      `the repository's main was ${mainBeforeFix} from before the hold until now, and is ${repository.mirrorHead()} with the fix; the listing has been on hold since ${heldAt}`);
+    const fixRes = await submit(maker, { spec: draftSpec({ repo: repository.url, baseCommit: fixCommit, disclosureKey: disclosure.recipient }), allowlist: [], maker: maker.address });
+    one('held.fix.accepted', fixRes.status === 202, `HTTP ${fixRes.status}`);
+    const fixView = await follow((await fixRes.json()).id);
+    const fixSteps = (fixView.validationReport?.steps ?? []).filter((x) => x.status === 'ok').map((x) => x.name);
+    one('held.fix.validated', fixView.status === 'ready' && ['control', 'fetch', 'build', 'listingCheck'].every((x) => fixSteps.includes(x)) && fixView.list?.params?.artifact?.baseCommit === fixCommit,
+      JSON.stringify({ status: fixView.status, steps: fixSteps, commit: fixView.list?.params?.artifact?.baseCommit, refusals: fixView.validationReport?.refusals, error: fixView.error }).slice(0, 500));
+    // It is the fix: the proof that was paid twice on the old version, checked against this listing's archive by the
+    // real runner, no longer fails where it did. Its test passes at the fixed commit, so it reproduces nothing.
+    const fixArchive = path.join(workDir, 'fixed-listing.zip');
+    fs.writeFileSync(fixArchive, archive(fixView.list.listingCid));
+    const fixKey = fixView.devTrust?.keys?.[0]?.publicKey;
+    const fixTool = fixKey === devKey ? tool : createTool({ chain, ipfs, runnerUrl: hunterRunner.url, runnerToken, devKey: fixKey, log });
+    const fixedCheck = await fixTool('check', claimFolder(workDir, 'fixed'), '--listing-archive', fixArchive);
+    const fixedGates = fixedCheck.json?.forecast?.gates ?? [];
+    const gateOf = (name) => fixedGates.find((g) => g.name === name)?.status;
+    one('held.fix.proofNoLongerFails', fixedCheck.code === 1 && fixedCheck.json?.forecast?.verdict === 'fail' && gateOf('reproduces') === 'fail' && gateOf('testPathsOnly') === 'pass' && gateOf('build') === 'pass',
+      `the old proof against the fixed version: ${fixedCheck.json?.forecast?.verdict}; ${fixedGates.map((g) => `${g.name} ${g.status}`).join(', ') || fixedCheck.stderr.slice(0, 300)}`);
+    // as after the other listings: the image lives in the registry only
+    await removeRunImages(h, docker, instance);
+    const successorListed = parsedLogs(await mined(makerSa.list(fixView.list.params, fixView.list.listingCid, fixView.list.disputeCid, fixView.list.knownIssueIds))).find((e) => e.name === 'Listed');
     const successorId = successorListed.args.listingId;
     const successorHash = successorListed.args.artifactHash;
     const successorFee = await sa.feeDue(successorId);
@@ -1166,6 +1206,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       const { json } = await server.get('/api/feed');
       return json.listings?.some((l) => l.listingId === String(successorId)) ? json : null;
     }, 'waiting for the feed to count the fixed version');
+    one('held.fix.listed', successorListed.args.baseCommit === fixCommit && successorHash === fixView.artifactHash && successorHash !== artifactHash, `listing ${successorId} is of ${successorListed.args.baseCommit}, artifact hash ${successorHash}`);
+
+    stage('hold: roll forward to the fixed version');
     const beforeRoll = await listingOnChain(listingId);
     one('held.roll.fromOnHold', beforeRoll.heldAt === heldAt && beforeRoll.state === stateAfterHeld && beforeRoll.pendingClaims === 0n, `the old listing is ${beforeRoll.state} and on hold since ${beforeRoll.heldAt} when it rolls`);
     const rollReceipt = await mined(makerSa.rollForward(listingId, successorId));
@@ -1189,6 +1232,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       ...rolledOnChain,
       ...rolledSite,
     }));
+    // the version the record now names as the one that fixed this one is the commit published after the hold
+    one('held.roll.toTheFix', rolledEvent?.args.successorArtifactHash === successorHash && rolledSite.successorRecord.artifact?.baseCommit === fixCommit, `rolled to artifact hash ${rolledEvent?.args.successorArtifactHash}, the record of commit ${rolledSite.successorRecord.artifact?.baseCommit}`);
 
     // ---------------------------------------------------------------- nothing live
     stage('nothing live');

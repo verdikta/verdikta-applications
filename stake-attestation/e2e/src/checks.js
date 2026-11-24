@@ -390,9 +390,20 @@ export function heldSiteChecks(prefix, { record, feed, listingId, heldAt, state,
  * gives a listing on hold a refusal of its own): the tool exited as it does for a refusal, with one of its own
  * errors and no claim; nothing was pinned; the wallet sent nothing; the contract holds no new claim, and the
  * listing's counts and queue are what they were; and the chain takes no commit there.
+ *
+ * An unrelated failure leaves the same things untouched (an archive that could not be read, a folder in use), so what
+ * the invocation asked the chain is checked too, from a recording of its own RPC calls: it read whether this listing
+ * takes a commit, the chain's answer was no, and it sent no transaction. A run that failed before that read never
+ * asked. `asked.reads` holds each read of the listing's eligibility: the acceptsCommits view (answer false: no commit)
+ * or the heldAt view (answer non-zero: on hold), whichever the tool reads.
  * `before` and `after`: { pins, nonce, claimCount, claimsCommitted, pendingClaims, lateClaims, tailClaim, acceptsCommits }.
+ * `asked`: { reads: { view: 'acceptsCommits'|'heldAt', answer: boolean|bigint|null }[], sent: number }.
  */
-export function refusedCommitChecks(prefix, { run, before, after }) {
+export function refusedCommitChecks(prefix, { run, before, after, asked }) {
+  const refuses = (r) => (r.view === 'acceptsCommits' ? r.answer === false : r.view === 'heldAt' && typeof r.answer === 'bigint' && r.answer !== 0n);
+  // heldAt 0 says nothing either way; acceptsCommits true says the listing takes the commit
+  const takes = (r) => r.view === 'acceptsCommits' && r.answer !== false;
+  const reads = asked?.reads ?? [];
   const named = /^verdikta-attest: ([A-Z_]+): /m.exec(String(run?.stderr ?? ''))?.[1] ?? null;
   // exit 1 is the tool's "refused or failed": a refusal is one of its own errors, and not the two that mean it never got an answer
   const refused = run?.code === 1 && named !== null && !['INTERNAL', 'RPC_UNAVAILABLE'].includes(named) && !run?.json?.claimId;
@@ -403,6 +414,7 @@ export function refusedCommitChecks(prefix, { run, before, after }) {
     check(`${prefix}.commit.nothingSent`, Boolean(before) && after?.nonce === before.nonce && after?.claimCount === before.claimCount, `the hunter's nonce ${before?.nonce} then ${after?.nonce}; claims on the contract ${before?.claimCount} then ${after?.claimCount}`),
     check(`${prefix}.commit.claimCountAsItWas`, Boolean(before) && Boolean(after) && counts.every((k) => before[k] === after[k]), JSON.stringify(counts.map((k) => [k, before?.[k], after?.[k]]), big)),
     check(`${prefix}.commit.chainRefuses`, before?.acceptsCommits === false && after?.acceptsCommits === false, `acceptsCommits ${before?.acceptsCommits} then ${after?.acceptsCommits}`),
+    check(`${prefix}.commit.stoppedAtTheChainsAnswer`, reads.some(refuses) && !reads.some(takes) && asked?.sent === 0, `the tool's own reads of the listing: ${JSON.stringify(reads, big)}; transactions it sent: ${asked?.sent}`),
   ];
 }
 
@@ -426,15 +438,20 @@ export function lateClaimChecks(prefix, { run, claimId, claim, events, before, a
 
 /**
  * The record once the late claim has settled: under the record's late claims, by its outcome, none expired; not among
- * the stake's own claims and verdicts; and no late finding paid or owed anything.
+ * the stake's own claims and verdicts; the late findings it publishes exactly the ones expected (`findings`: a valid
+ * late verdict is published, with `late` set; an INVALID or a DUPLICATE is a count and publishes none); and none of
+ * them paid or owed anything.
+ * @param {{ findings?: { claimId: string, outcome: string }[] }} o
  */
-export function laterRecordChecks(prefix, { record, lateClaims, lateOutcomes, claims, outcomes }) {
+export function laterRecordChecks(prefix, { record, lateClaims, lateOutcomes, claims, outcomes, findings = [] }) {
   const history = record?.record?.history ?? {};
   const late = (record?.record?.findings ?? []).filter((f) => f.late);
+  const named = (list) => list.map((f) => ({ claimId: String(f.claimId), outcome: f.outcome })).sort((a, b) => (BigInt(a.claimId) < BigInt(b.claimId) ? -1 : 1));
   return [
     check(`${prefix}.record.lateClaims`, history.lateClaims === String(lateClaims), `lateClaims ${history.lateClaims}, expected ${lateClaims}`),
     check(`${prefix}.record.lateOutcomes`, eq(history.lateOutcomes, lateOutcomes.map(String)) && history.lateExpired === '0', `lateOutcomes ${JSON.stringify(history.lateOutcomes)}, lateExpired ${history.lateExpired}`),
     check(`${prefix}.record.notAmongTheClaims`, history.claims === String(claims) && eq(history.outcomes, outcomes.map(String)), `claims ${history.claims}, outcomes ${JSON.stringify(history.outcomes)}`),
+    check(`${prefix}.record.lateFindings`, eq(named(late), named(findings)), `published as found later: ${JSON.stringify(named(late))}, expected ${JSON.stringify(named(findings))}`),
     check(`${prefix}.record.noAward`, late.every((f) => f.paidWei === '0' && f.owedWei === '0'), JSON.stringify(late.map((f) => [f.claimId, f.paidWei, f.owedWei]))),
   ];
 }

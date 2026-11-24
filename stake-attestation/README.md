@@ -1397,12 +1397,9 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   commit's or a late claim's, is adopted first, before the listing, the wallet's balance, the flag or `--restart` can
   refuse the run or remove the keys that claim needs, and the transaction it records is the one that made the claim.
   That is before `--yes` is read too: such a folder is under way, as one with a signed commit is, and any run adopts
-  the claim and discloses it. The logs are read from the block the folder was prepared at, as they always were; a
-  reorganization that rolled the chain back under that block can mine a claim sent since in a block below it. So on
-  any run of a prepared folder, and again before a late claim is signed, the listing's own queue of open claims is
-  read too (`openClaimOf`: `getListing`'s `tailClaim`, then each claim's `prevInOrder`): the contract's state holds
-  every open claim, whatever block made it, and one of these hashes found there is adopted. Nothing is saved for it:
-  `state.json` is what it was.
+  the claim and discloses it. The logs are read from the block the folder was prepared at, as they always were, so
+  one case is not reached: a claim of the folder's hashes that another client sent and a reorganization then mined
+  below that block. That needs a reorganization deeper than the folder is old.
   Its depth is measured against a head read after its log, and the log's block is then held to its hash, so a claim a
   reorganization moved is looked for again and not pinned early. A late claim is signed only when no claim of its
   hashes can be on the chain unseen (`nonceAndClaimAt`, `src/commit.js`): the wallet's nonce and the logs are read at

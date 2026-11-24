@@ -1160,9 +1160,9 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // at that nonce: a transaction that takes it afterwards leaves the signature unusable
   const at = /async function nonceAndClaimAt[\s\S]*?\n\}/.exec(commit)?.[0];
   assert.ok(at, 'tool/src/commit.js: nonceAndClaimAt');
-  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await countAt\(ctx, state\.hunter, head\.number\);\s*const existing = await findCommitted\(ctx, state, head\.number\);\s*const queued = [^\n]*\n\s*const pending = existing \|\| queued \? nonce : await countAt\(ctx, state\.hunter, 'pending'\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
+  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await countAt\(ctx, state\.hunter, head\.number\);\s*const existing = await findCommitted\(ctx, state, head\.number\);\s*const pending = existing \? nonce : await countAt\(ctx, state\.hunter, 'pending'\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
   // each of those reads is the node's own answer (provider.send), never a provider's memory of an earlier one
-  for (const method of ['eth_blockNumber', 'eth_getBlockByNumber', 'eth_getTransactionCount', 'eth_getLogs', 'eth_call']) assert.ok(commit.includes(`ctx.provider.send('${method}'`), `${method} is asked of the node`);
+  for (const method of ['eth_blockNumber', 'eth_getBlockByNumber', 'eth_getTransactionCount', 'eth_getLogs']) assert.ok(commit.includes(`ctx.provider.send('${method}'`), `${method} is asked of the node`);
   assert.doesNotMatch(commit, /ctx\.provider\.getLogs\(|ctx\.provider\.getTransactionCount\(/, 'none of them through a method the provider may answer from memory');
   const send = /async function sendCommit[\s\S]*?\n\}/.exec(commit)[0];
   assert.match(send, /const at = late \? await nonceAndClaimAt\(ctx, state\) : \{ existing: await findCommitted\(ctx, state\) \};/, 'a late claim asks; a commit looks for its log as it always did');
@@ -1188,21 +1188,9 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // scan starts a page below the height the folder was prepared at; so a run without --yes is no dry run there
   const runBody = /export async function runCommit[\s\S]*$/.exec(commit)[0];
   assert.ok(runBody.indexOf('if (state?.stage === \'prepared\') {') < runBody.indexOf('await readyToCommit('), 'adopted before the terms and --yes');
-  // the logs are read from the block the folder was prepared at, and state.json is what it was; a claim a
-  // reorganization put below that block is found in the listing's own queue of open claims, read at the same block:
-  // every claim joins the tail of that queue when it is made, and only resolve (settle, expire) takes one out
+  // the logs are read from the block the folder was prepared at, as they always were, and state.json is what it was
   assert.match(commit, /for \(let from = state\.startBlock; from <= head; from \+= ctx\.logPageBlocks\) \{/);
   assert.doesNotMatch(commit, /startBlockHash/);
-  const open = /async function openClaimOf[\s\S]*?\n\}/.exec(commit)?.[0];
-  assert.ok(open, 'tool/src/commit.js: openClaimOf');
-  assert.match(open, /const \[listing\] = await viewAt\(ctx, 'getListing', \[BigInt\(state\.listingId\)\], block\);\s*for \(let id = listing\.tailClaim; id !== 0n;\) \{\s*const \[claim\] = await viewAt\(ctx, 'getClaim', \[id\], block\);/);
-  assert.match(open, /claim\.archiveHash === state\.archiveSha256 && claim\.ciphertextSha256 === state\.ciphertextSha256\) return id;\s*id = claim\.prevInOrder;/);
-  assert.match(logic, /uint64 tail = l\.tailClaim;\s*if \(tail == 0\) \{[\s\S]*?\} else \{\s*claims\[tail\]\.nextInOrder = id;\s*c\.prevInOrder = tail;\s*\}\s*l\.tailClaim = id;/, 'a claim, late or not, joins the tail of its listing\'s queue');
-  for (const field of ['tailClaim']) assert.ok(ABI.find((f) => f.name === 'getListing').outputs[0].components.some((c) => c.name === field), `getListing returns ${field}`);
-  for (const field of ['prevInOrder', 'hunter', 'archiveHash', 'ciphertextSha256']) assert.ok(ABI.find((f) => f.name === 'getClaim').outputs[0].components.some((c) => c.name === field), `getClaim returns ${field}`);
-  assert.match(/async function nonceAndClaimAt[\s\S]*?\n\}/.exec(commit)[0], /const queued = existing \? false : \(await openClaimOf\(ctx, state, head\.number\)\) !== null;/);
-  assert.match(commit, /if \(late && at\.queued\) return adoptQueued\(ctx, ws, state\);/);
-  assert.match(commit, /const at = restart \? await nonceAndClaimAt\(ctx, state\) : await claimOnChain\(ctx, state\);\s*if \(at\.existing\) state = await adoptLogged\(ctx, ws, state, at\.existing\);\s*else if \(at\.queued\) state = await adoptQueued\(ctx, ws, state\);/, 'and any run on a prepared folder reads it, before anything is asked');
   assert.match(section(4), /A folder that `commit` has prepared and whose two hashes already have a claim on the chain, sent some other way than by this tool, is under way too: any run of `commit` there adopts that claim, pins its ciphertext and sends the disclose, --yes or not/);
   assert.match(toolSrc('usage.js').replace(/\s+/g, ' '), /a claim of the folder's two hashes that is on the chain already, sent some other way, is under way like a signed one: any run adopts it and discloses it, --yes or not/);
 

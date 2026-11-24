@@ -121,8 +121,6 @@ export function makeContext(options = {}) {
   };
 
   ctx.encode = (name, args) => iface.encodeFunctionData(name, args);
-  /** What a view answered, from the bytes of an eth_call a caller made itself (commit.js reads some at a block of its own). */
-  ctx.decode = (name, data) => iface.decodeFunctionResult(name, data);
   ctx.parseLog = (log) => {
     try {
       return iface.parseLog(log);

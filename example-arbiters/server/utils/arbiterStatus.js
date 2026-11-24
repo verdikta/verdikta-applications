@@ -65,10 +65,16 @@ function isFrozenAt(a, now, callDeadline = DEFAULT_CALL_DEADLINE) {
  *   banned / blocked              -> 'blocked'
  *   exiting / paused / under-staked / fee above the aggregator's max -> 'inactive'
  *   re-syncing / frozen           -> 'frozen'
- *   a score at or below points.major (one more major miss reaches 0 and blocks)
- *                                 -> 'atRisk'
+ *   quality <= points.major (one far reveal, -major, reaches 0) or
+ *   timeliness <= points.nocommit (one failed round without a commit, -nocommit,
+ *   reaches 0)                    -> 'atRisk'
  *   both scores still at `start` with no offenses (never scored) -> 'new'
  *   otherwise                     -> 'active'
+ *
+ * Note that does not change the status:
+ *   failMissRisk  timeliness <= points.fail: one promoted miss in a failed round
+ *                 (-fail) would block it. With the default points every new
+ *                 arbiter (timeliness 500 = fail) carries it and stays 'new'.
  */
 function deriveStatus(a, ctx = {}) {
   const now = ctx.now != null ? ctx.now : Math.floor(Date.now() / 1000);
@@ -93,8 +99,9 @@ function deriveStatus(a, ctx = {}) {
 
   const q = Number(a.quality);
   const t = Number(a.timeliness);
-  const lowScore = Number.isFinite(q) && Number.isFinite(t) && Math.min(q, t) <= points.major;
+  const lowScore = Number.isFinite(q) && Number.isFinite(t) && (q <= points.major || t <= points.nocommit);
   if (lowScore) reasons.push('lowScore');
+  if (Number.isFinite(t) && t <= points.fail) reasons.push('failMissRisk');
   const unscored = q === points.start && t === points.start && !Number(a.offenses);
   if (unscored) reasons.push('new');
 

@@ -1,6 +1,7 @@
 /**
  * Pure helpers for v2 ReputationAggregator rounds: phase / slot-flag decoding,
- * the outcome of one round, and which arbiter slots a failed round is charged to.
+ * the outcome of one round, which arbiter slots a failed round is charged to, and
+ * the keeper outcome (and score change) settlement reports for each slot.
  * Shared by the agg-history drill-down and the oracle-health scan; no I/O, so
  * it is unit-tested directly (test/roundModel.test.js).
  *
@@ -44,37 +45,57 @@ function mPlus(K, M) {
   return M + Math.ceil((K - M) / 2);
 }
 
+/** Keeper outcome codes (ReputationKeeper T_* / C_COMMITTED, ReputationAggregator._settle). */
+const CODE = Object.freeze({ NONE: 0, DELIVERED: 1, MISS_FINISHED: 2, MISS_FAILED: 3, NOCOMMIT_FAILED: 4, COMMITTED: 0x80 });
+const CODE_NAMES = Object.freeze({
+  0: 'none', 1: 'delivered', 2: 'promoted miss (round finished)', 3: 'promoted miss (round failed)', 4: 'no commit (round failed)',
+});
+
 /**
  * Outcome, tallies and blame for one round.
  *
  * @param {object} r
  * @param {number} r.phase        getRoundInfo phase (0 = no such round)
  * @param {number|null} r.failedPhase  EvaluationFailed(aggId, phase) if seen
- * @param {Array<{flags:number, late?:boolean, qcode?:number}>} r.slots  getSlot per index (undispatched slots included)
- * @param {number} r.M  commits required (current aggregator config)
+ * @param {Array<{flags:number, late?:boolean, qcode?:number, skipReason?:string}>} r.slots
+ *   getSlot per index. A slot skipped at the draw (owner() failed, dispatch
+ *   reverted) has its key set and flags 0; skipReason comes from SlotSkipped.
+ * @param {number} r.M  commits required (the round's aggregator config)
  * @param {number} r.N  reveals required
  * @param {boolean} [r.fulfilled]  a FulfillAIEvaluation was seen
- * @returns {{ kind, label, failStage, analysis, blame: Array<{slot:number, stage:'commit'|'reveal'}> }}
- *   kind: 'completed' | 'running' | 'malformed' | 'failed' | 'notDrawn' | 'cancelled' | 'unknown'
+ * @param {'requester'|'treasury'|null} [r.refundTo]  payee of the round's
+ *   RequesterRefunded, when seen (a draw failure after a beacon stage pays the
+ *   treasury when the keeper's selection walk does not cover the class list)
+ * @returns {{ kind, label, failStage, notDrawnReason, treasury, analysis,
+ *   blame: Array<{slot:number, stage:'commit'|'reveal', skipped?:string}> }}
+ *   kind: 'completed' | 'running' | 'malformed' | 'failed' | 'notProgressed' |
+ *         'notDrawn' | 'cancelled' | 'unknown'
+ *   notDrawnReason (notDrawn / cancelled): 'poolShortage' | 'drawTreasury' |
+ *         'beaconQuorum' | 'cancelled'
+ *   treasury: the unspent prepay went to the treasury, not back to the requester
  *   blame is only non-empty for a failed round whose failure an arbiter caused.
  */
-function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled = false }) {
-  const decoded = slots.map((s, i) => ({ slot: i, ...decodeSlotFlags(s.flags), late: !!s.late, qcode: Number(s.qcode) || 0 }));
+function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled = false, refundTo = null }) {
+  const decoded = slots.map((s, i) => ({
+    slot: i, ...decodeSlotFlags(s.flags), late: !!s.late, qcode: Number(s.qcode) || 0, skipReason: s.skipReason || null,
+  }));
   const dispatched = decoded.filter((s) => s.dispatched);
   const committed = decoded.filter((s) => s.committed);
   const promoted = decoded.filter((s) => s.promoted);
   const revealed = decoded.filter((s) => s.revealed);
   const counted = decoded.filter((s) => s.counted);
+  const notCommitted = decoded.filter((s) => !s.committed);
   const analysis = {
     totalSlots: decoded.length,
     dispatched: dispatched.length,
+    skipped: decoded.length - dispatched.length,
     committed: committed.length,
     promoted: promoted.length,
     revealed: revealed.length,
     counted: counted.length,
     lateReveals: revealed.filter((s) => !s.counted).length,
-    nonResponding: dispatched.filter((s) => !s.committed).length,
-    nonRespondingSlotIds: dispatched.filter((s) => !s.committed).map((s) => s.slot),
+    nonResponding: notCommitted.length,
+    nonRespondingSlotIds: notCommitted.map((s) => s.slot),
     promotedNotRevealed: promoted.filter((s) => !s.revealed).map((s) => s.slot),
     quality: {
       close: decoded.filter((s) => s.qcode === 1).length,
@@ -83,7 +104,9 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
     },
   };
 
-  const out = (kind, label, extra = {}) => ({ kind, label, failStage: null, analysis, blame: [], ...extra });
+  const out = (kind, label, extra = {}) => ({
+    kind, label, failStage: null, notDrawnReason: null, treasury: false, analysis, blame: [], ...extra,
+  });
   const ph = Number(phase) || 0;
   const fp = failedPhase != null ? Number(failedPhase) : null;
 
@@ -91,7 +114,9 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
   if (fulfilled || ph === PHASE.FINAL || ph === PHASE.SETTLED) {
     return out('completed', ph === PHASE.FINAL ? 'COMPLETED (awaiting settlement)' : 'COMPLETED');
   }
-  if (ph === PHASE.CANCELLED) return out('cancelled', 'CANCELLED (never drawn: prepay sent to the treasury)');
+  if (ph === PHASE.CANCELLED) {
+    return out('cancelled', 'CANCELLED (never drawn: prepay sent to the treasury)', { notDrawnReason: 'cancelled', treasury: true });
+  }
   if (ph === PHASE.DRAW) return out('running', 'IN PROCESS (awaiting jury draw)');
   if (ph === PHASE.BEACON) return out('running', 'IN PROCESS (beacon stage)');
   if (ph === PHASE.COMMIT) return out('running', `IN PROCESS (commit phase, ${committed.length}/${M} commits)`);
@@ -99,26 +124,117 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
   if (ph === PHASE.REVEAL) return out('running', `IN PROCESS (reveal phase, ${counted.length}/${N} reveals)`);
 
   // ph === FAILED from here
-  if (fp === PHASE.DRAW) return out('notDrawn', 'FAILED (no jury could be drawn: too few eligible arbiters)', { failStage: 'draw' });
-  if (fp === PHASE.BEACON) return out('notDrawn', 'FAILED (beacon quorum missed)', { failStage: 'beacons' });
-  if (fp === PHASE.COMMIT || (fp == null && promoted.length === 0)) {
-    if (dispatched.length > 0 && committed.length === 0) {
-      return out('malformed', 'LIKELY MALFORMED (no arbiter committed)', { failStage: 'commit' });
+  if (fp === PHASE.DRAW) {
+    if (refundTo === 'treasury') {
+      return out('notDrawn', 'FAILED (no jury could be drawn after the beacon stage: prepay sent to the treasury)', {
+        failStage: 'draw', notDrawnReason: 'drawTreasury', treasury: true,
+      });
     }
-    if (committed.length >= M) {
-      // enough commits, but nobody closed the window after T+: not an arbiter failure
-      return out('failed', 'FAILED (commit window never closed)', { failStage: 'commit' });
-    }
-    return out('failed', `FAILED (commit phase: ${committed.length}/${M} commits)`, {
-      failStage: 'commit',
-      blame: dispatched.filter((s) => !s.committed).map((s) => ({ slot: s.slot, stage: 'commit' })),
+    return out('notDrawn', 'FAILED (no jury could be drawn: too few eligible arbiters; requester refunded)', {
+      failStage: 'draw', notDrawnReason: 'poolShortage',
     });
   }
-  if (fp === PHASE.CLOSING) return out('failed', 'FAILED (never promoted)', { failStage: 'closing' });
+  if (fp === PHASE.BEACON) {
+    return out('notDrawn', 'FAILED (beacon quorum missed: prepay sent to the treasury)', {
+      failStage: 'beacons', notDrawnReason: 'beaconQuorum', treasury: true,
+    });
+  }
+  if (fp === PHASE.COMMIT || (fp == null && promoted.length === 0)) {
+    if (committed.length >= M) {
+      // enough commits, but nobody closed the window after T+: nobody is charged
+      // and the unspent prepay goes to the treasury
+      return out('notProgressed', 'NOT PROGRESSED (commit window never closed with ≥ M commits: prepay sent to the treasury)', {
+        failStage: 'commit', treasury: true,
+      });
+    }
+    if (dispatched.length > 0 && committed.length === 0) {
+      // Every drawn arbiter is still docked points.nocommit by the keeper (unless
+      // frozen at the round end); the classification only keeps these rounds out
+      // of the arbiter-failure count, since a request every node rejects is
+      // usually unusable.
+      return out('malformed', 'LIKELY MALFORMED (no arbiter committed; each drawn arbiter still loses the no-commit timeliness penalty unless frozen at the round end)', { failStage: 'commit' });
+    }
+    // _settle charges T_NOCOMMIT_FAILED to every slot without a commit, including
+    // slots skipped at the draw (key set, flags 0)
+    return out('failed', `FAILED (commit phase: ${committed.length}/${M} commits)`, {
+      failStage: 'commit',
+      blame: notCommitted.map((s) => ({
+        slot: s.slot, stage: 'commit', ...(s.dispatched ? {} : { skipped: s.skipReason || 'skipped at the draw' }),
+      })),
+    });
+  }
+  if (fp === PHASE.CLOSING) {
+    return out('notProgressed', 'NOT PROGRESSED (commit window closed, never promoted: prepay sent to the treasury)', {
+      failStage: 'closing', treasury: true,
+    });
+  }
   return out('failed', `FAILED (reveal phase: ${counted.length}/${N} reveals)`, {
     failStage: 'reveal',
     blame: promoted.filter((s) => !s.revealed).map((s) => ({ slot: s.slot, stage: 'reveal' })),
   });
+}
+
+/**
+ * The keeper outcome _settle reports for one slot, and the score change
+ * applyOutcomes would make from it. Mirrors ReputationAggregator._settle and
+ * ReputationKeeper.applyOutcomes; pure.
+ *
+ * @param {object} p
+ * @param {number} p.settlePhase  the round's phase when it was settled: 3 commit,
+ *   4 closing, 5 reveal (from EvaluationFailed at settlement), or 6 final (it
+ *   settled as finished). Draw / beacon failures are never settled.
+ * @param {number} p.commits  commits the round received
+ * @param {number} p.M        commits required
+ * @param {number} p.flags    the slot's flags
+ * @param {number} [p.qcode]  the slot's quality code (1 close, 2 off, 3 far)
+ * @param {object} p.points   keeper points() (gain, minor, major, fail, nocommit, start, cap)
+ * @returns {{ code, codeName, committed, tDelta, qDelta, scored, frozenSkip, note }}
+ *   code includes the C_COMMITTED bit (0x80) and the quality bits (q << 4).
+ *   tDelta / qDelta are the expected changes before the cap and before a score
+ *   that reaches 0 restarts at `start` (which also blocks the arbiter).
+ *   frozenSkip: the keeper skips this outcome (OutcomeSkippedFrozen) if the
+ *   arbiter was frozen at the round end — true only for a scored slot without a commit.
+ */
+function slotOutcome({ settlePhase, commits, M, flags, qcode = 0, points }) {
+  const f = decodeSlotFlags(flags);
+  const ph = Number(settlePhase);
+  const failed = ph !== PHASE.FINAL;
+  let code = CODE.NONE;
+  if (ph === PHASE.COMMIT) {
+    // -nocommit only if the round failed for lack of commits (not for want of a closeCommits call)
+    if (!f.committed && Number(commits) < Number(M)) code = CODE.NOCOMMIT_FAILED;
+  } else if (ph === PHASE.CLOSING) {
+    code = CODE.NONE;   // enough commits arrived; nobody promoted, so nobody failed to deliver
+  } else if (f.promoted) {
+    if (f.revealed) code = failed ? CODE.DELIVERED : CODE.DELIVERED | ((Number(qcode) & 3) << 4);
+    else code = failed ? CODE.MISS_FAILED : CODE.MISS_FINISHED;
+  }
+  if (code !== CODE.NONE && f.committed) code |= CODE.COMMITTED;
+
+  const te = code & 0x0f;
+  const qe = (code >> 4) & 0x03;
+  const tDelta = { 1: points.gain, 2: -points.major, 3: -points.fail, 4: -points.nocommit }[te] ?? 0;
+  const qDelta = { 1: points.gain, 2: -points.minor, 3: -points.major }[qe] ?? 0;
+  const scored = code !== CODE.NONE;
+  const frozenSkip = scored && !f.committed;
+  let note = null;
+  if (!scored) {
+    note = ph === PHASE.CLOSING || (ph === PHASE.COMMIT && Number(commits) >= Number(M))
+      ? 'not scored: the round had enough commits but was never promoted'
+      : 'not scored';
+  } else if (frozenSkip) {
+    note = 'skipped by the keeper if the arbiter was frozen at the round end';
+  }
+  return {
+    code,
+    codeName: CODE_NAMES[te] || String(te),
+    committed: f.committed,
+    tDelta,
+    qDelta,
+    scored,
+    frozenSkip,
+    note,
+  };
 }
 
 module.exports = {
@@ -130,4 +246,7 @@ module.exports = {
   decodeSlotFlags,
   mPlus,
   describeRound,
+  CODE,
+  CODE_NAMES,
+  slotOutcome,
 };

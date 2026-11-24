@@ -70,7 +70,7 @@ const STATUS_ORDER = [
 const ARBITER_STATUS_DESCRIPTIONS = {
   Active: 'Registered, staked, answering health calls, and selectable; both scores have moved from their start',
   New: 'Selectable but never scored: quality and timeliness are still at their starting value',
-  'At risk': 'Selectable, but a quality or timeliness score is at or below the keeper\'s major penalty: one more major miss reaches 0 and blocks it',
+  'At risk': 'Selectable, but one more penalty would block it: quality at or below the keeper\'s major penalty (one far reveal reaches 0), or timeliness at or below its no-commit penalty (one failed round without a commit reaches 0)',
   Frozen: 'Not selectable until it answers a health call: a call went unanswered past the keeper\'s deadline, or it was registered without a hash-chain head (from this site) and its node has not re-synced yet',
   Blocked: 'Not selectable: a score reached 0 (blocked for the lock duration, doubling per offense), or banned after the maximum number of offenses',
   Inactive: 'Registered but not selectable: paused by its owner, exiting (unbonding), under-staked, or posting a fee above the aggregator\'s maximum'
@@ -86,12 +86,12 @@ const rateColor = (pct) => {
   return COLORS.blocked;
 };
 
-// One operator row in the reliability table. The Blameworthy count, when
-// nonzero, is a toggle that expands the list of failed aggIds this operator is
-// responsible for — each a link to that evaluation's full agg-history page.
-const blameAggLabel = (id) => `${id.slice(0, 18)}…${id.slice(-6)}`;
+// One row of a reliability table (one arbiter key, or one operator's roll-up).
+// The Blameworthy count, when nonzero, is a toggle that expands the list of
+// failed rounds this arbiter (or operator) is responsible for — each a link to
+// that round's agg-history page.
 // Which blame rows are expanded, remembered across route unmounts (keyed by
-// window + operator) so returning from an agg-history page via Back re-shows the
+// window + row) so returning from an agg-history page via Back re-shows the
 // same list instead of collapsing it.
 const expandedBlame = new Set();
 
@@ -150,8 +150,8 @@ const fmtAgoMs = (ms) => {
   return `${Math.floor(h / 24)}d ago`;
 };
 
-function OperatorRow({ o, windowLabel, alert }) {
-  const rowKey = `${windowLabel}|${o.operator}`;
+// `lead` is the row's identifying cells (operator + jobId, or operator + count).
+function ReliabilityRow({ o, rowKey, lead, colSpan }) {
   const [open, setOpen] = useState(() => expandedBlame.has(rowKey));
   const toggle = () => setOpen((v) => {
     const next = !v;
@@ -159,13 +159,15 @@ function OperatorRow({ o, windowLabel, alert }) {
     return next;
   });
   const blame = o.blameworthy || 0;
-  const aggIds = o.blameAggIds || [];
+  const rounds = o.blameAggIds || [];
   return (
     <>
       <tr>
-        <td><AlertDot alert={alert} /><code>{shortAddr(o.operator)}</code></td>
-        <td>{o.arbiters == null ? '—' : o.arbiters}</td>
-        <td><strong>{o.timesSelected}</strong></td>
+        {lead}
+        <td>
+          <strong>{o.timesSelected}</strong>
+          {o.skipped ? <span className="gas-muted" title="Slots skipped at the draw: its operator's owner() call failed or the request dispatch reverted. Never paid; charged the no-commit penalty if the round failed for lack of commits."> · {o.skipped} skipped</span> : ''}
+        </td>
         <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
           {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}
         </td>
@@ -181,7 +183,7 @@ function OperatorRow({ o, windowLabel, alert }) {
               className="blame-toggle"
               onClick={toggle}
               aria-expanded={open}
-              title="Show the failed evaluations this operator is responsible for"
+              title="Show the failed rounds charged here"
             >
               {blame} <span className="blame-caret">{open ? '▾' : '▸'}</span>
             </button>
@@ -190,16 +192,16 @@ function OperatorRow({ o, windowLabel, alert }) {
       </tr>
       {open && blame > 0 && (
         <tr className="blame-detail-row">
-          <td colSpan={7}>
+          <td colSpan={colSpan}>
             <div className="blame-detail">
               <span className="blame-detail-label">
-                Responsible for {aggIds.length} failed evaluation{aggIds.length === 1 ? '' : 's'}:
+                Responsible for {rounds.length} failed round{rounds.length === 1 ? '' : 's'}:
               </span>
               <ul className="blame-agg-list">
-                {aggIds.map((b) => (
+                {rounds.map((b) => (
                   <li key={b.aggId}>
-                    <Link to={`/agg-history/${b.aggId}`} className="blame-agg-link" title={b.aggId}>
-                      <code>{blameAggLabel(b.aggId)}</code>
+                    <Link to={`/agg-history/${b.round}`} className="blame-agg-link" title={b.aggId}>
+                      <code>round #{b.round}</code>
                     </Link>
                     <span className="blame-agg-meta"> — {b.stage} stage{b.slots > 1 ? ` · ${b.slots} arbiters` : ''}</span>
                   </li>
@@ -233,9 +235,19 @@ const ScanFailedBanner = ({ hData }) => (
   </div>
 );
 
+const RELIABILITY_HEAD = (hData) => (
+  <>
+    <th className="tooltip-header" title="Times this arbiter was drawn into a jury and sent the commit request (and slots skipped at the draw)">Drawn</th>
+    <th className="tooltip-header" title="Commits received, and commits ÷ times drawn">Commits</th>
+    <th className="tooltip-header" title="Times one of its commits was promoted (asked to reveal). Each round promotes M of the commits at random.">Promoted</th>
+    <th className="tooltip-header" title="Reveals received, and reveals ÷ times promoted. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
+    <th className="tooltip-header" title={`Failed rounds charged here. A round needs ${hData?.requirements?.M ?? 'M'} commits, then ${hData?.requirements?.N ?? 'N'} reveals from the promoted commits. When a round fails with fewer than M commits, every slot that didn't commit is charged, including slots skipped at the draw; when it fails in the reveal phase, every promoted slot that didn't reveal is. Rounds where no arbiter committed are counted as likely malformed requests and not listed here, although the keeper still docks every drawn arbiter its no-commit penalty. Rounds that never got going are not charged at all: no jury drawable, beacon quorum missed, or M commits that were never closed or promoted.`}>Blameworthy</th>
+  </>
+);
+
 const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsByOp = {}) => (
   <section className="analytics-section">
-    <h2 title="Per-operator commit and reveal reliability across recent evaluations. Commit rate = commits ÷ times drawn; reveal rate = reveals ÷ times promoted (only promoted commits are asked to reveal). A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Operator Reliability · {windowLabel}</h2>
+    <h2 title="Commit and reveal reliability per arbiter (one operator contract + Job ID registration) across recent evaluations, then rolled up per operator. Commit rate = commits ÷ times drawn; reveal rate = reveals ÷ times promoted (only promoted commits are asked to reveal). A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Arbiter Reliability · {windowLabel}</h2>
     <div className="section-content">
       {hLoading && !hData ? (
         <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
@@ -244,31 +256,63 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsBy
       ) : hData?.scanFailed ? (
         <ScanFailedBanner hData={hData} />
       ) : hData && hData.operators.length > 0 ? (
-        <div className="stats-table">
-          <table>
-            <thead>
-              <tr>
-                <th>Operator</th>
-                <th className="tooltip-header" title="Number of arbiters (registered jobIds) currently backed by this operator contract">Arbiters</th>
-                <th className="tooltip-header" title="Times one of this operator's arbiters was drawn into a jury and sent the commit request">Drawn</th>
-                <th className="tooltip-header" title="Commits received, and commits ÷ times drawn">Commits</th>
-                <th className="tooltip-header" title="Times one of its commits was promoted (asked to reveal). Each round promotes M of the commits at random.">Promoted</th>
-                <th className="tooltip-header" title="Reveals received, and reveals ÷ times promoted. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
-                <th className="tooltip-header" title={`Times this operator's arbiters were to blame for a failed round. A round needs ${hData?.requirements?.M ?? 'M'} commits, then ${hData?.requirements?.N ?? 'N'} reveals from the promoted commits; when it fails, each (operator, jobId) slot that didn't commit — or that was promoted but didn't reveal — is charged here. Rounds where no arbiter committed are treated as likely malformed requests and not charged, nor are rounds that failed before or outside the arbiters' part (no jury drawable, beacon quorum missed, commit window never closed).`}>Blameworthy</th>
-              </tr>
-            </thead>
-            <tbody>
-              {hData.operators.map((o) => (
-                <OperatorRow
-                  key={o.operator}
-                  o={o}
-                  windowLabel={windowLabel}
-                  alert={alertsByOp[o.operator?.toLowerCase()]}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="stats-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Operator</th>
+                  <th className="tooltip-header" title="The Chainlink job of this arbiter registration; an operator may back several">Job ID</th>
+                  {RELIABILITY_HEAD(hData)}
+                </tr>
+              </thead>
+              <tbody>
+                {(hData.arbiters || []).map((a) => (
+                  <ReliabilityRow
+                    key={a.key}
+                    o={a}
+                    rowKey={`${windowLabel}|key|${a.key}`}
+                    colSpan={7}
+                    lead={(
+                      <>
+                        <td><AlertDot alert={alertsByOp[a.operator?.toLowerCase()]} /><code>{shortAddr(a.operator)}</code></td>
+                        <td title={a.key}><code>{a.jobId ? `${a.jobId.slice(0, 10)}…` : '—'}</code></td>
+                      </>
+                    )}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <h3 className="table-title">By operator</h3>
+          <div className="stats-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Operator</th>
+                  <th className="tooltip-header" title="Arbiters (registered Job IDs) this operator backs now">Arbiters</th>
+                  {RELIABILITY_HEAD(hData)}
+                </tr>
+              </thead>
+              <tbody>
+                {hData.operators.map((o) => (
+                  <ReliabilityRow
+                    key={o.operator}
+                    o={o}
+                    rowKey={`${windowLabel}|op|${o.operator}`}
+                    colSpan={7}
+                    lead={(
+                      <>
+                        <td><AlertDot alert={alertsByOp[o.operator?.toLowerCase()]} /><code>{shortAddr(o.operator)}</code></td>
+                        <td>{o.arbiters == null ? '—' : o.arbiters}</td>
+                      </>
+                    )}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       ) : (
         <div className="empty-state"><Server size={32} /><p>No oracle activity in the window</p></div>
       )}
@@ -277,7 +321,7 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsBy
 );
 
 // ---- Response Timing section (per-window). Commit time = seconds from the
-// request landing on-chain to the operator's commit; reveal time = seconds from
+// jury draw (JuryDrawn) to the operator's commit; reveal time = seconds from
 // the reveal request dispatched to the slot to the operator's reveal. Both come
 // from block deltas (Base: fixed 2s blocks), so they are exact to the block.
 const TIMING_COLORS = { commit: '#2a78d6', reveal: '#eb6834' };
@@ -588,7 +632,7 @@ function TimingDailyChart({ daily, generatedAt }) {
 
 const renderTimingSection = (windowLabel, hData, hLoading, hError) => (
   <section className="analytics-section">
-    <h2 title="How quickly each operator responds. Commit time = seconds from the evaluation request landing on-chain to this operator's commit. Reveal time = seconds from the reveal request being dispatched to the operator's reveal. Measured in whole blocks (2s each on Base)."><Clock size={20} className="inline-icon" /> Response Timing · {windowLabel}</h2>
+    <h2 title="How quickly each operator responds. Commit time = seconds from the jury draw (JuryDrawn) to this operator's commit. Reveal time = seconds from the reveal request being dispatched to the operator's reveal. Measured in whole blocks (2s each on Base)."><Clock size={20} className="inline-icon" /> Response Timing · {windowLabel}</h2>
     <div className="section-content">
       {hLoading && !hData ? (
         <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
@@ -605,8 +649,8 @@ const renderTimingSection = (windowLabel, hData, hLoading, hError) => (
               <thead>
                 <tr>
                   <th>Operator</th>
-                  <th className="tooltip-header" title="Commits with a measurable time (the request was inside the window)">Commits</th>
-                  <th className="tooltip-header" title="Seconds from the request landing on-chain to this operator's commit: average · min · max">Commit time (avg · min · max)</th>
+                  <th className="tooltip-header" title="Commits with a measurable time (the jury draw was inside the window)">Commits</th>
+                  <th className="tooltip-header" title="Seconds from the jury draw (JuryDrawn) to this operator's commit: average · min · max">Commit time (avg · min · max)</th>
                   <th className="tooltip-header" title="Reveals with a measurable time (the reveal request was inside the window)">Reveals</th>
                   <th className="tooltip-header" title="Seconds from the reveal request dispatched to the slot to this operator's reveal: average · min · max">Reveal time (avg · min · max)</th>
                 </tr>
@@ -638,7 +682,7 @@ const renderTimingSection = (windowLabel, hData, hLoading, hError) => (
           </div>
           <TimingCluster timing={hData.timing} />
           <p className="health-footnote">
-            Every commit and reveal in the window is one dot; its position is the operator's response time. Times are whole blocks (2s each on Base). Commit time is measured from the evaluation request; reveal time from the reveal request dispatched to that arbiter.
+            Every commit and reveal in the window is one dot; its position is the operator's response time. Times are whole blocks (2s each on Base). Commit time is measured from the jury draw; reveal time from the reveal request dispatched to that arbiter.
           </p>
           {hData.windowDays > 1 && <TimingDailyChart daily={hData.timing.daily} generatedAt={hData.generatedAt} />}
         </>
@@ -930,6 +974,7 @@ function Analytics() {
       { label: 'Fulfilled', data: trend.map(d => d.fulfilled), backgroundColor: COLORS.active, stack: 's' },
       { label: 'Failed', data: trend.map(d => d.failed), backgroundColor: COLORS.blocked, stack: 's' },
       { label: 'Likely malformed', data: trend.map(d => d.malformed || 0), backgroundColor: COLORS.inactive, stack: 's' },
+      { label: 'Not progressed', data: trend.map(d => d.notProgressed || 0), backgroundColor: COLORS.atRisk, stack: 's' },
       { label: 'Not drawn', data: trend.map(d => d.notDrawn || 0), backgroundColor: COLORS.frozen, stack: 's' }
     ]
   } : null;
@@ -1190,12 +1235,52 @@ function Analytics() {
               <strong>{data.arbiters.totalOracles}</strong> registered arbiters
             </div>
           )}
+          {Object.keys(data?.arbiters?.byClass || {}).length > 0 && (
+            <div className="stats-table">
+              <h3 className="table-title">By ClassID</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th className="tooltip-header" title="The model class an arbiter registered for (arbiterClasses); a request names one">ClassID</th>
+                    <th>Arbiters</th>
+                    <th className="tooltip-header" title={`Arbiters a draw can pick now (active, new or at risk) against the jury size K = ${data.arbiters.K ?? '?'}. With fewer selectable than K, every draw for the class fails.`}>Selectable / K</th>
+                    {STATUS_ORDER.map(({ key, label }) => (
+                      <th key={key} className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS[label]}>{label}</th>
+                    ))}
+                    <th className="tooltip-header" title="The keeper's scansAll(cls): whether a draw walks the whole class list (it is no longer than maxScan). When it does not, whether a draw finds enough arbiters depends on the seed, so a beacon round whose draw fails sends its prepay to the treasury instead of refunding it.">Full scan</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.values(data.arbiters.byClass)
+                    .sort((a, b) => Number(a.classId) - Number(b.classId))
+                    .map((c) => (
+                      <tr key={c.classId}>
+                        <td title={c.classDescription || undefined}>
+                          <strong>{c.classId}</strong>{c.className && c.className !== `Class ${c.classId}` ? ` · ${c.className}` : ''}
+                        </td>
+                        <td>{c.total}</td>
+                        <td
+                          style={{ color: c.short ? COLORS.blocked : COLORS.active, fontWeight: 600 }}
+                          title={c.short ? `Fewer selectable arbiters than K: draws for class ${c.classId} fail (pool shortage)` : undefined}
+                        >
+                          {c.selectable} / {c.K ?? '?'}{c.short ? ' · draws fail' : ''}
+                        </td>
+                        {STATUS_ORDER.map(({ key }) => (
+                          <td key={key} style={{ color: COLORS[key], fontWeight: 600 }}>{c[key] ?? 0}</td>
+                        ))}
+                        <td>{c.scansAll == null ? '—' : c.scansAll ? 'Yes' : 'No'}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </section>
 
       {/* Oracle Eval Success Rate Section */}
       <section className="analytics-section">
-        <h2 title="Share of decided oracle evaluation rounds that completed successfully (a FulfillAIEvaluation event) over the look-back window; the rest failed at settlement without enough commits or reveals. Rounds where no arbiter committed are counted separately as likely malformed, rounds that never reached the arbiters as not drawn, and rounds still running are not yet counted."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
+        <h2 title="Fulfilled rounds (a FulfillAIEvaluation event) as a share of the rounds the arbiters decided: fulfilled plus those that failed for too few commits or reveals, over the look-back window. Not in the rate: likely malformed rounds (no arbiter committed), rounds that had M commits but were never closed or promoted (no arbiter at fault; the prepay goes to the treasury), rounds never drawn, and rounds still running."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
         <div className="section-content">
           {healthLoading && !healthData ? (
             <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
@@ -1226,20 +1311,41 @@ function Analytics() {
                 </div>
                 <div
                   className="health-stat"
-                  title="Requests where not a single selected arbiter committed. Every arbiter rejecting the same request usually means the request itself is unusable (e.g. a CID that isn't a valid archive or a manifest that fails validation), so these count as neither successes nor failures and no arbiter is blamed."
+                  title={`Requests where not a single drawn arbiter committed. Every arbiter rejecting the same request usually means the request itself is unusable (e.g. a CID that isn't a valid archive or a manifest that fails validation), so these count as neither successes nor failures. The keeper still docks every drawn arbiter that didn't commit ${healthData.points?.nocommit != null ? `${healthData.points.nocommit} timeliness points (the no-commit penalty)` : 'the no-commit timeliness penalty'}, unless the arbiter was frozen at the round end.`}
                 >
                   <span className="health-stat-value" style={{ color: COLORS.inactive }}>{healthData.success.likelyMalformed ?? 0}</span>
                   <span className="health-stat-label">Likely malformed</span>
                 </div>
                 <div
                   className="health-stat"
-                  title="Rounds that never reached the arbiters: no jury could be drawn (fewer eligible arbiters than the jury size), the beacon quorum was missed, or the round was cancelled undrawn. Not counted in the success rate."
+                  title="Rounds that had at least M commits but whose commit window was never closed, or that were closed and never promoted. No arbiter is at fault and none is charged; the unspent prepay goes to the treasury. Not counted in the success rate."
+                >
+                  <span className="health-stat-value" style={{ color: COLORS.atRisk }}>{healthData.success.notProgressed ?? 0}</span>
+                  <span className="health-stat-label">Not progressed</span>
+                </div>
+                <div
+                  className="health-stat"
+                  title={(() => {
+                    const b = healthData.success.notDrawnBy || {};
+                    return `Rounds that never reached the arbiters. Not counted in the success rate.\n` +
+                      `Pool shortage (fewer eligible arbiters than the jury size; refunded): ${b.poolShortage ?? 0}\n` +
+                      `Draw failed after the beacon stage, class list longer than the keeper's scan (treasury): ${b.drawTreasury ?? 0}\n` +
+                      `Beacon quorum missed (treasury): ${b.beaconQuorum ?? 0}\n` +
+                      `Cancelled undrawn (treasury): ${b.cancelled ?? 0}`;
+                  })()}
                 >
                   <span className="health-stat-value" style={{ color: COLORS.frozen }}>{healthData.success.notDrawn ?? 0}</span>
                   <span className="health-stat-label">Not drawn</span>
                 </div>
+                <div
+                  className="health-stat"
+                  title="Rounds whose unspent prepay went to the treasury instead of back to the requester (a refund would be a free re-roll): missed beacon quorum, never closed or promoted with M commits, a beacon draw failure when the keeper's walk does not cover the class list, or cancelled. The ETH is the RequesterRefunded amounts paid to the treasury plus RoundCancelled amounts."
+                >
+                  <span className="health-stat-value" style={{ color: COLORS.blocked }}>{healthData.success.treasuryLost?.count ?? 0}</span>
+                  <span className="health-stat-label">To treasury{healthData.success.treasuryLost?.count ? ` (${Number(healthData.success.treasuryLost.eth).toFixed(5)} ETH)` : ''}</span>
+                </div>
                 {dailyChartData && (
-                  <div className="health-chart" title={`Fulfilled (green) vs failed (red) vs likely malformed (grey) vs not drawn (blue) evaluations per day — last ${healthData.windowDays} days`}>
+                  <div className="health-chart" title={`Fulfilled (green) vs failed (red) vs likely malformed (grey) vs not progressed (amber) vs not drawn (blue) evaluations per day — last ${healthData.windowDays} days`}>
                     <div className="health-chart-canvas"><Bar data={dailyChartData} options={dailyChartOptions} /></div>
                     <span className="health-stat-label">{healthData.windowDays}-day trend</span>
                   </div>
@@ -1256,7 +1362,7 @@ function Analytics() {
         </div>
       </section>
 
-      {/* Operator Reliability — 14-day and 24-hour windows */}
+      {/* Arbiter Reliability — 14-day and 24-hour windows */}
       {renderReliabilitySection('Last 14 days', healthData, healthLoading, healthError, alertsByOp)}
       {renderReliabilitySection('Last 24 hours', health24Data, health24Loading, health24Error, alertsByOp)}
 

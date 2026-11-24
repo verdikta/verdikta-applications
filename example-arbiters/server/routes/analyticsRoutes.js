@@ -14,13 +14,15 @@ const router = express.Router();
 
 const logger = require('../utils/logger');
 const { analyticsCache } = require('../utils/analyticsCacheService');
-const { getVerdiktaService } = require('../utils/verdiktaService');
+const { getVerdiktaService, toAggId } = require('../utils/verdiktaService');
 const oracleHealthLoader = require('../utils/oracleHealthLoader');
 const { normalizeNetwork } = require('../config');
 const { classMap } = require('@verdikta/common');
 
 /**
- * Arbiter availability per class, enriched with class names from classMap.
+ * Arbiter availability per class (ClassID), with the selectable count against
+ * the aggregator's K and the keeper's scansAll(cls), enriched with class names
+ * from classMap.
  */
 async function getArbiterAnalytics(network) {
   const verdiktaService = getVerdiktaService(network);
@@ -47,6 +49,7 @@ async function getArbiterAnalytics(network) {
     return {
       byClass: enrichedByClass,
       totalOracles: arbiterData.totalOracles,
+      K: arbiterData.K, // the aggregator's jury size, for the per-ClassID selectable / K column
       verdiktaConnected: true,
       timestamp: arbiterData.timestamp
     };
@@ -254,15 +257,17 @@ router.get('/oracle-health', async (req, res) => {
 /**
  * GET /api/analytics/agg-history/:aggId
  * Full blow-by-blow of a single oracle aggregation (the drill-down behind a
- * blameworthy aggId). ?network=base|base-sepolia selects the chain.
+ * blameworthy round). :aggId is the bytes32 round id or the decimal round
+ * number (v2 ids are sequential: aggId = bytes32(round)).
+ * ?network=base|base-sepolia selects the chain.
  */
 router.get('/agg-history/:aggId', async (req, res) => {
   const network = normalizeNetwork(req.query.network);
-  const { aggId } = req.params;
-  if (!/^0x[0-9a-fA-F]{64}$/.test(aggId)) {
-    return res.status(400).json({ success: false, error: 'Invalid aggId format' });
+  const aggId = toAggId(req.params.aggId);
+  if (!aggId) {
+    return res.status(400).json({ success: false, error: 'Invalid round id: give a bytes32 aggId or a round number' });
   }
-  const cacheKey = `analytics_agg_history_${network}_${aggId.toLowerCase()}`;
+  const cacheKey = `analytics_agg_history_${network}_${aggId}`;
   try {
     const cached = analyticsCache.get(cacheKey);
     if (cached) {

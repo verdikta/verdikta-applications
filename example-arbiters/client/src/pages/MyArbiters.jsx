@@ -809,7 +809,16 @@ function MyArbiters() {
                         </td>
                         <td className="nowrap">
                           {job.stake} wVDKA
-                          {job.understakedBy && <div className="status-note">{job.understakedBy} short</div>}
+                          {job.understakedBy && (
+                            <div
+                              className="status-note"
+                              title={job.understakedUnflagged
+                                ? 'The keeper only updates its under-staked flag when the stake changes, so this arbiter is still selected against the raised requirement until its next top-up or burn.'
+                                : undefined}
+                            >
+                              {job.understakedBy} short{job.understakedUnflagged ? ' (still selected until the stake changes)' : ''}
+                            </div>
+                          )}
                         </td>
                         <td>
                           <div className="job-stats">

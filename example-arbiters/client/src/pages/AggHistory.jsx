@@ -1,10 +1,12 @@
 /**
  * Aggregation History Page
  * Full arbiter evaluation lifecycle for a given Verdikta aggregation ID — the
- * drill-down reached from a blameworthy aggId on the Analytics page. v2 rounds:
- * getRoundInfo + getSlot for state, the round events for the timeline. Network is
- * the header-selected one (via useNetwork); the same id is passed to the
- * /api/analytics/agg-history endpoint and used to pick the block explorer.
+ * drill-down reached from a blameworthy round on the Analytics page. v2 rounds:
+ * getRoundInfo + getSlot for state, the round events for the timeline, and the
+ * settle transaction's keeper events for each arbiter's new scores. The route
+ * takes the round number or the bytes32 aggId. Network is the header-selected
+ * one (via useNetwork); the same id is passed to the /api/analytics/agg-history
+ * endpoint and used to pick the block explorer.
  */
 
 import { useState, useEffect } from 'react';
@@ -107,21 +109,41 @@ function AggHistory() {
           <h2>Aggregation Not Found</h2>
           <p>{data?.message || 'No matching events found for this aggregation ID within the scan window.'}</p>
           <div className="agg-id-display" style={{ marginTop: '1rem', display: 'inline-block' }}>
-            {aggId}
+            {/^[0-9]+$/.test(aggId) ? `round #${aggId}` : aggId}
           </div>
         </div>
       </div>
     );
   }
 
-  const { contractParams, roundInfo, requestEvent, slots = [], fulfillment, outcome, outcomeKind, analysis, timeline = [], blame = [] } = data;
+  const {
+    contractParams, roundInfo, requestEvent, slots = [], fulfillment, outcome, outcomeKind, analysis,
+    timeline = [], blame = [], money, beaconArbiters, settlement, points,
+  } = data;
 
   const kindClass = {
-    completed: 'completed', running: 'running', malformed: 'malformed',
+    completed: 'completed', running: 'running', malformed: 'malformed', notProgressed: 'malformed',
     failed: 'failed', notDrawn: 'failed', cancelled: 'failed',
   }[outcomeKind] || 'failed';
   const OutcomeIcon = kindClass === 'completed' ? CheckCircle : kindClass === 'running' ? Clock : kindClass === 'malformed' ? AlertTriangle : XCircle;
-  const blamed = new Map(blame.map((b) => [b.slot, b.stage]));
+  const blamed = new Map(blame.map((b) => [b.slot, b]));
+  const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
+  // Expected keeper outcome for a slot (what _settle reports), as score changes.
+  const expectedText = (e) => {
+    if (!e) return '-';
+    if (!e.scored) return e.note || 'not scored';
+    const parts = [];
+    if (e.tDelta) parts.push(`T ${signed(e.tDelta)}`);
+    if (e.qDelta) parts.push(`Q ${signed(e.qDelta)}`);
+    return `${e.codeName}${parts.length ? `: ${parts.join(', ')}` : ''}`;
+  };
+  // What the keeper did at settlement (ScoresUpdated / OutcomeSkippedFrozen / ArbiterBlocked).
+  const actualText = (a) => {
+    if (!a) return '-';
+    if (a.skippedFrozen) return 'skipped: frozen at the round end';
+    if (!a.scored) return 'no change';
+    return `Q ${a.quality} · T ${a.timeliness}${a.blockedUntil ? ` · blocked until ${fmtTime(a.blockedUntil)} (offense ${a.offenses})` : ''}`;
+  };
   const fmtTime = (sec) => (sec ? new Date(sec * 1000).toLocaleString() : '—');
 
   // A list of arbiter chips for the slots matching `pred`.
@@ -154,10 +176,10 @@ function AggHistory() {
         <div className="header-content">
           <h1><Activity size={28} /> Aggregation History</h1>
           <div className="agg-id-display">
-            <span className="agg-id-label">Agg ID:</span>
-            {aggId}
-            {/^0x0{40}/i.test(aggId) && <span className="agg-id-label"> (round #{parseInt(aggId, 16)})</span>}
-            <button className="copy-btn" onClick={() => handleCopy(aggId)}>
+            <span className="agg-id-label">Round:</span>
+            #{data.round}
+            <span className="agg-id-label" title={data.aggId}> (aggId {data.aggId.slice(0, 6)}…{data.aggId.slice(-6)})</span>
+            <button className="copy-btn" onClick={() => handleCopy(data.aggId)} title="Copy the bytes32 aggId">
               {copied === 'aggId' ? 'Copied' : 'Copy'}
             </button>
           </div>
@@ -245,7 +267,10 @@ function AggHistory() {
                   <span className="req-actual-label">Never committed</span>
                   <span className="req-actual-value val-warn">{analysis.nonResponding}</span>
                 </div>
-                <div className="req-actual-detail">Slots: {analysis.nonRespondingSlotIds.join(', ')}</div>
+                <div className="req-actual-detail">
+                  Slots: {analysis.nonRespondingSlotIds.join(', ')}
+                  {analysis.skipped > 0 && ` (${analysis.skipped} skipped at the draw)`}
+                </div>
               </>
             )}
             {analysis.promotedNotRevealed?.length > 0 && (
@@ -279,6 +304,51 @@ function AggHistory() {
             <div className="detail-row"><span className="detail-label">Commit window ends:</span><span className="detail-value">{fmtTime(roundInfo.windowEnd)}</span></div>
             <div className="detail-row"><span className="detail-label">Deadline:</span><span className="detail-value">{fmtTime(roundInfo.deadline)}</span></div>
             <div className="detail-row"><span className="detail-label">Escrow:</span><span className="detail-value">{roundInfo.received} ETH received · {roundInfo.baseFees} base fees · {roundInfo.bonuses} bonuses · {roundInfo.rewards} rewards</span></div>
+            {money && (
+              <>
+                <div className="detail-row">
+                  <span className="detail-label">Draw reward:</span>
+                  <span className="detail-value">{money.draw ? `${money.draw.eth} ETH to ${money.draw.to}` : '—'}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Promote reward:</span>
+                  <span className="detail-value" title="No event carries it: derived as rewards − draw reward − beacon payments. Paid to the sender of the promote() transaction (CommitPhaseComplete).">
+                    {money.promote ? `${money.promote.eth} ETH to ${money.promote.to || 'the promote() caller'} (derived: ${money.promote.derived})` : '—'}
+                  </span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Beacon payments:</span>
+                  <span className="detail-value">
+                    {money.beacons
+                      ? `${money.beacons.eth} ETH: ${money.beacons.payments.map((b) => `${b.eth} to ${b.payee.slice(0, 8)}…${b.payee.slice(-4)}`).join(', ')}`
+                      : '—'}
+                  </span>
+                </div>
+                {(money.refunded || money.toTreasury) && (
+                  <div className="detail-row">
+                    <span className="detail-label">Unspent prepay:</span>
+                    <span className="detail-value">
+                      {[money.refunded && `${money.refunded} ETH refunded to the requester`,
+                        money.toTreasury && `${money.toTreasury} ETH to the treasury (no refund)`].filter(Boolean).join(' · ')}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+            {beaconArbiters?.length > 0 && (
+              <div className="detail-row">
+                <span className="detail-label">Beacon arbiters:</span>
+                <span className="detail-value">
+                  {beaconArbiters.map((b, i) => (
+                    <span key={b.key} title={`key ${b.key}`}>
+                      {i > 0 && ', '}
+                      {b.oracle ? `${b.oracle.slice(0, 8)}…${b.oracle.slice(-4)}` : b.key.slice(0, 10)}
+                      {b.jobId ? ` / ${b.jobId.slice(0, 8)}…` : ''}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -346,6 +416,8 @@ function AggHistory() {
                   <th>Revealed</th>
                   <th>Counted</th>
                   <th>Quality</th>
+                  <th title={points ? `What settlement reports to the keeper for the slot, as score changes (T = timeliness, Q = quality; points: gain +${points.gain}, minor −${points.minor}, major −${points.major}, fail −${points.fail}, nocommit −${points.nocommit}). A score that reaches 0 restarts at ${points.start} and blocks the arbiter.` : undefined}>Expected outcome</th>
+                  <th title="The keeper's new scores, from its events in the settle transaction">After settlement</th>
                   <th>Note</th>
                 </tr>
               </thead>
@@ -374,17 +446,23 @@ function AggHistory() {
                         </span>
                       ) : '-'}
                     </td>
-                    <td>{slot.fee}{slot.bonus ? ` + ${slot.bonus}` : ''}</td>
+                    <td title={slot.paid ? undefined : `Skipped at the draw: the fee (${slot.fee} ETH) was not paid`}>
+                      {slot.paid ? `${slot.fee}${slot.bonus ? ` + ${slot.bonus}` : ''}` : 'not paid'}
+                    </td>
                     <BoolCell value={slot.committed} />
                     <BoolCell value={slot.promoted} />
                     <BoolCell value={slot.revealed} />
                     <BoolCell value={slot.counted} />
                     <td>{slot.quality || '-'}</td>
+                    <td title={slot.expected?.frozenSkip ? 'Skipped by the keeper if the arbiter was frozen at the round end (it did not commit)' : undefined}>
+                      {expectedText(slot.expected)}{slot.expected?.frozenSkip ? ' *' : ''}
+                    </td>
+                    <td>{actualText(slot.actual)}</td>
                     <td>
                       {[
                         slot.late && 'late reveal',
                         slot.skipped && `skipped: ${slot.skipped}`,
-                        blamed.has(slot.slot) && `blamed (${blamed.get(slot.slot)})`,
+                        blamed.has(slot.slot) && `blamed (${blamed.get(slot.slot).stage})`,
                       ].filter(Boolean).join(' · ') || '-'}
                     </td>
                   </tr>
@@ -392,6 +470,14 @@ function AggHistory() {
               </tbody>
             </table>
           </div>
+          <p className="req-actual-detail">
+            Expected outcome mirrors the aggregator&rsquo;s settlement rule; * marks a slot without a commit, which the
+            keeper skips if the arbiter was frozen at the round end.
+            {settlement?.settled
+              ? ' After settlement shows the keeper’s events in the settle transaction.'
+              : ' The round is not settled yet, so no scores have changed.'}
+            {settlement?.note ? ` ${settlement.note}` : ''}
+          </p>
         </div>
       )}
 

@@ -20,15 +20,30 @@ test('never scored (both scores at start, no offenses) is new', () => {
   // an offense means it has been scored (a block restarts scores at start)
   assert.equal(st({ quality: 500, timeliness: 500, offenses: 1 }).status, 'active');
   // a custom start value is honoured
-  assert.equal(st({ quality: 300, timeliness: 300 }, { points: { start: 300 } }).status, 'new');
+  assert.equal(st({ quality: 450, timeliness: 450 }, { points: { start: 450 } }).status, 'new');
 });
 
-test('a score at or below points.major is at risk', () => {
-  assert.equal(st({ timeliness: 200 }).status, 'atRisk');
-  assert.equal(st({ quality: 150 }).status, 'atRisk');
+test('at risk: quality <= points.major or timeliness <= points.nocommit', () => {
+  assert.equal(st({ quality: 200 }).status, 'atRisk');
   assert.equal(st({ quality: 201 }).status, 'active');
+  assert.equal(st({ timeliness: 400 }).status, 'atRisk');
+  assert.equal(st({ timeliness: 401 }).status, 'active');
+  // quality above major but low timeliness: the old min(q, t) <= major rule missed this
+  assert.equal(st({ quality: 900, timeliness: 350 }).status, 'atRisk');
   assert.equal(st({ quality: 250 }, { points: { major: 300 } }).status, 'atRisk');
+  assert.equal(st({ timeliness: 450 }, { points: { nocommit: 450 } }).status, 'atRisk');
   assert.equal(st({ quality: 150 }).selectable, true);
+});
+
+test('timeliness <= points.fail adds the failMissRisk note without changing the status', () => {
+  const r = st({ timeliness: 480 });
+  assert.equal(r.status, 'active');
+  assert.ok(r.reasons.includes('failMissRisk'));
+  assert.ok(!st({ timeliness: 501 }).reasons.includes('failMissRisk'));
+  // a new arbiter (both at start 500 = fail) carries the note and stays new
+  const n = st({ quality: 500, timeliness: 500 });
+  assert.equal(n.status, 'new');
+  assert.ok(n.reasons.includes('failMissRisk'));
 });
 
 test('banned and blocked win over everything', () => {

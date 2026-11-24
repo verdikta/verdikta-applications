@@ -63,9 +63,9 @@ const deltaColor = (n) => (n == null ? 'var(--text-secondary)' : n > 0 ? '#16a34
 // pick the timeliness / quality change from the keeper's points() (null = no change).
 const POINT_ROWS = [
   { label: 'Promoted, revealed', desc: 'Revealed after promotion (even late).', t: (p) => p.gain, q: null },
-  { label: '… and close to the result', desc: 'Its reveal fell within the spread of the aggregated answer.', t: null, q: (p) => p.gain },
-  { label: '… and off', desc: 'Its reveal was outside the spread, but not far.', t: null, q: (p) => -p.minor },
-  { label: '… and far', desc: 'Its reveal was far from the aggregated answer.', t: null, q: (p) => -p.major },
+  { label: '… and close', desc: 'Within 1.5 × the spread of the median of the counted reveals (the spread is 1.4826 × the median distance from that median, at least the aggregator\'s spread floor; for a vector, the largest coordinate distance).', t: null, q: (p) => p.gain },
+  { label: '… and off', desc: 'More than 1.5 × and at most 3 × the spread from the median of the counted reveals.', t: null, q: (p) => -p.minor },
+  { label: '… and far', desc: 'More than 3 × the spread from the median of the counted reveals.', t: null, q: (p) => -p.major },
   { label: 'Promoted, no reveal (round finished)', desc: 'Asked to reveal and never did; the round finished anyway.', t: (p) => -p.major, q: null },
   { label: 'Promoted, no reveal (round failed)', desc: 'Asked to reveal and never did; the round failed for lack of reveals.', t: (p) => -p.fail, q: null },
   { label: 'No commit (round failed)', desc: 'Drawn but never committed, and the round failed for lack of commits.', t: (p) => -p.nocommit, q: null },
@@ -295,10 +295,10 @@ function Contracts() {
               <ConfigItem label="Commit Window (T+)" value={formatDuration(agg.config.tPlus)} title="After this, M commits are enough to close the commit phase" />
               <ConfigItem label="Reveal Window" value={formatDuration(agg.config.revealWindow)} title="Reveal time guaranteed to promoted arbiters after promotion" />
               <ConfigItem label="Max Oracle Fee" value={agg.config.maxOracleFee != null ? `${agg.config.maxOracleFee} ETH` : null} title="Fee ceiling: arbiters posting more are never drawn" />
-              <ConfigItem label="Draw Reward" value={agg.config.drawRewardFees != null ? `${agg.config.drawRewardFees} × fee` : null} title="Paid into ethOwed to whoever draws the jury (only the requester during the priority window)" />
-              <ConfigItem label="Promote Reward" value={agg.config.promoteRewardFees != null ? `${agg.config.promoteRewardFees} × fee` : null} title="Paid into ethOwed to whoever calls promote" />
+              <ConfigItem label="Draw Reward" value={agg.config.drawRewardFees != null ? `${agg.config.drawRewardFees} × fee ceiling` : null} title="× the request's fee ceiling (min(maxFee, maxOracleFee)), not an arbiter's fee. Paid into ethOwed to whoever draws the jury (only the requester during the priority window)" />
+              <ConfigItem label="Promote Reward" value={agg.config.promoteRewardFees != null ? `${agg.config.promoteRewardFees} × fee ceiling` : null} title="× the request's fee ceiling (min(maxFee, maxOracleFee)), not an arbiter's fee. Paid into ethOwed to whoever calls promote" />
               <ConfigItem label="Requester Draw Priority" value={formatDuration(agg.config.requesterDrawPriority)} />
-              <ConfigItem label="Spread Floor" value={agg.config.spreadFloor != null ? agg.config.spreadFloor.toLocaleString() : null} title="Minimum quality spread on the arbiters' 0..1,000,000 scale" />
+              <ConfigItem label="Spread Floor" value={agg.config.spreadFloor != null ? agg.config.spreadFloor.toLocaleString() : null} title="Minimum quality spread on the arbiters' 0..1,000,000 scale: a reveal is close within 1.5 × the spread of the median, off within 3 ×, far beyond" />
               <ConfigItem label="Rounds So Far" value={agg.config.roundCount != null ? agg.config.roundCount.toLocaleString() : null} title="roundCount(): rounds requested on this aggregator; aggIds are sequential" />
               <ConfigItem label="Beacons" value={agg.config.beacons ? 'On' : 'Off'} title="JuryBeacons contract for beacon-seeded draws (per-request flag)" />
               {agg.config.paused && <ConfigItem label="Status" value="Paused" />}
@@ -409,6 +409,10 @@ function Contracts() {
                 </tbody>
               </table>
               <p className="table-note">
+                Close, off and far are measured from the median of the counted reveals: close at most 1.5 × the
+                spread, off at most 3 ×, far beyond, where the spread is 1.4826 × the median distance from the
+                median, floored at the aggregator&rsquo;s spread floor. A late reveal is classified against the same
+                median and spread.
                 A score that reaches 0 blocks the arbiter and restarts at {keeper.config.points.start}.
                 An arbiter frozen at the round deadline is not scored unless it committed in that round.
               </p>

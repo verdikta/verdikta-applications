@@ -20,7 +20,7 @@ const {
   STATUSES, DEFAULT_POINTS, DEFAULT_CALL_DEADLINE, deriveStatus, exitState, flagNames, emptyTally, reduceRegistry,
 } = require('./arbiterStatus');
 const {
-  PHASE, PHASE_NAMES, QCODE_NAMES, SKIP_REASONS, decodeSlotFlags, mPlus, describeRound,
+  PHASE, PHASE_NAMES, QCODE_NAMES, SKIP_REASONS, decodeSlotFlags, mPlus, describeRound, slotOutcome,
 } = require('./roundModel');
 const GasReceiptStore = require('./gasReceiptStore');
 
@@ -152,6 +152,17 @@ const KEEPER_ABI = [
   "function maxScan() view returns (uint16)",
   "function liveRandom() view returns (uint8)",
   "function points() view returns (uint16 gain, uint16 minor, uint16 major, uint16 fail, uint16 nocommit, uint16 start, uint16 cap)",
+  "function scansAll(uint64 cls) view returns (bool)",
+  // Emitted by applyOutcomes inside the aggregator's settle transaction, so the
+  // RoundSettled transaction's receipt holds each arbiter's new scores.
+  "event ScoresUpdated(bytes32 indexed key, uint256 quality, uint256 timeliness)",
+  "event OutcomeSkippedFrozen(bytes32 indexed key)",
+  "event ArbiterBlocked(bytes32 indexed key, uint256 until, uint256 offenses, uint256 burned)",
+];
+
+// JuryBeacons: the beacon arbiters of a round.
+const BEACONS_ABI = [
+  "function getBeacons(address aggregator, bytes32 aggId) view returns (bytes32[] keys, uint256 atBlock, uint256 deadline)",
 ];
 
 // Minimal ERC-20 ABI for token metadata (wVDKA, LINK). Each getter is read
@@ -208,10 +219,11 @@ const AGG_EVENT_ABI = [
   "event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount)",
   "event SlotSkipped(bytes32 indexed aggRequestId, uint256 pollIndex, uint8 reason)",
 ];
-// The subset the oracle-health scan needs.
+// The subset the oracle-health scan needs (RequesterRefunded and RoundCancelled
+// for the prepay that went to the treasury, SlotSkipped for skipped slots).
 const HEALTH_EVENTS = [
   'RequestAIEvaluation', 'JuryDrawn', 'CommitReceived', 'CommitPhaseComplete', 'RevealReceived',
-  'FulfillAIEvaluation', 'EvaluationFailed', 'RoundSettled', 'RoundCancelled',
+  'FulfillAIEvaluation', 'EvaluationFailed', 'RoundSettled', 'RoundCancelled', 'RequesterRefunded', 'SlotSkipped',
 ];
 
 // One log query may stall this long before it's treated as failed. ethers'
@@ -234,6 +246,17 @@ class NotConfiguredError extends Error {
     this.code = 'NOT_CONFIGURED';
   }
 }
+
+/** Round id (bytes32) for a decimal round number or a bytes32 string; null if neither. */
+function toAggId(id) {
+  const v = String(id || '').trim();
+  if (/^0x[0-9a-fA-F]{64}$/.test(v)) return v.toLowerCase();
+  if (/^[0-9]{1,30}$/.test(v) && BigInt(v) > 0n) return ethers.zeroPadValue(ethers.toBeHex(BigInt(v)), 32);
+  return null;
+}
+
+/** Round number of a sequential v2 aggId (aggId = bytes32(roundId)). */
+const roundNumber = (aggId) => Number(BigInt(aggId));
 
 class VerdiktaService {
   constructor(providerUrl, aggregatorAddress, options = {}) {
@@ -599,6 +622,9 @@ class VerdiktaService {
     rec.understakedBy = ctx.stakeRequirementWei != null && a.stake < ctx.stakeRequirementWei
       ? ethers.formatEther(ctx.stakeRequirementWei - a.stake)
       : null;
+    // F_UNDERSTAKED is only re-evaluated on a stake change (topUpStake, a burn),
+    // so a stake short of a raised requirement keeps being selected until then.
+    rec.understakedUnflagged = rec.understakedBy != null && !(rec.flags & 32);
     return rec;
   }
 
@@ -636,12 +662,21 @@ class VerdiktaService {
   }
 
   /**
-   * Arbiter availability per class: status tallies (see arbiterStatus.STATUSES),
-   * average scores, distinct operators and the per-arbiter list.
+   * Arbiter availability per class (model ClassID, e.g. 128): status tallies
+   * (see arbiterStatus.STATUSES), average scores, distinct operators and the
+   * per-arbiter list, plus the selectable count against the aggregator's K:
+   * with fewer selectable arbiters than K, every draw for the class fails.
+   * `scansAll` is the keeper's scansAll(cls): false means a draw walks only part
+   * of the class list, so a beacon round whose draw then fails pays the
+   * treasury, not the requester.
    */
   async getArbiterAvailabilityByClass() {
     try {
-      const oracles = await this.getAllOracles();
+      const [oracles, keeper, K] = await Promise.all([
+        this.getAllOracles(),
+        this.getReputationKeeper(),
+        withRetry(() => this._agg().K()).then(Number).catch(() => null),
+      ]);
       const byClass = {};
 
       for (const oracle of oracles) {
@@ -692,13 +727,20 @@ class VerdiktaService {
         }
         cls.operators = cls.operatorAddresses.size;
         cls.operatorList = Array.from(cls.operatorAddresses);
+        cls.K = K;
+        cls.short = K != null && cls.selectable < K;
         delete cls.qualityScores;
         delete cls.timelinessScores;
         delete cls.operatorAddresses;
       }
 
+      await mapWithConcurrency(Object.keys(byClass), 4, async (classId) => {
+        byClass[classId].scansAll = await withRetry(() => keeper.scansAll(BigInt(classId))).then(Boolean).catch(() => null);
+      });
+
       return {
         byClass,
+        K,
         totalOracles: oracles.filter(o => !o.error).length,
         timestamp: Date.now()
       };
@@ -773,11 +815,13 @@ class VerdiktaService {
         frozen: oracle.frozen,
         blockedUntil: oracle.blockedUntil,
         callSentAt: oracle.callSentAt,
+        callAnsweredAt: oracle.callAnsweredAt,
         exitAt: oracle.exitAt,
         exit: oracle.exit,
         stake: oracle.stake,           // formatted ether string ("100.0")
         stakeWei: oracle.stakeWei,
         understakedBy: oracle.understakedBy,
+        understakedUnflagged: oracle.understakedUnflagged,
         fee: oracle.fee,
         feeWei: oracle.feeWei,
         offenses: oracle.offenses,
@@ -1176,11 +1220,14 @@ class VerdiktaService {
   // T+ with at least M, promotes M commits (CommitPhaseComplete), and finalizes
   // at the N-th reveal (FulfillAIEvaluation). A failed round is settled with
   // EvaluationFailed(phase) and charged to the arbiters that fell short (see
-  // utils/roundModel.describeRound).
+  // utils/roundModel.describeRound). Rounds that never got going (≥ M commits
+  // but never closed or promoted, or never drawn) are counted apart, and those
+  // whose prepay went to the treasury are totalled.
 
   /**
    * @param {{ days?: number }} [opts] look-back window in days (default 14).
-   * @returns {Promise<object>} success-rate + per-operator reliability, plus a
+   * @returns {Promise<object>} success rate, reliability per arbiter key
+   *   (`arbiters`) and its per-operator roll-up (`operators`, with gas), plus a
    *   `partial` flag if a chunk error cut the scan short.
    */
   async getOracleHealth({ days = 14 } = {}) {
@@ -1189,12 +1236,14 @@ class VerdiktaService {
     const iface = new ethers.Interface(AGG_EVENT_ABI);
     const topic0Or = [HEALTH_EVENTS.map((n) => iface.getEvent(n).topicHash)];
 
-    const [latest, blockSec, K, M, N] = await Promise.all([
+    const [latest, blockSec, K, M, N, treasury] = await Promise.all([
       withRetry(() => provider.getBlockNumber()),
       this.getBlockSeconds(),
       withRetry(() => agg.K()).then(Number),
       withRetry(() => agg.M()).then(Number),
       withRetry(() => agg.N()).then(Number),
+      // RequesterRefunded to this address is prepay kept by the treasury, not a refund
+      withRetry(() => agg.treasury()).then((a) => String(a).toLowerCase()).catch(() => null),
     ]);
     const BLOCKS_PER_DAY = Math.round(86400 / blockSec);
     const windowBlocks = Math.max(1, Math.round(days * BLOCKS_PER_DAY));
@@ -1244,12 +1293,13 @@ class VerdiktaService {
     allLogs.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.index - b.index));
 
     // Per-round event record.
-    const rounds = {}; // aggIdLower → { aggId, requestBlock, drawBlock, promoteBlock, fulfilled, failedPhase, cancelled, settled, commits: {i: {block, tx}}, reveals: {i: {block, tx, late}} }
+    const rounds = {}; // aggIdLower → { aggId, round, requestBlock, drawBlock, promoteBlock, fulfilled, failedPhase, cancelled, settled, commits, reveals, refunds, skips }
     const roundFor = (aggId) => {
       const k = String(aggId).toLowerCase();
       if (!rounds[k]) {
-        rounds[k] = { aggId: String(aggId), requestBlock: null, drawBlock: null, promoteBlock: null, fulfilled: false,
-          fulfillBlock: null, failedPhase: null, cancelled: false, settled: false, commits: {}, reveals: {} };
+        rounds[k] = { aggId: String(aggId), round: roundNumber(aggId), requestBlock: null, drawBlock: null, promoteBlock: null,
+          fulfilled: false, fulfillBlock: null, failedPhase: null, cancelled: false, cancelledWei: 0n, settled: false,
+          commits: {}, reveals: {}, refunds: [], skips: {} };
       }
       return rounds[k];
     };
@@ -1274,7 +1324,13 @@ class VerdiktaService {
           break;
         case 'EvaluationFailed': r.failedPhase = Number(p.args.phase); break;
         case 'RoundSettled': r.settled = true; break;
-        case 'RoundCancelled': r.cancelled = true; break;
+        case 'RoundCancelled': r.cancelled = true; r.cancelledWei = p.args.toTreasury; break;
+        case 'RequesterRefunded': r.refunds.push({ to: String(p.args.requester).toLowerCase(), wei: p.args.amount }); break;
+        case 'SlotSkipped':
+          if (p.args.pollIndex !== ethers.MaxUint256) {
+            r.skips[Number(p.args.pollIndex)] = SKIP_REASONS[Number(p.args.reason)] || `reason ${p.args.reason}`;
+          }
+          break;
       }
     }
 
@@ -1301,17 +1357,46 @@ class VerdiktaService {
       return r.drawBlock != null ? PHASE.COMMIT : PHASE.DRAW;
     };
 
-    const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0, failed: 0, malformed: 0, notDrawn: 0 }));
-    const tally = { requests: 0, fulfilled: 0, failed: 0, malformed: 0, notDrawn: 0, running: 0 };
-    const likelyMalformedAggIds = [];
-    const ops = {};      // operatorLower → { operator, selected, commits, promoted, reveals, lateReveals }
-    const blameByOp = {}; // operatorLower → { count, evals: { aggId → { stage, slots } } }
+    // Registry entries (removed keys included) give each slot key its jobId.
+    const jobIdOfKey = {};
+    let arbiterCountByOp = {};
+    try {
+      for (const e of await this._getRegistryEvents()) {
+        if (e.name === 'ArbiterRegistered') jobIdOfKey[e.key.toLowerCase()] = e.jobId;
+      }
+      for (const e of (await this.getRegistry()).values()) {
+        const k = String(e.oracle).toLowerCase();
+        arbiterCountByOp[k] = (arbiterCountByOp[k] || 0) + 1;
+      }
+    } catch (err) {
+      logger.warn('oracle-health: registry read failed (jobIds and arbiter counts omitted)', { network: this.networkKey, msg: err.message });
+      arbiterCountByOp = null;
+    }
+
+    const emptyBucketTally = () => ({
+      requests: 0, fulfilled: 0, failed: 0, malformed: 0, notProgressed: 0, notDrawn: 0, running: 0,
+      notDrawnBy: { poolShortage: 0, drawTreasury: 0, beaconQuorum: 0, cancelled: 0 },
+      treasuryLost: 0, treasuryLostWei: 0n,
+    });
+    const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0, failed: 0, malformed: 0, notProgressed: 0, notDrawn: 0 }));
+    const tally = emptyBucketTally();
+    const likelyMalformed = [];   // { aggId, round }
+    const arbs = {};     // keyLower → per-arbiter (operator, jobId) reliability
+    const ops = {};      // operatorLower → roll-up over its arbiters
+    const blameByKey = {}; // keyLower → { count, evals: { aggIdLower → { aggId, round, stage, slots } } }
+    const blameByOp = {};
     const timingByOp = {};
     const timingDaily = Array.from({ length: days }, () => ({ cSum: 0, cN: 0, rSum: 0, rN: 0 }));
     const commitRevealLogs = []; // { kind, txHash, operator, blockNumber } for gas tracking
+    const counter = () => ({ selected: 0, skipped: 0, commits: 0, promoted: 0, reveals: 0, lateReveals: 0 });
+    const arbFor = (s) => {
+      const k = s.key.toLowerCase();
+      if (!arbs[k]) arbs[k] = { key: s.key, operator: s.oracle, jobId: jobIdOfKey[k] || null, ...counter() };
+      return arbs[k];
+    };
     const opFor = (addr) => {
       const k = addr.toLowerCase();
-      if (!ops[k]) ops[k] = { operator: addr, selected: 0, commits: 0, promoted: 0, reveals: 0, lateReveals: 0 };
+      if (!ops[k]) ops[k] = { operator: addr, keys: new Set(), ...counter() };
       return ops[k];
     };
     const timingFor = (addr) => {
@@ -1319,33 +1404,56 @@ class VerdiktaService {
       if (!timingByOp[k]) timingByOp[k] = { operator: addr, commit: [], reveal: [] };
       return timingByOp[k];
     };
+    const addBlame = (map, k, r, stage) => {
+      if (!map[k]) map[k] = { count: 0, evals: {} };
+      map[k].count++;
+      const rk = r.aggId.toLowerCase();
+      const e = map[k].evals[rk] || (map[k].evals[rk] = { aggId: r.aggId, round: r.round, stage, slots: 0 });
+      e.slots++;
+    };
 
     for (const r of judged) {
       const o = dayOff(r.requestBlock);
       tally.requests++;
       if (inDays(o)) daily[o].requests++;
       const slots = r.slots || [];
+      const toTreasury = r.refunds.filter((x) => treasury && x.to === treasury);
+      const refundTo = toTreasury.length ? 'treasury' : r.refunds.length ? 'requester' : null;
       const d = describeRound({
-        phase: phaseOf(r), failedPhase: r.failedPhase, M, N, fulfilled: r.fulfilled,
-        slots: slots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: r.reveals[s.index]?.late })),
+        phase: phaseOf(r), failedPhase: r.failedPhase, M, N, fulfilled: r.fulfilled, refundTo,
+        slots: slots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: r.reveals[s.index]?.late, skipReason: r.skips[s.index] })),
       });
-      const bucket = { completed: 'fulfilled', failed: 'failed', malformed: 'malformed', notDrawn: 'notDrawn', cancelled: 'notDrawn' }[d.kind] || 'running';
+      const bucket = {
+        completed: 'fulfilled', failed: 'failed', malformed: 'malformed', notProgressed: 'notProgressed',
+        notDrawn: 'notDrawn', cancelled: 'notDrawn',
+      }[d.kind] || 'running';
       tally[bucket]++;
       if (bucket !== 'running' && inDays(o)) daily[o][bucket]++;
-      if (d.kind === 'malformed') likelyMalformedAggIds.push(r.aggId);
+      if (d.notDrawnReason) tally.notDrawnBy[d.notDrawnReason]++;
+      if (d.treasury) {
+        const wei = toTreasury.reduce((acc, x) => acc + x.wei, 0n) + (r.cancelledWei || 0n);
+        tally.treasuryLost++;
+        tally.treasuryLostWei += wei;
+      }
+      if (d.kind === 'malformed') likelyMalformed.push({ aggId: r.aggId, round: r.round });
 
       for (const s of slots) {
         const f = decodeSlotFlags(s.flags);
         const op = opFor(s.oracle);
-        if (f.dispatched) op.selected++;
-        if (f.committed) op.commits++;
-        if (f.promoted) op.promoted++;
-        if (f.revealed) op.reveals++;
+        const ar = arbFor(s);
+        op.keys.add(s.key.toLowerCase());
+        for (const c of [op, ar]) {
+          if (f.dispatched) c.selected++; else c.skipped++;
+          if (f.committed) c.commits++;
+          if (f.promoted) c.promoted++;
+          if (f.revealed) c.reveals++;
+        }
         const rv = r.reveals[s.index];
-        if (rv && rv.late) op.lateReveals++;
-        // Response timing: commit = draw → CommitReceived; reveal = promotion
-        // (the reveal requests go out in that tx) → RevealReceived. Block deltas
-        // at the measured block time, so no per-event getBlock is needed.
+        if (rv && rv.late) { op.lateReveals++; ar.lateReveals++; }
+        // Response timing: commit = jury draw (JuryDrawn) → CommitReceived;
+        // reveal = promotion (the reveal requests go out in that tx) →
+        // RevealReceived. Block deltas at the measured block time, so no
+        // per-event getBlock is needed.
         const cm = r.commits[s.index];
         if (cm) {
           commitRevealLogs.push({ kind: 'commit', txHash: cm.tx, operator: s.oracle, blockNumber: cm.block });
@@ -1367,16 +1475,13 @@ class VerdiktaService {
         }
       }
 
-      // Blame: a slot is an (operator, jobId) arbiter, so an operator backing
-      // several slots in one round is docked once per blameworthy slot.
+      // Blame: a slot is one (operator, jobId) arbiter key, charged once per
+      // blameworthy slot; the operator roll-up sums its keys.
       for (const b of d.blame) {
         const s = slots.find((x) => x.index === b.slot);
         if (!s) continue;
-        const k = s.oracle.toLowerCase();
-        if (!blameByOp[k]) blameByOp[k] = { count: 0, evals: {} };
-        blameByOp[k].count++;
-        const e = blameByOp[k].evals[r.aggId] || (blameByOp[k].evals[r.aggId] = { stage: b.stage, slots: 0 });
-        e.slots++;
+        addBlame(blameByKey, s.key.toLowerCase(), r, b.stage);
+        addBlame(blameByOp, s.oracle.toLowerCase(), r, b.stage);
       }
     }
 
@@ -1416,20 +1521,6 @@ class VerdiktaService {
       for (const v of raw.commit) timingPoints.push([i, 'c', v]);
       for (const v of raw.reveal) timingPoints.push([i, 'r', v]);
     });
-
-    // Currently registered arbiters per operator contract, for context next to
-    // the reliability numbers. If the registry can't be read, counts are null.
-    let arbiterCountByOp = {};
-    try {
-      const registry = await this.getRegistry();
-      for (const e of registry.values()) {
-        const k = String(e.oracle).toLowerCase();
-        arbiterCountByOp[k] = (arbiterCountByOp[k] || 0) + 1;
-      }
-    } catch (err) {
-      logger.warn('oracle-health: registry read failed (arbiter counts omitted)', { network: this.networkKey, msg: err.message });
-      arbiterCountByOp = null;
-    }
 
     // ---- Gas tracking (step 2): fetch & persist receipts for new commit/reveal
     // txs. Receipts are immutable, so we only fetch tx hashes not already cached
@@ -1562,28 +1653,52 @@ class VerdiktaService {
     }
 
     const pct = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
+    const blameList = (b) => (b ? Object.values(b.evals) : []);
+    const rates = (c) => ({
+      timesSelected: c.selected,
+      skipped: c.skipped,             // slots skipped at the draw (owner() failed / dispatch reverted)
+      commits: c.commits,
+      commitRatePct: pct(c.commits, c.selected),
+      promoted: c.promoted,
+      reveals: c.reveals,
+      lateReveals: c.lateReveals,
+      revealRatePct: pct(c.reveals, c.promoted), // reveals per promotion — only promoted commits are asked to reveal
+    });
+    // Reliability per arbiter key (one (operator, jobId) registration).
+    const arbiters = Object.values(arbs)
+      .map((a) => {
+        const b = blameByKey[a.key.toLowerCase()];
+        return {
+          key: a.key,
+          operator: a.operator,
+          jobId: a.jobId,
+          ...rates(a),
+          blameworthy: b ? b.count : 0,  // failed-round slots charged to this arbiter
+          blameAggIds: blameList(b),     // { aggId, round, stage, slots } drill-down list
+        };
+      })
+      .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);
+    // Roll-up per operator contract (sums of its keys), with the per-op gas stats.
     const operators = Object.values(ops)
-      .map((o) => ({
-        operator: o.operator,
-        arbiters: arbiterCountByOp ? (arbiterCountByOp[o.operator.toLowerCase()] || 0) : null,
-        timesSelected: o.selected,
-        commits: o.commits,
-        commitRatePct: pct(o.commits, o.selected),
-        promoted: o.promoted,
-        reveals: o.reveals,
-        lateReveals: o.lateReveals,
-        revealRatePct: pct(o.reveals, o.promoted), // reveals per promotion — only promoted commits are asked to reveal
-        blameworthy: (blameByOp[o.operator.toLowerCase()] || {}).count || 0, // failed-round slots charged to this operator
-        // Distinct failed aggIds this operator is responsible for (drill-down list).
-        blameAggIds: blameByOp[o.operator.toLowerCase()]
-          ? Object.entries(blameByOp[o.operator.toLowerCase()].evals).map(([aggId, d]) => ({ aggId, stage: d.stage, slots: d.slots }))
-          : [],
-        gas: gasByOp[o.operator.toLowerCase()] || null, // per-op gas stats (null until receipts cached)
-      }))
+      .map((o) => {
+        const b = blameByOp[o.operator.toLowerCase()];
+        return {
+          operator: o.operator,
+          arbiters: arbiterCountByOp ? (arbiterCountByOp[o.operator.toLowerCase()] || 0) : null,
+          keysSeen: o.keys.size,          // distinct arbiter keys of this operator drawn in the window
+          ...rates(o),
+          blameworthy: b ? b.count : 0,
+          blameAggIds: blameList(b),
+          gas: gasByOp[o.operator.toLowerCase()] || null, // per-op gas stats (null until receipts cached)
+        };
+      })
       .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);
 
     const dailyTrend = daily
-      .map((d, i) => ({ daysAgo: i, fulfilled: d.fulfilled, failed: d.failed, malformed: d.malformed, notDrawn: d.notDrawn }))
+      .map((d, i) => ({
+        daysAgo: i, fulfilled: d.fulfilled, failed: d.failed, malformed: d.malformed,
+        notProgressed: d.notProgressed, notDrawn: d.notDrawn,
+      }))
       .reverse();
 
     return {
@@ -1593,6 +1708,7 @@ class VerdiktaService {
       toBlock: latest,
       blockSeconds: Math.round(blockSec * 1000) / 1000,
       requirements: { K, M, N },
+      points: await this._getStatusCtx().then((c) => c.points).catch(() => DEFAULT_POINTS),
       scannedChunks,
       totalChunks: ranges.length,
       chunkErrors,
@@ -1607,16 +1723,29 @@ class VerdiktaService {
       success: {
         requests: tally.requests,
         fulfilled: tally.fulfilled,
-        // Failed after the draw for an arbiter-side reason or an unclosed/unpromoted window.
+        // Failed after the draw for an arbiter-side reason: too few commits or reveals.
         unfulfilled: tally.failed,
-        likelyMalformed: tally.malformed,   // no arbiter committed — probably a bad request, not a node failure
-        likelyMalformedAggIds,
-        notDrawn: tally.notDrawn,           // never drawn: pool shortage, beacon quorum missed, or cancelled
+        // No arbiter committed: probably a bad request. Not an arbiter failure here,
+        // although the keeper still docks each drawn arbiter points.nocommit.
+        likelyMalformed: tally.malformed,
+        likelyMalformedAggIds: likelyMalformed,
+        // ≥ M commits, but the window was never closed or the commits never
+        // promoted: nobody is charged, and the prepay goes to the treasury.
+        notProgressed: tally.notProgressed,
+        // Never drawn: pool shortage (refunded), a draw failure after the beacon
+        // stage when the walk does not cover the class (treasury), a missed beacon
+        // quorum (treasury) or cancelled undrawn (treasury).
+        notDrawn: tally.notDrawn,
+        notDrawnBy: tally.notDrawnBy,
+        // Rounds whose unspent prepay went to the treasury, and the ETH it took.
+        treasuryLost: { count: tally.treasuryLost, eth: ethers.formatEther(tally.treasuryLostWei) },
         inProgress: tally.running,
-        // Rate over the drawn rounds arbiters could actually act on, once decided.
+        // Rate over the drawn rounds the arbiters decided: fulfilled vs failed for
+        // too few commits or reveals.
         successRatePct: pct(tally.fulfilled, tally.fulfilled + tally.failed),
       },
       dailyTrend,
+      arbiters,
       operators,
       // Response timing (seconds; from block deltas at the measured block time).
       // `operators` carries avg/min/max per operator, `points` every observation
@@ -1639,29 +1768,45 @@ class VerdiktaService {
   /**
    * Full blow-by-blow of a single round (aggId), for the agg-history drill-down:
    * the requirements (K/M/N/P, current aggregator config), the round's on-chain
-   * state (getRoundInfo), every slot (getSlot: who, fee, what it did), the
-   * request CIDs, the event timeline, the final result and a derived outcome
-   * (utils/roundModel.describeRound).
+   * state (getRoundInfo), every slot (getSlot: who, fee, what it did, and the
+   * keeper outcome settlement reports for it), the request CIDs, the event
+   * timeline, the money (base fees, bonuses, and the rewards split into draw,
+   * promote and beacon payments), the final result and a derived outcome
+   * (utils/roundModel.describeRound / slotOutcome).
+   *
+   * Once the round is settled, the RoundSettled transaction's receipt is read
+   * for the keeper's ScoresUpdated / OutcomeSkippedFrozen / ArbiterBlocked
+   * events: applyOutcomes runs inside the settle call, so these are each
+   * arbiter's actual new scores.
    *
    * The request block is exact (getRoundInfo), so the event scan runs from it to
    * a bounded estimate of the round's end — never a full-history scan.
+   * @param {string} aggId  bytes32 round id, or a decimal round number
    */
-  async getAggHistory(aggId) {
+  async getAggHistory(aggIdIn) {
     const agg = this._agg();
     const logProvider = this._getLogProvider();
     const iface = new ethers.Interface(AGG_EVENT_ABI);
+    const aggId = toAggId(aggIdIn);
+    if (!aggId) throw new Error(`Not a round id: ${aggIdIn}`);
+    const round = roundNumber(aggId);
 
     // 1. Requirements (the aggregator's current config; a round keeps the values
     //    it was requested with, which only differ if the owner changed them since).
     const [K, M, N, P] = await withRetry(() => Promise.all([agg.K(), agg.M(), agg.N(), agg.P()]))
       .then((v) => v.map(Number));
     const contractParams = { K, M, N, P, mPlus: mPlus(K, M) };
+    const [treasury, beaconsAddr] = await Promise.all([
+      withRetry(() => agg.treasury()).then(String).catch(() => null),
+      withRetry(() => agg.beacons()).then(String).catch(() => null),
+    ]);
+    const isTreasury = (a) => treasury != null && String(a).toLowerCase() === treasury.toLowerCase();
 
     // 2. Round state. Phase 0 = the aggregator has no such round.
     const ri = await withRetry(() => agg.getRoundInfo(aggId));
     const phase = Number(ri.phase);
     if (phase === PHASE.NONE) {
-      return { found: false, aggId, network: this.networkKey, message: 'No round with this ID on the aggregator' };
+      return { found: false, aggId, round, network: this.networkKey, message: `No round #${round} on the aggregator` };
     }
     const fmt = (v) => ethers.formatEther(v);
     const roundInfo = {
@@ -1699,7 +1844,7 @@ class VerdiktaService {
     const failTopic = iface.getEvent('EvaluationFailed').topicHash;
     const isEnd = (log) => endTopics.has(log.topics[0])
       || (log.topics[0] === failTopic && [PHASE.DRAW, PHASE.BEACON].includes(Number(iface.parseLog(log).args.phase)));
-    const topics = [iface.fragments.filter((f) => f.type === 'event').map((f) => f.topicHash), String(aggId).toLowerCase()];
+    const topics = [iface.fragments.filter((f) => f.type === 'event').map((f) => f.topicHash), aggId];
     const logs = [];
     // Sequential, NOT Promise.all: concurrent getLogs get batched into one
     // JSON-RPC call by ethers, and the Tenderly archive gateway hangs on batched
@@ -1714,6 +1859,9 @@ class VerdiktaService {
 
     const timeline = [];
     let requestEvent = null, fulfillment = null, failedPhase = null;
+    let draw = null, promoteTx = null, settleTx = null, beaconStage = false, scoringReverted = false;
+    const beaconPayments = [], refunds = [];
+    let cancelledWei = null;
     const lateBySlot = {}, skipBySlot = {}, bonusBySlot = {};
     for (const log of logs) {
       let p;
@@ -1727,12 +1875,21 @@ class VerdiktaService {
           break;
         case 'RequestFunded': entry.detail = `requester ${a.requester}, ${fmt(a.fromValue)} ETH sent, ${fmt(a.fromCredit)} ETH from credit`; break;
         case 'SeedSealed': entry.detail = 'draw seed sealed'; break;
-        case 'JuryDrawn': entry.detail = `drawn by ${a.drawer}, reward ${fmt(a.reward)} ETH`; break;
-        case 'BeaconStageStarted': entry.detail = `${a.beacons} beacons called`; break;
-        case 'BeaconPayment': entry.detail = `${fmt(a.amount)} ETH to ${a.payee}`; break;
+        case 'JuryDrawn':
+          draw = { drawer: String(a.drawer), wei: a.reward, txHash: log.transactionHash };
+          entry.detail = `drawn by ${a.drawer}, reward ${fmt(a.reward)} ETH`;
+          break;
+        case 'BeaconStageStarted': beaconStage = true; entry.detail = `${a.beacons} beacons called`; break;
+        case 'BeaconPayment':
+          beaconPayments.push({ payee: String(a.payee), wei: a.amount });
+          entry.detail = `${fmt(a.amount)} ETH to ${a.payee}`;
+          break;
         case 'CommitReceived': entry.detail = `slot ${a.pollIndex}`; break;
         case 'CommitWindowClosed': entry.detail = `close block ${a.closeBlock}`; break;
-        case 'CommitPhaseComplete': entry.detail = `${a.promoted} commits promoted`; break;
+        case 'CommitPhaseComplete':
+          promoteTx = log.transactionHash;
+          entry.detail = `${a.promoted} commits promoted`;
+          break;
         case 'RevealReceived': {
           const i = Number(a.pollIndex);
           lateBySlot[i] = Boolean(a.late);
@@ -1752,18 +1909,34 @@ class VerdiktaService {
           failedPhase = Number(a.phase);
           entry.detail = `failed in the ${PHASE_NAMES[failedPhase] || failedPhase} phase`;
           break;
-        case 'RoundSettled': entry.detail = a.failed ? 'settled as failed' : 'settled'; break;
-        case 'RoundCancelled': entry.detail = `${fmt(a.toTreasury)} ETH to the treasury`; break;
+        case 'RoundSettled':
+          settleTx = log.transactionHash;
+          entry.detail = a.failed ? 'settled as failed' : 'settled';
+          break;
+        case 'RoundCancelled':
+          cancelledWei = a.toTreasury;
+          entry.detail = `${fmt(a.toTreasury)} ETH to the treasury`;
+          break;
         case 'BasePayment': entry.detail = `slot ${a.pollIndex}: ${fmt(a.amount)} ETH to ${a.payee}`; break;
         case 'BonusPayment':
           bonusBySlot[Number(a.pollIndex)] = fmt(a.amount);
           entry.detail = `slot ${a.pollIndex}: ${fmt(a.amount)} ETH to ${a.payee}`;
           break;
-        case 'RequesterRefunded': entry.detail = `${fmt(a.amount)} ETH to ${a.requester}`; break;
+        case 'RequesterRefunded': {
+          // _refund pays the treasury instead of the requester when a refund would
+          // be a free re-roll (missed beacon quorum, never promoted, ...)
+          const toTreasury = isTreasury(a.requester);
+          refunds.push({ to: String(a.requester), wei: a.amount, toTreasury });
+          entry.detail = toTreasury
+            ? `${fmt(a.amount)} ETH to the treasury (no refund)`
+            : `${fmt(a.amount)} ETH refunded to ${a.requester}`;
+          break;
+        }
         case 'SlotSkipped': {
           const i = a.pollIndex === ethers.MaxUint256 ? null : Number(a.pollIndex);
           const reason = SKIP_REASONS[Number(a.reason)] || `reason ${a.reason}`;
           if (i != null) skipBySlot[i] = reason;
+          else if (Number(a.reason) === 4) scoringReverted = true;
           entry.detail = i != null ? `slot ${i}: ${reason}` : reason;
           break;
         }
@@ -1772,43 +1945,174 @@ class VerdiktaService {
       timeline.push(entry);
     }
 
-    // 5. Slots + derived outcome.
-    const slots = rawSlots.map((s, n) => ({
-      slot: s.index,
-      oracle: s.oracle,
-      jobId: jobIds[n],
-      key: s.key,
-      payee: s.payee,
-      fee: s.fee,
-      bonus: bonusBySlot[s.index] || null,
-      ...decodeSlotFlags(s.flags),
-      late: !!lateBySlot[s.index],
-      quality: QCODE_NAMES[s.qcode] || null,
-      committedAt: s.committedAt || null,
-      skipped: skipBySlot[s.index] || null,
-    }));
+    // 5. Money. getRoundInfo's `rewards` lumps the draw reward (JuryDrawn), the
+    //    promote reward (no event) and the beacon payments (BeaconPayment), so the
+    //    promote reward is derived as rewards − draw − beacons. It went to whoever
+    //    called promote(): the sender of the CommitPhaseComplete transaction.
+    const drawWei = draw ? draw.wei : 0n;
+    const beaconWei = beaconPayments.reduce((acc, b) => acc + b.wei, 0n);
+    const promoteWei = BigInt(ri.rewards) - drawWei - beaconWei;
+    let promoter = null;
+    if (promoteTx) {
+      promoter = await withRetry(() => this.provider.getTransaction(promoteTx))
+        .then((tx) => (tx && tx.from ? ethers.getAddress(tx.from) : null)).catch(() => null);
+    }
+    const refundWei = refunds.filter((r) => !r.toTreasury).reduce((acc, r) => acc + r.wei, 0n);
+    const treasuryWei = refunds.filter((r) => r.toTreasury).reduce((acc, r) => acc + r.wei, 0n) + (cancelledWei || 0n);
+    const money = {
+      received: fmt(ri.received),
+      baseFees: fmt(ri.baseFees),
+      bonuses: fmt(ri.bonuses),
+      rewards: fmt(ri.rewards),
+      draw: draw ? { eth: fmt(drawWei), to: draw.drawer } : null,
+      promote: promoteTx ? { eth: fmt(promoteWei), to: promoter, derived: 'rewards − draw − beacons' } : null,
+      beacons: beaconPayments.length
+        ? { eth: fmt(beaconWei), payments: beaconPayments.map((b) => ({ payee: b.payee, eth: fmt(b.wei) })) }
+        : null,
+      refunded: refunds.some((r) => !r.toTreasury) ? fmt(refundWei) : null,
+      toTreasury: treasuryWei > 0n ? fmt(treasuryWei) : null,
+      treasury,
+    };
+
+    // 6. Beacon arbiters (JuryBeacons.getBeacons), when the round had a beacon stage.
+    let beaconArbiters = null;
+    if (beaconStage && beaconsAddr && beaconsAddr !== ZERO_ADDRESS) {
+      try {
+        const jb = new ethers.Contract(beaconsAddr, BEACONS_ABI, this.provider);
+        const res = await withRetry(() => jb.getBeacons(this.aggregatorAddress, aggId));
+        beaconArbiters = await Promise.all([...res.keys].map(async (key) => {
+          const [jobId, a] = await Promise.all([
+            withRetry(() => keeper.jobIdOf(key)).then(String).catch(() => null),
+            withRetry(() => keeper.getArbiter(key)).catch(() => null),
+          ]);
+          return { key: String(key), jobId, oracle: a && a.oracle !== ZERO_ADDRESS ? ethers.getAddress(a.oracle) : null };
+        }));
+      } catch (err) {
+        logger.warn('agg-history: getBeacons failed', { network: this.networkKey, aggId, msg: err.message });
+      }
+    }
+
+    // 7. Settlement outcome per slot: what _settle reports (expected), and once
+    //    settled what the keeper actually did (from the settle tx's receipt).
+    //    settlePhase is the phase the round was in at settlement: EvaluationFailed
+    //    at settlement carries it (3, 4, 5); a finished round settles from 6.
+    let settlePhase = null;
+    if (phase === PHASE.SETTLED || phase === PHASE.FINAL) settlePhase = PHASE.FINAL;
+    else if (phase === PHASE.FAILED && [PHASE.COMMIT, PHASE.CLOSING, PHASE.REVEAL].includes(failedPhase)) settlePhase = failedPhase;
+    const { points } = await this._getStatusCtx().catch(() => ({ points: DEFAULT_POINTS }));
+    let actualByKey = null, settleNote = null;
+    if (settleTx) {
+      if (scoringReverted) {
+        settleNote = 'The keeper scoring call reverted at settlement: no scores were applied for this round.';
+      } else {
+        try {
+          actualByKey = await this._settleKeeperEvents(settleTx, aggId);
+        } catch (err) {
+          settleNote = `Could not read the settlement receipt: ${err.message}`;
+          logger.warn('agg-history: settle receipt failed', { network: this.networkKey, aggId, msg: err.message });
+        }
+      }
+    }
+
+    const slots = rawSlots.map((s, n) => {
+      const flags = decodeSlotFlags(s.flags);
+      const expected = settlePhase != null
+        ? slotOutcome({ settlePhase, commits: roundInfo.commits, M, flags: s.flags, qcode: s.qcode, points })
+        : null;
+      return {
+        slot: s.index,
+        oracle: s.oracle,
+        jobId: jobIds[n],
+        key: s.key,
+        payee: s.payee,
+        fee: s.fee,
+        paid: flags.dispatched,        // a slot skipped at the draw was never paid its fee
+        bonus: bonusBySlot[s.index] || null,
+        ...flags,
+        late: !!lateBySlot[s.index],
+        quality: QCODE_NAMES[s.qcode] || null,
+        committedAt: s.committedAt || null,
+        skipped: skipBySlot[s.index] || null,
+        expected,
+        // null until settled; then { scored, quality, timeliness, blockedUntil?, offenses? } or { skippedFrozen: true }
+        actual: actualByKey ? (actualByKey[s.key.toLowerCase()] || { scored: false }) : null,
+      };
+    });
+    const refundTo = refunds.length ? (refunds.some((r) => r.toTreasury) ? 'treasury' : 'requester') : null;
     const d = describeRound({
-      phase, failedPhase, M, N, fulfilled: !!fulfillment,
-      slots: rawSlots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: lateBySlot[s.index] })),
+      phase, failedPhase, M, N, fulfilled: !!fulfillment, refundTo,
+      slots: rawSlots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: lateBySlot[s.index], skipReason: skipBySlot[s.index] })),
     });
 
     return {
       found: true,
       aggId,
+      round,
       network: this.networkKey,
       contractParams,
       roundInfo,
       requestEvent,
       slots,
+      beaconArbiters,
+      money,
+      points,
+      settlement: { settled: !!settleTx, txHash: settleTx, settlePhase, note: settleNote },
       fulfillment,
       outcome: d.label,
       outcomeKind: d.kind,
       failStage: d.failStage,
+      notDrawnReason: d.notDrawnReason,
+      treasury: d.treasury,
       blame: d.blame,
       analysis: d.analysis,
       timeline,
       scan: { fromBlock, toBlock, truncated },
     };
+  }
+
+  /**
+   * The keeper's per-key events from a round's settle transaction. One
+   * transaction may settle several rounds (a request settles due rounds too),
+   * and the aggregator emits RoundSettled after each round's applyOutcomes, so
+   * this round's keeper events are those after the previous RoundSettled of this
+   * aggregator and up to its own. Decoded with the keeper's interface, from logs
+   * whose address is the keeper.
+   * @returns {Promise<Object<string, object>>} keyLower → { scored, quality, timeliness } |
+   *   { skippedFrozen: true }, plus blockedUntil / offenses when the arbiter was blocked
+   */
+  async _settleKeeperEvents(txHash, aggId) {
+    const keeper = await this.getReputationKeeper();
+    const rcpt = await withRetry(() => this._getReceiptProvider().getTransactionReceipt(txHash));
+    if (!rcpt) throw new Error('receipt not available');
+    const aggIface = new ethers.Interface(AGG_EVENT_ABI);
+    const settledTopic = aggIface.getEvent('RoundSettled').topicHash;
+    const aggLower = this.aggregatorAddress.toLowerCase();
+    const keeperLower = this.keeperAddress.toLowerCase();
+    let segment = [];
+    for (const log of [...rcpt.logs].sort((a, b) => a.index - b.index)) {
+      const addr = String(log.address).toLowerCase();
+      if (addr === keeperLower) {
+        segment.push(log);
+      } else if (addr === aggLower && log.topics[0] === settledTopic) {
+        if (String(log.topics[1]).toLowerCase() === aggId.toLowerCase()) break;
+        segment = [];
+      }
+    }
+    const out = {};
+    for (const log of segment) {
+      let p;
+      try { p = keeper.interface.parseLog({ topics: log.topics, data: log.data }); } catch { continue; }
+      if (!p) continue;
+      const k = String(p.args.key).toLowerCase();
+      if (p.name === 'ScoresUpdated') {
+        out[k] = { ...(out[k] || {}), scored: true, quality: Number(p.args.quality), timeliness: Number(p.args.timeliness) };
+      } else if (p.name === 'OutcomeSkippedFrozen') {
+        out[k] = { ...(out[k] || {}), scored: false, skippedFrozen: true };
+      } else if (p.name === 'ArbiterBlocked') {
+        out[k] = { ...(out[k] || {}), blockedUntil: Number(p.args.until), offenses: Number(p.args.offenses) };
+      }
+    }
+    return out;
   }
 
   /**
@@ -1989,5 +2293,6 @@ function getVerdiktaService(networkKey) {
 module.exports = {
   getVerdiktaService,
   VerdiktaService,
-  NotConfiguredError
+  NotConfiguredError,
+  toAggId,
 };

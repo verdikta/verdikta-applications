@@ -6,6 +6,9 @@
  * detail the page formerly showed per class. Data comes from /api/arbiters/owned
  * for the header-selected network (read-only; no wallet needed).
  *
+ * Each arbiter row shows its two scores, offenses, health-call (freeze) state and
+ * exit time; the header shows the owner's claimable ETH on the aggregator.
+ *
  * Also shows a read-only Node Funding section (#funding) — each operator's
  * sending-key ETH balances + estimated query runway — reached from the Node ETH
  * cell in the analytics table. Mirrors the My Arbiters funding panel minus the
@@ -19,11 +22,24 @@ import { useNetwork } from '../context/NetworkContext';
 import { chainForNetwork } from '../config/chains';
 import { apiService } from '../services/api';
 import { estQueriesFor, fmtQueries } from '../utils/funding';
-import { STATUS_LABELS, reasonLines } from '../utils/arbiterRegistration';
+import { STATUS_LABELS, REASON_TEXT, reasonLines } from '../utils/arbiterRegistration';
 import '../styles/funding.css';
 import './OwnerDetails.css';
 
 const shortAddr = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
+const fmtTime = (sec) => (sec ? new Date(sec * 1000).toLocaleString() : null);
+
+// Health-call state of one arbiter: frozen (call unanswered past the deadline,
+// or re-syncing its chain), a call waiting for an answer, or none.
+function healthState(j) {
+  if (j.frozen || (j.statusReasons || []).includes('resyncing')) {
+    return { label: 'Frozen', title: `Health call sent ${fmtTime(j.callSentAt) || '—'}, not answered in time` };
+  }
+  if ((j.statusReasons || []).includes('callPending')) {
+    return { label: 'Call pending', title: `Health call sent ${fmtTime(j.callSentAt) || '—'}` };
+  }
+  return { label: 'OK', title: j.callAnsweredAt ? `Last answered ${fmtTime(j.callAnsweredAt)}` : undefined };
+}
 
 function OwnerDetails() {
   const { address } = useParams();
@@ -33,6 +49,7 @@ function OwnerDetails() {
   const explorer = chain.explorer;
 
   const [operators, setOperators] = useState([]);
+  const [claimableEth, setClaimableEth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const fundingRef = useRef(null);
@@ -47,6 +64,7 @@ function OwnerDetails() {
         if (cancelled) return;
         if (!res.success) throw new Error(res.error || 'Failed to load owner details');
         setOperators(res.data.operators || []);
+        setClaimableEth(res.data.claimableEth ?? null);
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load owner details');
       } finally {
@@ -99,6 +117,13 @@ function OwnerDetails() {
       qualityScore: j.qualityScore,
       timelinessScore: j.timelinessScore,
       fee: j.fee,
+      frozen: j.frozen,
+      callSentAt: j.callSentAt,
+      callAnsweredAt: j.callAnsweredAt,
+      exitAt: j.exitAt,
+      exit: j.exit,
+      understakedBy: j.understakedBy,
+      understakedUnflagged: j.understakedUnflagged,
     }))
   );
   const distinctAddresses = sortedOps.length;
@@ -118,6 +143,9 @@ function OwnerDetails() {
         </a>
       </p>
       <p className="network-note">Network: {chain.name}</p>
+      <p className="network-note" title="ETH this owner can withdraw from the aggregator's ethOwed ledger: arbiter base fees and bonuses across its operators, plus any draw / promote rewards and refunds it earned">
+        Claimable: <strong>{claimableEth ?? '—'}</strong> ETH
+      </p>
 
       <section className="owner-section">
         <h2><Users size={18} className="inline-icon" /> Registered Arbiters</h2>
@@ -131,6 +159,11 @@ function OwnerDetails() {
                 <th>Address</th>
                 <th>Job ID</th>
                 <th>Status</th>
+                <th>Quality</th>
+                <th>Timeliness</th>
+                <th>Offenses</th>
+                <th title="Health-call state: an unanswered call past the keeper's deadline freezes the arbiter">Health call</th>
+                <th title="When completeExit is allowed (exitAt), for an arbiter that requested its exit">Exit</th>
               </tr>
             </thead>
             <tbody>
@@ -161,8 +194,21 @@ function OwnerDetails() {
                         {arb.jobId}
                       </code>
                     </td>
-                    <td title={reasonLines(arb.statusReasons).join('\n')}>
+                    <td title={[
+                      ...reasonLines(arb.statusReasons),
+                      arb.understakedUnflagged ? REASON_TEXT.understakedUnflagged : null,
+                    ].filter(Boolean).join('\n')}>
                       {STATUS_LABELS[arb.status] || arb.status || '—'}
+                    </td>
+                    <td>{arb.qualityScore ?? '—'}</td>
+                    <td>{arb.timelinessScore ?? '—'}</td>
+                    <td>{arb.offenses ?? '—'}</td>
+                    <td title={healthState(arb).title}>{healthState(arb).label}</td>
+                    <td>
+                      {!arb.exit || arb.exit.state === 'none' ? '—'
+                        : arb.exit.state === 'unbonding' ? `unbonding until ${fmtTime(arb.exitAt) || '—'}`
+                          : arb.exit.state === 'ready' ? `ready since ${fmtTime(arb.exitAt) || '—'}`
+                            : 'unbonded; waiting out a block'}
                     </td>
                   </tr>
                 );

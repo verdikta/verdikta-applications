@@ -1598,13 +1598,19 @@ goes in a URL.
   at its next read, not before; what another tab or another sender did is caught by the read
   before sending and by the contract's own checks; a node is taken to answer truly for the block
   it names; and the nodes behind one address are taken to agree on the chain. What the page
-  holds all the same: a hold's state and its next step come from one read tied to one block's
-  hash, and a node without that block refuses the read. The one case left is an address that is
-  a pool, with a reorganization under way and nodes that do not yet agree: the header of an
-  older block, asked by number, can then come from a node on another chain than the one the
-  calls were made on, so the page may keep the line of one of its own transactions, hash and
-  amount, though its block was replaced. Nothing is sent on the strength of such a line, and
-  the page does not walk a block's ancestry. The
+  holds all the same, where a read address is configured (`VITE_SA_RPC_URL`): a hold's state and
+  its next step, as the page shows them, come from one read tied to one block's hash, and a node
+  without that block refuses the read. The one case left there is an address that is a pool,
+  with a reorganization under way and nodes that do not yet agree: the header of an older block,
+  asked by number, can then come from a node on another chain than the one the calls were made
+  on, so the page may keep the line of one of its own transactions, hash and amount, though its
+  block was replaced. Nothing is sent on the strength of such a line, and the page does not walk
+  a block's ancestry. A wallet's node is asked by the block's number, so none of that is held
+  for it: the read just before something is sent, and every read of the page where no read
+  address is configured, are tied to their block only by its hash read before and after the
+  calls, and for the rest stand on the assumption alone, that the nodes behind the wallet's
+  address agree on the chain. A site that wants what it shows of a hold tied to a block's hash
+  configures the read address. The
   design's order for the maker is "once the hold is mined, push the fix": a hold whose block is
   replaced after the maker acted on it is not something a page can undo, and the page says it at
   its next read. What the page does hold: it says "on hold" and "push the fix" only from one
@@ -1795,7 +1801,9 @@ requireCanonical: true}`), as Base's public endpoints do: a listing's page makes
 one read at that read's block hash, and a refusal is a failed read of the page, with no
 fallback to the block's number. The nodes behind the address are taken to agree on the chain;
 what the page holds where they do not, and the one case left, are under "The page reads; it
-does not watch" above.
+does not watch" above. Without a read address the page's reads go through the visitor's wallet,
+by block number, and what they show of a hold is not tied to a block's hash: it stands on the
+nodes behind the wallet's address agreeing on the chain.
 The API is same-origin under `/api`; `vite` and `vite preview` proxy it to `SA_API_URL`
 (default `http://127.0.0.1:5009`).
 

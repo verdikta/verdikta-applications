@@ -244,3 +244,22 @@ test('readFrom: a read of the block that is not complete is taken at once, and t
   assert.deepEqual({ reached: got.reached, seen: got.seen }, { reached: false, seen: true });
   assert.equal(taken.length, AFTER_TX_READS);
 });
+
+test('readFrom: once a read is taken, no read of an earlier block is taken or ends the reading (R9-F1)', async () => {
+  const sleep = async () => {};
+  const complete = (r) => r.checked;
+  // A top-up was mined at block 100 on a listing on hold. A read of 102 has the listing closed and could not check
+  // the top-up's block; a reader that trails then answers of block 101, where the listing was still on hold, and has
+  // everything checked. That read is from before what the page shows: it is not taken, and it does not end the reading.
+  const taken = [];
+  let left = [{ block: 102, state: 'closed', checked: false }, { block: 101, state: 'held', checked: true }];
+  let got = await readFrom(async () => left.shift() ?? { block: 101, state: 'held', checked: true }, 100, { sleep, complete, onRead: (r) => taken.push(`${r.block} ${r.state}`) });
+  assert.deepEqual(taken, ['102 closed'], 'the page never goes back to an earlier block');
+  assert.deepEqual({ reached: got.reached, seen: got.seen }, { reached: false, seen: true }, 'and the caller is told the reading did not complete');
+  // a read of the block already taken, or a later one, is taken and can complete
+  taken.length = 0;
+  left = [{ block: 102, state: 'closed', checked: false }, { block: 101, state: 'held', checked: true }, { block: 102, state: 'closed', checked: true }];
+  got = await readFrom(async () => left.shift(), 100, { sleep, complete, onRead: (r) => taken.push(`${r.block} ${r.state}`) });
+  assert.deepEqual(taken, ['102 closed', '102 closed']);
+  assert.deepEqual({ block: got.read.block, reached: got.reached, seen: got.seen }, { block: 102, reached: true, seen: true });
+});

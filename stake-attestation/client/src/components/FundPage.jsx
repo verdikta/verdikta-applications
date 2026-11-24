@@ -6,7 +6,7 @@ import { WalletError, chainReader, listingAt, stakeAttestation } from '../chain/
 import { safeguardTerms } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { holdView, readHold } from '../lib/hold.js';
-import { asKept, isKept, keptBlocks } from '../lib/seenMined.js';
+import { asKept, isKept, keptBlocks, refreshHeights } from '../lib/seenMined.js';
 import { readFrom } from '../lib/poll.js';
 import { STRINGS, fill } from '../strings.js';
 import { AwardLine, StatePill } from './Awards.jsx';
@@ -106,6 +106,9 @@ export function FundPage({ listingId }) {
   // the newest block this page knows the listing changed in: a transaction it sent, or a read through the wallet that
   // found the listing changed. No read from before it is taken, whichever action asks for the read.
   const needed = useRef(0);
+  // the block of the newest read this page has shown, on load or after: no read of an earlier block is taken after
+  // it, so a node that trails the one that answered before cannot put an earlier state of the listing back
+  const shownAt = useRef(0);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
@@ -116,7 +119,11 @@ export function FundPage({ listingId }) {
     let live = true;
     setLoaded(null);
     readListing(listingId, kept.current.blocks())
-      .then((got) => { if (live) setLoaded(got); })
+      .then((got) => {
+        if (!live) return;
+        if (Number.isSafeInteger(got.block)) shownAt.current = Math.max(shownAt.current, got.block);
+        setLoaded(got);
+      })
       .catch((err) => { if (live) setLoaded({ failed: err instanceof WalletError ? fill(STRINGS.wallet[err.code], err.vars) : errorReason(err) }); });
     return () => { live = false; };
   }, [listingId, attempt]);
@@ -138,28 +145,30 @@ export function FundPage({ listingId }) {
     refreshRun.current += 1;
     const run = refreshRun.current;
     const wanted = () => mounted.current && refreshRun.current === run;
-    // The heights each read asks the hash of: the blocks of the receipts the page still holds, and that of the
-    // receipt handed over this moment (its part holds it from its next render on).
-    const heights = () => [...new Set([...kept.current.blocks(), ...(isKept(told) ? [told.block] : [])])];
-    // Whether a read has checked every one of them: a hash at each that is not above its block.
-    const checked = (got) => heights().every((height) => height > got.block || typeof got.hashes?.[height] === 'string');
+    // The heights each read asks the hash of, and whether a read has checked them all: the blocks of the receipts
+    // the page still holds, and at first that of the receipt handed over this moment (lib/seenMined.js).
+    const { heights, checked } = refreshHeights(kept.current, told);
     // A read of the block waited for, or a later one, is the listing as the chain has it: it is shown at once. It is
-    // shown here and nowhere else, by readFrom, which hands over only a read that answered within its time: a read
-    // that timed out and answers later is taken by nothing, and cannot put an older listing back over a later one.
+    // shown here and nowhere else, by readFrom, which hands over only a read that answered within its time and is
+    // not of a block before the newest one shown: a read that timed out and answers later, or one from a node that
+    // trails, is taken by nothing, and cannot put an older listing back over a later one. A listing this page showed
+    // that such a read does not have is said as gone, not only as absent, also when the read before it failed.
     const show = (got) => {
-      // a listing this page showed that a read of a later block does not have: said as gone, not only as absent,
-      // also when the read before this one failed
+      shownAt.current = Math.max(shownAt.current, got.block);
       setLoaded(got.missing && lastListing.current !== null ? { ...got, gone: true } : got);
       // the chain as read at or after a hold's block says whether it is there: the receipt no longer stands in
       setHeldHere((seen) => (seen && got.block >= seen.block ? null : seen));
     };
     // A read that could not check a receipt's block is not the last one: the page reads again, the same bounded
     // number of times, and then says what it could not check.
-    readFrom(() => readListing(listingId, heights()), from, { live: wanted, onRead: show, complete: checked }).then(({ reached, seen }) => {
+    // No read is taken from before the block the page was told of, nor from before the newest block it has shown.
+    // Where none was taken, the page says it has not read the block it was told of only if it has shown none that
+    // late, and what it said it could not check stays said.
+    readFrom(() => readListing(listingId, heights()), Math.max(from, shownAt.current), { live: wanted, onRead: show, complete: checked }).then(({ reached, seen }) => {
       if (!wanted()) return;
       if (reached || seen) setBehind(null);
-      else if (from > 0) setBehind(from);
-      setUnchecked(!reached && seen);
+      else if (from > shownAt.current) setBehind(from);
+      if (seen) setUnchecked(!reached);
     });
   }, [listingId]);
   // The listing this page shows, by maker and artifact. On a chain whose blocks were replaced the id can come to name
@@ -177,16 +186,18 @@ export function FundPage({ listingId }) {
   // A hold or an opening is the listing's it was sent for. Its receipt can arrive after the page has come to show
   // another listing under the id (the action was still waiting when a read replaced it): each callback is made for
   // the listing shown when its action was drawn, and one made for another listing sets nothing here. The page still
-  // reads from the receipt's block.
+  // reads from the receipt's block, and does not ask for the hash there: nothing on the page holds that receipt.
   /** A hold this page sent was mined (`seen`: its kept receipt, with the Held event's time): said at once, then read from its block. */
   const onHeld = useCallback((seen) => {
-    if (identity === shownIdentity.current) setHeldHere(asKept(seen));
-    refresh(seen);
+    const here = identity === shownIdentity.current;
+    if (here) setHeldHere(asKept(seen));
+    refresh(here ? seen : seen.block);
   }, [refresh, identity]);
   /** The opening fund() was mined (`seen`: its kept receipt): its own line stays, and the rest of the page follows the listing. */
   const onOpened = useCallback((seen) => {
-    if (identity === shownIdentity.current) setOpenedHere(seen);
-    refresh(seen);
+    const here = identity === shownIdentity.current;
+    if (here) setOpenedHere(seen);
+    refresh(here ? seen : seen.block);
   }, [refresh, identity, setOpenedHere]);
 
   const header = (

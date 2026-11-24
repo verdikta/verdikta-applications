@@ -123,7 +123,9 @@ export const AFTER_TX_WAIT_MS = 2000;
  * A read is taken (`onRead`) only here, once it has answered within its time and is of that block or a later one. A
  * read that timed out goes on in the background, and whatever it answers later is taken by nothing: it cannot put an
  * older state back over a later read's. A read that is of the block and is not `complete` (it could not check
- * something it should have) is taken all the same, and the reading goes on, within the same number of tries.
+ * something it should have) is taken all the same, and the reading goes on, within the same number of tries. Once a
+ * read is taken, none of an earlier block is: a node that trails the one that answered before cannot put the state
+ * of an earlier block back, nor end the reading with it.
  * @template {{ block: number }} T
  * @param {() => Promise<T|null>} read - one read, with the block it is of; "nothing is there" is an answer with its
  *        block like any other, since null says nothing of any block and is tried again. It only reads: what a read
@@ -142,14 +144,17 @@ export async function readFrom(read, minBlock, {
 } = {}) {
   let newest = null;
   let seen = false;
+  // the block a read has to be of to be taken: the one waited for, then that of the newest read taken
+  let floor = minBlock;
   for (let i = 0; i < tries; i += 1) {
     if (i) await sleep(waitMs);
     if (!live()) break;
     try {
       const got = await withTimeout(Promise.resolve().then(read), readTimeoutMs);
       if (got) {
-        if (got.block >= minBlock && live()) {
+        if (got.block >= floor && live()) {
           seen = true;
+          floor = got.block;
           onRead(got);
           if (complete(got)) return { read: got, reached: true, seen };
         }

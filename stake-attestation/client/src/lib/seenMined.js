@@ -94,3 +94,26 @@ export function keptBlocks() {
     blocks: () => [...held.keys()],
   });
 }
+
+/**
+ * What one refresh of the page asks of its reads: the blocks to give the hash at, and whether a read has checked
+ * them all. They are the blocks of the receipts the page holds (`registry`) and, at first, that of a receipt handed
+ * to this refresh (`told`): its part holds it only from its next render on. From the first read that is held to them
+ * the registry alone decides: by then the part holds the receipt, or nothing on the page does (the page came to show
+ * another listing under the id) and its block is asked for no more.
+ * @param {{ blocks(): number[] }} registry - keptBlocks()
+ * @param {object|number} told - a kept receipt, or the number of a block
+ */
+export function refreshHeights(registry, told) {
+  let handed = isKept(told) ? told.block : null;
+  const heights = () => [...new Set([...registry.blocks(), ...(handed === null ? [] : [handed])])];
+  return {
+    heights,
+    /** Whether a read has a hash at each of them that is not above its block. */
+    checked(got) {
+      const all = heights().every((height) => height > got.block || typeof got.hashes?.[height] === 'string');
+      handed = null;
+      return all;
+    },
+  };
+}

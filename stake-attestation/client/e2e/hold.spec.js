@@ -1107,6 +1107,70 @@ test.describe('the maker\'s hold', () => {
     expect(headers, 'the replaced receipt\'s block').not.toContain(height(first.blockNumber));
   });
 
+  test('a reader that trails after a later block was shown: the page does not go back to the earlier block, or to its hold (R9-F1)', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await holdOnChain(chain, stack, listingId);
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    await expect(page.getByTestId('listing-held')).toBeVisible();
+    // From the top-up on, the reader's headers are the test's to answer. They wait until the chain is where the test
+    // wants it. The reader then does not give the header of the top-up's block, and once it was asked for that, it
+    // trails: its latest block is one in which the listing was still on hold.
+    let release;
+    const released = new Promise((resolve) => { release = resolve; });
+    const reader = { scripted: false, toppedUpAt: null, trailing: null, trails: false, trailed: 0 };
+    const height = (n) => `0x${n.toString(16)}`;
+    const stop = await interceptRpc(page, stack, async (p) => {
+      if (!reader.scripted || p.method !== 'eth_getBlockByNumber') return undefined;
+      await released;
+      if (p.params?.[0] === reader.toppedUpAt) {
+        reader.trails = true;
+        return { result: null };
+      }
+      if (p.params?.[0] !== 'latest' || !reader.trails) return undefined;
+      reader.trailed += 1;
+      return { result: reader.trailing };
+    }, { from: 'reader' });
+    const panel = page.getByTestId('top-up');
+    await panel.getByTestId('top-up-amount').fill('0.01');
+    reader.scripted = true;
+    await panel.getByRole('button', { name: fill(STRINGS.topUp.button, { eth: '0.01' }) }).click();
+    await expect(panel.getByTestId('topped-up')).toBeVisible({ timeout: 30_000 });
+    const [toppedUp] = (await chain.sa.queryFilter(chain.sa.filters.Funded(listingId))).slice(-1);
+    // one block later the listing is still on hold; in the block after that its maker closes it, from elsewhere
+    await chain.provider.send('hardhat_mine', ['0x1']);
+    reader.toppedUpAt = height(toppedUp.blockNumber);
+    reader.trailing = await chain.provider.send('eth_getBlockByNumber', [height(toppedUp.blockNumber + 1), false]);
+    await (await (await chain.as(stack.accounts.maker)).close(listingId)).wait();
+    expect(await chain.sa.heldAt(listingId, { blockTag: toppedUp.blockNumber + 1 }) > 0n, 'on hold in the block the reader trails at').toBe(true);
+    release();
+    // The first read is of the block with the close: the listing is closed, and the top-up's block could not be
+    // checked, so the page reads again. Those reads come from the trailing block, where the listing is on hold and
+    // the top-up's block is its parent: each is whole and checked, and none is taken, since the page has shown a
+    // later block. The page stays on the closed listing and says what it could not check.
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    await expect(page.getByTestId('listing-unchecked')).toHaveText(F.unchecked, { timeout: 30_000 });
+    expect(reader.trails).toBe(true);
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed);
+    for (const id of ['listing-held', 'listing-held-since', 'hold', 'roll-forward', 'listing-behind']) await expect(page.getByTestId(id)).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText('push the fix');
+    // asked again of a reader that still trails, the page stays where it is
+    const trailed = reader.trailed;
+    await page.getByTestId('listing-read-again').click();
+    await expect.poll(() => reader.trailed, { timeout: 30_000 }).toBeGreaterThanOrEqual(trailed + 4);
+    await expect(page.getByTestId('listing-unchecked')).toBeVisible();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed);
+    await expect(page.getByTestId('listing-held')).toHaveCount(0);
+    // a reader that has caught up and gives the header: the top-up's block is the chain's, and its line is said
+    await stop();
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('listing-unchecked')).toHaveCount(0, { timeout: 30_000 });
+    await expect(panel.getByTestId('topped-up')).toContainText(toppedUp.transactionHash);
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed);
+  });
+
   test('a hold the chain dates otherwise than the receipt did: one time on the page, the chain\'s, and no transaction named for it', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     await installWallet(page, stack);

@@ -674,9 +674,10 @@ each mode 0600, in a folder of mode 0700.
       ends with COMMIT_REPLACED before it signs anew: the transaction that took the nonce may
       be a claim of the files set aside, sent some other way, which is paid and needs them.
       While that transaction is in a block that is not final, the run says the commit is not
-      mined (TX_PENDING, exit 4): run the same command again. The text of COMMIT_REPLACED says
-      what to look for before a new folder pays, how a claim of the files set aside gets them
-      back, and what that run finds and does not.
+      mined (TX_PENDING, exit 4): run the same command again, and do not pay from a new folder
+      yet. Either text names the files set aside and says, at once, where to look for a claim
+      of them (the wallet's whole history on the contract, not only the transaction that took
+      the nonce), how such a claim gets its files back, and what that run finds and does not.
     - Such a folder signs nothing more: every later run of `commit` there ends with
       COMMIT_REPLACED, and the commit goes in a new folder (copy finding.json, report.md and
       the patches there).

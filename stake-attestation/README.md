@@ -1454,11 +1454,15 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   are set aside, so a process that stops anywhere on the way leaves no folder that signs. It is said only once it
   cannot be undone: while the transaction that took the nonce is in a block the node does not name as finalized, a
   reorganization can still free the nonce and let the saved commit go, so until then the run says the commit is not
-  mined and is to be made again (`TX_PENDING`, exit 4). The commit goes in a new folder, with one copy of the claim's
-  files, and only after a look for a claim of every set of files the folder set aside and of its own two hashes,
-  mined or pending, among the transactions of the wallet each `state.json` names: the transaction that took the
-  nonce, and those after it. The text says so, names every set, and says how a claim of files set aside gets them
-  back: a new claim folder with a `.verdikta-claim` of mode 0700 in it, that stamp's `archive.zip`, `keys.json`,
+  mined and is to be made again (`TX_PENDING`, exit 4). That text names the files set aside and the way back for a
+  claim of them at once, since such a claim's disclosure window does not wait for finality; it holds back only the
+  advice to pay from a new folder. Once the nonce is used for good, the reads that decide come in an order no fork
+  change gets between: the saved commit's own receipt is asked for (a reorganization can have mined it), a claim of
+  the folder's hashes is looked for once more, and only with neither is the commit replaced. The commit goes in a new
+  folder, with one copy of the claim's files, and only after a look for a claim of every set of files the folder set
+  aside and of its own two hashes, mined or pending, among the transactions of the wallet each `state.json` names,
+  whatever their nonce: the transaction that took the nonce, those before it and those after it. The text says so,
+  names every set, and says how a claim of files set aside gets them back: a new claim folder with a `.verdikta-claim` of mode 0700 in it, that stamp's `archive.zip`, `keys.json`,
   `ciphertext.age` and `state.json` there under those plain names (and `anchor.json` where the stamp has one), each
   with its mode, and `commit` on that folder, without `--yes`. It also says what that run finds. It looks for the
   claim in the logs from the block the set was prepared at, or, where the chain was reorganized below that block and

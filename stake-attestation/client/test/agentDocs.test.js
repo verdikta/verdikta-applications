@@ -1210,27 +1210,33 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // later run ends there again.
   const gone = /if \(gone\) \{[\s\S]*?\n  \}\n/.exec(/async function finishCommitWait[\s\S]*?\n\}/.exec(commit)?.[0] ?? '')?.[0];
   assert.ok(gone, 'tool/src/commit.js: finishCommitWait, the gone branch');
-  assert.match(gone, /const stop = replacedAfterRestart\(ws\);\s*if \(stop\) \{[\s\S]*?const taken = await nonceTakenForGood\(ctx, state\);\s*if \(taken !== 'final'\) \{[\s\S]*?throw fail\('TX_PENDING', [^\n]*\n\s*\}\s*throw fail\('COMMIT_REPLACED', stop\);\s*\}[\s\S]*?const next = \{ \.\.\.withKind\(state, false\), stage: 'prepared', commitTx: null \};\s*ws\.saveState\(next\);/, 'refused before the folder is saved as prepared, and for good only once the transaction that took the nonce is final');
+  assert.match(gone, /const stop = replacedAfterRestart\(ws\);\s*if \(stop\) \{[\s\S]*?const taken = await nonceTakenForGood\(ctx, state\);\s*if \(taken !== 'final'\) \{[\s\S]*?throw fail\('TX_PENDING', pendingAfterRestart\(ws, state, why\)\);\s*\}[\s\S]*?if \(await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionReceipt\(state\.commitTx\.hash\)\)\) \{\s*return finishCommitWait\(ctx, ws, state, await ctx\.waitMined\(state\.commitTx, \{ confirmations: ctx\.confirmations \}\)\);\s*\}\s*const now = await anchoredClaim\(ctx, ws, state\);\s*if \(now\.existing\) return adoptLogged\(ctx, ws, state, now\.existing, now\.from\);\s*throw fail\('COMMIT_REPLACED', stop\);\s*\}[\s\S]*?const next = \{ \.\.\.withKind\(state, false\), stage: 'prepared', commitTx: null \};\s*ws\.saveState\(next\);/, 'for good only once the transaction that took the nonce is final; then the saved commit\'s own receipt and a claim of its hashes are asked for again; and all of it before the folder is saved as prepared');
   // final: the wallet's count at the node's finalized block is past the saved nonce
   assert.match(commit, /async function nonceTakenForGood\(ctx, state\) \{\s*const head = await blockIdAt\(ctx\);\s*const finalized = head \? await finalizedBlockOf\(ctx, head\) : null;\s*if \(!finalized\) return 'no-finalized-block';\s*return await countAt\(ctx, state\.hunter, finalized\.number\) > state\.commitTx\.nonce \? 'final' : 'not-final';/);
   assert.equal(new ToolError('TX_PENDING').exitCode, 4);
   assert.equal(gone.split('ws.saveState(').length, 2, 'the one write of that branch comes after the refusal');
   const replaced = /function replacedAfterRestart\(ws\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
   assert.ok(replaced, 'tool/src/commit.js: replacedAfterRestart');
-  assert.match(replaced, /const stamps = ws\.setAsideClaims\(\);\s*if \(stamps\.length === 0\) return null;\s*return `This folder signs nothing more: --restart set files aside here \(\$\{asideNames\(stamps\)\}\), /);
-  // the text: where a claim of the files set aside gets them back, what that run finds and what it does not, and
-  // where the commit goes otherwise. It promises no command the tool does not have.
-  const replacedText = /return `(This folder signs nothing more: [^`]*)`;/.exec(replaced)?.[1];
-  assert.ok(replacedText);
+  // the text: what to look for before a new folder pays, how a claim of the files set aside gets them back, what that
+  // run finds and what it does not, and where the commit goes otherwise. It promises no command the tool does not have.
+  assert.match(replaced, /const stamps = ws\.setAsideClaims\(\);\s*if \(stamps\.length === 0\) return null;\s*return `This folder signs nothing more: \$\{setAsideMayBePaid\(stamps\)\} Before a new folder pays, look for a claim of each of them, and of this folder's own two hashes \(state\.json\), mined or pending: \$\{WHERE_TO_LOOK\} \$\{RESTORE\} If no such claim exists, prepare the commit in a new folder: copy finding\.json, report\.md and the patches there, and run commit on it\.`;/);
+  assert.match(commit, /const setAsideMayBePaid = \(stamps\) => `--restart set files aside here \(\$\{asideNames\(stamps\)\}\), and a claim of the two hashes in one of those state\.json files may have been sent some other way: by the transaction that took the nonce, or by another\.`;/);
+  // no nonce bounds the search
+  assert.match(commit, /const WHERE_TO_LOOK = `\$\{SAVED_STATE_NAMES\} Look through that wallet's transactions on the contract, whatever their nonce: the one that took the nonce, those before it and those after it\. A claim that exists is paid, its disclosure window is running, and it needs its files\.`;/);
+  const restore = /const RESTORE = '([^\n]*)';\n/.exec(commit)?.[1].replace(/\\'/g, '\'');
+  assert.ok(restore, 'tool/src/commit.js: RESTORE');
   for (const said of [
-    /Before a new folder pays, look for a claim of each of them, and of this folder's own two hashes \(state\.json\), mined or pending: \$\{SAVED_STATE_NAMES\} Look among that wallet's transactions: the one that took the nonce, and those after it\./,
-    /make a new claim folder with a \.verdikta-claim folder in it, of mode 0700; copy that stamp's archive\.zip, keys\.json, ciphertext\.age and state\.json there under those plain names, and anchor\.json too where the stamp has one, each with its mode \(cp -p\); and run commit on that folder, without --yes\./,
+    /^For a claim of files that were set aside: make a new claim folder with a \.verdikta-claim folder in it, of mode 0700; copy that stamp's archive\.zip, keys\.json, ciphertext\.age and state\.json there under those plain names, and anchor\.json too where the stamp has one, each with its mode \(cp -p\); and run commit on that folder, without --yes\./,
     /That run looks for the claim in the logs from the block the set was prepared at \(startBlock in its state\.json\), or, where the chain was reorganized below that block and the set's anchor\.json holds a finalized block that still stands, from that block, which needs an RPC that serves the logs from there; and it discloses the claim it finds\./,
     /If it prints a commit's terms and asks for --yes instead, it did not find the claim: do not give --yes there, which would pay for a second one\./,
-    /It does not find a claim below that: for a set with no anchor\.json, one that a reorganization put below startBlock\./,
-    /If no such claim exists, prepare the commit in a new folder: copy finding\.json, report\.md and the patches there, and run commit on it\.$/,
-  ]) assert.match(replacedText, said);
-  assert.doesNotMatch(replacedText, /#\d|--adopt|later version/);
+    /It does not find a claim below that: for a set with no anchor\.json, one that a reorganization put below startBlock\.$/,
+  ]) assert.match(restore, said);
+  assert.doesNotMatch(`${replaced} ${restore}`, /#\d|--adopt|later version/);
+  // before finality the run says the same of the files set aside, and holds back only the advice to pay anew
+  const pending = /function pendingAfterRestart\(ws, state, why\) \{[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(pending, 'tool/src/commit.js: pendingAfterRestart');
+  assert.match(pending, /return `Transaction \$\{state\.commitTx\.hash\}: it stays saved, and no other was signed\. Another transaction of this wallet has its nonce, \$\{why\}\. If that stands, this folder signs nothing more, and this command says so then\. Do not pay from a new folder before this command has said that this folder signs nothing more\. Meanwhile, \$\{setAsideMayBePaid\(stamps\)\} Look for a claim of each of them now, mined or pending: \$\{WHERE_TO_LOOK\} \$\{RESTORE\}`;/);
+  assert.doesNotMatch(pending, /prepare the commit in a new folder|Nothing was signed/);
   // (what the restored folder's run covers is anchoredClaim's: from startBlock, or from the finalized block its anchor proves)
   assert.match(/async function provenStart[\s\S]*?\n\}/.exec(commit)?.[0] ?? '', /return \{ from: anchor\.finalized\.number, reorganized: true \};/);
   // with nothing set aside the folder is prepared again, and a run again signs a new one, as it did
@@ -1261,7 +1267,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
       // (4) anchor.json and COMMIT_REPLACED
       'Every folder saves anchor.json when it is prepared. A commit whose nonce went to another transaction before it was mined, with no claim made, ends with COMMIT_REPLACED, and a run again signs a new one.',
       // (5) with files set aside, COMMIT_REPLACED before anything is signed anew
-      'In a folder where --restart set files aside, a run that finds its saved commit replaced ends with COMMIT_REPLACED before it signs anew: the transaction that took the nonce may be a claim of the files set aside, sent some other way, which is paid and needs them. While that transaction is in a block that is not final, the run says the commit is not mined (TX_PENDING, exit 4): run the same command again. The text of COMMIT_REPLACED says what to look for before a new folder pays, how a claim of the files set aside gets them back, and what that run finds and does not.',
+      'In a folder where --restart set files aside, a run that finds its saved commit replaced ends with COMMIT_REPLACED before it signs anew: the transaction that took the nonce may be a claim of the files set aside, sent some other way, which is paid and needs them. While that transaction is in a block that is not final, the run says the commit is not mined (TX_PENDING, exit 4): run the same command again, and do not pay from a new folder yet. Either text names the files set aside and says, at once, where to look for a claim of them (the wallet\'s whole history on the contract, not only the transaction that took the nonce), how such a claim gets its files back, and what that run finds and does not.',
       // (6) such a folder signs nothing more
       'Such a folder signs nothing more: every later run of `commit` there ends with COMMIT_REPLACED, and the commit goes in a new folder (copy finding.json, report.md and the patches there).',
     ]) assert.ok(nine.includes(said), said);

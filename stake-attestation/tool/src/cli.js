@@ -11,7 +11,7 @@ import { fail, ToolError } from './errors.js';
 import { createHunter } from './hunter.js';
 import { withoutProofText } from './forecast.js';
 import { createPinner } from './ipfs.js';
-import { forecastFooter } from './notices.js';
+import { forecastFooter, LATE_CLAIM_NOTE } from './notices.js';
 import { plainText, scrubber } from './secrets.js';
 import { settlementLines } from './settlement.js';
 import { WATCH_MAX_MS } from './status.js';
@@ -21,7 +21,7 @@ export { COMMANDS } from './usage.js';
 
 const { version } = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
-const FLAGS = new Set(['--json', '--no-pack', '--remote-runner', '--yes', '--restart', '--accept-unread-pin', '--retrigger', '--wait', '--waive-appeal']);
+const FLAGS = new Set(['--json', '--no-pack', '--remote-runner', '--yes', '--late', '--restart', '--accept-unread-pin', '--retrigger', '--wait', '--waive-appeal']);
 const VALUES = new Set(['--listing', '--listing-archive', '--key-file', '--rpc-url', '--contract', '--gateway', '--max-wait-ms']);
 
 function usageError(text) {
@@ -182,8 +182,9 @@ function printForecast(out, { forecast: f, pack, claimDir }, { noPack }) {
 }
 
 function printCommit(out, r) {
-  out(`Claim ${r.claimId} on listing ${r.listingId}: ${r.stage}.`);
+  out(`${r.late ? 'Late claim' : 'Claim'} ${r.claimId} on listing ${r.listingId}: ${r.stage}.`);
   out(`Paid ${eth(r.valueWei)}: bond ${eth(r.bondWei)}, prepay ${eth(r.prepayWei)}.`);
+  if (r.late) out(LATE_CLAIM_NOTE);
   out(`archive sha256 ${r.archiveSha256}`);
   out(`ciphertext sha256 ${r.ciphertextSha256}`);
   out(`ciphertext CID ${r.ciphertextCid}`);
@@ -211,7 +212,9 @@ function printFailedRound(out, f) {
 }
 
 function printStatus(out, s) {
-  out(`Claim ${s.claimId} on listing ${s.listingId}: ${s.state}${s.outcome ? ` ${s.outcome}` : ''}${stageOf(s)}`);
+  out(`${s.late ? 'Late claim' : 'Claim'} ${s.claimId} on listing ${s.listingId}: ${s.state}${s.outcome ? ` ${s.outcome}` : ''}${stageOf(s)}`);
+  // node P43: a late claim says so, and that no award rides on it
+  if (s.late) out(LATE_CLAIM_NOTE);
   if (s.times.revealableAt) out(`Revealable at ${when(s.times.revealableAt)}`);
   if (s.times.revealDeadline) out(`Reveal before ${when(s.times.revealDeadline)}`);
   if (s.revealDeadlineMoved) out(`The reveal deadline moved earlier, from ${when(s.revealDeadlineMoved.from)}${s.revealDeadlineMoved.cause === 'release' ? ': the maker released the claim' : s.revealDeadlineMoved.cause === 'rollForward' ? ': the maker rolled the listing forward' : ''}`);
@@ -315,7 +318,7 @@ async function dispatch(verb, args, io, env, write) {
       const claimDir = needsDir();
       needsIpfs();
       const hunter = createHunter({ ...shared, ...(await walletOptions()), pinner: pinnerOf(env, scrub) });
-      const r = await hunter.commit({ claimDir, listingId: listingOf(), acknowledge: options['--yes'] === true, restart: options['--restart'] === true, acceptUnreadPin: options['--accept-unread-pin'] === true });
+      const r = await hunter.commit({ claimDir, listingId: listingOf(), late: options['--late'] === true, acknowledge: options['--yes'] === true, restart: options['--restart'] === true, acceptUnreadPin: options['--accept-unread-pin'] === true });
       if (json) write(io.stdout, asJson(r));
       else printCommit(out, r);
       return 0;

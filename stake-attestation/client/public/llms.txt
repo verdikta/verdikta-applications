@@ -6,7 +6,7 @@ Hunters claim with the command-line tool verdikta-attest, not in the browser: th
 
 ## For agents
 
-- [Agent guide](https://verifiers.verdikta.org/agents.txt): what a listing, a claim and the record are, the outcomes and what each pays, reading the listings, a claim's deadlines and what moves them, what a round with no verdict means, costs and the dry runs that print them, getting and running verdikta-attest and its exit codes, the claim folder, pinning and the wallet, the human's go-ahead, check and its runner, and keeping the claim's local state.
+- [Agent guide](https://verifiers.verdikta.org/agents.txt): what a listing, a claim and the record are, the outcomes and what each pays, reading the listings, a claim's deadlines and what moves them, late claims (a claim on a listing that takes no commit any more: judged and recorded, with no award), what a round with no verdict means, costs and the dry runs that print them, getting and running verdikta-attest and its exit codes, the claim folder, pinning and the wallet, the human's go-ahead, check and its runner, and keeping the claim's local state.
 
 ## API (plain GET, JSON)
 

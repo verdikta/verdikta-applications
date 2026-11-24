@@ -36,9 +36,17 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      a folder with none of a claim's files is refused, with no forecast: it says nothing of a claim
                      on a listing that names documents (stake.documents), check shows the documents tier the runner
                      built: the maker's statement of what the code must do. Documents never widen the scope
-  commit <claim-dir> --listing <id> [--yes] [--restart] [--accept-unread-pin]
+  commit <claim-dir> --listing <id> [--late] [--yes] [--restart] [--accept-unread-pin]
                      on a folder with no commit signed yet, without --yes it prints the terms, the price and how
                      many claims on the listing are open ahead of yours, and sends nothing
+                     --late files a late claim, on a listing that takes no commit any more: its stake has rolled
+                     forward, or closed after it opened, or its maker holds it. A late claim is judged and recorded,
+                     and pays no award. It costs what a commit costs; the bond is forfeited on INVALID, and the
+                     prepay is spent on the evaluation. The wrong kind for the listing is refused, with or without
+                     --late, before anything is pinned or sent. Once a folder holds a late claim, prepared or
+                     signed, a later run goes on with that one, with --late or without it; the price it signs is
+                     the price its terms named. --restart does not start a late claim over: a changed one goes in
+                     a new folder
   reveal <claim-dir> [--retrigger] [--yes]
                      pins the plaintext and pays any top-up the live fee needs; prints it, and sends only with --yes
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes

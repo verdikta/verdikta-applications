@@ -556,6 +556,49 @@ test('commit --late --restart is refused before anything is deleted, pinned or s
   }
 });
 
+test('a commit\'s prepared folder that a late run takes over is a late claim\'s from then on, signed or not: --restart no longer starts it over', async () => {
+  try {
+    const l = await w.listing();
+    const dir = makeClaimDir();
+    assert.equal((await child(dir, l.listingId, 'prepare:saved', { ordinary: true })).signal, 'SIGKILL');
+    assert.equal(Object.hasOwn(readJson(statePath(dir)), 'late'), false, 'a commit\'s prepared folder');
+    await (await asMaker().hold(l.listingId)).wait();
+    const m = await mark();
+    // the late run has its --yes, and stops before it signs: the price changes after its terms are said
+    let searches = 0;
+    const provider = new Proxy(w.provider, {
+      get(target, prop) {
+        if (prop === 'getLogs') {
+          return async (filter) => {
+            searches += 1;
+            if (searches === 2) await (await w.aggregator.setFeeMultiplier(5n)).wait();
+            return target.getLogs(filter);
+          };
+        }
+        const v = target[prop];
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    await assert.rejects(w.hunter({ provider }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }), (e) => e.code === 'LATE_PRICE_CHANGED');
+    const saved = readJson(statePath(dir));
+    assert.equal(saved.stage, 'prepared');
+    assert.equal(saved.late, true, 'the folder says it holds a late claim');
+    assert.equal(saved.commitTx ?? null, null, 'nothing was signed');
+    // --restart, with no flag, is refused as for any late claim, and nothing is removed
+    const kept = filesOf(dir);
+    await assert.rejects(w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true, restart: true }), (e) => e.code === 'LATE_NEEDS_NEW_FOLDER');
+    assert.deepEqual(filesOf(dir), kept);
+    await assertNothingSent(m, null, 'the takeover and the refusal');
+    // and a run with no flag files the late claim, with the keys the folder had
+    const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true });
+    assert.equal(r.late, true);
+    assert.equal(fs.readFileSync(statePath(dir, 'keys.json')).toString('base64'), kept['keys.json']);
+    assert.equal(await w.claimCount(), m.claims + 1n);
+  } finally {
+    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+  }
+});
+
 test('a late claim whose files changed is told to use a new folder, and nothing is signed', async () => {
   const { l, dir } = await preparedLate();
   const m = await mark();

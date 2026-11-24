@@ -158,15 +158,30 @@ async function blockIdAt(ctx, number = null) {
 /**
  * A Committed or a LateClaim log of this hunter, listing and these two hashes, since the block the folder was prepared
  * at. Either kind is a claim on these hashes that has its bond: one filter, the two events' topics in its first place.
+ *
+ * The range is read in pages of ctx.logPageBlocks. An RPC that caps eth_getLogs below that refuses a page, so a page
+ * that is refused is asked for again in halves, down to one block, as settlement.js reads its own: a prepared folder
+ * is scanned before a resume and before --restart, and on such an RPC neither could go on once the folder was older
+ * than the cap. A node that does not answer at all refuses the single block too, and that is the error.
  */
 async function findCommitted(ctx, state, upTo = null) {
   const [first, ...indexed] = ctx.topics('Committed', [null, BigInt(state.listingId), state.hunter]);
   const topics = [[first, ctx.topics('LateClaim', [])[0]], ...indexed];
   // up to the head as it is now, or up to the block a caller has read something else at (nonceAndClaimAt)
   const head = upTo ?? await headNow(ctx);
-  for (let from = state.startBlock; from <= head; from += ctx.logPageBlocks) {
-    const to = Math.min(head, from + ctx.logPageBlocks - 1);
-    const logs = await ctx.rpc(() => ctx.provider.send('eth_getLogs', [{ address: ctx.contract, topics, fromBlock: quantity(from), toBlock: quantity(to) }]));
+  let page = Math.max(1, Math.floor(ctx.logPageBlocks));
+  for (let from = state.startBlock; from <= head;) {
+    const to = Math.min(head, from + page - 1);
+    let logs;
+    try {
+      logs = await ctx.rpc(() => ctx.provider.send('eth_getLogs', [{ address: ctx.contract, topics, fromBlock: quantity(from), toBlock: quantity(to) }]));
+    } catch (err) {
+      // a refusal, not a read that timed out (that one says so): waiting again on every half would only take longer
+      if (err.code !== 'RPC_UNAVAILABLE' || err.detail || to === from) throw err;
+      page = Math.ceil((to - from + 1) / 2);
+      continue;
+    }
+    from = to + 1;
     for (const log of logs) {
       const parsed = ctx.parseLog(log);
       if (CLAIM_MADE.includes(parsed?.name) && parsed.args.archiveHash === state.archiveSha256 && parsed.args.ciphertextSha256 === state.ciphertextSha256) {

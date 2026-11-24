@@ -1189,7 +1189,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   const runBody = /export async function runCommit[\s\S]*$/.exec(commit)[0];
   assert.ok(runBody.indexOf('if (state?.stage === \'prepared\') {') < runBody.indexOf('await readyToCommit('), 'adopted before the terms and --yes');
   // the logs are read from the block the folder was prepared at, as they always were, and state.json is what it was
-  assert.match(commit, /for \(let from = state\.startBlock; from <= head; from \+= ctx\.logPageBlocks\) \{/);
+  assert.match(commit, /let page = Math\.max\(1, Math\.floor\(ctx\.logPageBlocks\)\);\s*for \(let from = state\.startBlock; from <= head;\) \{/);
   assert.doesNotMatch(commit, /startBlockHash/);
   assert.match(section(4), /A folder that `commit` has prepared and whose two hashes already have a claim on the chain, sent some other way than by this tool, is under way too: any run of `commit` there adopts that claim, pins its ciphertext and sends the disclose, --yes or not/);
   assert.match(toolSrc('usage.js').replace(/\s+/g, ' '), /a claim of the folder's two hashes that is on the chain already, sent some other way, is under way like a signed one: any run adopts it and discloses it, --yes or not/);

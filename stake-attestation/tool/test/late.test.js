@@ -841,6 +841,51 @@ test('a head that is behind the chain is behind for the nonce and the logs alike
   assert.equal(await w.claimCount(), count + 1n, 'one claim, one bond');
 });
 
+// Round 10: a prepared folder is scanned before a resume and before --restart, so on an RPC that caps eth_getLogs
+// below the range a folder has grown to, neither could go on. A page that is refused is asked for again in halves.
+test('an RPC that caps eth_getLogs below the blocks a prepared folder is old: the scan goes on in smaller pages, for a resume and for --restart', async () => {
+  try {
+    // an ordinary commit's folder, ten blocks old, and a cap of three: --restart starts over
+    {
+      const l = await w.listing();
+      const dir = makeClaimDir();
+      const count = await w.claimCount();
+      assert.equal((await child(dir, l.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
+      const old = readJson(statePath(dir));
+      await w.mine(10);
+      w.logLimits.maxBlocks = 3;
+      w.logLimits.calls.length = 0;
+      const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true });
+      assert.equal(r.stage, 'disclosed');
+      assert.notEqual(r.ciphertextSha256, old.ciphertextSha256, 'new keys');
+      assert.equal(await w.claimCount(), count + 1n);
+      const asked = w.logLimits.calls.filter((c) => c.fromBlock !== undefined);
+      assert.ok(asked.some((c) => c.refused), 'the first page was refused');
+      assert.ok(asked.filter((c) => !c.refused).every((c) => c.blocks <= 3), 'and every page answered is within the cap');
+      w.logLimits.maxBlocks = null;
+    }
+    // a late claim's folder, whose claim was sent some other way seven blocks on: found past the first pages, adopted
+    {
+      const l = await rolled();
+      const dir = makeClaimDir();
+      const count = await w.claimCount();
+      assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+      const saved = readJson(statePath(dir));
+      await w.mine(7);
+      const other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+      await w.mine(2);
+      w.logLimits.maxBlocks = 3;
+      const r = await late({ claimDir: dir, listingId: l.listingId });
+      assert.equal(r.stage, 'disclosed');
+      assert.equal(r.commitTx, other.hash);
+      assert.equal(await w.claimCount(), count + 1n, 'one claim');
+    }
+  } finally {
+    w.logLimits.maxBlocks = null;
+    w.logLimits.calls.length = 0;
+  }
+});
+
 // Round 7: a run without --yes on a prepared folder is a dry run only while no claim of its hashes is on the chain.
 test('a prepared folder whose claim is on the chain already is under way: a run without --yes adopts and discloses it, as it resumes a signed one', async () => {
   const l = await rolled();

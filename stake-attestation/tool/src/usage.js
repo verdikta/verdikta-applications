@@ -49,6 +49,8 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      signs is the price its terms named. A prepared late claim whose two hashes already have a
                      claim on the chain is disclosed on any run, --yes or not, as a signed one is. --restart
                      does not start a late claim over: a changed one goes in a new folder
+                     --late is the bare flag, on commit only: with a value (--late=false too) or on another
+                     command it is a usage error, and nothing is read or sent
   reveal <claim-dir> [--retrigger] [--yes]
                      pins the plaintext and pays any top-up the live fee needs; prints it, and sends only with --yes
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes

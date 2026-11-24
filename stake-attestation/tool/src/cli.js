@@ -36,6 +36,8 @@ function parseArgs(args) {
     const a = args[i];
     if (a.startsWith('-')) {
       const name = a.split('=')[0];
+      // --late (node P43) is the bare token or nothing: with a value, `--late=false` too, it is no yes and no no
+      if (name === '--late' && a !== name) throw usageError('--late takes no value');
       if (FLAGS.has(name)) {
         options[name] = true;
       } else if (VALUES.has(name)) {
@@ -247,6 +249,8 @@ function claimTarget(positional) {
 
 async function dispatch(verb, args, io, env, write) {
   const { options, positional } = parseArgs(args);
+  // and it is commit's alone: on another command it would be passed over, and that command would go on (node P43)
+  if (options['--late'] === true && verb !== 'commit') throw usageError('--late is commit\'s flag: no other command takes it');
   if (positional.length > 1) throw usageError('too many arguments');
   const out = (text) => write(io.stdout, `${text}\n`);
   const json = options['--json'] === true;

@@ -1416,6 +1416,8 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   - `--restart` never starts a late claim over, signed or not (`LATE_NEEDS_NEW_FOLDER`; owner, 2026-11-24): a
     changed late claim goes in a new folder, and the old folder's files stay as they are. A prepared late claim
     whose files changed says the same, with no word of `--restart` (`LATE_INPUTS_CHANGED`).
+  - `--late` is taken only as the bare flag and only by `commit`: with a value (`--late=false` too) or on another
+    command it is a usage error (exit 2) before anything is read or sent. Every other flag is read as it was.
   - `status`, `reveal`, `claim` and `appeal` then work as on any claim: `commit`, `status` and `claim` print "Late
     claim" and that no award rides on it (`late` with `--json`), and `appeal`'s notice says an overturned INVALID
     returns the bond and pays nothing more.

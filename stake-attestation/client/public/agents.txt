@@ -325,6 +325,8 @@ of `commit`. `verdikta-attest commit` files one with --late.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
+- --late takes no value and is `commit`'s alone: `--late=false`, any other value, or --late on
+  another command is a usage error (exit 2), before anything is read or sent.
 - A stopped run goes on with what the folder holds, with --late or without it: a signed commit or
   late claim is sent again as it was saved, and a folder prepared for a late claim stays a late
   claim's. --late changes nothing in a folder whose commit is signed: that run goes on as a

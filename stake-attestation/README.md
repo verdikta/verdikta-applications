@@ -292,9 +292,11 @@ made after it; `getListing` and the record show a listing's values.
 
 ## The contract: late claims and the record
 
-A finding on a version whose stake has rolled forward or closed is a **late
-claim** (decision D6): `lateClaim(listingId, archiveHash, ciphertextSha256)`
-on a `Rolled` or `Closed` listing, open to every hunter, with the bond plus the
+A finding on a version whose stake has rolled forward or closed, or whose maker
+has it on hold, is a **late claim** (decision D6): `lateClaim(listingId,
+archiveHash, ciphertextSha256)` on a `Rolled` or `Closed` listing, or on one
+its maker holds (`hold`, "The contract: listings"; the lens's
+`acceptsLateClaims` says which), open to every hunter, with the bond plus the
 live fee (`commitPrice`). It is commit-shaped: `disclose` within the hour
 (erratum E5), the listing's fix window from the disclosure (the maker may flag
 or release it), a reveal with the E1 line once every earlier claim on the

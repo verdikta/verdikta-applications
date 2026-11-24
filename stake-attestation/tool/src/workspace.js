@@ -240,6 +240,7 @@ export function openWorkspace(claimDir) {
       fsyncDir(dir);
       for (const name of copied) fs.rmSync(pathOf(name), { force: true });
       fsyncDir(dir);
+      return stamp;
     },
   };
 }

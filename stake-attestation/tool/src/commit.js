@@ -50,13 +50,17 @@
 // This is asked where a late claim is about to be paid for: inside the reads of nonceAndClaimAt before one is signed,
 // on any run with --late of a prepared folder before its terms, and before saved late-claim bytes are sent again
 // (settleCommit: a reorganization since they were signed can have mined these hashes in another transaction, of a
-// lower nonce, and left theirs free). And wherever a folder's claim is looked for, the logs are read from the bound
+// lower nonce, and left theirs free; the bytes are then kept, unsent, until that claim is adopted at its depth, since
+// their nonce was not shown to be used). And wherever a folder's claim is looked for, the logs are read from the bound
 // the anchor proves, whatever the flag and the kind: on a resume of a prepared folder, and when a saved
 // transaction's nonce is gone. A commit is signed as it always was, and no run without --late is refused for its
 // anchor.
 //
 // --restart starts over only once the new claim may go out: after the listing, the wallet and --yes have had their
-// say (readyToCommit). A refusal leaves the prepared folder whole, with its keys.
+// say (readyToCommit). A refusal before that leaves the prepared folder whole, with its keys. Those reads take their
+// time, so the old files' claim is looked for once more, the last thing before they are set aside; and the new late
+// claim is signed at the nonce that look read or not at all, so a claim of the old files mined from then on is not
+// followed by it at the next nonce.
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { codeReview } from './common.js';
@@ -439,8 +443,8 @@ async function settleCommit(ctx, ws, state) {
     // a reorganization since can have left their nonce free and mined these hashes, sent some other way, in a
     // transaction of a lower nonce, or left a lower nonce unused for one to take.
     const at = await nonceAndClaimAt(ctx, ws, state);
-    // the claim is made: these bytes are not needed, and the claim is adopted where a gone nonce's is
-    if (at.existing) return 'superseded';
+    // the claim is made, so these bytes are not sent: its log is handed on, to be adopted once it holds
+    if (at.existing) return { existing: at.existing, from: at.from };
     const kept = `The late claim this folder signed earlier (transaction ${state.commitTx.hash}) was not sent again`;
     if (at.unproven) throw fail('START_UNPROVEN', `${at.unproven} ${kept}: if an earlier run sent it, it can still be mined, so look for it before a new folder pays for another.`);
     if (at.nonce < state.commitTx.nonce) throw fail('WALLET_BUSY', `${kept}: a transaction of this wallet before it is not mined, and that one may be this same claim, sent some other way.`);
@@ -450,7 +454,11 @@ async function settleCommit(ctx, ws, state) {
   return finishCommitWait(ctx, ws, state, outcome);
 }
 
-async function finishCommitWait(ctx, ws, state, { receipt, gone }) {
+async function finishCommitWait(ctx, ws, state, { receipt, gone, superseded }) {
+  // The saved bytes were not sent again, since a claim of these hashes is on the chain by another transaction. Their
+  // nonce was not shown to be used, so the folder keeps them until that claim is adopted: at its depth, where its
+  // log said. One that a reorganization takes out again leaves the folder as it was (TX_PENDING), bytes and all.
+  if (superseded) return adoptLogged(ctx, ws, state, superseded.existing, superseded.from);
   if (gone) {
     // what took the nonce may be the claim itself, sent some other way: looked for from where the anchor proves the
     // logs complete, whatever the kind. A claim found is adopted; with none found the folder is prepared again, and
@@ -520,8 +528,9 @@ async function commitPreflight(ctx, listingId, hunter, late = false) {
 /**
  * Signs and sends the commit, or with `late` the late claim: never twice, and only with everything on disk.
  * @param {bigint} quoted the price this run's notice named: a live price that differs is said before it is signed
+ * @param {number|null} [restartNonce] after --restart, the wallet's nonce as read just before the old files were set aside
  */
-async function sendCommit(ctx, ws, state, listingId, late, quoted) {
+async function sendCommit(ctx, ws, state, listingId, late, quoted, restartNonce = null) {
   // A late claim's nonce and the logs are read at one block (nonceAndClaimAt). Only a late claim asks this: a
   // commit is signed as it always was, at the wallet's next nonce counting what is pending.
   const at = late ? await nonceAndClaimAt(ctx, ws, state) : { existing: await findCommitted(ctx, state) };
@@ -530,6 +539,11 @@ async function sendCommit(ctx, ws, state, listingId, late, quoted) {
   if (late && at.unproven) throw fail('START_UNPROVEN', at.unproven);
   // No log of it is not proof for a late claim: one sent some other way and not in those blocks has none there.
   if (late && at.pending > at.nonce) throw fail('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond.');
+  // After --restart, the late claim goes out at the nonce that was read with the look for the old files' claim, just
+  // before they were set aside, or not at all. Another nonce now means a transaction of this wallet was mined in
+  // between, and it may be that claim: the new one must not follow it at the next nonce. Nothing is signed, and the
+  // folder is left prepared (runCommit: COMMIT_REPLACED, which names the files set aside).
+  if (late && restartNonce !== null && at.nonce !== restartNonce) return state;
 
   readProvenFiles(ctx, ws, state);
   const price = await commitPreflight(ctx, listingId, state.hunter, late); // read just before signing: the live fee
@@ -704,7 +718,7 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
     // A prepared folder's claim may be on the chain already, sent some other way with these two hashes. That is asked
     // first: the claim has its bond, so nothing may refuse the run (the listing, the wallet's balance, the flag) or
     // remove its keys (--restart) before it is found and disclosed.
-    if (state?.stage === 'prepared') {
+    const lookFirst = async () => {
       // --restart removes the keys, so it asks more: a claim of these hashes that is not in the blocks read has no
       // log to be found by, and would lose them. A prepared folder names no kind, so this is asked whatever the flag.
       // The logs are read from where the anchor proves them complete, whatever the flag: a claim that exists is
@@ -715,7 +729,9 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
       if (at.existing) state = await adoptLogged(ctx, ws, state, at.existing, at.from);
       else if (late && at.unproven) throw fail('START_UNPROVEN', at.unproven);
       else if (restart && at.pending > at.nonce) throw fail('WALLET_BUSY', 'It may be this folder\'s claim, and --restart would remove the keys it needs.');
-    }
+      return at;
+    };
+    if (state?.stage === 'prepared') await lookFirst();
     if (state && restart && state.stage !== 'prepared') throw fail('RESTART_REFUSED');
     // --restart starts over only once the new claim may go out (below): until then the prepared one is the active one
     const startOver = Boolean(state && restart);
@@ -726,19 +742,27 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
     // (--restart's new claim is checked as a first one is, with no state: its files may be other files)
     if (!state || state.stage === 'prepared') {
       const { listing, inputs, price } = await readyToCommit(ctx, ws, startOver ? null : state, id, hunter, acknowledge, late);
+      let aside = null;
       if (startOver) {
         // Only here, after everything that can refuse the run: the listing may take no commit, or none of this kind,
-        // the wallet may not hold the price, --yes may be missing. A refusal leaves the prepared folder whole, with
-        // its keys, for the claim of its hashes that no read here could rule out. And set aside, never deleted: no
-        // read can see a claim of these hashes that someone holds and has not sent yet.
-        ws.setAsidePrepared();
+        // the wallet may not hold the price, --yes may be missing. A refusal before this leaves the prepared folder
+        // whole, with its keys. Those reads took their time (the listing's files are fetched), so the old files'
+        // claim is looked for once more, the last thing before they are set aside: one mined meanwhile is adopted,
+        // and its files stay the active ones.
+        const at = await lookFirst();
+        if (state.stage !== 'prepared') throw fail('RESTART_REFUSED');
+        // And set aside, never deleted: no read can see a claim of these hashes that someone holds and has not sent
+        // yet. The new late claim is signed at the nonce this look read (sendCommit), so one mined from here on is
+        // not followed by it.
+        aside = { stamp: ws.setAsidePrepared(), nonce: at.nonce };
         state = null;
       }
       if (!state) state = await prepare(ctx, ws, listing, inputs, hunter, id);
-      state = await sendCommit(ctx, ws, state, id, late, price);
+      state = await sendCommit(ctx, ws, state, id, late, price, aside?.nonce ?? null);
       // The signed bytes' nonce went to another transaction while this run waited, and no claim came of it: there is
-      // none to disclose. The folder is prepared again, and a run again signs anew.
-      if (state.stage === 'prepared') throw fail('COMMIT_REPLACED');
+      // none to disclose. The folder is prepared again, and a run again signs anew. After --restart that transaction
+      // may be a claim of the files this run set aside, which needs them: said first.
+      if (state.stage === 'prepared') throw fail('COMMIT_REPLACED', aside ? `Before that, look at the transaction that took the nonce: this run set the folder's earlier files aside (*.set-aside-${aside.stamp}), and a claim of those needs them.` : undefined);
     }
     // The claim exists, and is the kind the chain says. A run whose flag says the other kind goes on all the same,
     // since the bond is paid and only the disclosure keeps it, and says which kind the folder holds.

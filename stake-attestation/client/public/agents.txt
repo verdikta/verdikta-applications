@@ -648,8 +648,9 @@ each mode 0600, in a folder of mode 0700.
 - Once the commit is sent, the claim is the archive.zip saved there: editing the folder's files
   changes nothing that is revealed. Before that, a change stops `commit` with INPUTS_CHANGED
   (--restart starts over with new keys, and sets the old files aside in the same folder: it
-  deletes nothing, and it sets nothing aside before the new claim may go out, so a run that is
-  refused, or that has no --yes, leaves the folder as it was).
+  deletes nothing. It sets them aside only once the listing, your balance and --yes have let
+  the new claim through: a run refused before that leaves the folder as it was. From then on
+  the old files are under their set-aside names, whatever becomes of the new claim).
 - Do not run two copies of the tool on one folder (FOLDER_BUSY).
 
 ## 10. The full reference

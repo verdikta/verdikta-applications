@@ -1419,8 +1419,9 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   transactions: a claim from a new folder would pay a second bond beside it. This is asked where a late claim is
   about to be paid for: inside the reads below before one is signed, on any run with `--late` of a prepared folder
   before its terms, and before saved late-claim bytes are sent again on a resume (a reorganization since they were
-  signed can have mined the same hashes in another transaction, of a lower nonce, and left theirs free: then that
-  claim is adopted and the saved bytes are not sent; behind an earlier transaction that is not mined they wait,
+  signed can have mined the same hashes in another transaction, of a lower nonce, and left theirs free: then the
+  saved bytes are not sent and that claim is adopted once it is deep enough, the folder keeping the bytes until it
+  is, since their nonce was not shown to be used; behind an earlier transaction that is not mined they wait,
   `WALLET_BUSY`). And wherever a folder's claim is looked for, the logs are read from the bound the anchor proves,
   whatever the flag and the kind: on any resume of a prepared folder, and when a saved transaction's nonce is gone.
   A commit is signed as it always was, and no run without `--late` is refused for its anchor: `--restart` without
@@ -1440,9 +1441,15 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   with them, are set aside under one stamp (`*.set-aside-…`), for the one case no read can see, a claim someone holds and has not
   sent yet. They are copied before any original is removed, `state.json` first, so a `--restart` that stops half way
   leaves either the prepared claim whole or no claim with the whole set aside. And it sets them aside only once the
-  new claim may go out: after the listing, the wallet's balance and `--yes` have had their say, so a run that is
-  refused (a listing that takes no commit, or none of this kind) or that only prints the terms leaves the prepared
-  folder whole, the active one, with its keys. A live fee that
+  listing, the wallet's balance and `--yes` have let the new claim through: a run that is refused before that (a
+  listing that takes no commit, or none of this kind), or that only prints the terms, leaves the prepared folder
+  whole, the active one, with its keys. Those reads take their time, so the old files' claim is looked for once more,
+  the last thing before they are set aside: one mined meanwhile is adopted, and `--restart` is refused. From then on
+  the old files are under their set-aside names whatever becomes of the new claim, and a refusal after that point
+  (the wallet has a transaction pending, the fee or the balance changed) leaves the new prepared claim the active
+  one. The new late claim is signed at the nonce that last look read, or not at all: if a transaction of the wallet
+  was mined in between, it may be a claim of the old files, and the new one must not follow it at the next nonce
+  (`COMMIT_REPLACED`, whose text then names the files that were set aside). A live fee that
   moved between the terms and the signature is said before it is signed, for either kind. And a signed commit whose
   nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was
   pinned, and a run again signs anew.

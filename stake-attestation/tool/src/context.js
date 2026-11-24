@@ -209,16 +209,19 @@ export function makeContext(options = {}) {
 
   /**
    * A resume's view of saved bytes: mined, gone, or sent again and waited on. `beforeResend` runs only if they are
-   * about to go out again, and can refuse: sending them may be what spends the money. It can also answer
-   * 'superseded': what the bytes were signed to do is done already, by another transaction, so they are not sent,
-   * and the caller is told what it is told when their nonce went to something else (gone).
+   * about to go out again, and can refuse: sending them may be what spends the money. It can also answer with what
+   * makes them unneeded (what they were signed to do is done already, by another transaction): then they are not
+   * sent, and the caller gets that answer as `superseded`. It is not `gone`: their nonce was not shown to be used,
+   * so the caller keeps them until what it was handed holds.
+   * @returns {Promise<{ receipt: object } | { gone: true } | { superseded: object }>}
    */
   ctx.settleSaved = async (rec, { beforeResend = null, ...options_ } = {}) => {
     const receipt = await ctx.rpc(() => ctx.provider.getTransactionReceipt(rec.hash));
     if (!receipt) {
       const next = await ctx.rpc(() => ctx.provider.getTransactionCount(rec.from, 'latest'));
       if (next <= rec.nonce) {
-        if (beforeResend && await beforeResend() === 'superseded') return { gone: true };
+        const superseded = beforeResend ? await beforeResend() : undefined;
+        if (superseded) return { superseded };
         await ctx.broadcast(rec);
       }
     }

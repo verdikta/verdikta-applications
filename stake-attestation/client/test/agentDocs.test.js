@@ -1179,19 +1179,25 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // and only once the new claim may go out: after the listing, the wallet and --yes have had their say, so a refusal
   // leaves the prepared folder whole
   assert.match(commit, /const startOver = Boolean\(state && restart\);/);
-  assert.match(commit, /const \{ listing, inputs, price \} = await readyToCommit\(ctx, ws, startOver \? null : state, id, hunter, acknowledge, late\);\s*if \(startOver\) \{[\s\S]*?ws\.setAsidePrepared\(\);\s*state = null;\s*\}\s*if \(!state\) state = await prepare\(/);
+  // and the old files' claim is looked for once more, the last thing before they are set aside (the reads before it
+  // take their time); the new late claim is then signed at the nonce that look read, or not at all
+  assert.match(commit, /const \{ listing, inputs, price \} = await readyToCommit\(ctx, ws, startOver \? null : state, id, hunter, acknowledge, late\);\s*let aside = null;\s*if \(startOver\) \{[\s\S]*?const at = await lookFirst\(\);\s*if \(state\.stage !== 'prepared'\) throw fail\('RESTART_REFUSED'\);[\s\S]*?aside = \{ stamp: ws\.setAsidePrepared\(\), nonce: at\.nonce \};\s*state = null;\s*\}\s*if \(!state\) state = await prepare\(ctx, ws, listing, inputs, hunter, id\);\s*state = await sendCommit\(ctx, ws, state, id, late, price, aside\?\.nonce \?\? null\);/);
   assert.equal(commit.split('ws.setAsidePrepared()').length, 2, 'the one place a prepared folder is set aside');
+  assert.match(commit, /if \(late && restartNonce !== null && at\.nonce !== restartNonce\) return state;\s*readProvenFiles\(ctx, ws, state\);/, 'before anything is signed');
+  assert.match(commit, /if \(state\.stage === 'prepared'\) throw fail\('COMMIT_REPLACED', aside \? `[^`]*\(\*\.set-aside-\$\{aside\.stamp\}\)[^`]*` : undefined\);/);
+  assert.match(toolSrc('workspace.js'), /setAsidePrepared\(\) \{\s*const stamp = [^\n]*\n[\s\S]*?fsyncDir\(dir\);\s*return stamp;\s*\},/);
   const setAside = /setAsidePrepared\(\) \{[\s\S]*?\n {4}\},/.exec(toolSrc('workspace.js'))?.[0];
   assert.ok(setAside, 'tool/src/workspace.js: setAsidePrepared');
   // each file is copied whole under the stamp before any original is removed, and state.json goes first
   assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'anchor\.json', 'state\.json'\]\) \{\s*const bytes = readOptional\(name\);\s*if \(bytes === null\) continue;\s*writePrivate\(`\$\{name\}\.set-aside-\$\{stamp\}`, bytes\);/);
   assert.match(setAside, /copied\.push\(name\);\s*\}[\s\S]*?fs\.rmSync\(pathOf\('state\.json'\), \{ force: true \}\);\s*fsyncDir\(dir\);\s*for \(const name of copied\) fs\.rmSync\(pathOf\(name\), \{ force: true \}\);/, 'every copy is written before an original is removed, and state.json is removed first');
-  assert.match(section(9).replace(/\s+/g, ' '), /--restart starts over with new keys, and sets the old files aside in the same folder: it deletes nothing, and it sets nothing aside before the new claim may go out, so a run that is refused, or that has no --yes, leaves the folder as it was/);
+  assert.match(section(9).replace(/\s+/g, ' '), /--restart starts over with new keys, and sets the old files aside in the same folder: it deletes nothing\. It sets them aside only once the listing, your balance and --yes have let the new claim through: a run refused before that leaves the folder as it was\. From then on the old files are under their set-aside names, whatever becomes of the new claim/);
 
   // a claim of the folder's hashes that is on the chain already is found before the acknowledgement is read; so a run
   // without --yes is no dry run there
   const runBody = /export async function runCommit[\s\S]*$/.exec(commit)[0];
-  assert.ok(runBody.indexOf('if (state?.stage === \'prepared\') {') < runBody.indexOf('await readyToCommit('), 'adopted before the terms and --yes');
+  const first = runBody.indexOf('if (state?.stage === \'prepared\') await lookFirst();');
+  assert.ok(first > 0 && first < runBody.indexOf('await readyToCommit('), 'adopted before the terms and --yes');
   // the logs are read from the block the folder was prepared at, as they always were, and state.json is what it was
   assert.match(commit, /async function findCommitted\(ctx, state, upTo = null, start = state\.startBlock\) \{/);
   assert.match(commit, /let page = Math\.max\(1, Math\.floor\(ctx\.logPageBlocks\)\);\s*for \(let from = start; from <= head;\) \{/);
@@ -1228,8 +1234,10 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // mined, they are not sent either
   const resend = /async function settleCommit[\s\S]*?\n\}/.exec(commit)?.[0];
   assert.ok(resend, 'tool/src/commit.js: settleCommit');
-  assert.match(resend, /if \(state\.late !== true\) return undefined;[\s\S]*?const at = await nonceAndClaimAt\(ctx, ws, state\);[\s\S]*?if \(at\.existing\) return 'superseded';[\s\S]*?if \(at\.unproven\) throw fail\('START_UNPROVEN', [^\n]*\n\s*if \(at\.nonce < state\.commitTx\.nonce\) throw fail\('WALLET_BUSY', /);
-  assert.match(toolSrc('context.js'), /if \(beforeResend && await beforeResend\(\) === 'superseded'\) return \{ gone: true \};\s*await ctx\.broadcast\(rec\);/, 'asked before the bytes are sent, and only then');
+  assert.match(resend, /if \(state\.late !== true\) return undefined;[\s\S]*?const at = await nonceAndClaimAt\(ctx, ws, state\);[\s\S]*?if \(at\.existing\) return \{ existing: at\.existing, from: at\.from \};[\s\S]*?if \(at\.unproven\) throw fail\('START_UNPROVEN', [^\n]*\n\s*if \(at\.nonce < state\.commitTx\.nonce\) throw fail\('WALLET_BUSY', /);
+  assert.match(toolSrc('context.js'), /const superseded = beforeResend \? await beforeResend\(\) : undefined;\s*if \(superseded\) return \{ superseded \};\s*await ctx\.broadcast\(rec\);/, 'asked before the bytes are sent, and only then');
+  // and the bytes are kept until that claim is adopted: their nonce was not shown to be used
+  assert.match(waited, /if \(superseded\) return adoptLogged\(ctx, ws, state, superseded\.existing, superseded\.from\);\s*if \(gone\) \{/);
   const raised = [...commit.matchAll(/^.*fail\('START_UNPROVEN'.*$/gm)].map((m) => m[0].trim());
   assert.equal(raised.length, 3, 'START_UNPROVEN is raised in three places');
   assert.deepEqual(raised.slice(1), ['if (late && at.unproven) throw fail(\'START_UNPROVEN\', at.unproven);', 'else if (late && at.unproven) throw fail(\'START_UNPROVEN\', at.unproven);'], 'for --late alone where a claim would be signed or a folder set aside');

@@ -321,12 +321,36 @@ export function chainOf(stack) {
       return { ...c, ...r };
     },
 
-    /** The jury's vector for `outcome` arrives at the mock aggregator for the claim's open round. */
-    async verdict(claimId, outcome, { dispute = false, justification = JUSTIFICATION_CID } = {}) {
+    /**
+     * The claim's open round drawn, as the site's keeper draws it on the v2 aggregator: a request only
+     * escrows, and the jury is drawn from block B+2 (StakeAttestation.drawJury, anyone may). Blocks come
+     * here only with transactions, so they are mined to B+2; the keeper may draw it first. Returns the
+     * round's id, once it is in its commit phase.
+     */
+    async drawn(claimId, { dispute = false } = {}) {
       const c = await sa.getClaim(claimId);
+      const requestId = dispute ? c.disputeRequestId : c.requestId;
+      const agg = new Contract(stack.aggregator, stack.aggregatorAbi, provider);
+      for (let i = 0; i < 20; i += 1) {
+        const info = await agg.getRoundInfo(requestId);
+        if (info.phase >= 3n) return requestId;
+        if (BigInt(await provider.getBlockNumber()) < info.requestBlock + 2n) {
+          await provider.send('evm_mine', []);
+          continue;
+        }
+        try {
+          await (await (await as(stack.accounts.owner)).drawJury(claimId)).wait();
+        } catch { /* drawn by the keeper meanwhile: the phase says so */ }
+      }
+      throw new Error(`claim ${claimId}: its round was not drawn`);
+    },
+
+    /** The jury's vector for `outcome` arrives at the mock aggregator for the claim's open round, once it is drawn. */
+    async verdict(claimId, outcome, { dispute = false, justification = JUSTIFICATION_CID } = {}) {
       const vector = OUTCOMES.map((o) => (o === outcome ? 1_000_000n : 0n));
+      const requestId = await this.drawn(claimId, { dispute });
       const agg = new Contract(stack.aggregator, stack.aggregatorAbi, await provider.getSigner(stack.accounts.owner));
-      await (await agg.scriptResult(dispute ? c.disputeRequestId : c.requestId, vector, justification)).wait();
+      await (await agg.scriptResult(requestId, vector, justification)).wait();
     },
 
     /** An arbiter's justification upload on the gateway stand-in: its CID. */

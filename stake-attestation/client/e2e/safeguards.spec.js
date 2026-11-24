@@ -43,7 +43,7 @@ test('the safeguards on the listing, claim and record pages, each as the contrac
 
   // a narrow INVALID: the appeal window and the waiver, then the bond back once the keeper settles it
   const narrow = await chain.revealedClaim({ listingId, recipient: key.recipient, label: 'narrow' });
-  await (await agg.scriptResult((await chain.sa.getClaim(narrow.claimId)).requestId, NARROW, 'bafkreinarrowjustificationxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')).wait();
+  await (await agg.scriptResult(await chain.drawn(narrow.claimId), NARROW, 'bafkreinarrowjustificationxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')).wait();
   await chain.judged(narrow.claimId);
   const appealDeadline = await chain.sa.appealDeadline(narrow.claimId);
   const time = (t) => new Date(Number(t) * 1000).toISOString().replace('.000Z', 'Z');

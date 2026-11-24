@@ -189,17 +189,27 @@ async function countAt(ctx, address, at) {
 const isBlockId = (b) => Number.isSafeInteger(b?.number) && b.number >= 0 && typeof b.hash === 'string' && /^0x[0-9a-f]{64}$/.test(b.hash);
 
 /**
- * A transaction's receipt, asked of the node: its status, its logs and its block, or null when the node has none (or
- * answers with something that is no receipt).
+ * A transaction's receipt, asked of the node, and held to the chain: null when the node has none; `borneOut: false`
+ * when what it answered is no receipt of this transaction (another hash, no status of a mined transaction, no block),
+ * or names a block that does not hold the transaction now. A receipt is evidence only of what its block holds.
  */
 async function receiptNow(ctx, hash) {
   const raw = await ctx.rpc(() => ctx.provider.send('eth_getTransactionReceipt', [hash]));
+  if (raw === null || raw === undefined) return null;
+  let receipt;
   try {
-    const receipt = { status: Number(BigInt(raw.status)), logs: raw.logs, blockNumber: Number(BigInt(raw.blockNumber)), blockHash: String(raw.blockHash).toLowerCase() };
-    return Array.isArray(receipt.logs) && isBlockId({ number: receipt.blockNumber, hash: receipt.blockHash }) ? receipt : null;
+    receipt = { status: Number(BigInt(raw.status)), logs: raw.logs, blockNumber: Number(BigInt(raw.blockNumber)), blockHash: String(raw.blockHash).toLowerCase() };
   } catch {
-    return null;
+    return { borneOut: false };
   }
+  const wellFormed = String(raw.transactionHash).toLowerCase() === hash.toLowerCase() && (receipt.status === 0 || receipt.status === 1)
+    && Array.isArray(receipt.logs) && isBlockId({ number: receipt.blockNumber, hash: receipt.blockHash });
+  if (!wellFormed) return { borneOut: false };
+  // the block at that height, as the node has it now: that block, and this transaction in it
+  const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [quantity(receipt.blockNumber), false]));
+  const holds = String(block?.hash).toLowerCase() === receipt.blockHash && Array.isArray(block?.transactions)
+    && block.transactions.some((tx) => String(tx?.hash ?? tx).toLowerCase() === hash.toLowerCase());
+  return { ...receipt, borneOut: holds };
 }
 
 /**
@@ -461,13 +471,17 @@ async function adoptClaim(ctx, ws, state, claimId, txHash = state.commitTx?.hash
  *   1. The nonce is used for good: the wallet's count at the node's finalized block is past it (nonceTakenForGood).
  *      Until then a reorganization can free the nonce again, and the saved commit can still go out.
  *   2. What used it: the saved commit itself, if the node has its receipt now (a reorganization since the wait can
- *      have mined it, anywhere). That receipt is the one used, once it is where it says and as deep as a commit must
- *      be: it is never waited for a second time.
+ *      have mined it, anywhere). That receipt is the one used, once the block it names holds this transaction and is
+ *      as deep as a commit must be: it is never waited for a second time. One the chain does not bear out is acted
+ *      on by no run.
  *   3. Or another transaction with these hashes, which the logs show, read once more from the bound the anchor
- *      proves. Logs that cannot show it are no proof that there is none.
+ *      proves. Logs that a node did not give are no proof that there is none: another node can give them.
  *
- * Only with all three settled is the commit replaced, and the folder signs nothing more. Everything short of that is
- * to be run again (TX_PENDING), with the files set aside named at once. Nothing is saved on any of these ways.
+ * With the nonce used for good and no receipt of the saved commit, it can never be mined, and the folder signs
+ * nothing more. That is said (COMMIT_REPLACED) once the logs are read through too, or once it is plain that this
+ * folder's anchor can never show from where to read them: then the look for a claim of its own hashes is the
+ * hunter's, with the rest. Everything short of that is to be run again (TX_PENDING), with the files set aside named
+ * at once. Nothing is saved on any of these ways.
  */
 async function replacedOrNot(ctx, ws, state) {
   const taken = await nonceTakenForGood(ctx, state);
@@ -476,31 +490,38 @@ async function replacedOrNot(ctx, ws, state) {
   }
   const receipt = await receiptNow(ctx, state.commitTx.hash);
   if (receipt) {
-    const head = await headNow(ctx);
-    const settled = head - receipt.blockNumber + 1 >= ctx.confirmations && (await blockIdAt(ctx, receipt.blockNumber))?.hash === receipt.blockHash;
-    if (!settled) throw fail('TX_PENDING', pendingAfterRestart(ws, state, NONCE.ownReceiptUnsettled));
+    // evidence that contradicts the chain is acted on by no run: the signed state stays as it is
+    if (!receipt.borneOut) throw fail('TX_PENDING', pendingAfterRestart(ws, state, NONCE.ownReceiptContradicted));
+    if (await headNow(ctx) - receipt.blockNumber + 1 < ctx.confirmations) throw fail('TX_PENDING', pendingAfterRestart(ws, state, NONCE.ownReceiptShallow));
     return finishCommitWait(ctx, ws, state, { receipt });
   }
   const now = await anchoredClaim(ctx, ws, state);
   if (now.existing) return adoptLogged(ctx, ws, state, now.existing, now.from);
+  // The nonce is used for good and the saved commit has no receipt, so it can never be mined: the folder signs
+  // nothing more, whatever the logs show. What they decide is only whether a claim of the folder's own hashes, made
+  // by another transaction, could have been found here.
+  const cut = now.unproven ? now.unproven.indexOf(NEW_FOLDER) : -1;
+  if (now.unproven && cut < 0) {
+    // a node did not give the logs: another node can, and a claim found then is adopted. To be run again, with the
+    // anchor's own words on which RPC to use.
+    throw fail('TX_PENDING', `${pendingAfterRestart(ws, state, NONCE.logsUnread)} As for this folder's own two hashes: ${now.unproven}`);
+  }
   if (now.unproven) {
-    // why the logs prove nothing, as the anchor's own text has it. Where a node did not give them, that text says
-    // which RPC to use; where the folder cannot show its bound at all, its advice is a late claim's, and is left out.
-    const cut = now.unproven.indexOf(NEW_FOLDER);
-    const why = cut < 0 ? now.unproven : `${now.unproven.slice(0, cut).trim()} So this folder cannot show whether another transaction made a claim of its own two hashes: look for one as said above.`;
-    throw fail('TX_PENDING', `${pendingAfterRestart(ws, state, NONCE.logsUnread)} As for this folder's own two hashes: ${why}`);
+    // the anchor can never show its bound, and no run will show more: this is the end, and the look for a claim of
+    // the folder's own hashes is the hunter's too. (The anchor's advice there is a late claim's, and is left out.)
+    throw fail('COMMIT_REPLACED', `${replacedAfterRestart(ws)} This folder's own anchor cannot show from which block the logs hold every claim of its two hashes: ${now.unproven.slice(0, cut).trim()} So a claim of them that a reorganization put below that block is not found here: your look covers them too.`);
   }
   throw fail('COMMIT_REPLACED', replacedAfterRestart(ws));
 }
 
 /**
  * A wait that ran out after it saw the saved commit's nonce used (ctx.waitMined), in a folder where --restart set
- * files aside: the run cannot say yet what used it, and already says what a claim of the files set aside needs.
+ * files aside. The wait gives a receipt time to appear before it says the nonce is gone, and a run with a shorter
+ * wait than that would never come to say it. So such a run goes on to the reads that decide (replacedOrNot): they
+ * need no grace, since they ask for the receipt only once the nonce is used for good. Not final yet, the run says
+ * what one that knows it says: the files set aside, and to run again.
  */
-function withSetAsideGuidance(ws, state, err) {
-  if (err?.code !== 'TX_PENDING' || err.nonceUsed !== true || ws.setAsideClaims().length === 0) return err;
-  return fail('TX_PENDING', pendingAfterRestart(ws, state, NONCE.waitEnded));
-}
+const sawNonceUsed = (ws, err) => err?.code === 'TX_PENDING' && err.nonceUsed === true && ws.setAsideClaims().length > 0;
 
 /** A saved commit's fate: the claim it made, or that it made none and its nonce is gone. */
 async function settleCommit(ctx, ws, state) {
@@ -522,9 +543,10 @@ async function settleCommit(ctx, ws, state) {
     return undefined;
   };
   const outcome = await ctx.settleSaved(state.commitTx, { confirmations: ctx.confirmations, beforeResend }).catch((err) => {
-    throw withSetAsideGuidance(ws, state, err);
+    if (sawNonceUsed(ws, err)) return null;
+    throw err;
   });
-  return finishCommitWait(ctx, ws, state, outcome);
+  return outcome ? finishCommitWait(ctx, ws, state, outcome) : replacedOrNot(ctx, ws, state);
 }
 
 async function finishCommitWait(ctx, ws, state, { receipt, gone, superseded }) {
@@ -673,9 +695,9 @@ function pendingAfterRestart(ws, state, what) {
 const NONCE = Object.freeze({
   notFinal: 'Another transaction of this wallet has its nonce, in a block that is not final yet.',
   noFinalizedBlock: 'Another transaction of this wallet has its nonce, and this node names no finalized block, so it cannot show that the block is final: use an RPC that does.',
-  ownReceiptUnsettled: 'Its nonce is used for good, and the node has a receipt of this transaction itself, which is not where it says or not deep enough yet.',
+  ownReceiptContradicted: 'Its nonce is used for good, and the node answered with a receipt for this transaction that the chain does not bear out: the block it names does not hold this transaction, or it is no receipt of it. Nothing is done on it.',
+  ownReceiptShallow: 'Its nonce is used for good, by this transaction itself, whose block is not deep enough yet.',
   logsUnread: 'Another transaction of this wallet has its nonce, in a block that is final.',
-  waitEnded: 'Its nonce is used: by another transaction of this wallet, or by this one with its receipt not shown yet. This run\'s wait ended before it could tell which.',
 });
 
 const setAsideMayBePaid = (stamps) => `--restart set files aside here (${asideNames(stamps)}), and a claim of the two hashes in one of those state.json files may have been sent some other way: by the transaction that took the nonce, or by another.`;
@@ -736,9 +758,10 @@ async function sendCommit(ctx, ws, state, listingId, late, quoted) {
   await ctx.broadcast(rec);
   await ctx.step('commit:sent');
   const outcome = await ctx.waitMined(rec, { confirmations: ctx.confirmations }).catch((err) => {
-    throw withSetAsideGuidance(ws, next, err);
+    if (sawNonceUsed(ws, err)) return null;
+    throw err;
   });
-  return finishCommitWait(ctx, ws, next, outcome);
+  return outcome ? finishCommitWait(ctx, ws, next, outcome) : replacedOrNot(ctx, ws, next);
 }
 
 async function disclose(ctx, ws, state, { acceptUnreadPin }) {

@@ -1460,10 +1460,14 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   change gets between: the saved commit's own receipt is asked for (a reorganization can have mined it), a claim of
   the folder's hashes is looked for once more, and only with neither is the commit replaced. The receipt is asked of
   the node itself, never of a provider's memory of an earlier answer, and the one that comes back is the one used,
-  once it is where it says and as deep as a commit must be: it is not waited for a second time. Logs that cannot be
-  read through are no proof that no other transaction made the claim, so then the run is to be made again through an
-  RPC that serves them. And a run whose wait ended after it saw the nonce used says the same of the files set aside
-  as one that knows the nonce is not final. The commit goes in a new
+  once it is where it says and as deep as a commit must be: it is not waited for a second time. A receipt is evidence
+  only of what its block holds: one that is not this transaction's, or names a block that does not hold it, is acted
+  on by no run, and the signed bytes stay. Logs that a node did not give are no proof that no other transaction made
+  the claim, so then the run is to be made again through an RPC that serves them. An anchor that can never show its
+  bound is no reason to run again: the saved commit can never be mined, so the folder signs nothing more, and the
+  look for a claim of its own two hashes is the hunter's with the rest. And a run whose wait ended after it saw the
+  nonce used goes on to the same reads, so a wait shorter than the time a receipt is given to appear still comes to
+  the end. The commit goes in a new
   folder, with one copy of the claim's files, and only after a look for a claim of every set of files the folder set
   aside and of its own two hashes, mined or pending, among the transactions of the wallet each `state.json` names,
   whatever their nonce: the transaction that took the nonce, those before it and those after it. The text says so,

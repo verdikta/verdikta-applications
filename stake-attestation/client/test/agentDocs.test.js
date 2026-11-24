@@ -1008,7 +1008,7 @@ test('bounty 400: tamper flags and integrity checks are common\'s, each kind sai
   }
   const stakeLabels = quoted(/export const STAKE_LABELS = Object\.freeze\(\[([^\]]+)\]/.exec(labels)[1]);
   assert.ok(section(2).includes(`\`stake\` (${stakeLabels.slice(0, -1).join(', ')} or ${stakeLabels.at(-1)},`), `the stake labels: ${stakeLabels.join(', ')}`);
-  assert.match(labels, /live: listing\.state === 'Open' && !listing\.lapsed,/);
+  assert.match(labels, /live: listing\.state === 'Open' && !listing\.lapsed && heldAt === null,/);
 });
 
 test('bounty 400: what a commit carries, who pays a confirmation, a dry run\'s needs, and an appeal round with no verdict, as the code has them', () => {

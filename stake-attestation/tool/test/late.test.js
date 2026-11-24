@@ -1874,6 +1874,10 @@ test('a folder is said to sign nothing more only once the transaction that took 
   }
 });
 
+// Round 18 (R17-F1 again): nor is it a lower bound. A claim of the files set aside can be mined before the new commit
+// is even signed, at the nonce below the one that was then taken.
+const WHOLE_HISTORY = /Look through that wallet's transactions on the contract, whatever their nonce: the one that took the nonce, those before it and those after it\./;
+
 // Round 17 (R17-F1): the transaction that took the nonce is not the only one to look at. A transfer can take it, and a
 // commit of the files set aside be mined right behind it: the text sends the hunter through every claim the folder
 // has held before a new folder pays.
@@ -1885,7 +1889,7 @@ test('an unrelated transaction took the nonce and a claim of the files set aside
   const err = await signsNothing(c, () => w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', 'the run');
   assert.match(err.message, SIGNS_NOTHING_MORE);
   assert.match(err.message, /Before a new folder pays, look for a claim of each of them, and of this folder's own two hashes \(state\.json\), mined or pending: every one of those state\.json files names the wallet \(hunter\), the chain, the contract, the listing and the two hashes of one claim\./);
-  assert.match(err.message, /Look among that wallet's transactions: the one that took the nonce, and those after it\./);
+  assert.match(err.message, WHOLE_HISTORY);
   assert.match(err.message, /If no such claim exists, prepare the commit in a new folder: copy finding\.json, report\.md and the patches there, and run commit on it\./);
   assert.doesNotMatch(err.message, /If the transaction is no such claim/);
   // the claim that is paid is disclosed from its files, as the text says, and nothing more is paid
@@ -1894,6 +1898,104 @@ test('an unrelated transaction took the nonce and a claim of the files set aside
   assert.equal(r.stage, 'disclosed');
   assert.equal(r.commitTx, other.hash);
   assert.equal(await w.claimCount(), count, 'one claim, one bond');
+});
+
+test('a claim of the files set aside is mined before the new commit is signed, and a transfer then takes the new commit\'s nonce: the text sends the hunter through the wallet\'s whole history, not from that nonce on (R17-F1)', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  assert.equal((await child(dir, l.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
+  const old = readJson(statePath(dir));
+  const count = await w.claimCount();
+  let other = null;
+  let prepares = 0;
+  const onStep = async (step) => {
+    // after --restart's last look and the set-aside: the old hashes are mined, at the nonce the new commit would have had
+    if (step === 'prepare:saved' && ++prepares === 1) other = await (await w.sa.connect(w.hunterWallet).commit(l.listingId, old.archiveSha256, old.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    // the new commit is signed at the next nonce, which a transfer takes before it is sent
+    if (step === 'commit:signed') await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n })).wait();
+  };
+  const err = await w.hunter({ onStep }).commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true }).catch((e) => e);
+  assert.ok(other, 'the old claim was mined before the new commit was signed');
+  assert.equal(err.code, 'COMMIT_REPLACED', `${err.code}: ${err.message}`);
+  const signed = readJson(statePath(dir));
+  assert.equal((await w.provider.getTransaction(other.hash)).nonce, signed.commitTx.nonce - 1, 'the paid claim is at the nonce before the one that was taken');
+  assert.match(err.message, SIGNS_NOTHING_MORE);
+  assert.match(err.message, WHOLE_HISTORY);
+  assert.match(err.message, /by the transaction that took the nonce, or by another/);
+  assert.equal(await w.claimCount(), count + 1n, 'the old claim alone');
+  const stamp = workFiles(dir).find((n) => n.startsWith('state.json.set-aside-')).slice('state.json.set-aside-'.length);
+  const r = await w.hunter().commit({ claimDir: restoredFrom(dir, stamp), listingId: l.listingId });
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(r.commitTx, other.hash);
+  assert.equal(await w.claimCount(), count + 1n, 'one claim, one bond');
+});
+
+// Round 18 (R14-F2 again): the reads that decide are made in an order no fork change can get between. The nonce is
+// shown used for good first; then the saved commit's own receipt is asked for, and a claim of the folder's hashes
+// looked for once more, since a reorganization after the first look can have mined the saved commit itself.
+test('a reorganization mines the saved commit itself between the look for its claim and the finality read: the folder is not reported as replaced, and its claim is disclosed (R14-F2)', async () => {
+  const c = await restartedAndSigned();
+  const snapshot = await w.rpc('evm_snapshot');
+  await c.sendOld();
+  const count = await w.claimCount();
+  // The run has looked for a claim of the folder's hashes and found none. As it asks for the finalized block, the
+  // chain is reorganized: the other client's commit is gone, and the saved commit, sent by an earlier run, is mined.
+  let reorganized = false;
+  const provider = injecting('send', async () => {
+    await w.rpc('evm_revert', [snapshot]);
+    await w.rpc('eth_sendRawTransaction', [c.signed.commitTx.raw]);
+    await w.mine(2);
+    reorganized = true;
+  }, (method, params) => method === 'eth_getBlockByNumber' && params[0] === 'finalized');
+  const r = await w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId }).catch((e) => e);
+  assert.ok(reorganized);
+  assert.equal(r.stage, 'disclosed', `${r.code}: ${r.message}`);
+  assert.equal(r.commitTx, c.signed.commitTx.hash, 'the saved commit made the claim');
+  assert.equal(r.ciphertextSha256, c.signed.ciphertextSha256);
+  assert.equal(await w.claimCount(), count, 'one claim on this fork: the folder\'s own');
+});
+
+// Round 18 (R18-F1, R18-F2): while the transaction that took the nonce is not final, the run still says at once what
+// a paid claim of the files set aside needs, since its disclosure window does not wait for finality. Only the advice
+// to pay from a new folder waits. And it says what is true of the signature: it stays saved, and no other was made.
+test('while the transaction that took the nonce is not final, the run names the files set aside and how a claim of them gets them back, and such a claim is disclosed before finality (R18-F1)', async () => {
+  const c = await restartedAndSigned();
+  const finalizedBlock = await w.provider.getBlockNumber();
+  const other = await c.sendOld();
+  const provider = finalizedAt(() => finalizedBlock);
+  const err = await signsNothing(c, () => w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', 'not final');
+  assert.ok(err.message.includes(`*.set-aside-${c.stamp}`), 'the files set aside are named now');
+  assert.match(err.message, /copy that stamp's archive\.zip, keys\.json, ciphertext\.age and state\.json there under those plain names, and anchor\.json too where the stamp has one, each with its mode \(cp -p\); and run commit on that folder, without --yes\./);
+  assert.match(err.message, WHOLE_HISTORY);
+  assert.match(err.message, /Do not pay from a new folder before this command has said that this folder signs nothing more\./);
+  assert.doesNotMatch(err.message, /prepare the commit in a new folder/, 'the advice to pay anew waits for finality');
+  // R18-F2: what is true of the signature
+  assert.match(err.message, /stays saved, and no other was signed/);
+  assert.doesNotMatch(err.message, /Nothing was signed/);
+  // the paid claim gets its files back and is disclosed, with the finalized block still behind it
+  const count = await w.claimCount();
+  await w.mine(2);
+  const r = await w.hunter({ provider }).commit({ claimDir: restoredFrom(c.dir, c.stamp), listingId: c.l.listingId });
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(r.commitTx, other.hash);
+  assert.equal(await w.claimCount(), count, 'one claim, one bond');
+  assert.ok(finalizedBlock < other.blockNumber, 'and the finalized block is still behind the claim');
+  // the same wording on the run that signed (R18-F2): --restart signs the new commit, the old hashes take its nonce
+  {
+    const l = await w.listing();
+    const dir = makeClaimDir();
+    assert.equal((await child(dir, l.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
+    const old = readJson(statePath(dir));
+    const final2 = await w.provider.getBlockNumber();
+    const onStep = async (step) => {
+      if (step === 'commit:signed') await (await w.sa.connect(w.hunterWallet).commit(l.listingId, old.archiveSha256, old.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    };
+    const e2 = await w.hunter({ onStep, provider: finalizedAt(() => final2) }).commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true }).catch((e) => e);
+    assert.equal(e2.code, 'TX_PENDING', `${e2.code}: ${e2.message}`);
+    assert.equal(readJson(statePath(dir)).stage, 'commit-signed', 'this run signed, and the signature is saved');
+    assert.match(e2.message, /stays saved, and no other was signed/);
+    assert.doesNotMatch(e2.message, /Nothing was signed/);
+  }
 });
 
 // The owner's decision of 2026-11-24 on R16-F1: the text says what the restored files' run finds, and what it does

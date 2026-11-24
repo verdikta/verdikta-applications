@@ -2009,31 +2009,34 @@ test('no receipt for the saved commit, and logs that cannot show that no other t
   // through a node that serves them, the scan is complete, and the folder signs nothing more
   const final = await signsNothing(c, () => w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', 'logs read');
   assert.match(final.message, SIGNS_NOTHING_MORE);
-  // a folder whose anchor proves no bound at all (it is gone) says that, and gives no late claim's advice for it
+  // a folder whose anchor proves no bound at all (it is gone) says that, at the end it has come to, and gives no late
+  // claim's advice for it
   fs.rmSync(statePath(c.dir, 'anchor.json'));
   const none = await w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }).catch((e) => e);
-  assert.equal(none.code, 'TX_PENDING', `${none.code}: ${none.message}`);
-  assert.match(none.message, /As for this folder's own two hashes: It has no anchor: an earlier version of this tool prepared it, or the file is gone\. So this folder cannot show whether another transaction made a claim of its own two hashes: look for one as said above\.$/);
+  assert.equal(none.code, 'COMMIT_REPLACED', `${none.code}: ${none.message}`);
+  assert.match(none.message, /This folder's own anchor cannot show from which block the logs hold every claim of its two hashes: It has no anchor: an earlier version of this tool prepared it, or the file is gone\. So a claim of them that a reorganization put below that block is not found here: your look covers them too\./);
   assert.doesNotMatch(none.message, /commit --late/);
 });
 
-test('a receipt the node gives for the saved commit after finality is the one used, once: no second wait, whatever a later read says (R19-F1)', async () => {
-  const c = await restartedAndSigned();
-  const other = await c.sendOld();
+test('a receipt the node gives for the saved commit after finality is the one used, once, when the block it names holds that transaction: a mined revert ends the run with COMMIT_REVERTED (R19-F1)', async () => {
+  // The saved commit is mined, and reverts, on a fork the provider's own receipt method has not caught up with: the
+  // chain is rolled back as the run asks for the finalized block, the maker holds the listing, and the saved commit,
+  // sent by an earlier run, is mined there and reverts.
+  const l = await w.listing();
+  const finalizedBlock = await w.provider.getBlockNumber();
   await w.mine(2);
-  // One backend answers the node's own receipt read with a receipt of the saved commit, mined and reverted in the block
-  // that holds the other transaction; the provider's own method, another backend, knows none.
+  const snapshot = await w.rpc('evm_snapshot');
+  await w.mine(3);
+  const c = await restartedAndSigned({ l, options: { provider: finalizedAt(() => finalizedBlock) } });
+  await c.sendOld();
+  const top = await w.provider.getBlockNumber();
+  const remembering = new ethers.BrowserProvider({ request: (call) => w.hre.network.provider.request(call) }, 31337, { cacheTimeout: 5_000, staticNetwork: true });
   let asked = 0;
-  const reverted = { transactionHash: c.signed.commitTx.hash, blockNumber: `0x${other.blockNumber.toString(16)}`, blockHash: other.blockHash, status: '0x0', logs: [] };
-  const provider = new Proxy(w.provider, {
+  const counting = new Proxy(remembering, {
     get(target, prop) {
       if (prop === 'send') {
         return async (method, params) => {
-          if (method === 'eth_getTransactionReceipt' && params[0] === c.signed.commitTx.hash) {
-            asked += 1;
-            if (asked > 5) throw new Error('asked again and again');
-            return reverted;
-          }
+          if (method === 'eth_getTransactionReceipt' && params[0] === c.signed.commitTx.hash) asked += 1;
           return target.send(method, params);
         };
       }
@@ -2041,15 +2044,63 @@ test('a receipt the node gives for the saved commit after finality is the one us
       return typeof v === 'function' ? v.bind(target) : v;
     },
   });
+  let reorganized = false;
+  const provider = injecting('send', async () => {
+    await w.rpc('evm_revert', [snapshot]);
+    await (await asMaker().hold(l.listingId)).wait();
+    await w.rpc('eth_sendRawTransaction', [c.signed.commitTx.raw]).catch(() => {});
+    while (await w.provider.getBlockNumber() <= top) await w.mine();
+    reorganized = true;
+  }, (method, params) => method === 'eth_getBlockByNumber' && params[0] === 'finalized', counting);
+  const count = await w.claimCount();
   const err = await w.hunter({ provider }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }).catch((e) => e);
+  assert.ok(reorganized);
+  assert.equal((await w.provider.getTransactionReceipt(c.signed.commitTx.hash)).status, 0, 'the saved commit was mined, and reverted');
   assert.equal(err.code, 'COMMIT_REVERTED', `${err.code}: ${err.message}`);
-  assert.equal(asked, 1, 'the receipt was asked for once, and used');
+  assert.equal(asked, 1, 'the receipt was asked of the node once, and used');
+  assert.ok(await w.claimCount() <= count, 'and it made no claim');
+});
+
+// Round 20 (R14-F2 again): a receipt is evidence only of what its block holds. One that names a block which does not
+// hold the saved transaction contradicts the chain: nothing is done on it, and the signed state stays.
+test('a receipt for the saved commit that names a block which does not hold it is acted on by no run: the signed bytes stay, and nothing is signed in their place (R14-F2)', async () => {
+  const c = await restartedAndSigned();
+  const other = await c.sendOld();
+  await w.mine(2);
+  // One backend answers the node's own receipt read with a reverted receipt of the saved commit, in the block that in
+  // truth holds the other client's commit of the files set aside.
+  const fabricated = { transactionHash: c.signed.commitTx.hash, blockNumber: `0x${other.blockNumber.toString(16)}`, blockHash: other.blockHash, status: '0x0', logs: [] };
+  const lying = (receipt) => new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'send') {
+        return async (method, params) => (method === 'eth_getTransactionReceipt' && params[0] === c.signed.commitTx.hash ? receipt : target.send(method, params));
+      }
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  for (const [label, receipt] of [
+    ['a block that holds another transaction', fabricated],
+    ['a receipt of another transaction', { ...fabricated, transactionHash: other.hash }],
+    ['no status', { ...fabricated, status: '0x7' }],
+  ]) {
+    for (const again of ['a run', 'a run again with --yes']) {
+      const err = await signsNothing(c, () => w.hunter({ provider: lying(receipt) }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', `${label}, ${again}`);
+      assert.match(err.message, /the node answered with a receipt for this transaction that the chain does not bear out/);
+      assert.doesNotMatch(err.message, /Run commit again: it signs a new one/);
+    }
+  }
+  // the paid claim is the other client's, and it is the only one
+  const count = await w.claimCount();
+  const r = await w.hunter().commit({ claimDir: restoredFrom(c.dir, c.stamp), listingId: c.l.listingId });
+  assert.equal(r.commitTx, other.hash);
+  assert.equal(await w.claimCount(), count, 'one claim, one bond');
 });
 
 // Round 19 (R18-F1 again): a run whose wait is shorter than the time it gives a receipt to appear never comes to say
 // whether the nonce is gone. It has seen the nonce used, though, and that is enough to say at once what a claim of the
 // files set aside needs.
-test('a wait shorter than the grace a receipt is given: the run that times out has seen the nonce used, and already names the files set aside and the way back (R18-F1)', async () => {
+test('a wait shorter than the grace a receipt is given: the run that times out has seen the nonce used, and goes on to say what it can, the files set aside while the nonce is not final and the end once it is (R18-F1, R20-F1)', async () => {
   const short = { waitMs: 5, receiptGraceMs: 60_000 };
   const guides = (err, stamp, label) => {
     assert.equal(err.code, 'TX_PENDING', `${label}: ${err.code}: ${err.message}`);
@@ -2059,29 +2110,46 @@ test('a wait shorter than the grace a receipt is given: the run that times out h
     assert.match(err.message, /Do not pay from a new folder before this command has said that this folder signs nothing more\./, label);
     assert.doesNotMatch(err.message, /prepare the commit in a new folder/, label);
   };
-  // on a resume, and on every retry of it
+  // on a resume, and on every retry of it, while the transaction that took the nonce is not final
   {
     const c = await restartedAndSigned();
+    const finalizedBlock = await w.provider.getBlockNumber();
     const other = await c.sendOld();
+    const notFinal = finalizedAt(() => finalizedBlock);
     for (const label of ['the first timeout', 'a retry']) {
-      const err = await signsNothing(c, () => w.hunter(short).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', label);
+      const err = await signsNothing(c, () => w.hunter({ ...short, provider: notFinal }).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'TX_PENDING', label);
       guides(err, c.stamp, label);
     }
     // and the claim is disclosed from its files meanwhile
     await w.mine(2);
-    const r = await w.hunter().commit({ claimDir: restoredFrom(c.dir, c.stamp), listingId: c.l.listingId });
+    const r = await w.hunter({ provider: notFinal }).commit({ claimDir: restoredFrom(c.dir, c.stamp), listingId: c.l.listingId });
     assert.equal(r.commitTx, other.hash);
+    // R20-F1: once that transaction is final, the same short runs come to the end the pending text spoke of
+    const final = await signsNothing(c, () => w.hunter(short).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', 'final');
+    assert.match(final.message, SIGNS_NOTHING_MORE);
   }
-  // on the run that signed
+  // R20-F1: an unrelated transfer took the nonce and is final: the first short run already says the folder signs
+  // nothing more, and that the commit goes in a new folder once no claim is found
+  {
+    const c = await restartedAndSigned();
+    await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n })).wait();
+    for (const label of ['the first short run', 'the next']) {
+      const err = await signsNothing(c, () => w.hunter(short).commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', label);
+      assert.match(err.message, SIGNS_NOTHING_MORE);
+      assert.match(err.message, /If no such claim exists, prepare the commit in a new folder/);
+    }
+  }
+  // on the run that signed, not final
   {
     const l = await w.listing();
     const dir = makeClaimDir();
     assert.equal((await child(dir, l.listingId, 'prepare:saved', { lateClaim: false })).signal, 'SIGKILL');
     const old = readJson(statePath(dir));
+    const finalizedBlock = await w.provider.getBlockNumber();
     const onStep = async (step) => {
       if (step === 'commit:signed') await (await w.sa.connect(w.hunterWallet).commit(l.listingId, old.archiveSha256, old.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
     };
-    const err = await w.hunter({ ...short, onStep }).commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true }).catch((e) => e);
+    const err = await w.hunter({ ...short, onStep, provider: finalizedAt(() => finalizedBlock) }).commit({ claimDir: dir, listingId: l.listingId, restart: true, acknowledge: true }).catch((e) => e);
     const stamp = workFiles(dir).find((n) => n.startsWith('state.json.set-aside-')).slice('state.json.set-aside-'.length);
     guides(err, stamp, 'the run that signed');
   }
@@ -2096,6 +2164,34 @@ test('a wait shorter than the grace a receipt is given: the run that times out h
     assert.equal(err.code, 'TX_PENDING');
     assert.match(err.message, /^The transaction is not mined yet\. It stays saved: run the same command again to wait for it, and no second one is sent\. Transaction 0x[0-9a-f]{64}\.$/);
   }
+});
+
+// Round 20 (R20-F2): an anchor that can never show its bound (no finalized block was saved with it, and the block it
+// was prepared at is gone) is not a reason to run again: no run will ever show more. The nonce is used for good and
+// the saved commit has no receipt, so the folder signs nothing more, and the run says so; the look for a claim of the
+// folder's own two hashes is then the hunter's, with the rest, and the text says when the commit may go in a new folder.
+test('an anchor that can never show its bound does not keep the run asking to be made again: the folder signs nothing more, and the text says what the look must cover (R20-F2)', async () => {
+  const l = await w.listing();
+  await w.mine(2);
+  const snapshot = await w.rpc('evm_snapshot');
+  await w.mine(3);
+  // the node named no finalized block when either claim of this folder was prepared
+  const c = await restartedAndSigned({ l, options: { provider: finalizedAt(() => null) } });
+  assert.equal(anchorOf(c.dir).finalized, null);
+  await w.rpc('evm_revert', [snapshot]);
+  const other = await c.sendOld();
+  while (await w.provider.getBlockNumber() <= c.signed.startBlock) await w.mine();
+  for (const label of ['a run', 'a run again']) {
+    const err = await signsNothing(c, () => w.hunter().commit({ claimDir: c.dir, listingId: c.l.listingId, acknowledge: true }), 'COMMIT_REPLACED', label);
+    assert.match(err.message, SIGNS_NOTHING_MORE);
+    assert.match(err.message, /This folder's own anchor cannot show from which block the logs hold every claim of its two hashes: The chain was reorganized below the block it was prepared at, and the node named no finalized block when it was prepared\. So a claim of them that a reorganization put below that block is not found here: your look covers them too\./);
+    assert.match(err.message, /If no such claim exists, prepare the commit in a new folder/);
+    assert.doesNotMatch(err.message, /commit --late/);
+  }
+  // following the text reaches a decision: the paid claim is of the files set aside, and they have no finalized
+  // block either, so their restored folder does not find a claim below its block, as the text says; the hunter's own
+  // look is what is left, and no command asks to be run again
+  assert.ok(other.blockNumber < c.old.startBlock);
 });
 
 // Round 18 (R18-F1, R18-F2): while the transaction that took the nonce is not final, the run still says at once what

@@ -159,6 +159,6 @@ test('a listing on hold: a renewal and a top-up are taken as before, and neither
   assert.match(actions, /\{terms\.can && held && <p className="hint" data-testid="renew-held">\{R\.held\}<\/p>\}/);
   // the page hands both the hold as it read it
   const page = fs.readFileSync(new URL('../src/components/FundPage.jsx', import.meta.url), 'utf8');
-  assert.match(page, /<TopUpEscrow listingId=\{listingId\} listing=\{l\} held=\{hold\.held\} onChanged=\{refresh\} \/>/);
-  assert.match(page, /<RenewListing listingId=\{listingId\} listing=\{l\} held=\{hold\.held\} onChanged=\{refresh\} \/>/);
+  assert.match(page, /<TopUpEscrow listingId=\{listingId\} listing=\{l\} held=\{hold\.held\} read=\{read\} onChanged=\{refresh\} \/>/);
+  assert.match(page, /<RenewListing listingId=\{listingId\} listing=\{l\} held=\{hold\.held\} read=\{read\} onChanged=\{refresh\} \/>/);
 });

@@ -411,6 +411,12 @@ export const STRINGS = {
     replaced:
       'Nothing was sent: on the chain as your wallet reads it now, listing {id} is not the listing this page shows, or ' +
       'there is no such listing. This page reads it again.',
+    // one block answered both "on hold" and "takes commits", which the contract never says of one block
+    contradictory: 'the chain answered that this listing is on hold and that it takes commits, of one block',
+    // a payment or a withdrawal this page saw mined, whose block is not the chain's as the page now reads it
+    txDropped:
+      'Transaction {tx}, sent from this page, is not on the chain as this page now reads it. Look it up before ' +
+      'sending it again.',
     // the page showed the listing, and a read of a later block has none (the block it was created in was dropped)
     gone:
       'Listing {id} was on this page a moment ago and is not on the chain as this page now reads it. Nothing sent ' +

@@ -11,6 +11,7 @@ import { awardField, field, fillListing, generateAndSaveKey, listAndFund, repoTe
 
 const F = STRINGS.listing.fields;
 const B = STRINGS.listing.bounds;
+const at = (seconds) => new Date(Number(seconds) * 1000).toISOString().replace('.000Z', 'Z');
 const DAY = 86400n;
 const HOUR = 3600n;
 const ETH = 10n ** 18n;
@@ -255,7 +256,11 @@ test('a read that fails after fund() is mined never offers a second payment', as
   const listingId = BigInt(await listed.getAttribute('data-listing-id'));
   await page.evaluate(() => window.__testWallet.failCallsAfterNextSend(5));
   await page.getByRole('button', { name: STRINGS.chain.fund }).click();
-  await expect(page.getByTestId('opened')).toHaveText(new RegExp(`^Listing ${listingId} is open \\(transaction 0x[0-9a-f]{64}\\)`));
+  // the line is the receipt's own: its transaction, and the end of the period its Opened event carries, with no read
+  // between the receipt and the line for a failing node to break
+  await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
+  const [openedEvent] = await chain.sa.queryFilter(chain.sa.filters.Opened(listingId));
+  await expect(page.getByTestId('opened')).toHaveText(fill(STRINGS.chain.opened, { id: String(listingId), until: at(openedEvent.args.fundedUntil), tx: openedEvent.transactionHash }));
   await expect(page.getByRole('button', { name: STRINGS.chain.fund })).toHaveCount(0);
   const l = await chain.sa.getListing(listingId);
   expect(l.state).toBe(State.Open);

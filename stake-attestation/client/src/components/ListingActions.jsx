@@ -2,35 +2,30 @@ import { useEffect, useId, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 
 import { LISTING_STATES } from '../chain/abi.js';
-import { chainReader, listingAt, minedReceipt, stakeAttestation } from '../chain/wallet.js';
+import { snapshot } from '../chain/snapshot.js';
+import { chainReader, listingAt, listingEvent, minedReceipt, stakeAttestation } from '../chain/wallet.js';
 import { ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { NO_HOLD, holdTerms, readHold } from '../lib/hold.js';
 import { closeTerms, renewTerms, sameListing, topUpEffect, topUpTerms } from '../lib/listingActions.js';
+import { kept } from '../lib/seenMined.js';
 import { STRINGS, fill } from '../strings.js';
 import { TextField } from './Field.jsx';
 import { useSeenMined } from './seenMined.js';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
-/** The event `name` of `contract` for the listing in a receipt, or null: another contract's log, or another listing's, is none. */
-function listingEvent(contract, receipt, name, listingId) {
-  for (const log of receipt.logs) {
-    if (!same(log.address, contract.target)) continue;
-    let event = null;
-    try {
-      event = contract.interface.parseLog(log);
-    } catch {
-      // not an event of the client's ABI
-    }
-    if (event?.name === name && event.args.listingId === BigInt(listingId)) return event;
-  }
-  return null;
-}
 const heldEvent = (contract, receipt, listingId) => listingEvent(contract, receipt, 'Held', listingId);
 const stateWords = (l) => STRINGS.fund.states[LISTING_STATES[Number(l.state)]] ?? String(l.state);
-/** The block the wallet's node is at: a raw eth_blockNumber, since ethers' getBlockNumber() may answer from a cache. */
-const blockNow = async (provider) => Number(await provider.send('eth_blockNumber', []));
+// Every read below is one snapshot (chain/snapshot.js): its calls are held to one block hash, through the site's
+// reader or through the wallet. Every transaction's line is a kept receipt (lib/seenMined.js): it carries its block's
+// hash, and is said only while that block is the chain's as the page reads it (`read`: the snapshot the listing was
+// last read at). `onChanged` is given that receipt, so the page's next reads say which hash their chain has at its
+// block; where nothing was sent it is given the block of the read that found the listing changed.
+/** The line of a transaction this page saw mined that is not on the chain as the page now reads it. */
+const droppedLine = (seen, testId) => (seen?.dropped
+  ? <p className="error" role="alert" data-testid={testId}>{fill(STRINGS.fund.txDropped, { tx: seen.tx })}</p>
+  : null);
 
 /**
  * A top-up (design §13.2): fund() on a listing that has opened, with no fee. The contract pays what the
@@ -44,7 +39,7 @@ const blockNow = async (provider) => Number(await provider.send('eth_blockNumber
  * has it on hold (node P42). A top-up is taken as before, and a Depleted listing's state goes back to Open the same
  * way; it takes no claims all the same, and the page says that in place of "reopens".
  */
-export function TopUpEscrow({ listingId, listing, held = false, onChanged = () => {} }) {
+export function TopUpEscrow({ listingId, listing, held = false, read = null, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const T = STRINGS.topUp;
@@ -52,7 +47,8 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
   // a depleted listing: what reopens it is the amount to start from
   const [amount, setAmount] = useState(terms.toReopenWei ? formatEth(terms.toReopenWei) : '');
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null); // { tx, toOwed, escrow, reopened }
+  // the top-up this page saw mined: { tx, toOwed, escrow, reopened } with its block. Its figures are that block's.
+  const [done, setDone, toppedUp] = useSeenMined(read, () => true);
   const [error, setError] = useState(null);
 
   if (!terms.can && !done) return null;
@@ -79,18 +75,17 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
-      const blockTag = await blockNow(provider);
-      const mine = await listingAt(reader, listingId, blockTag);
+      const { value: mine, block } = await snapshot(provider, (at) => listingAt(reader, listingId, at));
       // another listing under this id, or none: the wallet's chain is not the one this page read (FundPage refresh)
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
-        onChanged(blockTag);
+        onChanged(block);
         return undefined;
       }
       if (!topUpTerms(mine).can || !same(mine.maker, account)) {
         setError(fill(T.changed, { id: listingId, state: stateWords(mine) }));
         // the block the wallet saw the change at: the page reads the listing from there (FundPage refresh)
-        onChanged(blockTag);
+        onChanged(block);
         return undefined;
       }
       const tx = await stakeAttestation(signer).fund(BigInt(listingId), 0n, { value: wei });
@@ -113,9 +108,10 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
       }
       // From here the top-up is mined: nothing below reports it as failed. What the escrow holds is the receipt's
       // Funded event; without one the line says only that it was topped up, and the page's own read says the rest.
-      setDone({ tx: receipt.hash, toOwed, escrow, reopened });
+      const seen = kept(receipt, { toOwed, escrow, reopened });
+      setDone(seen);
       setAmount('');
-      onChanged(receipt.blockNumber);
+      onChanged(seen);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -136,7 +132,8 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
           {terms.state === 'Rolled' && <p className="hint" data-testid="top-up-rolled">{T.rolled}</p>}
         </>
       )}
-      {done && (
+      {droppedLine(done, 'top-up-dropped')}
+      {toppedUp && (
         <p className="ok" data-testid="topped-up">
           {done.escrow === null && fill(T.doneNoEscrow, { tx: done.tx })}
           {done.escrow !== null && (done.toOwed > 0n
@@ -175,14 +172,15 @@ export function TopUpEscrow({ listingId, listing, held = false, onChanged = () =
  * maker has it on hold (node P42). A renewal extends the paid period as before and does not make the listing take
  * claims again, so the page never says "until it is renewed" of one.
  */
-export function RenewListing({ listingId, listing, held = false, onChanged = () => {} }) {
+export function RenewListing({ listingId, listing, held = false, read = null, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const R = STRINGS.renew;
   const [fee, setFee] = useState(null);
   const [now, setNow] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null); // { tx, until }
+  // the renewal this page saw mined: { tx, until } with its block. Its paid period is that block's.
+  const [done, setDone, renewedHere] = useSeenMined(read, () => true);
   const [error, setError] = useState(null);
   const terms = renewTerms(listing, now ?? Math.floor(Date.now() / 1000));
 
@@ -191,11 +189,13 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
     let live = true;
     (async () => {
       const provider = await chainReader();
-      const [due, block] = await Promise.all([stakeAttestation(provider).listingFeeWei(), provider.getBlock('latest')]);
+      const sa = stakeAttestation(provider);
+      // the fee, and the time of the block it was read at
+      const { value: due, time } = await snapshot(provider, (at) => sa.listingFeeWei(at));
       if (live) {
         setFee(due);
         // the chain's time, which is what decides whether the period has lapsed
-        setNow(Number(block.timestamp));
+        setNow(Number(time));
       }
     })().catch(() => {});
     return () => { live = false; };
@@ -210,16 +210,15 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
-      const blockTag = await blockNow(provider);
-      const [mine, due] = await Promise.all([listingAt(reader, listingId, blockTag), reader.listingFeeWei({ blockTag })]);
+      const { value: [mine, due], block } = await snapshot(provider, (at) => Promise.all([listingAt(reader, listingId, at), reader.listingFeeWei(at)]));
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
-        onChanged(blockTag);
+        onChanged(block);
         return undefined;
       }
       if (!renewTerms(mine, 0).can || !same(mine.maker, account)) {
         setError(fill(R.changed, { id: listingId, state: stateWords(mine) }));
-        onChanged(blockTag);
+        onChanged(block);
         return undefined;
       }
       if (due !== fee) {
@@ -233,8 +232,9 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
       // payment. Until when is the receipt's own Renewed event, so no read stands between the receipt and the line;
       // without one the line says only that it was renewed, and the page's read says until when.
       const renewed = listingEvent(reader, receipt, 'Renewed', listingId);
-      setDone({ tx: receipt.hash, until: renewed ? renewed.args.fundedUntil : null });
-      onChanged(receipt.blockNumber);
+      const seen = kept(receipt, { until: renewed ? renewed.args.fundedUntil : null });
+      setDone(seen);
+      onChanged(seen);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -253,7 +253,8 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
         </p>
       )}
       {terms.can && held && <p className="hint" data-testid="renew-held">{R.held}</p>}
-      {done && (
+      {droppedLine(done, 'renew-dropped')}
+      {renewedHere && (
         <p className="ok" data-testid="renewed">
           {done.until === null ? fill(R.doneNoTime, { tx: done.tx }) : fill(R.done, { tx: done.tx, until: formatTime(done.until) })}
         </p>
@@ -289,16 +290,17 @@ export function RenewListing({ listingId, listing, held = false, onChanged = () 
  * that a read of that block or later does not show is said in an alert, never as a hold, and the action is offered
  * again: the maker must not publish a fix on the strength of a hold that is not on the chain.
  */
-export function HoldListing({ listingId, listing, hold = NO_HOLD, readBlock = null, onHeld = () => {}, onChanged = () => {} }) {
+export function HoldListing({ listingId, listing, hold = NO_HOLD, read = null, onHeld = () => {}, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const H = STRINGS.hold;
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
-  // The hold this page saw mined: { tx, heldAt, block }. It is the listing's hold while the read is from before its
-  // block, and from then on while the read has a hold of that very time; once a read does not, it is dropped for good
-  // (lib/seenMined.js), and a hold the listing has later is never said with this transaction.
-  const [done, setDone, mine] = useSeenMined(readBlock, (d) => hold.held && hold.heldAt === BigInt(d.heldAt));
+  // The hold this page saw mined: { tx, heldAt } with its block. It is the listing's hold while the read is of a block
+  // before its own, and from then on while its block is the chain's and the read has a hold of that very time; once a
+  // read says otherwise, it is dropped for good (lib/seenMined.js), and a hold the listing has later is never said
+  // with this transaction.
+  const [done, setDone, mine] = useSeenMined(read, (d) => hold.held && hold.heldAt === BigInt(d.heldAt));
   const [error, setError] = useState(null);
   const terms = holdTerms(listing, hold);
 
@@ -319,21 +321,20 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, readBlock = nu
         return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account: sender }));
       }
       const reader = stakeAttestation(provider);
-      const blockTag = await blockNow(provider);
-      const [mine, now] = await Promise.all([listingAt(reader, listingId, blockTag), readHold(reader, listingId, { blockTag })]);
+      const { value: [mine, now], block } = await snapshot(provider, (at) => Promise.all([listingAt(reader, listingId, at), readHold(reader, listingId, at)]));
       // A hold has no way back, so it is sent only for the listing this page showed the maker: the same artifact, and
       // the same maker's. On a chain whose blocks were replaced the id can name another of the maker's open listings,
       // and a hold there would leave the version meant to be protected taking commits.
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
         setAsking(false);
-        onChanged(blockTag);
+        onChanged(block);
         return undefined;
       }
       if (!holdTerms(mine, now).can || !same(mine.maker, sender)) {
         setError(fill(H.changed, { id: listingId }));
         setAsking(false);
-        onChanged(blockTag);
+        onChanged(block);
         return undefined;
       }
       const tx = await stakeAttestation(signer).hold(BigInt(listingId));
@@ -349,8 +350,9 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, readBlock = nu
         onChanged(receipt.blockNumber);
         return undefined;
       }
-      setDone({ tx: receipt.hash, heldAt: held.args.heldAt, block: receipt.blockNumber });
-      onHeld(held.args.heldAt, receipt.blockNumber);
+      const seen = kept(receipt, { heldAt: held.args.heldAt });
+      setDone(seen);
+      onHeld(seen);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -395,7 +397,7 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, readBlock = nu
     body = (
       <>
         {/* a hold this page saw mined, and the chain as read since does not show: said first, and never as a hold */}
-        {done && <p className="error" role="alert" data-testid="hold-dropped">{fill(H.dropped, { tx: done.tx })}</p>}
+        {done?.dropped && <p className="error" role="alert" data-testid="hold-dropped">{fill(H.dropped, { tx: done.tx })}</p>}
         <ul className="warning" data-testid="hold-warning">
           <li>{H.warning.stops}</li>
           <li>{H.warning.pending}</li>
@@ -424,7 +426,7 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, readBlock = nu
  * through the wallet. The receipt says what came back and whether the contract could send it: a wallet
  * it could not pay is credited instead (PaymentDeferred), and withdraws.
  */
-export function CloseListing({ listingId, listing, readBlock = null, onChanged = () => {} }) {
+export function CloseListing({ listingId, listing, read = null, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const C = STRINGS.close;
@@ -432,13 +434,13 @@ export function CloseListing({ listingId, listing, readBlock = null, onChanged =
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const terms = closeTerms(listing);
-  // The close this page saw mined: { tx, amount, account, deferred, block }. It stands by its receipt while the page's
-  // read is from before its block (`readBlock`: the block the listing was read at). From that block on the read
-  // decides: a listing that does not read closed is not, the page says so, and the close is offered again by its
-  // terms. A receipt a read contradicted is dropped for good (lib/seenMined.js): if the listing is closed later, by
-  // another transaction, this section says nothing of it, as on a visit that sent no close, and never that
-  // transaction's hash or what it reported as returned.
-  const [done, setDone, closedHere] = useSeenMined(readBlock, () => terms.why === 'closed');
+  // The close this page saw mined: { tx, amount, account, deferred } with its block. It stands by its receipt while
+  // the page's read is of a block before its own (`read`: the snapshot the listing was last read at). From that block
+  // on it stands only while its block is the chain's and the listing reads closed: otherwise the page says so, and
+  // the close is offered again by its terms. A receipt a read contradicted is dropped for good (lib/seenMined.js): if
+  // the listing is closed by another transaction, or by this one mined again in another block, this section says
+  // nothing of it, as on a visit that sent no close, and never that receipt's hash or what it reported as returned.
+  const [done, setDone, closedHere] = useSeenMined(read, () => terms.why === 'closed');
 
   if (terms.why === 'closed' && !closedHere) return null;
 
@@ -449,19 +451,18 @@ export function CloseListing({ listingId, listing, readBlock = null, onChanged =
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
-      const blockTag = await blockNow(provider);
-      const mine = await listingAt(reader, listingId, blockTag);
+      const { value: mine, block } = await snapshot(provider, (at) => listingAt(reader, listingId, at));
       if (!sameListing(mine, listing)) {
         setError(fill(STRINGS.fund.replaced, { id: listingId }));
         setAsking(false);
-        onChanged(blockTag);
+        onChanged(block);
         return undefined;
       }
       // what this page offered is what is sent: a claim that came in, or an escrow that moved, asks again
       if (!closeTerms(mine).can || !same(mine.maker, account) || BigInt(mine.escrowWei) !== terms.escrowWei) {
         setError(fill(C.changed, { id: listingId }));
         setAsking(false);
-        onChanged(blockTag);
+        onChanged(block);
         return undefined;
       }
       const tx = await stakeAttestation(signer).close(BigInt(listingId));
@@ -480,10 +481,11 @@ export function CloseListing({ listingId, listing, readBlock = null, onChanged =
         if (event?.name === 'Closed') amount = event.args.amountReturned;
         if (event?.name === 'PaymentDeferred' && same(event.args.to, account)) deferred = true;
       }
-      setDone({ tx: receipt.hash, amount, account, deferred, block: receipt.blockNumber });
+      const seen = kept(receipt, { amount, account, deferred });
+      setDone(seen);
       // sent: a close that turns out not to be on the chain is offered again from its first step
       setAsking(false);
-      onChanged(receipt.blockNumber);
+      onChanged(seen);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -526,7 +528,7 @@ export function CloseListing({ listingId, listing, readBlock = null, onChanged =
     <section className="claim" aria-labelledby={id} data-testid="close">
       <h3 id={id}>{C.title}</h3>
       <p>{C.intro}</p>
-      {done && !closedHere && <p className="error" role="alert" data-testid="close-dropped">{fill(C.dropped, { id: listingId, tx: done.tx })}</p>}
+      {done?.dropped && <p className="error" role="alert" data-testid="close-dropped">{fill(C.dropped, { id: listingId, tx: done.tx })}</p>}
       {body}
       {error && <p className="error" role="alert">{error}</p>}
     </section>
@@ -539,14 +541,15 @@ export function CloseListing({ listingId, listing, readBlock = null, onChanged =
  * (a close whose payment was deferred has just added to it). The amount is read again through the
  * wallet before sending, and the contract pays the caller and no one else.
  */
-export function Withdraw({ version = 0 }) {
+export function Withdraw({ version = 0, read = null, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const W = STRINGS.withdraw;
   const account = w.wallet?.account ?? null;
   const [held, setHeld] = useState(null); // { account, wei }
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(null); // { tx, amount, account }
+  // the withdrawal this page saw mined: { tx, amount, account } with its block
+  const [done, setDone, withdrawn] = useSeenMined(read, () => true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -556,8 +559,8 @@ export function Withdraw({ version = 0 }) {
     }
     let live = true;
     chainReader()
-      .then((provider) => stakeAttestation(provider).withdrawable(account))
-      .then((wei) => { if (live) setHeld({ account, wei }); })
+      .then((provider) => snapshot(provider, (at) => stakeAttestation(provider).withdrawable(account, at)))
+      .then(({ value: wei }) => { if (live) setHeld({ account, wei }); })
       .catch(() => { if (live) setHeld(null); });
     return () => { live = false; };
   }, [account, version, done]);
@@ -570,14 +573,17 @@ export function Withdraw({ version = 0 }) {
     setError(null);
     try {
       const { signer, provider, account: sender } = await w.ensure();
-      const amount = await stakeAttestation(provider).withdrawable(sender, { blockTag: await blockNow(provider) });
+      const { value: amount } = await snapshot(provider, (at) => stakeAttestation(provider).withdrawable(sender, at));
       if (amount === 0n) {
         setHeld({ account: sender, wei: 0n });
         return setError(fill(W.changed, { account: sender }));
       }
       const tx = await stakeAttestation(signer).withdraw();
       const receipt = await minedReceipt(tx);
-      setDone({ tx: receipt.hash, amount, account: sender });
+      const seen = kept(receipt, { amount, account: sender });
+      setDone(seen);
+      // the page reads from the withdrawal's block: what it holds for the wallet now, and whether that block is the chain's
+      onChanged(seen);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -590,7 +596,8 @@ export function Withdraw({ version = 0 }) {
     <section className="claim" aria-labelledby={id} data-testid="withdraw">
       <h3 id={id}>{W.title}</h3>
       <p>{W.intro}</p>
-      {done && <p className="ok" data-testid="withdrawn">{fill(W.done, { tx: done.tx, eth: formatEth(done.amount), account: done.account })}</p>}
+      {droppedLine(done, 'withdraw-dropped')}
+      {withdrawn && <p className="ok" data-testid="withdrawn">{fill(W.done, { tx: done.tx, eth: formatEth(done.amount), account: done.account })}</p>}
       {mine > 0n && (
         <>
           <p data-testid="withdraw-held">{fill(W.held, { eth: formatEth(mine), account })}</p>

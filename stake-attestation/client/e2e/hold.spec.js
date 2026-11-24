@@ -34,15 +34,23 @@ async function holdOnChain(chain, stack, listingId, from = stack.accounts.maker)
 const lines = async (locator) => (await locator.innerText()).split('\n').filter(Boolean);
 /**
  * The site's reader held at the block the chain is at now, as a node that trails the wallet's: resolves what lets it
- * go. `seen.reads` counts the block numbers it was asked for meanwhile, one for each read of the listing.
+ * go. Every read of the page is a snapshot of the latest block (src/chain/snapshot.js), so the reader goes on
+ * answering "latest" with that block. `seen.reads` counts the calls it made meanwhile that `seen.of` picks out: a read
+ * of the listing asks getListing once.
  */
-async function freezeReader(page, stack, chain, seen = { reads: 0 }) {
-  const block = Number(await chain.provider.send('eth_blockNumber', []));
+async function freezeReader(page, stack, chain, seen = { reads: 0, of: () => false }) {
+  const frozen = await chain.provider.send('eth_getBlockByNumber', ['latest', false]);
   return interceptRpc(page, stack, (p) => {
-    if (p.method !== 'eth_blockNumber') return undefined;
-    seen.reads += 1;
-    return { result: `0x${block.toString(16)}` };
+    if (seen.of(p)) seen.reads += 1;
+    return p.method === 'eth_getBlockByNumber' && p.params?.[0] === 'latest' ? { result: frozen } : undefined;
   }, { from: 'reader' });
+}
+/** A block's hash as another chain has it at that height: any other 32 bytes. */
+const otherHash = (hash) => `${hash.slice(0, -1)}${hash.endsWith('0') ? '1' : '0'}`;
+/** What the node answers for one request, asked directly. */
+async function ofNode(stack, p) {
+  const res = await fetch(stack.rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: p.method, params: p.params }) });
+  return (await res.json()).result;
 }
 const word = (n) => `0x${BigInt(n).toString(16).padStart(64, '0')}`;
 /** The call getListing(id) as a page sends it, and what the chain answers for it now. */
@@ -328,7 +336,7 @@ test.describe('the maker\'s hold', () => {
     const pick = field(page, RF.pick);
     await expect(pick).toBeVisible();
     await pick.selectOption(String(successor.listingId));
-    const seen = { reads: 0 };
+    const seen = { reads: 0, of: isCallWith((await listingCall(chain, first.listingId)).data) };
     const letGo = await freezeReader(page, stack, chain, seen);
     await page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) }).click();
     await expect(page.getByTestId('rolled')).toBeVisible({ timeout: 30_000 });
@@ -751,6 +759,92 @@ test.describe('the maker\'s hold', () => {
     await expect(renewed).toHaveText(fill(STRINGS.renew.done, { tx: events[0].transactionHash, until: at(events[0].args.fundedUntil) }));
     await expect(renew.getByRole('alert')).toHaveCount(0);
     await expect(renew.getByTestId('renew-period')).toHaveText(fill(STRINGS.renew.until, { time: at(events[0].args.fundedUntil) }), { timeout: 20_000 });
+  });
+
+  test('a close whose block is not the chain\'s when the page catches up, on a chain where the listing is closed all the same: nothing of that receipt is said', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    const escrow = formatEth((await chain.sa.getListing(listingId)).escrowWei);
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    const close = page.getByTestId('close');
+    const ask = close.getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) });
+    await expect(ask).toBeVisible();
+    // From here the chain as the site's reader has it is another one: every block mined from now on has another hash
+    // there. The wallet's node reports the close in its own block; on the reader's chain the listing is closed too
+    // (by that call mined again, or by another close), in a block that is not the receipt's.
+    const head = Number(await chain.provider.send('eth_blockNumber', []));
+    await interceptRpc(page, stack, async (p) => {
+      if (p.method !== 'eth_getBlockByNumber') return undefined;
+      const block = await ofNode(stack, p);
+      return { result: block && Number(block.number) > head ? { ...block, hash: otherHash(block.hash) } : block };
+    }, { from: 'reader' });
+    await ask.click();
+    await close.getByRole('button', { name: fill(STRINGS.close.confirm, { id: listingId, eth: escrow }) }).click();
+    // the first read that has caught up already says closed: the state is said, and nothing the receipt reported
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    const [event] = await chain.sa.queryFilter(chain.sa.filters.Closed(listingId));
+    await expect(page.getByTestId('closed')).toHaveCount(0);
+    await expect(page.getByTestId('close')).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText(event.transactionHash);
+    await expect(page.locator('main')).not.toContainText('of escrow went back');
+    await expect(page.getByTestId('listing-behind')).toHaveCount(0);
+  });
+
+  test('a block replaced under the page\'s read: the listing of one chain is never shown with the hold of the other', async ({ page, stack, chain }) => {
+    const held = await chain.openListing({ recipient: key.recipient });
+    await holdOnChain(chain, stack, held.listingId);
+    // what the replacing chain has under that id: another of the maker's listings, open and not on hold
+    const other = await chain.openListing({ recipient: key.recipient });
+    const mine = await listingCall(chain, held.listingId);
+    const theirs = await listingCall(chain, other.listingId);
+    const takes = chain.sa.interface.encodeFunctionData('acceptsCommits', [held.listingId]);
+    let moved = false;
+    await installWallet(page, stack);
+    await interceptRpc(page, stack, async (p) => {
+      // the listing under the id is the replacing chain's from the first call
+      if (isCallWith(mine.data)(p)) return { result: theirs.result };
+      // its hold and whether it takes commits are still the old block's on the first try (on hold, taking none), and
+      // the replacing chain's from then on
+      if (isHeldAtCall(p) || isCallWith(takes)(p)) return moved ? { result: word(isHeldAtCall(p) ? 0 : 1) } : undefined;
+      // the block at that height has another hash when the page asks again after the first try's calls
+      if (p.method === 'eth_getBlockByNumber' && p.params?.[0] !== 'latest' && !moved) {
+        moved = true;
+        const block = await ofNode(stack, p);
+        return { result: { ...block, hash: otherHash(block.hash) } };
+      }
+      return undefined;
+    }, { from: 'reader' });
+    await page.goto(`/#/fund/${held.listingId}`);
+    // the page shows one block's answers: the replacing chain's listing, open, and nothing of the old block's hold
+    const shown = await chain.sa.getListing(other.listingId);
+    await expect(page.getByTestId('listing-summary')).toContainText(shown.listingCid);
+    expect(moved).toBe(true);
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
+    for (const id of ['listing-held', 'listing-held-since']) await expect(page.getByTestId(id)).toHaveCount(0);
+    await expect(page.getByTestId('listing-open-until')).toBeVisible();
+    // (the site's list of the repository's other listings still names the held one, truly: it is another listing)
+    await expect(page.getByTestId('hold').getByTestId('hold-since')).toHaveCount(0);
+    await expect(page.getByTestId('hold').getByTestId('hold-warning')).toBeVisible();
+    await expect(page.getByTestId('commit-offer')).not.toContainText(STRINGS.offer.held);
+    expect(await page.getByTestId('roll-forward').getByTestId('roll-hold-first').innerText()).toBe(RF.hold.first);
+  });
+
+  test('one block that says both "on hold" and "takes commits" is a failed read of the page, never guidance', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    expect(await chain.sa.acceptsCommits(listingId)).toBe(true);
+    await installWallet(page, stack);
+    // the node answers the hold's view with a time for a listing it says takes commits, at one block
+    const stop = await interceptRpc(page, stack, (p) => (isHeldAtCall(p) ? { result: word(1_800_000_000) } : undefined), { from: 'reader' });
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByText(fill(F.readFailed, { reason: F.contradictory }))).toBeVisible();
+    for (const id of ['listing-summary', 'listing-held', 'hold', 'roll-forward']) await expect(page.getByTestId(id)).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText('on hold since');
+    await expect(page.locator('main')).not.toContainText('push the fix');
+    // read again, once the node answers of one block
+    await stop();
+    await page.getByRole('button', { name: F.retry }).click();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
+    await expect(page.getByTestId('listing-held')).toHaveCount(0);
   });
 
   test('a hold the chain dates otherwise than the receipt did: one time on the page, the chain\'s, and no transaction named for it', async ({ page, stack, chain }) => {

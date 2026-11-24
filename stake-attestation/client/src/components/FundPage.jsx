@@ -1,10 +1,12 @@
-import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
-import { WalletError, chainReader, stakeAttestation } from '../chain/wallet.js';
+import { snapshot } from '../chain/snapshot.js';
+import { WalletError, chainReader, listingAt, stakeAttestation } from '../chain/wallet.js';
 import { safeguardTerms } from '../lib/claimActions.js';
 import { errorReason, formatEth, formatTime, formatWhole } from '../lib/format.js';
 import { holdView, readHold } from '../lib/hold.js';
+import { asKept, isKept } from '../lib/seenMined.js';
 import { readFrom } from '../lib/poll.js';
 import { STRINGS, fill } from '../strings.js';
 import { AwardLine, StatePill } from './Awards.jsx';
@@ -21,24 +23,29 @@ const F = STRINGS.fund;
 const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 
 /**
- * The listing, its hold (node P42) and whether it takes a commit as commit() decides it, read at one block: a hold
- * mined between two reads never pairs a listing with the hold of another moment. A contract deployed before the hold
- * refuses the heldAt call, which readHold answers as "no hold here"; a read that fails any other way rejects with the
- * rest, and the page says it could not be read. `block` is the block every part of the answer is of, and "no such
- * listing" is an answer of a block too: a listing whose block was dropped is gone as of the block read, which is how
- * a page waiting for a later block learns of it.
- * @returns {Promise<{ missing: true, block: number } | { listing: object, hold: { supported: boolean, heldAt: bigint }, takesCommits: boolean, block: number }>}
+ * The page's read of the listing: one snapshot of one block hash (chain/snapshot.js). The count, the listing, its hold
+ * (node P42) and whether it takes a commit as commit() decides it are that one block's: a hold mined between two
+ * calls, or a block replaced under them, never pairs a listing with the hold of another moment or of another chain.
+ * A contract deployed before the hold refuses the heldAt call, which readHold answers as "no hold here"; a read that
+ * fails any other way rejects with the rest, and the page says it could not be read. So does a block that says both
+ * "on hold" and "takes commits": the contract never says both of one block, and the page gives no guidance from it.
+ * "No such listing" is an answer of a block too: a listing whose block was dropped is gone as of the block read,
+ * which is how a page waiting for a later block learns of it.
+ * @param {number[]} [heights] - the blocks of the receipts the page keeps: the snapshot says which hash its chain has
+ *        at each (lib/seenMined.js)
+ * @returns {Promise<{ block: number, blockHash: string, hashes: Record<number, string|null> } & ({ missing: true } | { listing: object, hold: { supported: boolean, heldAt: bigint }, takesCommits: boolean })>}
  */
-async function readListing(listingId) {
+async function readListing(listingId, heights = []) {
   const provider = await chainReader();
   const sa = stakeAttestation(provider);
-  const id = BigInt(listingId);
-  // a raw eth_blockNumber: ethers' getBlockNumber() may answer from a cache
-  const block = Number(await provider.send('eth_blockNumber', []));
-  const at = { blockTag: block };
-  if (id === 0n || id > (await sa.listingCount(at))) return { missing: true, block };
-  const [listing, hold, takesCommits] = await Promise.all([sa.getListing(id, at), readHold(sa, id, at), sa.acceptsCommits(id, at)]);
-  return { listing, hold, takesCommits, block };
+  const { value, block, blockHash, hashes } = await snapshot(provider, async (at) => {
+    const listing = await listingAt(sa, listingId, at);
+    if (listing === null) return { missing: true };
+    const [hold, takesCommits] = await Promise.all([readHold(sa, listingId, at), sa.acceptsCommits(BigInt(listingId), at)]);
+    if (hold.heldAt !== 0n && takesCommits) throw new Error(STRINGS.fund.contradictory);
+    return { listing, hold, takesCommits };
+  }, { heights });
+  return { ...value, block, blockHash, hashes };
 }
 
 /**
@@ -53,18 +60,26 @@ async function readListing(listingId) {
 export function FundPage({ listingId }) {
   const headingId = useId();
   const [lookup, setLookup] = useState('');
-  const [loaded, setLoaded] = useState(null); // { listing, hold, takesCommits, block } | { missing, block } | { failed }
+  // the page's read: one snapshot (readListing), { listing, hold, takesCommits } or { missing }, with its block's number
+  // and hash and the hashes its chain has at the blocks the page was told of; or { failed }
+  const [loaded, setLoaded] = useState(null);
   const [attempt, setAttempt] = useState(0);
-  // The opening fund() this page sent and saw mined: { block }. Like a hold's receipt, it stands while the page's read
-  // is from before that block; from then on only while the read has the listing opened (its openedAt set, whatever its
-  // state since); and once a read does not, it is dropped for good (lib/seenMined.js): a listing closed without ever
-  // opening is never said to have been opened here.
+  // the snapshot that read is of: what a receipt the page keeps is held against (lib/seenMined.js)
+  const read = useMemo(
+    () => (loaded?.blockHash ? { block: loaded.block, blockHash: loaded.blockHash, hashes: loaded.hashes } : null),
+    [loaded],
+  );
+  // The opening fund() this page sent and saw mined, as FundListing kept its receipt. Like a hold's receipt, it stands
+  // while the page's read is of a block before its own; from then on only while its block is the chain's and the read
+  // has the listing opened (its openedAt set, whatever its state since); and once a read says otherwise, it is dropped
+  // for good (lib/seenMined.js): a listing closed without ever opening is never said to have been opened here.
   const [openedHere, setOpenedHere, openingStands] = useSeenMined(
-    loaded?.block ?? null,
+    read,
     () => !loaded?.listing || BigInt(loaded.listing.openedAt) !== 0n,
   );
-  // a hold this page sent and saw mined: { at, block }. It stands only while the page's read is from before that
-  // block (lib/hold.js holdView); a read of that block or later decides, and replaces it.
+  // The hold this page sent and saw mined, as HoldListing kept its receipt (with `heldAt`). It stands in for the read
+  // only while the page's read is of a block before its own (lib/hold.js holdView); a read of that block or later
+  // decides alone, and replaces it.
   const [heldHere, setHeldHere] = useState(null);
   // the block of a transaction sent from this page that no read has reached: the page says so, and offers to read again
   const [behind, setBehind] = useState(null);
@@ -73,6 +88,9 @@ export function FundPage({ listingId }) {
   // the newest block this page knows the listing changed in: a transaction it sent, or a read through the wallet that
   // found the listing changed. No read from before it is taken, whichever action asks for the read.
   const needed = useRef(0);
+  // the blocks of the receipts this page keeps: each read asks which hash its chain has at them (lib/seenMined.js).
+  // One for each transaction sent from the page in this visit, and never forgotten while the page shows the listing.
+  const keptAt = useRef([]);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
@@ -84,8 +102,8 @@ export function FundPage({ listingId }) {
     if (listingId === null) return undefined;
     let live = true;
     setLoaded(null);
-    readListing(listingId)
-      .then((read) => { if (live) setLoaded(read); })
+    readListing(listingId, keptAt.current)
+      .then((got) => { if (live) setLoaded(got); })
       .catch((err) => { if (live) setLoaded({ failed: err instanceof WalletError ? fill(STRINGS.wallet[err.code], err.vars) : errorReason(err) }); });
     return () => { live = false; };
   }, [listingId, attempt]);
@@ -98,21 +116,25 @@ export function FundPage({ listingId }) {
   // says plainly when none did, with a way to read again. A later refresh replaces the one before it and never asks
   // for less: the page keeps the newest block any of them named (`needed`), so an action that sends nothing (a
   // renewal the wallet's read refuses, say) cannot bring back a read from before a roll that is still being waited for.
-  const refresh = useCallback((minBlock = 0) => {
+  const refresh = useCallback((told = 0) => {
     setVersion((v) => v + 1);
+    // `told` is a receipt this page keeps (its block is read from, and its hash asked of every read from now on), or
+    // the number of a block: a read through the wallet that found the listing changed, or a block still to be read
+    const minBlock = isKept(told) ? told.block : told;
+    if (isKept(told) && !keptAt.current.includes(told.block)) keptAt.current = [...keptAt.current, told.block];
     needed.current = Math.max(needed.current, minBlock);
     const from = needed.current;
     refreshRun.current += 1;
     const run = refreshRun.current;
     const wanted = () => mounted.current && refreshRun.current === run;
-    readFrom(() => readListing(listingId), from, { live: wanted }).then(({ read, reached }) => {
+    readFrom(() => readListing(listingId, keptAt.current), from, { live: wanted }).then(({ read: got, reached }) => {
       if (!wanted()) return;
       if (reached) {
         // a listing this page showed that a read of a later block does not have: said as gone, not only as absent
-        setLoaded((was) => (read.missing && was && !was.failed && (!was.missing || was.gone) ? { ...read, gone: true } : read));
+        setLoaded((was) => (got.missing && was && !was.failed && (!was.missing || was.gone) ? { ...got, gone: true } : got));
         setBehind(null);
         // the chain as read at or after a hold's block says whether it is there: the receipt no longer stands in
-        setHeldHere((seen) => (seen && read.block >= seen.block ? null : seen));
+        setHeldHere((seen) => (seen && got.block >= seen.block ? null : seen));
       } else if (from > 0) setBehind(from);
     });
   }, [listingId]);
@@ -132,15 +154,15 @@ export function FundPage({ listingId }) {
   // another listing under the id (the action was still waiting when a read replaced it): each callback is made for
   // the listing shown when its action was drawn, and one made for another listing sets nothing here. The page still
   // reads from the receipt's block.
-  /** A hold this page sent was mined at `at` (its Held event) in `block`: said at once, then read from that block. */
-  const onHeld = useCallback((at, block) => {
-    if (identity === shownIdentity.current) setHeldHere({ at, block });
-    refresh(block);
+  /** A hold this page sent was mined (`seen`: its kept receipt, with the Held event's time): said at once, then read from its block. */
+  const onHeld = useCallback((seen) => {
+    if (identity === shownIdentity.current) setHeldHere(asKept(seen));
+    refresh(seen);
   }, [refresh, identity]);
-  /** The opening fund() was mined in `block`: its own line stays, and the rest of the page follows the listing. */
-  const onOpened = useCallback((block = 0) => {
-    if (identity === shownIdentity.current) setOpenedHere({ block });
-    refresh(block);
+  /** The opening fund() was mined (`seen`: its kept receipt): its own line stays, and the rest of the page follows the listing. */
+  const onOpened = useCallback((seen) => {
+    if (identity === shownIdentity.current) setOpenedHere(seen);
+    refresh(seen);
   }, [refresh, identity, setOpenedHere]);
 
   const header = (
@@ -182,12 +204,12 @@ export function FundPage({ listingId }) {
   const l = loaded.listing;
   const state = LISTING_STATES[Number(l.state)];
   // the hold as the chain has it, or as this page saw it mined (lib/hold.js holdView)
-  const hold = holdView(l, loaded.hold, heldHere, loaded.block);
+  const hold = holdView(l, loaded.hold, heldHere && { at: heldHere.heldAt, block: heldHere.block }, loaded.block);
   // A listing this page just opened reads Listed until a read reaches the opening's block: until then it is shown as
   // open, by the receipt. A read of that block or later that still says Listed means the opening is not on the chain
   // as read: the state is the read's, the page says so, and the funding form is back.
   const openingAhead = openingStands && state === 'Listed';
-  const openingDropped = openedHere !== null && !openingStands;
+  const openingDropped = openedHere?.dropped === true;
   const shown = openingAhead ? 'Open' : state;
   // errata E8 and E9: the floor and the size list() copied onto this listing, for its whole life
   const terms = safeguardTerms(l);
@@ -228,16 +250,16 @@ export function FundPage({ listingId }) {
             opening (`followed`) it says only that this page opened it, and "is open until" is the line below, of the
             listing and its hold as last read. An opening a read contradicted is said only while the listing is still
             Listed, where it can be funded again; of a listing closed without opening, nothing is said of it. */}
-        {(state === 'Listed' || openingStands) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} followed={state !== 'Listed'} dropped={openingDropped} onOpened={onOpened} />}
+        {(state === 'Listed' || openedHere !== null) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} listed={state === 'Listed'} stands={openingStands} followed={state !== 'Listed'} dropped={openingDropped} onOpened={onOpened} />}
         {state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
         {hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
         {state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
-        <ListingMore listingId={listingId} listing={l} hold={hold} takesCommits={loaded.takesCommits} readBlock={loaded.block} onHeld={onHeld} onChanged={refresh} />
-        <TopUpEscrow listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
-        <RenewListing listingId={listingId} listing={l} held={hold.held} onChanged={refresh} />
-        <CloseListing listingId={listingId} listing={l} readBlock={loaded.block} onChanged={refresh} />
+        <ListingMore listingId={listingId} listing={l} hold={hold} takesCommits={loaded.takesCommits} read={read} onHeld={onHeld} onChanged={refresh} />
+        <TopUpEscrow listingId={listingId} listing={l} held={hold.held} read={read} onChanged={refresh} />
+        <RenewListing listingId={listingId} listing={l} held={hold.held} read={read} onChanged={refresh} />
+        <CloseListing listingId={listingId} listing={l} read={read} onChanged={refresh} />
       </Fragment>
-      <Withdraw version={version} />
+      <Withdraw version={version} read={read} onChanged={refresh} />
     </>
   );
 }

@@ -1555,6 +1555,38 @@ goes in a URL.
   sending refuses it. The fixed version is listed after the hold, often in another tab, so the panel
   looks for successors again when asked; where the site's record did not have this listing yet (its
   mirror trailed the opening) or could not be read, looking again reads the record first.
+  **A block is its hash, never its number.** Two rules hold it, and nothing on this page goes
+  around them. *One read is of one block* (`snapshot` in `client/src/chain/snapshot.js`): every
+  contract read of the page (the count, the listing, its hold and `acceptsCommits`; each read
+  through the wallet just before something is sent; the roll panel's read of its successors; the
+  fees and what the contract holds for the wallet) takes the latest block, makes its calls at
+  that block's number, and is taken only when the block at that number still has the hash it had
+  before them; otherwise it is made again, three times at most, and then it is a failed read
+  ("The listing could not be read", with Read again). A read that says both "on hold" and "takes
+  commits" is a failed read too, never guidance. *A receipt the page keeps carries its block's
+  hash* (`kept` in `client/src/lib/seenMined.js`): the opening, a top-up, a renewal, the hold, a
+  roll forward, a close and a withdrawal each say their line only while their receipt stands.
+  It stands while the page's read is of a block before its own; from a read of that block or a
+  later one, only if the chain that read is of has that hash at that height (each read carries
+  the hash at the block of every receipt the page keeps) and the read shows what the
+  transaction did (a hold of that very time, a listing that opened, the successor it named, a
+  closed listing); and
+  once a read said otherwise it is dropped for good: what the listing becomes later, by another
+  transaction or by the same one mined again in another block, is said as the chain's state,
+  never with that receipt's hash or figures. The page does not go after a transaction that was
+  included again. `test/snapshot.test.js` fails when a contract read of these components is
+  made outside a snapshot, and `test/hold.test.js` when a receipt is kept without its block's
+  hash.
+  **The page reads; it does not watch.** It reads on load, after each of its own transactions
+  until it has read their block, and when asked. A block replaced after its latest read is seen
+  at its next read, not before; what another tab or another sender did is caught by the read
+  before sending and by the contract's own checks; and a node is taken to answer truly for a
+  block hash it names. The design's order for the maker is "once the hold is mined, push the
+  fix": a hold whose block is replaced after the maker acted on it is not something a page can
+  undo, and the page says it at its next read. What the page does hold: it says "on hold" and
+  "push the fix" only from one snapshot, of one block hash, that shows the hold on the maker and
+  artifact the page shows and `acceptsCommits` false; and it says a transaction's hash or figures
+  only while that transaction's block is the chain's.
   **What the page saw mined, against what it reads.** The site's reader can trail the node the
   wallet sent through. After each transaction sent from the page it reads the listing again until
   a read is of the block the transaction was mined in (`readFrom` in `client/src/lib/poll.js`), takes
@@ -1562,19 +1594,15 @@ goes in a URL.
   The page keeps the newest block it was told of, from a receipt or from a read through the wallet
   that found the listing changed (an action that then sends nothing hands over that read's block),
   and no later read of the page is taken from before it: a refused renewal cannot bring back the
-  listing as it was before a roll the page is still waiting to read. A hold the page saw mined
-  stands by its receipt only while the page's read is from before that block; from that block on
-  the read decides. A hold that is not there (its block was dropped) is said in an alert, never
-  drawn as a hold, and offered again; a listing that is not there either is said as gone, with
-  nothing of the hold left on the page; and a hold the chain dates otherwise than the receipt did
-  is said by the chain's time everywhere, without the transaction. A `hold()` that was mined with
-  no `Held` event of this listing in its receipt is named by its transaction and claims no hold.
-  The opening, a roll forward and a close stand by their receipts the same way
-  (`client/src/lib/seenMined.js`): a read of their block or later that does not show them (a
-  listing that never opened, whose successor is not the one named, that is not Closed) is the
-  state the page shows, an alert names the transaction while the action can still be taken, and
-  the action is offered again. A receipt a read contradicted is dropped for good: what the
-  listing becomes later, by another transaction, is never said with its hash or its figures.
+  listing as it was before a roll the page is still waiting to read. A hold that is not there
+  (its block was dropped) is said in an alert, never drawn as a hold, and offered again; a
+  listing that is not there either is said as gone, with nothing of the hold left on the page;
+  and a hold the chain dates otherwise than the receipt did is said by the chain's time
+  everywhere, without the transaction. A `hold()` that was mined with no `Held` event of this
+  listing in its receipt is named by its transaction and claims no hold. An opening, a roll
+  forward or a close that a read does not show is the state the page shows, an alert names the
+  transaction while the action can still be taken, and the action is offered again; a payment
+  or a withdrawal whose block is not the chain's is said in an alert with its transaction.
   **Every action is sent for the listing the page shows.** Listing ids are given in the
   order `list()` is mined, so on a chain whose blocks were replaced an id can name another
   listing of the maker's, or none. Just before sending, each action (top-up, renew, hold, close,
@@ -1589,9 +1617,10 @@ goes in a URL.
   an opening whose receipt arrives after that sets nothing for the listing now shown.
   **A transaction that is mined is never reported as failed.** Every transaction of the page
   takes its receipt through `minedReceipt`, so a call the wallet sent again at a higher fee is
-  reported under the hash it was mined under and the page reads from its block. A renewal's and
-  a top-up's lines are the receipt's own events (`Renewed`, `Funded`), with no read between the
-  receipt and the line: a read that fails after a mined payment cannot invite a second one. A
+  reported under the hash it was mined under and the page reads from its block. An opening's, a
+  renewal's and a top-up's lines are the receipt's own events (`Opened`, `Renewed`, `Funded`),
+  with no read between the receipt and the line: a read that fails after a mined payment cannot
+  invite a second one. A
   roll that the wallet's read refuses because this listing rolled or closed elsewhere has the
   page read it from that block.
   The commit offer follows the contract's `acceptsCommits`, read with the listing: a listing that
@@ -1599,7 +1628,7 @@ goes in a URL.
   followed the same way, so its claims, the hold and the rest are there without a reload; the
   opening's line then keeps its transaction and says only that this page opened the listing, and
   "open until" is said, as on any visit, of the listing and its hold as last read.
-  **How the page knows.** It reads `heldAt(listingId)` at the block it reads the listing at. A
+  **How the page knows.** It reads `heldAt(listingId)` in the snapshot it reads the listing in. A
   call the contract refuses means a contract from before the hold: the page then draws no hold
   section, and the roll-forward panel says what it said before the hold existed, character for
   character (`STRINGS.roll.fix`: keep the fix private until the listing is closed, when it can be

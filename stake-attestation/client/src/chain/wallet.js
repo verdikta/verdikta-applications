@@ -123,15 +123,31 @@ export async function minedReceipt(tx) {
 }
 
 /**
- * The listing as `contract`'s node has it at `blockTag`, or null when the contract has no listing of that id there:
+ * The listing as `contract`'s node has it at one block, or null when the contract has no listing of that id there:
  * one whose block was dropped, read through a node that has dropped it too. getListing reverts for such an id, so the
  * count is asked first, at the same block.
+ * @param {{ blockTag: number }} at - the block of the read this is part of (chain/snapshot.js)
  * @returns {Promise<object|null>}
  */
-export async function listingAt(contract, listingId, blockTag) {
+export async function listingAt(contract, listingId, at) {
   const id = BigInt(listingId);
-  if (id === 0n || id > BigInt(await contract.listingCount({ blockTag }))) return null;
-  return contract.getListing(id, { blockTag });
+  if (id === 0n || id > BigInt(await contract.listingCount(at))) return null;
+  return contract.getListing(id, at);
+}
+
+/** The event `name` of `contract` for the listing in a receipt, or null: another contract's log, or another listing's, is none. */
+export function listingEvent(contract, receipt, name, listingId) {
+  for (const log of receipt.logs) {
+    if (String(log.address).toLowerCase() !== String(contract.target).toLowerCase()) continue;
+    let event = null;
+    try {
+      event = contract.interface.parseLog(log);
+    } catch {
+      // not an event of the client's ABI
+    }
+    if (event?.name === name && event.args.listingId === BigInt(listingId)) return event;
+  }
+  return null;
 }
 
 /** The event `name` in a receipt, parsed with the client's ABI, or null. */

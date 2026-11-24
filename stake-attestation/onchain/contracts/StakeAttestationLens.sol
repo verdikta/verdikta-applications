@@ -206,8 +206,8 @@ contract StakeAttestationLens {
     }
 
     /// @notice Whether lateClaim (decision D6) takes a claim on the listing now: its stake ended,
-    ///         Rolled, or Closed after it opened; or its maker has held it (P39: host.heldAt is
-    ///         set). ClaimLogic.commit's rule. commitPrice quotes what it takes, as for a commit.
+    ///         Rolled, or Closed after it opened; or it is on hold (P39: host.heldAt is not 0).
+    ///         ClaimLogic.commit's rule. commitPrice quotes what it takes, as for a commit.
     function acceptsLateClaims(uint256 listingId) external view returns (bool) {
         StakeAttestation.Listing memory l = host.getListing(listingId);
         return l.state == StakeAttestation.ListingState.Rolled

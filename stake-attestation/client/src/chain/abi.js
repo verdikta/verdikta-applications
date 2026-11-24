@@ -50,10 +50,10 @@ export const STAKE_ATTESTATION_ABI = Object.freeze([
   'function withdraw()',
   'function withdrawable(address) view returns (uint256)',
   'function listingFeeWei() view returns (uint256)',
-  // the maker's hold (node P39): no page sends or reads it yet. A contract deployed before it has neither function,
-  // and a reader takes a refused heldAt as "not held"
+  // the maker's hold (node P39): no page sends or reads it yet. heldAt is the time of the hold while the listing is
+  // on hold, else 0. A contract deployed before it has neither function, and a reader takes a refused heldAt as "not held"
   'function hold(uint256 listingId)',
-  'function heldAt(uint256) view returns (uint64)',
+  'function heldAt(uint256 listingId) view returns (uint64)',
   // the settlement safeguards' lens views (errata E7-E9; node P18): read, never sent from here
   'function settleableAt(uint256 claimId) view returns (uint256)',
   'function appealDeadline(uint256 claimId) view returns (uint256)',

@@ -857,14 +857,14 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\|/, 'only an Open listing is an entry');
   const commitBody = /function commit\([\s\S]*?\n {4}\}/.exec(logic)[0];
   assert.match(commitBody, /s == StakeAttestation\.ListingState\.Rolled\s*\|\| \(s == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\)\s*\|\| listingHeld,\s*"not accepting late claims"/, 'a late claim needs a listing that is Rolled, Closed after it opened, or held');
-  // held is the contract's heldAt: lateClaim hands it to commit, only the maker's hold sets it, on an Open or a
-  // Depleted listing, and a listing where it is set takes no commit
-  assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /msg\.value, true, heldAt\[listingId\] != 0\s*\);/, 'lateClaim reads heldAt');
+  // held is the contract's own record of a hold (_heldAt, read through heldAt): lateClaim hands it to commit, only
+  // the maker's hold sets it, on an Open or a Depleted listing, and a listing where it is set takes no commit
+  assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /msg\.value, true, _heldAt\[listingId\] != 0\s*\);/, 'lateClaim reads the hold');
   const holdBody = /function hold\([\s\S]*?\n {4}\}/.exec(logic)[0];
   assert.match(holdBody, /require\(msg\.sender == l\.maker, "not maker"\);/);
   assert.match(holdBody, /require\(s == StakeAttestation\.ListingState\.Open \|\| s == StakeAttestation\.ListingState\.Depleted, "not rollable"\);/);
   assert.match(holdBody, /require\(heldAt\[listingId\] == 0, "not accepting commits"\);\s*heldAt\[listingId\] = uint64\(block\.timestamp\);/);
-  assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /&& l\.escrowWei >= l\.awards\[3\]\s*&& heldAt\[listingId\] == 0;/, 'acceptsCommits is false on a held listing');
+  assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /&& l\.escrowWei >= l\.awards\[3\]\s*&& _heldAt\[listingId\] == 0;/, 'acceptsCommits is false on a held listing');
   assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /uint256 pendingClaims; +\/\/ claims neither settled nor expired \(P2b\); never a late claim \(P2e\)/);
   assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /uint64 +headClaim; +\/\/ the earliest claim neither settled nor expired \(0 = none\)/);
   assert.match(flat, /`pendingClaims` is how many claims are open there now, every one of them ahead of a claim you commit, and `headClaim` is the first of them: 0 and null on a listing where yours would be first\./);
@@ -877,7 +877,7 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   // is written in one place and nothing clears it
   const host = read('onchain', 'contracts', 'StakeAttestation.sol');
   assert.equal(`${host}\n${logic}`.split('heldAt[listingId] = ').length - 1, 1, 'the hold is set in one place only');
-  assert.doesNotMatch(`${host}\n${logic}`, /delete heldAt|heldAt\[[^\]]*\] = 0\b/, 'and never cleared');
+  assert.doesNotMatch(`${host}\n${logic}`, /delete _?heldAt|heldAt\[[^\]]*\] = 0\b/, 'and never cleared');
   const opens = [...`${host}\n${logic}`.matchAll(/l\.state = (?:StakeAttestation\.)?ListingState\.Open;/g)];
   assert.equal(opens.length, 2, 'a listing becomes Open in two places only');
   assert.match(host, /if \(s == ListingState\.Listed\) \{[\s\S]{0,600}?l\.state = ListingState\.Open;/);

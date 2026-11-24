@@ -46,7 +46,9 @@ library ClaimLogic {
     ///         instead a listing whose stake ended: Rolled, or Closed after it opened (closed
     ///         unfunded, it never had one); or one its maker has held (P39), which takes no commit
     ///         any more. No allowlist. The lens's acceptsLateClaims states the same rule.
-    /// @param listingHeld the listing's maker has held it (StakeAttestation.hold); read only when `late`
+    /// @param listingHeld the listing's maker has held it at some time (StakeAttestation.hold);
+    ///        read only when `late`. Such a listing is Open or Depleted, or, once the hold ended,
+    ///        Rolled or Closed after it opened, which takes late claims either way.
     function commit(
         mapping(uint256 => StakeAttestation.Claim) storage claims,
         StakeAttestation.Listing storage l,
@@ -115,7 +117,7 @@ library ClaimLogic {
     ///      for that condition. "not rollable" is rollForward's for a listing that is neither Open
     ///      nor Depleted (a hold is the first half of a roll forward, taken where one is), and
     ///      "not accepting commits" is commit's: a held listing takes none already.
-    /// @param heldAt StakeAttestation.heldAt
+    /// @param heldAt StakeAttestation._heldAt: each listing's time of hold, 0 = never
     function hold(StakeAttestation.Listing storage l, mapping(uint256 => uint64) storage heldAt, uint256 listingId)
         external
     {

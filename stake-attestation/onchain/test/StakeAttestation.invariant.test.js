@@ -53,7 +53,8 @@
 // someone else, or of a listing that cannot be held, to be refused), late claims on held listings
 // that are still Open or Depleted, and commits there, which must be refused. A hold moves no ETH
 // and a late claim's bond and prepay are held as any claim's, so the equation is unchanged. After
-// every step a held listing takes no commit and its heldAt is the time it had; at the end every
+// every step a held listing takes no commit and its heldAt is the time it had (0 once it has
+// rolled or closed); at the end every
 // claim made on a listing after its hold is a late claim, and the sequences must have paid awards
 // to claims committed before a hold and settled after it. Skipped under solidity-coverage:
 // StakeAttestation.hold.test.js covers every line they reach.
@@ -191,12 +192,14 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           if (l.owedWei > 0n) expect(l.escrowWei, `${at}: owing with escrow`).to.equal(0n);
           expect(l.pendingClaims, `${at}: pendingClaims`).to.equal(pendingBy.get(id) || 0n);
           if (!holds) continue;
-          // The hold (P39): one-way, and no commit from it on.
+          // The hold (P39): one-way, and no commit from it on. heldAt is its time while the listing
+          // is Open or Depleted, and 0 once the hold has ended in a roll forward or a close.
           const heldAt = await sa.heldAt(id);
           const seen = heldSeen.get(id);
-          if (seen) expect(heldAt, `${at}: heldAt`).to.equal(seen.at);
+          const onHold = l.state === ListingState.Open || l.state === ListingState.Depleted;
+          if (seen) expect(heldAt, `${at}: heldAt`).to.equal(onHold ? seen.at : 0n);
           else if (heldAt !== 0n) heldSeen.set(id, { at: heldAt, claims: await sa.claimCount() });
-          if (heldAt !== 0n) expect(await sa.acceptsCommits(id), `${at}: a held listing takes no commit`).to.equal(false);
+          if (seen || heldAt !== 0n) expect(await sa.acceptsCommits(id), `${at}: a listing that was held takes no commit`).to.equal(false);
         }
         let credits = 0n;
         for (const a of accounts) credits += await sa.withdrawable(a);

@@ -129,6 +129,22 @@ export { checkBinding };
 /** The two events that say a claim was made: a commit's and a late claim's, with the same fields (StakeAttestation.sol). */
 const CLAIM_MADE = Object.freeze(['Committed', 'LateClaim']);
 
+// Where the order of reads decides whether a bond is paid twice, or a ciphertext pinned early, each read has to be
+// the node's answer at that moment. A provider may answer its own methods from a short memory (ethers keeps an answer
+// for 250 ms unless told not to, and a library caller's provider may), so the reads below go to the node by
+// provider.send: the head, a block's hash, the wallet's transaction count, the logs.
+const quantity = (n) => `0x${n.toString(16)}`;
+
+/** The head's number, asked of the node. */
+async function headNow(ctx) {
+  return Number(BigInt(await ctx.rpc(() => ctx.provider.send('eth_blockNumber', []))));
+}
+
+/** The wallet's transaction count at a block number or a tag ('pending'), asked of the node. */
+async function countAt(ctx, address, at) {
+  return Number(BigInt(await ctx.rpc(() => ctx.provider.send('eth_getTransactionCount', [address, typeof at === 'number' ? quantity(at) : at]))));
+}
+
 /**
  * A Committed or a LateClaim log of this hunter, listing and these two hashes, since the block the folder was prepared
  * at. Either kind is a claim on these hashes that has its bond: one filter, the two events' topics in its first place.
@@ -137,29 +153,23 @@ async function findCommitted(ctx, state, upTo = null) {
   const [first, ...indexed] = ctx.topics('Committed', [null, BigInt(state.listingId), state.hunter]);
   const topics = [[first, ctx.topics('LateClaim', [])[0]], ...indexed];
   // up to the head as it is now, or up to the block a caller has read something else at (nonceAndClaimAt)
-  const head = upTo ?? await ctx.rpc(() => ctx.provider.getBlockNumber());
+  const head = upTo ?? await headNow(ctx);
   for (let from = state.startBlock; from <= head; from += ctx.logPageBlocks) {
     const to = Math.min(head, from + ctx.logPageBlocks - 1);
-    const logs = await ctx.rpc(() => ctx.provider.getLogs({ address: ctx.contract, topics, fromBlock: from, toBlock: to }));
+    const logs = await ctx.rpc(() => ctx.provider.send('eth_getLogs', [{ address: ctx.contract, topics, fromBlock: quantity(from), toBlock: quantity(to) }]));
     for (const log of logs) {
       const parsed = ctx.parseLog(log);
       if (CLAIM_MADE.includes(parsed?.name) && parsed.args.archiveHash === state.archiveSha256 && parsed.args.ciphertextSha256 === state.ciphertextSha256) {
-        return { claimId: parsed.args.claimId, blockNumber: log.blockNumber, blockHash: log.blockHash, txHash: log.transactionHash };
+        return { claimId: parsed.args.claimId, blockNumber: Number(BigInt(log.blockNumber)), blockHash: log.blockHash, txHash: log.transactionHash };
       }
     }
   }
   return null;
 }
 
-/** The head, asked of the node each time: a provider's own short memory of it is not used where an order of reads matters. */
-async function headNow(ctx) {
-  return Number(BigInt(await ctx.rpc(() => ctx.provider.send('eth_blockNumber', []))));
-}
-
 /** A block's number and hash, asked of the node: the latest, or the one at `number`. Null when there is none. */
 async function blockIdAt(ctx, number = null) {
-  const tag = number === null ? 'latest' : `0x${number.toString(16)}`;
-  const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [tag, false]));
+  const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [number === null ? 'latest' : quantity(number), false]));
   return block ? { number: Number(BigInt(block.number)), hash: block.hash } : null;
 }
 
@@ -184,9 +194,9 @@ async function blockIdAt(ctx, number = null) {
 async function nonceAndClaimAt(ctx, state) {
   const head = await blockIdAt(ctx);
   if (!head) throw fail('RPC_UNAVAILABLE');
-  const nonce = await ctx.rpc(() => ctx.provider.getTransactionCount(state.hunter, head.number));
+  const nonce = await countAt(ctx, state.hunter, head.number);
   const existing = await findCommitted(ctx, state, head.number);
-  const pending = existing ? nonce : await ctx.rpc(() => ctx.provider.getTransactionCount(state.hunter, 'pending'));
+  const pending = existing ? nonce : await countAt(ctx, state.hunter, 'pending');
   if ((await blockIdAt(ctx, head.number))?.hash !== head.hash) throw fail('RPC_UNAVAILABLE', 'The chain was reorganized while it was read, so nothing was signed.');
   return { existing, nonce, pending };
 }
@@ -249,7 +259,7 @@ async function adoptLogged(ctx, ws, state, found) {
     if (seen) {
       const head = await headNow(ctx);
       if (head - seen.blockNumber + 1 >= ctx.confirmations) {
-        const block = await ctx.rpc(() => ctx.provider.getBlock(seen.blockNumber));
+        const block = await blockIdAt(ctx, seen.blockNumber);
         if (block?.hash === seen.blockHash) return adoptClaim(ctx, ws, state, seen.claimId, seen.txHash);
       }
     }

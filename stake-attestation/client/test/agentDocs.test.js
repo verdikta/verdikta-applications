@@ -1160,7 +1160,10 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // at that nonce: a transaction that takes it afterwards leaves the signature unusable
   const at = /async function nonceAndClaimAt[\s\S]*?\n\}/.exec(commit)?.[0];
   assert.ok(at, 'tool/src/commit.js: nonceAndClaimAt');
-  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionCount\(state\.hunter, head\.number\)\);\s*const existing = await findCommitted\(ctx, state, head\.number\);\s*const pending = existing \? nonce : await ctx\.rpc\(\(\) => ctx\.provider\.getTransactionCount\(state\.hunter, 'pending'\)\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
+  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await countAt\(ctx, state\.hunter, head\.number\);\s*const existing = await findCommitted\(ctx, state, head\.number\);\s*const pending = existing \? nonce : await countAt\(ctx, state\.hunter, 'pending'\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
+  // each of those reads is the node's own answer (provider.send), never a provider's memory of an earlier one
+  for (const method of ['eth_blockNumber', 'eth_getBlockByNumber', 'eth_getTransactionCount', 'eth_getLogs']) assert.ok(commit.includes(`ctx.provider.send('${method}'`), `${method} is asked of the node`);
+  assert.doesNotMatch(commit, /ctx\.provider\.getLogs\(|ctx\.provider\.getTransactionCount\(/, 'none of them through a method the provider may answer from memory');
   const send = /async function sendCommit[\s\S]*?\n\}/.exec(commit)[0];
   assert.match(send, /const at = late \? await nonceAndClaimAt\(ctx, state\) : \{ existing: await findCommitted\(ctx, state\) \};/, 'a late claim asks; a commit looks for its log as it always did');
   assert.match(send, /if \(late && at\.pending > at\.nonce\) throw fail\('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond\.'\);/);
@@ -1176,8 +1179,9 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.match(commit, /if \(state && restart\) \{[\s\S]*?ws\.setAsidePrepared\(\);\s*state = null;\s*\}/);
   const setAside = /setAsidePrepared\(\) \{[\s\S]*?\n {4}\},/.exec(toolSrc('workspace.js'))?.[0];
   assert.ok(setAside, 'tool/src/workspace.js: setAsidePrepared');
-  assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'state\.json'\]\) \{\s*if \(readOptional\(name\) !== null\) fs\.renameSync\(/);
-  assert.doesNotMatch(toolSrc('workspace.js'), /fs\.rmSync\(pathOf\(name\), \{ force: true \}\);\s*fsyncDir/, 'nothing of a prepared claim is removed');
+  // each file is copied whole under the stamp before any original is removed, and state.json goes first
+  assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'state\.json'\]\) \{\s*const bytes = readOptional\(name\);\s*if \(bytes === null\) continue;\s*writePrivate\(`\$\{name\}\.set-aside-\$\{stamp\}`, bytes\);/);
+  assert.match(setAside, /copied\.push\(name\);\s*\}[\s\S]*?fs\.rmSync\(pathOf\('state\.json'\), \{ force: true \}\);\s*fsyncDir\(dir\);\s*for \(const name of copied\) fs\.rmSync\(pathOf\(name\), \{ force: true \}\);/, 'every copy is written before an original is removed, and state.json is removed first');
   assert.match(section(9), /--restart starts over with new keys, and sets the old files aside in the same folder: it deletes nothing/);
 
   // a resume: the flag is read until something is signed, and the saved transaction decides from then on

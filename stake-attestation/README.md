@@ -1404,9 +1404,12 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   And the late claim is signed at that nonce, so a transaction that takes it afterwards leaves the signature unusable,
   and the claim on the chain is adopted. A commit is signed as it always was. The block those reads were made at is
   read again by its hash, and a run that saw it change signs nothing (`RPC_UNAVAILABLE`): a reorganization between
-  them would have the nonce count a claim the logs no longer hold. `--restart` asks the same, whatever the flag, since
-  a prepared folder names no kind, and it deletes nothing: the prepared files, `state.json` with them, are set aside
-  under one stamp (`*.set-aside-…`), for the one case no read can see, a claim someone holds and has not sent yet. A live fee that
+  them would have the nonce count a claim the logs no longer hold. Each of those reads is asked of the node
+  (`provider.send`), never answered from a provider's own memory of an earlier one. `--restart` asks the same, whatever
+  the flag, since a prepared folder names no kind, and it loses nothing: the prepared files, `state.json` with them,
+  are set aside under one stamp (`*.set-aside-…`), for the one case no read can see, a claim someone holds and has not
+  sent yet. They are copied before any original is removed, `state.json` first, so a `--restart` that stops half way
+  leaves either the prepared claim whole or no claim with the whole set aside. A live fee that
   moved between the terms and the signature is said before it is signed, for either kind. And a signed commit whose
   nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was
   pinned, and a run again signs anew.

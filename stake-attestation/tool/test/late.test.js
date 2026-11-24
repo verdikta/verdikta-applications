@@ -735,10 +735,10 @@ test('a late claim sent some other way and not mined yet: nothing is signed whil
 // Rounds 2 and 3: the same claim may be mined at any moment of the run. The wallet's nonce and the logs are read at one
 // block and the pending count after them, so one mined by then is seen and nothing is signed; and the late claim is
 // signed at that nonce, so one mined after it leaves the signature at a used nonce, and the claim is adopted.
-/** A provider that runs `inject` once, right after its first `method` call that `when` accepts. */
-function injecting(method, inject, when = () => true) {
+/** A provider (the world's, or `over`) that runs `inject` once, right after its first `method` call that `when` accepts. */
+function injecting(method, inject, when = () => true, over = w.provider) {
   let done = false;
-  return new Proxy(w.provider, {
+  return new Proxy(over, {
     get(target, prop) {
       if (prop === method) {
         return async (...args) => {
@@ -769,7 +769,7 @@ test('a late claim sent some other way and mined in the middle of the run: durin
     const price = await w.sa.commitPrice(l.listingId);
     const heldBefore = await w.provider.getBalance(w.address);
     let other = null;
-    const provider = injecting('getLogs', async () => { other = await sendOther(l, dir); }, () => fs.existsSync(statePath(dir)));
+    const provider = injecting('send', async () => { other = await sendOther(l, dir); }, (method) => method === 'eth_getLogs' && fs.existsSync(statePath(dir)));
     const err = await w.hunter({ provider }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
     assert.ok(other, 'the other one went out during the scan');
     assert.equal(err.code, 'WALLET_BUSY', err.message);
@@ -856,6 +856,14 @@ test('a reorganization between the nonce and the logs: the block they were read 
   let snapshot = null;
   let first = null;
   let pendingAgain = null;
+  // the nonce at a block, not the pending count: the read a reorganization comes right after
+  const atBlock = (method, params) => method === 'eth_getTransactionCount' && params[1] !== 'pending';
+  const reorganize = async () => {
+    await w.rpc('evm_revert', [snapshot]);
+    await w.mine();
+    await w.rpc('evm_setAutomine', [false]);
+    pendingAgain = await sendOther();
+  };
   // the same late claim is mined right after the folder is prepared: the head the run reads holds it
   const onStep = async (step) => {
     if (step !== 'prepare:saved') return;
@@ -864,12 +872,10 @@ test('a reorganization between the nonce and the logs: the block they were read 
   };
   // the nonce is read at that block and counts it; then the block is replaced by an empty one, and the claim is back
   // in the pool, not mined
-  const provider = injecting('getTransactionCount', async () => {
-    await w.rpc('evm_revert', [snapshot]);
-    await w.mine();
-    await w.rpc('evm_setAutomine', [false]);
-    pendingAgain = await sendOther();
-  }, (_address, tag) => typeof tag === 'number');
+  // a provider as a library caller may hand in: ethers answers a repeated request from memory for a while (250 ms
+  // unless told otherwise; a minute here, so that the run again below is sure to be inside it)
+  const remembering = new ethers.BrowserProvider({ request: (call) => w.hre.network.provider.request(call) }, 31337, { cacheTimeout: 60_000, staticNetwork: true });
+  const provider = injecting('send', reorganize, atBlock, remembering);
   try {
     const err = await w.hunter({ provider, onStep, waitMs: 300 }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
     assert.ok(pendingAgain, 'the reorganization happened between the two reads');
@@ -878,6 +884,12 @@ test('a reorganization between the nonce and the logs: the block they were read 
     assert.equal(readJson(statePath(dir)).commitTx ?? null, null, 'nothing was signed');
     assert.equal((await w.rpc('eth_getBlockByNumber', ['pending', false])).transactions.length, 1, 'only the claim that came back to the pool waits');
     assert.notEqual((await w.provider.getBlock(first.blockNumber)).hash, first.blockHash, 'the block at that height is another block');
+    // Round 5: a run again at once, through a provider that still remembers what it answered a moment ago. Every
+    // read that decides is the node's own, so the nonce is the new fork's, below the pending count: nothing is signed.
+    const again = await w.hunter({ provider: remembering, waitMs: 300 }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
+    assert.equal(again.code, 'WALLET_BUSY', again.message);
+    assert.equal(readJson(statePath(dir)).commitTx ?? null, null, 'nothing was signed');
+    assert.equal((await w.rpc('eth_getBlockByNumber', ['pending', false])).transactions.length, 1);
     await w.mine();
   } finally {
     await w.rpc('evm_setAutomine', [true]);
@@ -919,6 +931,67 @@ test('--restart sets the prepared files aside and deletes nothing: a claim of th
   assert.equal(codeReview.verifyDisclosure({ plaintext: new Uint8Array(old['archive.zip']), ciphertext: new Uint8Array(old['ciphertext.age']), archiveSha256: claim.archiveHash, ciphertextSha256: claim.ciphertextSha256, contentKey: keys.contentKey, ephemeralKey: keys.ephemeralKey, disclosureKey: l.recipient }).ok, true, 'the files set aside are the ones that claim needs');
 });
 
+// Round 5: a --restart that stops half way. The four files are copied before any original is removed, and state.json
+// is removed first, so the folder is either the prepared claim it was, whole, or no claim with the whole set aside.
+test('--restart stopped half way: while copying, the prepared claim is whole and can still be adopted; after the state is gone, the whole set stands under one stamp', async () => {
+  const names = ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json'];
+  const prepared = async () => {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+    const old = { state: readJson(statePath(dir)) };
+    for (const name of names) old[name] = fs.readFileSync(statePath(dir, name));
+    return { l, dir, old };
+  };
+  const asideOf = (dir) => fs.readdirSync(`${dir}/.verdikta-claim`).filter((n) => n.includes('.set-aside-'));
+
+  // stopped while the copies are written: the second one fails
+  {
+    const { l, dir, old } = await prepared();
+    const count = await w.claimCount();
+    const real = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (String(to).includes('keys.json.set-aside-')) throw Object.assign(new Error('stopped'), { code: 'EIO' });
+      return real(from, to);
+    };
+    try {
+      await assert.rejects(late({ claimDir: dir, listingId: l.listingId, restart: true }), (e) => e.code === 'FILE_ERROR');
+    } finally {
+      fs.renameSync = real;
+    }
+    for (const name of names) assert.ok(fs.readFileSync(statePath(dir, name)).equals(old[name]), `${name} is where it was`);
+    // the old hashes' claim is mined meanwhile: the folder still holds everything it needs, and it is adopted
+    await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, old.state.archiveSha256, old.state.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    const r = await late({ claimDir: dir, listingId: l.listingId });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.ciphertextSha256, old.state.ciphertextSha256, 'the claim of the old hashes, disclosed with its own files');
+    assert.equal(await w.claimCount(), count + 1n);
+  }
+  // stopped after state.json is gone, before the others are removed
+  {
+    const { l, dir, old } = await prepared();
+    const real = fs.rmSync;
+    fs.rmSync = (target, options) => {
+      if (String(target).endsWith('/archive.zip')) throw Object.assign(new Error('stopped'), { code: 'EIO' });
+      return real(target, options);
+    };
+    try {
+      await assert.rejects(late({ claimDir: dir, listingId: l.listingId, restart: true }));
+    } finally {
+      fs.rmSync = real;
+    }
+    assert.equal(fs.existsSync(statePath(dir)), false, 'the folder holds no claim');
+    const stamps = new Set(asideOf(dir).map((n) => n.split('.set-aside-')[1]));
+    assert.equal(stamps.size, 1, 'one stamp');
+    for (const name of names) assert.ok(fs.readFileSync(statePath(dir, `${name}.set-aside-${[...stamps][0]}`)).equals(old[name]), `${name}: the whole set, byte for byte`);
+    // a run again starts over, and the set under that stamp is still whole
+    const r = await late({ claimDir: dir, listingId: l.listingId });
+    assert.equal(r.stage, 'disclosed');
+    assert.notEqual(r.ciphertextSha256, old.state.ciphertextSha256);
+    for (const name of names) assert.ok(fs.readFileSync(statePath(dir, `${name}.set-aside-${[...stamps][0]}`)).equals(old[name]), `${name} after the run`);
+  }
+});
+
 // Round 3: --restart starts over with new keys, so it is held to the same reads.
 test('--restart while the same claim is mined in the middle of its checks: the keys stay', async () => {
   const l = await rolled();
@@ -928,9 +1001,9 @@ test('--restart while the same claim is mined in the middle of its checks: the k
   const saved = readJson(statePath(dir));
   const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
   let other = null;
-  const provider = injecting('getLogs', async () => {
+  const provider = injecting('send', async () => {
     other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
-  });
+  }, (method) => method === 'eth_getLogs');
   for (const flag of [false, true]) {
     const err = await w.hunter({ provider }).commit({ claimDir: dir, listingId: l.listingId, late: flag, restart: true, acknowledge: true }).catch((e) => e);
     // the first run sees it by the pending count, the second by its log
@@ -1002,11 +1075,11 @@ test('a claim moved by a reorganization right after its log was read is not adop
   let depthWhenAdopted = null;
   // the log is read with the claim in its first block; then that block is replaced by an empty one, and the claim is
   // mined in the next: the head is one block further, so the depth by the numbers is two
-  const provider = injecting('getLogs', async () => {
+  const provider = injecting('send', async () => {
     await w.rpc('evm_revert', [snapshot]);
     await w.mine();
     moved = await send();
-  });
+  }, (method) => method === 'eth_getLogs');
   const hunter = w.hunter({
     provider,
     confirmations: 2,

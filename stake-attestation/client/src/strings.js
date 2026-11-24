@@ -412,6 +412,13 @@ export const STRINGS = {
     notFundable: 'Listing {id} is {state}: there is nothing to open here.',
     changed: 'Nothing was sent: listing {id} on the site\'s chain is not the one this page shows, or it is no longer waiting to open (it is {state}). Reload the page.',
     states: { Listed: 'listed, not funded', Open: 'open', Depleted: 'depleted', Rolled: 'rolled forward', Closed: 'closed' },
+    // Node P42: the maker's hold (StakeAttestation.hold) is not a state. A listing on hold stays Open or Depleted, so
+    // the page says the hold beside the state, with its time, and never "open until" of a listing that takes no claims.
+    heldSince: 'On hold since',
+    held:
+      'Listing {id} is on hold since {time}: it takes no new claims. Claims committed before the hold run as before, and ' +
+      'a finding can still be filed on it as a late claim, which is judged and recorded and carries no award. The hold ' +
+      'ends when the listing is rolled forward or closed.',
   },
   check: {
     title: 'Check a disclosure',
@@ -581,6 +588,8 @@ export const STRINGS = {
     'under-staked': 'under-staked',
     invited: 'invited',
     lapsed: 'lapsed',
+    // node P42: its maker has it on hold (the server's heldAt). "On hold", as the badge says it, never "held"
+    held: 'on hold',
     noPrice: 'no stake label: no ETH/USD price to compare the top award with the declared value at risk',
     placeholders:
       'The badge floor and the under-staked share behind these labels are placeholder values until the program sets them at launch.',
@@ -615,12 +624,16 @@ export const STRINGS = {
     yes: 'This listing counts: its builder\'s signature and the project\'s proof check, and the site offers it to hunters.',
     no: 'This site offers no commit on this listing: {reason}',
     unknown: 'This site could not read whether this listing counts: {reason}. It offers no commit until it can.',
+    // node P42: a listing on hold counts and takes no commit, so it is no entry of the feed
+    held:
+      'This listing counts, and its maker has it on hold: it takes no commit, so the site does not offer it to hunters. ' +
+      'A finding can still be filed on it as a late claim, which carries no award.',
   },
   feed: {
     title: 'Feed',
     intro:
-      'Every listing that counts and takes claims now: a builder signed it, the project proved it, it is open, its ' +
-      'listing fee is paid, and its escrow is at least its top award. Newest first.',
+      'Every listing that counts and takes claims now: a builder signed it, the project proved it, it is open and not on ' +
+      'hold, its listing fee is paid, and its escrow is at least its top award. Newest first.',
     loading: 'Reading the feed…',
     empty: 'No listing takes claims at this block.',
     entry: 'Listing {id}',
@@ -677,6 +690,8 @@ export const STRINGS = {
     line: 'Listing {id} at {commit}: {state}',
     notCounted: 'not offered by this site',
     lapsed: 'its listing fee has lapsed',
+    // node P42: its maker has it on hold; its state reads Open or Depleted all the same
+    held: 'on hold since {time}',
     unavailable: 'The other listings of this repository could not be read: {reason}',
   },
   record: {
@@ -721,6 +736,8 @@ export const STRINGS = {
     listedAt: 'Listed',
     openedAt: 'Opened',
     fundedUntil: 'Listing fee paid until',
+    // node P42: shown while the listing is on hold
+    heldAt: 'On hold since',
     rolledAt: 'Rolled forward',
     closedAt: 'Closed',
     daysOpen: 'Days open, to its roll forward or close',
@@ -788,7 +805,10 @@ export const STRINGS = {
     successor: 'Successor, the version that fixed this one',
     lineageLine: 'listing {id}, artifact hash {hash}',
     later: 'Found later',
-    laterIntro: 'Claims made against this hash after a stake on it rolled forward or closed. They carry no award.',
+    // a late claim is taken on a listing that rolled forward or closed, and on one its maker has on hold (node P42)
+    laterIntro:
+      'Claims made against this hash after a stake on it rolled forward or closed, or while its maker had it on hold. ' +
+      'They carry no award.',
     lateClaims: 'Late claims made',
     lateVerdicts: 'Late claims judged, by outcome',
     lateExpired: 'Late claims expired',
@@ -1006,6 +1026,26 @@ export const STRINGS = {
         'and roll forward, all in one sitting. From the push until this listing has rolled forward, it takes claims ' +
         'as before.',
     },
+    // Node P42: the order with a hold, shown in place of `fix` where the contract has hold() (its heldAt view answers).
+    // A hold stops new commits at once, so it comes before the push; the rest of a roll forward follows it. `held` is
+    // the first line of a listing already on hold. Each is one line of the page's text, held to the contract's source
+    // (test/rollGuidance.test.js). Against a contract with no hold the three lines of `fix` stand as they were.
+    hold: {
+      first:
+        'Hold this listing before you push a fix. The site validates a version from its public repository, so a fixed ' +
+        'commit is public before it can be listed, and a hunter who reads the fix can claim the bug here for as long as ' +
+        'this listing takes commits. A hold stops new commits at once.',
+      order:
+        'The order: hold this listing; once the hold is mined, push the fix; validate the fixed commit, list it and ' +
+        'fund it; then roll forward to it here.',
+      held:
+        'This listing is on hold since {time} and takes no new commits. What is left of the order: push the fix; ' +
+        'validate the fixed commit, list it and fund it; then roll forward to it here.',
+      close:
+        'If no claim on this listing is pending and no award is owed, you can close it once it is on hold, instead of ' +
+        'rolling forward. A close is refused while a claim is pending or an award is owed: a top-up pays what is owed ' +
+        'first.',
+    },
     loading: 'Looking for your open listings of this repository…',
     pick: 'Successor listing',
     option: 'Listing {id}: {commit}, escrow {escrow} ETH, open since {opened}',
@@ -1021,6 +1061,34 @@ export const STRINGS = {
     done: 'Rolled forward to listing {id} (transaction {tx}).',
     changed: 'Nothing was sent: listing {id} is no longer an open listing of yours without a predecessor, or this listing can no longer roll forward. Reload the page.',
   },
+  // The maker's hold (node P42; StakeAttestation.hold, node P39), on a listing's own page next to roll forward, where
+  // the contract has it. The warning's three statements are each held to the contract's source (test/hold.test.js):
+  // it stops new claims at once, it does not touch pending claims, it cannot be undone.
+  hold: {
+    title: 'Hold',
+    intro:
+      'A hold is the first half of a roll forward: it stops new claims on this listing before the fix you roll forward ' +
+      'to is public.',
+    warning: {
+      stops: 'A hold stops new claims at once: once the hold is mined, this listing takes no commit.',
+      pending:
+        'It does not touch pending claims: each claim committed before the hold keeps its fix window, its place in ' +
+        'commit order, its judging, its dispute or appeal, and its award from this listing\'s escrow.',
+      oneWay: 'It cannot be undone: a hold has no resume, and it ends only when this listing is rolled forward or closed.',
+    },
+    late: 'A finding can still be filed on a listing on hold, as a late claim: it is judged and recorded, and carries no award.',
+    makerOnly: 'Only this listing\'s maker can hold it: connect the maker\'s wallet, and the hold is offered here.',
+    ask: 'Hold listing {id}',
+    confirm: 'Hold listing {id} now: no new claims once it is mined',
+    keep: 'Do not hold',
+    sending: 'Sending hold()…',
+    done: 'Listing {id} is on hold since {time} (transaction {tx}).',
+    changed: 'Nothing was sent: listing {id} changed on-chain since this page read it. It has been read again.',
+    since: 'This listing is on hold since {time}.',
+    next:
+      'What is left is on this page: roll forward to the fixed version once it is listed and funded, or close, when no ' +
+      'claim is pending and no award is owed.',
+  },
   // A listing's later life, on its own page (design §13.2): the contract's renew(), close() and withdraw().
   topUp: {
     title: 'Top up the escrow',
@@ -1033,6 +1101,11 @@ export const STRINGS = {
     depleted:
       'This listing is depleted: its escrow is below its top award, so it takes no new claims. It reopens once ' +
       'nothing is owed and the escrow is back at the top award, which takes {eth} ETH or more.',
+    // node P42: a listing on hold goes back to Open the same way (ClaimLogic.topUp reads no hold), and takes no commit
+    depletedHeld:
+      'This listing is depleted and on hold: it takes no new claims. Once nothing is owed and the escrow is back at the ' +
+      'top award, which takes {eth} ETH or more, its state goes back to open, and it stays on hold: a top-up does not ' +
+      'make it take claims again.',
     rolled:
       'This listing rolled forward: it takes no new claims, and a top-up does not reopen it. Its escrow pays the ' +
       'claims still settling against it.',
@@ -1041,12 +1114,14 @@ export const STRINGS = {
     effect: 'Of this, {owed} ETH goes to hunters who are owed it and {rest} ETH to the escrow, which will then hold {after} ETH.',
     effectPlain: 'The escrow will then hold {after} ETH.',
     reopens: 'The listing reopens.',
+    reopensHeld: 'The listing\'s state goes back to open; it stays on hold and takes no new claims.',
     button: 'Top up, paying {eth} ETH',
     buttonNoAmount: 'Top up',
     sending: 'Sending fund()…',
     done: 'Topped up (transaction {tx}). The escrow now holds {eth} ETH.',
     doneOwed: 'Topped up (transaction {tx}). {owed} ETH went to hunters who were owed it, and the escrow now holds {eth} ETH.',
     reopened: 'The listing is open again.',
+    reopenedHeld: 'The listing\'s state is open again; it stays on hold and takes no new claims.',
     changed: 'Nothing was sent: listing {id} can no longer be topped up (it is {state}). It has been read again.',
   },
   renew: {
@@ -1057,6 +1132,9 @@ export const STRINGS = {
       'is not paid for. The escrow is not touched.',
     until: 'The listing fee is paid until {time}.',
     lapsed: 'The paid period ended at {time}: this listing takes no new claims until it is renewed.',
+    // node P42: on hold, a renewal extends the paid period and nothing else (renew() reads no hold)
+    lapsedHeld: 'The paid period ended at {time}.',
+    held: 'This listing is on hold: it takes no new claims, renewed or not. A renewal extends the paid period, which the record shows, and nothing else.',
     fee: 'Listing fee for 30 more days: {fee} ETH',
     feeLoading: 'Reading the listing fee…',
     button: 'Renew for 30 days, paying {fee} ETH',
@@ -1177,7 +1255,8 @@ export const STRINGS = {
     record: 'Record of this version',
     // commit order (decision D5), from the listing as the chain has it: pendingClaims and headClaim
     open: 'Open now, neither settled nor expired: {count}.',
-    // a Rolled listing can hold claims from before the roll and late claims after it, in one queue
+    // a Rolled listing can have claims from before the roll and late claims after it, in one queue; so can a listing
+    // on hold, with claims from before the hold (node P42)
     openLate: 'Open now, neither settled nor expired: {count}, of which late claims: {late}.',
     order: 'Claims reveal in the order they were committed, and claim {head} is first: each later claim can be revealed only once every claim committed before it is settled or expired.',
     allResolved: 'None is open now: each is settled or expired.',

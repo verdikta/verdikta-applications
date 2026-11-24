@@ -335,3 +335,148 @@ export function noDocumentsTierChecks(prefix, pack) {
     check(`${prefix}.pack.noDocumentsTier`, names !== null && !names.includes('documents') && pack.tiers.every((t, i) => t.rank === i + 1) && !(pack.files ?? []).some((x) => x.tier === 'documents'), JSON.stringify(names)),
   ];
 }
+
+// Node P42: the maker's hold in the round (StakeAttestation.hold, node P39). One maker call stops new commits on a
+// listing at once and leaves its pending claims alone; it has no resume, and ends in a roll forward or a close. Each
+// step of it is checked by what it left on the chain and in the site's answers, never by its having run.
+const HOLDABLE = ['Open', 'Depleted'];
+const isoTime = (seconds) => new Date(Number(seconds) * 1000).toISOString().replace('.000Z', 'Z');
+const utcDay = (seconds) => new Date(Number(seconds) * 1000).toISOString().slice(0, 10);
+const inList = (list, listingId) => Array.isArray(list) && list.some((l) => l.listingId === String(listingId));
+/** What a hold must leave as it was: the listing's queue, its counts, its escrow and its paid period. */
+const UNTOUCHED = ['pendingClaims', 'headClaim', 'tailClaim', 'claimsCommitted', 'lateClaims', 'escrowWei', 'fundedUntil'];
+
+/**
+ * The hold itself, from the chain: the Held event of the maker's own transaction, its time the block's and the view's;
+ * the state as it was; no commit and late claims from then on; and every pending claim and the escrow untouched.
+ * `before` and `after` are the listing read just before and just after: its state by name, the heldAt view,
+ * acceptsCommits, the lens's acceptsLateClaims, and the fields of UNTOUCHED.
+ */
+export function holdChecks(prefix, { event, maker, before, after }) {
+  return [
+    check(`${prefix}.hold.byTheMaker`, Boolean(event) && event.from === maker, `Held sent by ${event?.from}`),
+    check(`${prefix}.hold.time`, Boolean(event) && before?.heldAt === 0n && event.heldAt > 0n && event.heldAt === BigInt(event.blockTimestamp) && after?.heldAt === event.heldAt, `the event says ${event?.heldAt}, its block ${event?.blockTimestamp}, the view ${before?.heldAt} then ${after?.heldAt}`),
+    check(`${prefix}.hold.stateAsItWas`, HOLDABLE.includes(after?.state) && after.state === before?.state, `${before?.state} then ${after?.state}: a hold is not a state`),
+    check(`${prefix}.hold.noCommitFromNow`, after?.acceptsCommits === false, `acceptsCommits ${before?.acceptsCommits} then ${after?.acceptsCommits}`),
+    check(`${prefix}.hold.lateClaimsFromNow`, before?.acceptsLateClaims === false && after?.acceptsLateClaims === true, `acceptsLateClaims ${before?.acceptsLateClaims} then ${after?.acceptsLateClaims}`),
+    check(`${prefix}.hold.pendingUntouched`, Boolean(before) && Boolean(after) && UNTOUCHED.every((k) => before[k] === after[k]), JSON.stringify(UNTOUCHED.filter((k) => before?.[k] !== after?.[k]).map((k) => [k, before?.[k], after?.[k]]), big) || 'nothing moved'),
+  ];
+}
+
+/**
+ * What the site answers while the listing is on hold (node P40): its labels say since when and that it is not live,
+ * its state is the chain's, the claims from before the hold are still pending, the badge says the hold with its day,
+ * and the listing is no entry of the feed, counted or apart.
+ * @param {{ record: object, feed: object, listingId: bigint, heldAt: bigint, state: string, pending: number }} o -
+ *   the answers of GET /api/records/:hash and GET /api/feed
+ */
+export function heldSiteChecks(prefix, { record, feed, listingId, heldAt, state, pending }) {
+  const labels = record?.labels?.listings?.[String(listingId)];
+  const listing = (record?.record?.listings ?? []).find((l) => l.listingId === String(listingId));
+  return [
+    check(`${prefix}.site.fresh`, record?.fresh === true && feed?.fresh === true, `the record fresh ${record?.fresh}, the feed fresh ${feed?.fresh}`),
+    check(`${prefix}.site.heldAt`, labels?.heldAt === Number(heldAt), `labels.heldAt ${JSON.stringify(labels?.heldAt)}, the chain's ${heldAt}`),
+    check(`${prefix}.site.notLive`, labels?.live === false, `labels.live ${labels?.live}`),
+    check(`${prefix}.site.stateIsTheChains`, listing?.state === state, `${listing?.state}, the chain's ${state}`),
+    check(`${prefix}.site.pendingStays`, record?.record?.history?.pending === String(pending), `pending ${record?.record?.history?.pending}, expected ${pending}`),
+    check(`${prefix}.site.badge`, record?.badge?.message === `stake on hold since ${utcDay(heldAt)}`, `${record?.badge?.state}: ${record?.badge?.message}`),
+    check(`${prefix}.site.feedWithoutIt`, Array.isArray(feed?.listings) && Array.isArray(feed?.notCounted) && !inList(feed.listings, listingId) && !inList(feed.notCounted, listingId), `the feed's listings ${JSON.stringify((feed?.listings ?? []).map((l) => l.listingId))}, apart ${JSON.stringify((feed?.notCounted ?? []).map((l) => l.listingId))}`),
+  ];
+}
+
+/**
+ * A commit the tool refused on the listing on hold, by what it left and not by its code or its words (a later node
+ * gives a listing on hold a refusal of its own): the tool exited as it does for a refusal, with one of its own
+ * errors and no claim; nothing was pinned; the wallet sent nothing; the contract holds no new claim, and the
+ * listing's counts and queue are what they were; and the chain takes no commit there.
+ * `before` and `after`: { pins, nonce, claimCount, claimsCommitted, pendingClaims, lateClaims, tailClaim, acceptsCommits }.
+ */
+export function refusedCommitChecks(prefix, { run, before, after }) {
+  const named = /^verdikta-attest: ([A-Z_]+): /m.exec(String(run?.stderr ?? ''))?.[1] ?? null;
+  // exit 1 is the tool's "refused or failed": a refusal is one of its own errors, and not the two that mean it never got an answer
+  const refused = run?.code === 1 && named !== null && !['INTERNAL', 'RPC_UNAVAILABLE'].includes(named) && !run?.json?.claimId;
+  const counts = ['claimsCommitted', 'pendingClaims', 'lateClaims', 'tailClaim'];
+  return [
+    check(`${prefix}.commit.refused`, refused, `exit ${run?.code}, ${named ?? 'no error of the tool'}${run?.json?.claimId ? `, claim ${run.json.claimId}` : ''}`),
+    check(`${prefix}.commit.nothingPinned`, Boolean(before) && after?.pins === before.pins, `${before?.pins} pins before, ${after?.pins} after`),
+    check(`${prefix}.commit.nothingSent`, Boolean(before) && after?.nonce === before.nonce && after?.claimCount === before.claimCount, `the hunter's nonce ${before?.nonce} then ${after?.nonce}; claims on the contract ${before?.claimCount} then ${after?.claimCount}`),
+    check(`${prefix}.commit.claimCountAsItWas`, Boolean(before) && Boolean(after) && counts.every((k) => before[k] === after[k]), JSON.stringify(counts.map((k) => [k, before?.[k], after?.[k]]), big)),
+    check(`${prefix}.commit.chainRefuses`, before?.acceptsCommits === false && after?.acceptsCommits === false, `acceptsCommits ${before?.acceptsCommits} then ${after?.acceptsCommits}`),
+  ];
+}
+
+/**
+ * A late claim the tool filed on the listing on hold: taken, by LateClaim and not Committed, disclosed, never one of
+ * the listing's pending claims, at the tail of the same queue behind the claim from before the hold (`earlier`), with
+ * the escrow untouched and the listing still on hold.
+ * `events`: how many LateClaim and Committed events name the claim; `before` and `after`: the listing around it.
+ */
+export function lateClaimChecks(prefix, { run, claimId, claim, events, before, after, earlier, listingId }) {
+  return [
+    check(`${prefix}.late.taken`, run?.code === 0 && claimId > 0n && claim?.listingId === listingId, `exit ${run?.code}, claim ${claimId} on listing ${claim?.listingId}`),
+    check(`${prefix}.late.isALateClaim`, claim?.late === true && events?.late === 1 && events?.committed === 0, `late ${claim?.late}; ${events?.late} LateClaim, ${events?.committed} Committed`),
+    check(`${prefix}.late.neverPending`, Boolean(before) && after?.pendingClaims === before.pendingClaims && after?.claimsCommitted === before.claimsCommitted && after?.lateClaims === before.lateClaims + 1n, `pending ${before?.pendingClaims} then ${after?.pendingClaims}, committed ${before?.claimsCommitted} then ${after?.claimsCommitted}, late ${before?.lateClaims} then ${after?.lateClaims}`),
+    check(`${prefix}.late.behindTheEarlierClaim`, after?.headClaim === earlier && after?.tailClaim === claimId && claim?.prevInOrder === earlier, `first ${after?.headClaim}, last ${after?.tailClaim}, the late claim after ${claim?.prevInOrder}; the claim from before the hold is ${earlier}`),
+    check(`${prefix}.late.disclosed`, claim?.disclosedAt > 0n, `disclosed at ${claim?.disclosedAt}`),
+    check(`${prefix}.late.escrowUntouched`, Boolean(before) && after?.escrowWei === before.escrowWei, `escrow ${before?.escrowWei} then ${after?.escrowWei}`),
+    check(`${prefix}.late.stillOnHold`, Boolean(before) && before.heldAt > 0n && after?.heldAt === before.heldAt && after?.acceptsCommits === false, `heldAt ${before?.heldAt} then ${after?.heldAt}`),
+  ];
+}
+
+/**
+ * The record once the late claim has settled: under the record's late claims, by its outcome, none expired; not among
+ * the stake's own claims and verdicts; and no late finding paid or owed anything.
+ */
+export function laterRecordChecks(prefix, { record, lateClaims, lateOutcomes, claims, outcomes }) {
+  const history = record?.record?.history ?? {};
+  const late = (record?.record?.findings ?? []).filter((f) => f.late);
+  return [
+    check(`${prefix}.record.lateClaims`, history.lateClaims === String(lateClaims), `lateClaims ${history.lateClaims}, expected ${lateClaims}`),
+    check(`${prefix}.record.lateOutcomes`, eq(history.lateOutcomes, lateOutcomes.map(String)) && history.lateExpired === '0', `lateOutcomes ${JSON.stringify(history.lateOutcomes)}, lateExpired ${history.lateExpired}`),
+    check(`${prefix}.record.notAmongTheClaims`, history.claims === String(claims) && eq(history.outcomes, outcomes.map(String)), `claims ${history.claims}, outcomes ${JSON.stringify(history.outcomes)}`),
+    check(`${prefix}.record.noAward`, late.every((f) => f.paidWei === '0' && f.owedWei === '0'), JSON.stringify(late.map((f) => [f.claimId, f.paidWei, f.owedWei]))),
+  ];
+}
+
+/**
+ * The roll forward from the hold: the maker's own call naming the successor; the old listing Rolled and linked both
+ * ways; the hold ended (the view answers 0, no commit, late claims as any Rolled listing); a successor that was never
+ * on hold and takes commits; and the site saying all of it, in the old version's record, the successor's, and the feed.
+ * `old` and `successor`: the two listings on the chain after the roll; `record` and `successorRecord`: the API's
+ * answers for their two artifact hashes.
+ */
+export function rolledFromHoldChecks(prefix, { event, maker, listingId, successorId, artifactHash, successorHash, old, successor, record, successorRecord, feed }) {
+  const was = (record?.record?.listings ?? []).find((l) => l.listingId === String(listingId));
+  const wasLabels = record?.labels?.listings?.[String(listingId)];
+  const next = (successorRecord?.record?.listings ?? []).find((l) => l.listingId === String(successorId));
+  const nextLabels = successorRecord?.labels?.listings?.[String(successorId)];
+  return [
+    check(`${prefix}.roll.byTheMaker`, Boolean(event) && event.from === maker && event.successorListingId === successorId, `RolledForward sent by ${event?.from} to listing ${event?.successorListingId}`),
+    check(`${prefix}.roll.rolled`, old?.state === 'Rolled' && old.successor === successorId && successor?.predecessor === listingId, `${old?.state}, successor ${old?.successor}; the successor's predecessor ${successor?.predecessor}`),
+    check(`${prefix}.roll.holdEnded`, old?.heldAt === 0n && old.acceptsCommits === false && old.acceptsLateClaims === true, `heldAt ${old?.heldAt}, acceptsCommits ${old?.acceptsCommits}, acceptsLateClaims ${old?.acceptsLateClaims}`),
+    check(`${prefix}.roll.successorTakesCommits`, successor?.state === 'Open' && successor.heldAt === 0n && successor.acceptsCommits === true, `${successor?.state}, heldAt ${successor?.heldAt}, acceptsCommits ${successor?.acceptsCommits}`),
+    check(`${prefix}.roll.record`, was?.state === 'Rolled' && was.successor === String(successorId) && was.successorHash === successorHash && wasLabels?.heldAt === null && wasLabels?.live === false, `${was?.state}, successor ${was?.successor} ${was?.successorHash}; heldAt ${JSON.stringify(wasLabels?.heldAt)}, live ${wasLabels?.live}`),
+    check(`${prefix}.roll.successorRecord`, successorRecord?.artifactHash === successorHash && next?.state === 'Open' && next.predecessor === String(listingId) && next.predecessorHash === artifactHash && nextLabels?.heldAt === null && nextLabels?.live === true, `${successorRecord?.artifactHash}: ${next?.state}, predecessor ${next?.predecessor} ${next?.predecessorHash}; heldAt ${JSON.stringify(nextLabels?.heldAt)}, live ${nextLabels?.live}`),
+    check(`${prefix}.roll.feed`, inList(feed?.listings, successorId) && !inList(feed?.listings, listingId), `the feed's listings ${JSON.stringify((feed?.listings ?? []).map((l) => l.listingId))}`),
+  ];
+}
+
+/**
+ * What the browser read off the client's pages while the listing was on hold: its own page says so with the time,
+ * beside a state that is the chain's; the record page the same, with the label, on one line; and the feed page has
+ * no entry for it.
+ * @param {object} pages - e2e/src/browser.js readHoldPages
+ * @param {{ heldAt: bigint, state: string }} o - `state` as the pages word it ("open")
+ */
+export function holdPageChecks(prefix, pages, { heldAt, state }) {
+  const time = isoTime(heldAt);
+  const l = pages?.listing ?? {};
+  const r = pages?.record ?? {};
+  return [
+    check(`${prefix}.page.listingOnHold`, l.heldSince === time && String(l.held).includes(`on hold since ${time}`) && String(l.holdSection).includes(`on hold since ${time}`), `since ${l.heldSince}; ${String(l.held).slice(0, 80)}; ${String(l.holdSection).slice(0, 80)}`),
+    check(`${prefix}.page.listingState`, l.state === state, `${l.state}, the chain's ${state}`),
+    check(`${prefix}.page.recordOnHold`, r.held === time && r.state === state && String(r.labels).split(', ').includes('on hold') && !String(r.labels).includes('\n'), `since ${r.held}, ${r.state}, labels ${JSON.stringify(r.labels)}`),
+    check(`${prefix}.page.feedWithoutIt`, pages?.feed?.hasListing === false, `the feed page has an entry for it: ${pages?.feed?.hasListing}`),
+    check(`${prefix}.page.noErrors`, (pages?.errors ?? [1]).length === 0, JSON.stringify(pages?.errors ?? [])),
+  ];
+}

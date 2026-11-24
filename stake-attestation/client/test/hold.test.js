@@ -70,6 +70,7 @@ const REFUSALS = Object.freeze({
   'a node that returns the empty revert data': { code: 3, message: 'execution reverted', data: '0x' },
   'a node that returns no data for an empty revert': { code: -32000, message: 'execution reverted' },
   'a wallet that wraps its node\'s answer': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: -32000, message: 'execution reverted' } },
+  'a node that says it in its data, in words': { code: -32015, message: 'VM execution error.', data: 'Reverted 0x' },
   'a revert with a reason': { code: 3, message: 'execution reverted: no such view', data: '0x08c379a0' + '0'.repeat(62) + '20' + '0'.repeat(62) + '0c' + Buffer.from('no such view').toString('hex').padEnd(64, '0') },
 });
 // What is not a refusal: the node, or the way to it, failed. ethers reports every JSON-RPC error on an eth_call as
@@ -365,6 +366,8 @@ test('once on hold, the page says so with the time, and still offers roll forwar
   const roll = extras.slice(extras.indexOf('export function RollForward('), extras.indexOf('/** Whether the site offers a commit'));
   assert.match(roll, /if \(!ROLLABLE\.has\(state\)\) return null;/);
   assert.doesNotMatch(roll, /hold\.held && return|if \(hold\.held\) return/);
-  const close = component('ListingActions.jsx');
-  assert.doesNotMatch(close.slice(close.indexOf('export function CloseListing('), close.indexOf('export function Withdraw(')), /hold/);
+  const actions = component('ListingActions.jsx');
+  const close = actions.slice(actions.indexOf('export function CloseListing('), actions.indexOf('\n}\n', actions.indexOf('export function CloseListing(')));
+  assert.ok(close.length > 0);
+  assert.doesNotMatch(close, /\bhold\b|\bheld\b|heldAt/, 'close is offered by its own terms: the pending claims and what is owed');
 });

@@ -18,7 +18,7 @@ settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
 depletion and owed awards; the environment builder; the server's listing
 flow, indexer, keeper, feed, record mirror and badge; and the client: the maker
 flows (listing, the disclosure key, decrypt-and-check, the baseline scan, release,
-roll forward, dispute, top-up, renew, close, withdraw), the record page with its badge, and the feed.
+hold, roll forward, dispute, top-up, renew, close, withdraw), the record page with its badge, and the feed.
 
 **The project decides who may stake on it.** Every listing needs the project's
 proof, with no allowlist and no exception, Verdikta included: a file in the
@@ -133,37 +133,56 @@ escrow once no claim is pending and nothing is owed.
   part of the escrow.
 - **Payments** go through a gas-capped send that falls back to the pull
   ledger, as in `BountyEscrow`.
-- **A fix stays private until the old listing is closed, when it can be
-  closed.** A fix in the public repository tells its readers where the bug
+- **A maker holds a listing before publishing a fix** (`hold`; owner,
+  2026-11-23). A fix in the public repository tells its readers where the bug
   was, and a hunter who reads it can claim the bug on the old listing for as
   long as that listing takes commits (`acceptsCommits`: Open, its paid period
   not over, its escrow at least the top award, and not held by its maker with
-  `hold`). A `close` can come before the push; a roll cannot.
-  `rollForward` needs a successor that is the same
-  maker's own listing, already Open, so the fixed commit is listed and funded
-  before the roll; the site counts a listing only with a builder's signature
-  ("The environment builder"), and the builder fetches a listed commit from
-  the public repository, with no credentials, so the fix is public before the
-  roll. The known issues of a listing are fixed when it is listed (design
-  §8.4), so the bug cannot be added to the old listing's instead. The order is
-  the maker's to keep, and the roll-forward panel states it ("The client"):
-  - with no claim pending, `close` the old listing first and, once that is
-    mined, push the fix and list the fixed commit: the stake has left the old
-    commit before anyone reads the fix. `close` is refused while a claim is
-    pending or an award is owed (a top-up pays what is owed first). A closed
-    listing takes no commit, and a claim on it afterwards is a late claim,
-    with no award. Only a roll sets `successor` and `predecessor`, so the
-    record holds the two versions without that link;
-  - with a claim pending, `close` is refused until every pending claim is
-    settled or expired. A maker who rolls forward before then publishes
-    first: push the fix, then validate, list and fund the fixed commit, and
-    roll forward, all in one sitting. The fix is public from the push, and
-    until the roll is mined the old listing takes commits as before, for as
-    long as it meets the four conditions of `acceptsCommits` above (a
-    Depleted listing, or one whose paid period is over, takes none). A roll
-    stops new commits on the old listing and ends the fix window of every
-    claim disclosed on it; those claims still settle against the old
-    listing's escrow.
+  `hold`). A roll cannot come before the push: `rollForward` needs a successor
+  that is the same maker's own listing, already Open, so the fixed commit is
+  listed and funded before the roll; the site counts a listing only with a
+  builder's signature ("The environment builder"), and the builder fetches a
+  listed commit from the public repository, with no credentials, so the fix is
+  public before the roll. The known issues of a listing are fixed when it is
+  listed (design §8.4), so the bug cannot be added to the old listing's
+  instead. A hold is the first half of a roll forward, sent before the push:
+  - who and when: the listing's maker, once, on an Open or a Depleted listing
+    (`hold` is refused with "not maker", "not rollable" or "already held"). It
+    takes no payment and names no successor, and neither a pending claim nor
+    an owed award holds it back;
+  - what it stops: once the hold is mined the listing takes no commit
+    (`acceptsCommits` is false). It takes late claims from then on, as a
+    Rolled listing does (`lateClaim`): judged, recorded under the record's
+    `later`, with no award;
+  - what it leaves alone: everything else. The state stays Open or Depleted
+    (`heldAt(listingId)` says since when, and `Held` is in the log). Every
+    claim committed before the hold keeps its fix window, its place in commit
+    order, its rounds, its dispute or appeal, and its award from the escrow,
+    and the maker still flags, releases, disputes, tops up and renews. Neither
+    a top-up that brings a Depleted listing back to Open nor a renewal makes a
+    held listing take commits again;
+  - no resume: a hold ends in `rollForward` or in `close`, whose conditions
+    are what they were, and `heldAt` answers 0 from then on;
+  - the order, which the listing's page states ("The client"): `hold`; once
+    that is mined, push the fix; validate, list and fund the fixed commit;
+    `rollForward`. A roll ends the fix window of every claim disclosed on the
+    old listing, and those claims still settle against the old listing's
+    escrow. With no claim pending and no award owed, a maker can `close` the
+    held listing instead: `close` is refused while a claim is pending or an
+    award is owed (a top-up pays what is owed first), and only a roll sets
+    `successor` and `predecessor`, so after a close the record holds the two
+    versions without that link.
+
+  Against a deployment that has no hold (a contract from before it has neither
+  `hold` nor `heldAt`, and a reader takes the refused call as not held), a
+  maker keeps the fix private until the old listing is closed, when it can be
+  closed: with no claim pending, `close` the old listing first and, once that
+  is mined, push the fix and list the fixed commit; with a claim pending,
+  `close` is refused until every pending claim is settled or expired, and a
+  maker who rolls forward before then publishes first (push, validate, list,
+  fund and roll forward, all in one sitting), the old listing taking commits
+  as before until the roll is mined, for as long as it meets the conditions of
+  `acceptsCommits`.
 
 ## The contract: claims
 
@@ -1510,15 +1529,38 @@ goes in a URL.
   repository at another commit (from the feed, each confirmed on-chain: Open, the maker's, no
   predecessor) and sends `rollForward` after reading both listings again at one block. Above
   the picker, the panel says what a maker does before publishing a fix
-  (`STRINGS.roll.fix`; "The contract: listings"): keep it private until the listing is closed,
-  when it can be closed; with no claim pending, close first; with one pending, a roll before the
-  claims are settled means the fix is public first, so push, validate, list, fund and roll forward
-  in one sitting, the listing taking claims as before until it has rolled (none while it is
-  Depleted or its paid period is over). Those lines depend on the
-  listing's state on-chain alone, so the panel shows for every Open or Depleted listing, also
+  (`STRINGS.roll.hold`; "The contract: listings"): hold this listing; once the hold is mined,
+  push the fix; validate the fixed commit, list it and fund it; roll forward to it; or, once on
+  hold, close, when no claim is pending and no award is owed. On a listing that is on hold the
+  panel says since when, and what is left of that order. Those lines depend on the chain alone
+  (the listing's state and its hold), so the panel shows for every Open or Depleted listing, also
   while the site's record is read and when it cannot be: only the picker waits for the record.
-  `test/rollGuidance.test.js` checks the three lines against `close` and `rollForward` in the
-  contract's source and refuses any wording that would call a roll harmless after a public push.
+  Next to it, **hold** (node P42; `HoldListing` in `client/src/components/ListingActions.jsx`,
+  the rules in `client/src/lib/hold.js`): a warning in three statements (it stops new claims at
+  once, it does not touch pending claims, it cannot be undone), that a finding can still be filed
+  as a late claim with no award, and the action, drawn for the connected wallet when it is the
+  listing's maker's and for no other: two steps before the wallet's own, as close has; the wallet
+  asked again at the click; the listing and its hold read again at one block through the wallet;
+  then `hold`, and the receipt's `Held` event for the time. From then on the page says the
+  listing is on hold, with the time, beside its state (which stays Open or Depleted, and is no
+  longer drawn as taking claims), and in every sentence it has about taking claims: no "open
+  until", a commit offer that says the site does not offer it, a renewal and a top-up that do not
+  make it take claims again. Roll forward stays offered, and close by its own terms. The queue
+  line counts the late claims a listing on hold takes with the claims from before the hold.
+  **How the page knows.** It reads `heldAt(listingId)` at the block it reads the listing at. A
+  call the contract refuses means a contract from before the hold: the page then draws no hold
+  section, and the roll-forward panel says what it said before the hold existed, character for
+  character (`STRINGS.roll.fix`: keep the fix private until the listing is closed, when it can be
+  closed; with no claim pending, close first; with one pending, push, validate, list, fund and
+  roll forward in one sitting, the listing taking claims as before until it has rolled (none
+  while it is Depleted or its paid period is over)). A read that fails any other way is a failed
+  read of the page, never "not on hold": ethers reports every JSON-RPC error on a call as
+  `CALL_EXCEPTION`, so the reader goes by the revert the node reports and not by that code.
+  `test/rollGuidance.test.js` checks both sets of lines against `hold`, `close` and `rollForward`
+  in the contract's source and refuses any wording that would call a roll harmless after a public
+  push; `test/hold.test.js` holds the warning's three statements to the source, one by one, and
+  the reader to that rule against the answers nodes give; `e2e/hold.spec.js` runs the page
+  through the wallet, and against a node that refuses the call.
   The same page carries the rest of a listing's life, each read again through the wallet before it
   is sent (`client/src/components/ListingActions.jsx`; the rules, held to the contract's source,
   in `client/src/lib/listingActions.js`):
@@ -1529,10 +1571,13 @@ goes in a URL.
     hunter's balance in the contract, and escrows the rest; the page says how an amount would split
     before it is sent, and that a Depleted listing reopens once nothing is owed and its escrow is
     back at the top award (its amount field starts at what that takes). The receipt's `OwedPaid`,
-    `Funded` and `Reopened` events say what happened.
+    `Funded` and `Reopened` events say what happened. Of a Depleted listing on hold the page says
+    that its state goes back to open and that it stays on hold: the top-up is taken the same way,
+    and the listing takes no claims.
   - **Renew**, while it is Open or Depleted: until when the listing fee is paid (or that the period
     has lapsed, by the chain's time), the fee for 30 more days read from `listingFeeWei()`, and
-    `renew` with exactly that. A fee that moved since the page read it sends nothing.
+    `renew` with exactly that. A fee that moved since the page read it sends nothing. Of a listing
+    on hold the page says that it takes no new claims, renewed or not.
   - **Close**, until it is Closed: what closing does and how much escrow comes back. The contract
     refuses while a claim is pending or an award is owed, so the page says which and offers nothing.
     It cannot be undone, so it takes two steps before the wallet's own. The receipt's `Closed` and
@@ -1552,7 +1597,9 @@ goes in a URL.
   page), each stake that counts (state, labels,
   award table, lowest class counted, bond, escrow, owed, declared value at risk and the top
   award's share of it, the times, days open, predecessor and successor, and the claims that failed
-  integrity with each check's name, apart from its other duplicates), the history (claims,
+  integrity with each check's name, apart from its other duplicates; for a listing its maker has on
+  hold, the label "on hold" and since when, from the API's `heldAt`, beside a state that stays the
+  chain's and is not drawn as taking claims; a listing shown apart says its hold the same way), the history (claims,
   claims judged, verdicts by outcome, claims that failed integrity, other duplicates, released,
   expired, disputes and their outcomes, days since the last valid finding), the valid findings, what was found later (late
   claims), the bad-disclosure flags with what became of each claim, and the badge with its
@@ -1566,7 +1613,9 @@ goes in a URL.
   them), escrow remaining, value at risk, image, scope and where its requirements are said to be
   written (its document globs), the disclosure key in both its forms, the age recipient and the bytes32, with the sentence
   that says they are one key (`shared/src/disclosureKey.js`), the other listings of its repository (their ids, commits and
-  states, each a link to its page), and links to its record and its page. The record page shows each stake's globs too.
+  states, each a link to its page; one that is on hold says so, with the time), and links to its record and its page.
+  A listing on hold is no entry of the feed (the server leaves it out, "A held listing"), so the feed page shows one
+  only there, among an entry's other listings of its repository. The record page shows each stake's globs too.
 - **A claim** (`#/claim/<claimId>`): its state and times from the chain (the lens's derived
   state and `claimTimes`), and the maker's actions through the wallet, each after reading the
   claim again: **release** inside the fix window of a disclosed claim, and **dispute** of a
@@ -1579,7 +1628,9 @@ goes in a URL.
   revealed shows its place in **commit order** (decision D5): first on its listing, or which claim it waits for
   (the listing's `headClaim`), with its reveal deadline as the lens has it: firm once the fix window is over, the
   latest it can be while the window is open, passed (anyone may expire it), or not set while an earlier claim is
-  open; an undisclosed claim past its disclose window is said to be expirable by anyone, whatever its place
+  open (on a listing its maker has on hold the state is still Open or Depleted, so the wording that names the
+  roll-forward is the one shown: a roll from the hold ends the window as from any other); an undisclosed claim past its
+  disclose window is said to be expirable by anyone, whatever its place
   (erratum E5), and a claim whose round ended with no verdict shows until when it can be sent again, after which
   anyone may expire it. For a claim that waits, the release panel says that a release ends the fix window and not
   that wait, and names the claim that comes first, before and after the release; if the claim it waits for was
@@ -1645,8 +1696,9 @@ record, feed and claim pages render, the server's labels and badge included.
 
 **Tests.** `npm test` covers the form model, the known-issue ids against common's, the key
 file, decrypt-and-check with common's real encryption, the record's view, the 15-minute watch,
-the release and dispute rules, roll-forward successors, the dispute statement and its CID, the
-enum names against the contract and the wording. `npx playwright test` starts
+the release and dispute rules, roll-forward successors, the hold (its reader against what nodes
+answer, and each statement of its warning against the contract's source), the dispute statement
+and its CID, the enum names against the contract and the wording. `npx playwright test` starts
 `e2e/support/stack.mjs`: StakeAttestation deployed on the in-process Hardhat network as the
 server's chain tests deploy it, behind Hardhat's JSON-RPC server; the real API server with
 mock pinning, dev trust and the server's own fake builder CLI as its builder, and its chain side

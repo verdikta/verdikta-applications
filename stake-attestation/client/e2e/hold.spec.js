@@ -29,7 +29,8 @@ async function holdOnChain(chain, stack, listingId, from = stack.accounts.maker)
   expect(heldAt > 0n, `listing ${listingId} is on hold`).toBe(true);
   return heldAt;
 }
-const lines = async (locator) => (await locator.innerText()).split('\n');
+/** The lines of an element's text as the page has it: one for each block of it, the gaps between blocks left out. */
+const lines = async (locator) => (await locator.innerText()).split('\n').filter(Boolean);
 const api = async (stack, path) => {
   const res = await fetch(`${stack.apiUrl}${path}`);
   return res.ok ? res.json() : null;
@@ -154,12 +155,15 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-summary').getByTestId('listing-held-since')).toHaveText(at(heldAt));
     expect(await page.getByTestId('listing-held').innerText()).toBe(fill(F.held, { id: listingId, time: at(heldAt) }));
     await expect(page.getByTestId('hold').getByTestId('hold-since')).toHaveText(fill(H.since, { time: at(heldAt) }));
+    // (a reload starts the test wallet again, on the account it was installed with)
+    await useAccount(page, stack.accounts.maker);
     await connect(page, stack.accounts.maker);
     await expect(page.getByTestId('hold').getByRole('button')).toHaveCount(0);
 
     // a renewal is still the maker's to send, and the listing is on hold all the same: lapsed, then renewed
     await chain.increaseTime(Number(held.fundedUntil - BigInt(await chain.now())) + 3600);
     await page.reload();
+    await useAccount(page, stack.accounts.maker);
     const renew = page.getByTestId('renew');
     await expect(renew.getByTestId('renew-period')).toHaveText(fill(STRINGS.renew.lapsedHeld, { time: at(held.fundedUntil) }));
     await expect(renew.getByTestId('renew-held')).toHaveText(STRINGS.renew.held);

@@ -11,6 +11,7 @@ import { confirmSuccessor, successorCandidates } from '../lib/successors.js';
 import { STRINGS, fill } from '../strings.js';
 import { siteErrorText } from './Facts.jsx';
 import { SelectField } from './Field.jsx';
+import { HoldListing } from './ListingActions.jsx';
 import { SameRepositorySection } from './SameRepository.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
 
@@ -84,13 +85,18 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
  * rollForward() (design §7.1, §13.2): the maker picks a successor among their own open listings
  * of the same repository, from the feed, each confirmed on-chain as the contract requires. Just
  * before sending, both listings are read again at one block through the wallet. Above the picker,
- * the panel says what a maker does before publishing a fix (node P38): a fixed commit is public
- * before it can be listed, and this listing takes commits until it is closed or rolled forward.
- * That text depends on the listing's state on-chain and on nothing else, so the panel shows for
- * every Open or Depleted listing: `record` (useListingRecord's answer) is null while the site's
- * record is read and { failed } when it cannot be, and only the picker waits for it.
+ * the panel says what a maker does before publishing a fix: a fixed commit is public before it
+ * can be listed. Where the contract has the maker's hold (node P42; `hold.supported`), that is the
+ * hold's order: hold, push the fix, validate it, list and fund the fixed version, roll forward, or
+ * close when nothing is pending; a listing already on hold says since when and what is left.
+ * Against a contract with no hold it is node P38's three lines, as they were: this listing takes
+ * commits until it is closed or rolled forward. Either text depends on the chain alone (the
+ * listing's state and its hold), so the panel shows for every Open or Depleted listing: `record`
+ * (useListingRecord's answer) is null while the site's record is read and { failed } when it
+ * cannot be, and only the picker waits for it. A listing on hold rolls forward as any other.
+ * `onChanged`: the listing rolled, so the page reads it again (a hold ends in the roll).
  */
-export function RollForward({ listingId, listing, record }) {
+export function RollForward({ listingId, listing, record, hold, onChanged = () => {} }) {
   const w = useWalletContext();
   const id = useId();
   const state = LISTING_STATES[Number(listing.state)];
@@ -146,6 +152,7 @@ export function RollForward({ listingId, listing, record }) {
       const tx = await stakeAttestation(signer).rollForward(BigInt(listingId), BigInt(pick));
       await tx.wait();
       setDone({ id: pick, tx: tx.hash });
+      onChanged();
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -178,27 +185,42 @@ export function RollForward({ listingId, listing, record }) {
     <section className="claim" aria-labelledby={id} data-testid="roll-forward">
       <h3 id={id}>{RF.title}</h3>
       <p>{RF.intro}</p>
-      <p className="warning" data-testid="roll-fix-keep">{RF.fix.keep}</p>
-      <ul data-testid="roll-fix-order">
-        <li>{RF.fix.noClaim}</li>
-        <li>{RF.fix.claimPending}</li>
-      </ul>
+      {hold.supported ? (
+        <>
+          <p className="warning" data-testid="roll-hold-first">{hold.held ? fill(RF.hold.held, { time: formatTime(hold.heldAt) }) : RF.hold.first}</p>
+          <ul data-testid="roll-hold-order">
+            {!hold.held && <li>{RF.hold.order}</li>}
+            <li>{RF.hold.close}</li>
+          </ul>
+        </>
+      ) : (
+        <>
+          <p className="warning" data-testid="roll-fix-keep">{RF.fix.keep}</p>
+          <ul data-testid="roll-fix-order">
+            <li>{RF.fix.noClaim}</li>
+            <li>{RF.fix.claimPending}</li>
+          </ul>
+        </>
+      )}
       {body}
       {error && <p className="error" role="alert">{error}</p>}
     </section>
   );
 }
 
-/** Whether the site offers a commit on this listing: only one that counts. */
-function CommitOffer({ data }) {
+/**
+ * Whether the site offers a commit on this listing: only one that counts, and never one its maker has on hold
+ * (node P42), which takes no commit and is no entry of the feed.
+ */
+function CommitOffer({ data, held = false }) {
   const id = useId();
   const O = STRINGS.offer;
   if (!data) return null;
-  let text = O.yes;
+  let text = held ? O.held : O.yes;
   if (data.failed) text = fill(O.unknown, { reason: data.failed });
   else if (!data.counted) text = fill(O.no, { reason: data.why ?? STRINGS.notCounted.none });
   return (
-    <section className="claim" aria-labelledby={id} data-testid="commit-offer" data-offered={String(Boolean(data.counted))}>
+    <section className="claim" aria-labelledby={id} data-testid="commit-offer" data-offered={String(Boolean(data.counted) && !held)}>
       <h3 id={id}>{O.title}</h3>
       <p>{text}</p>
     </section>
@@ -207,9 +229,11 @@ function CommitOffer({ data }) {
 
 /**
  * The parts of a listing's page that follow its opening: its claims, its record, the other listings
- * of its repository (node P35), roll forward. A listing that has not opened has no record yet.
+ * of its repository (node P35), the maker's hold (node P42) and, next to it, roll forward. A listing
+ * that has not opened has no record yet. `hold`: the listing's hold as the page read it from the chain
+ * (lib/hold.js holdView); `onHeld`, `onChanged`: a hold, or a roll, this page sent was mined.
  */
-export function ListingMore({ listingId, listing }) {
+export function ListingMore({ listingId, listing, hold, onHeld = () => {}, onChanged = () => {} }) {
   const state = LISTING_STATES[Number(listing.state)];
   const opened = state !== 'Listed';
   const data = useListingRecord(listingId, listing.artifactHash, opened);
@@ -217,12 +241,14 @@ export function ListingMore({ listingId, listing }) {
   return (
     <>
       <div className="pair">
-        <CommitOffer data={data} />
+        <CommitOffer data={data} held={hold.held} />
         <ListingClaims artifactHash={listing.artifactHash} data={data} listing={listing} />
       </div>
       <SameRepositorySection data={data} />
+      {/* the hold is the chain's alone, as roll forward's lines are: neither waits for the site's record */}
+      <HoldListing listingId={listingId} listing={listing} hold={hold} onHeld={onHeld} onChanged={onChanged} />
       {/* whatever the record's read came to: what the panel says before a fix is the chain's, and only its picker is the record's */}
-      <RollForward listingId={listingId} listing={listing} record={data} />
+      <RollForward listingId={listingId} listing={listing} record={data} hold={hold} onChanged={onChanged} />
     </>
   );
 }

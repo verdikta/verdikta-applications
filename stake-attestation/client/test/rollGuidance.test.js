@@ -115,7 +115,7 @@ test('the panel renders the three lines once each, after its intro and before th
 test('the panel shows from the listing\'s state on-chain: a record that is still read, or cannot be, only leaves the picker out', () => {
   const panel = read('../src/components/ListingExtras.jsx');
   // the listing's page renders the panel whatever the record's read came to
-  assert.match(panel, /\n      <RollForward listingId=\{listingId\} listing=\{listing\} record=\{data\} hold=\{hold\} \/>\n/);
+  assert.match(panel, /\n      <RollForward listingId=\{listingId\} listing=\{listing\} record=\{data\} hold=\{hold\} onChanged=\{onChanged\} \/>\n/);
   assert.doesNotMatch(panel, /&& <RollForward /);
   assert.equal(panel.split('<RollForward ').length, 2, 'rendered in one place');
   // inside, only the state decides whether there is a panel, and the record only what the picker's place holds
@@ -272,7 +272,7 @@ test('the README says the hold, and why: the builder fetches the fixed commit fr
   assert.match(bullet, /neither a pending claim nor an owed award holds it back/);
   assert.doesNotMatch(hold.replace(/\/\/.*$/gm, ''), /pendingClaims|owedWei|msg\.value/);
   // what it stops: commits, from its own block; and it opens late claims
-  assert.match(bullet, /what it stops: from the hold's block the listing takes no commit \(`acceptsCommits` is false\)\. It takes late claims from then on, as a Rolled listing does \(`lateClaim`\): judged, recorded under the record's `later`, with no award/);
+  assert.match(bullet, /what it stops: once the hold is mined the listing takes no commit \(`acceptsCommits` is false\)\. It takes late claims from then on, as a Rolled listing does \(`lateClaim`\): judged, recorded under the record's `later`, with no award/);
   assert.match(solidity('lateClaim'), /_heldAt\[listingId\] != 0/);
   // what it leaves alone
   assert.match(bullet, /what it leaves alone: everything else\. The state stays Open or Depleted \(`heldAt\(listingId\)` says since when, and `Held` is in the log\)/);
@@ -291,9 +291,9 @@ test('the README says the hold, and why: the builder fetches the fixed commit fr
   assert.doesNotMatch(bullet, /expect the old listing to take commits/);
 
   // one sentence for a deployment that has no hold: what the bullet said before the hold
-  const without = bullet.slice(bullet.indexOf('Against a deployment that has no hold'));
+  const without = bullet.slice(bullet.indexOf('Against a deployment that has no hold')).trim();
   assert.ok(without.startsWith('Against a deployment that has no hold'), 'the sentence');
-  assert.equal(without.trim().split(/\.(?:\s|$)/).filter(Boolean).length, 1, `one sentence: ${without}`);
+  assert.equal(without.split(/\.(?:\s|$)/).filter(Boolean).length, 1, `one sentence: ${without}`);
   assert.match(without, /a contract from before it has neither `hold` nor `heldAt`, and a reader takes the refused call as not held/);
   assert.match(without, /a maker keeps the fix private until the old listing is closed, when it can be closed/);
   inOrder(without, ['with no claim pending', '`close` the old listing first', 'once that is mined', 'push the fix', 'list the fixed commit']);

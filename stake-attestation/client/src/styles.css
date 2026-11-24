@@ -1137,6 +1137,18 @@ p.warning {
   padding: 0.75rem 1rem;
 }
 
+/* a warning in several statements (the hold's three): one box, as a warning paragraph has */
+ul.warning {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 10px;
+  padding: 0.75rem 1rem 0.75rem 2.25rem;
+}
+
+ul.warning li + li {
+  margin-top: 0.375rem;
+}
+
 .once {
   border: 2px solid var(--warn-icon);
   border-radius: 10px;

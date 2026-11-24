@@ -19,13 +19,15 @@ export const DILIGENCE = Object.freeze([
  * A late claim's three warnings (node P43; design §13.2, decision D6), said before one is paid for, each as the
  * contract has it: ClaimLogic.settle pays a late claim no award at any class and counts it under the record's `later`;
  * an INVALID's bond goes to the maker unless the INVALID is narrow (erratum E8), late or not, and every other outcome
- * returns it; the prepay goes to the round, and the round's wallet returns what it did not spend at finalize.
+ * returns it; the prepay goes to the round, and the round's wallet returns what it did not spend at finalize, in a
+ * call that is caught: when it fails the refund is deferred (RefundDeferred), and recoverLeftoverEth, which anyone may
+ * call, pays it to the hunter.
  * agents.txt says the three word for word (client/test/agentDocs.test.js).
  */
 export const LATE_CLAIM_WARNINGS = Object.freeze([
   'A late claim pays no award, whatever class the arbiters give it: it is judged and recorded on the record, under "later".',
   'The bond is forfeited on INVALID, as on any claim: it goes to the maker, unless the INVALID is narrow. On any other outcome it comes back, with no award.',
-  'The prepay is spent on the evaluation whatever the verdict: what a round does not spend comes back when the round is finalized.',
+  'The prepay is spent on the evaluation whatever the verdict: what a round does not spend comes back when the round is finalized or, if the refund fails then, when anyone calls recoverLeftoverEth on the wallet of that round.',
 ]);
 
 /** What commit, status and claim say of a claim that is a late one (getClaim's `late`). */
@@ -38,8 +40,17 @@ export const LATE_CLAIM_NOTE = 'A late claim: it is judged and recorded on the r
  * @param {{ claimId: bigint|string, late: boolean }} c the claim, with the chain's `late`
  */
 export function kindNotice({ claimId, late }) {
-  if (late) return `Claim ${claimId} in this folder is a late claim, filed with --late: this run goes on with it as that, and it pays no award.`;
+  if (late) return `Claim ${claimId} in this folder is a late claim: this run goes on with it as that, and it pays no award.`;
   return `Claim ${claimId} in this folder is an ordinary commit, made before this run: --late changes nothing now, and this run goes on with it.`;
+}
+
+/**
+ * The live price read as a commit or a late claim is signed, when it is not the one this run's terms named: the
+ * aggregator's fee moved in between. Said before the signature, so the amount printed is the amount sent.
+ * @param {{ late: boolean, quoted: bigint, price: bigint }} p
+ */
+export function priceMovedNotice({ late, quoted, price }) {
+  return `The live fee moved since the terms above were said: this ${late ? 'late claim' : 'commit'} sends ${eth(price)} now, not ${eth(quoted)}.`;
 }
 
 /**

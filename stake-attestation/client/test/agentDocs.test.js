@@ -450,7 +450,7 @@ test('node P33: step 8 says what claim and status report of a settle: the event\
 // tools/src/commit.js asks for --yes only before a commit is signed; a resumed one goes on without it (R1-F1).
 test('what they say commit does without --yes is what commit.js does', () => {
   const commit = toolSrc('commit.js');
-  const asksOnlyFirst = /if \(!state \|\| state\.stage === 'prepared'\) \{\s*const \{ listing, inputs \} = await readyToCommit\(/.test(commit);
+  const asksOnlyFirst = /if \(!state \|\| state\.stage === 'prepared'\) \{\s*const \{ listing, inputs, price \} = await readyToCommit\(/.test(commit);
   assert.ok(asksOnlyFirst, 'commit.js reads the acknowledgement only for a folder with no commit signed (readyToCommit)');
   assert.match(/function readyToCommit[\s\S]*?\n\}/.exec(commit)[0], /NEEDS_ACKNOWLEDGEMENT/);
   const text = agents().replace(/\s+/g, ' ');
@@ -1107,6 +1107,12 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.match(warnings[2], /^The prepay is spent on the evaluation\b/);
   for (const line of warnings) assert.ok(block.includes(line), `agents.txt says it word for word: ${line}`);
   assert.match(notices, /LATE_CLAIM_WARNINGS\.map\(/, 'and the notice commit --late prints before it pays carries them');
+  // the third warning's second half: finalize makes the refund in a call that is caught, and a refund deferred that
+  // way is the hunter's still: anyone may call recoverLeftoverEth, which pays the round's funder
+  assert.match(logic, /try EvaluationWallet\(payable\(wallet\)\)\.refundLeftoverEth\{gas: ClaimRules\.INLINE_REFUND_GAS_LIMIT\}\(\)[\s\S]*?\} catch \{\s*emit StakeAttestation\.RefundDeferred\(claimId, wallet\);\s*\}/);
+  assert.match(host, /Retry the recovery of a wallet's unspent prepay and pay it to the wallet's funder\s+\/\/\/\s+\(walletInfo: the hunter for a claim round or an appeal, the maker for a dispute\)\. Anyone may\s+\/\/\/\s+call\./);
+  assert.deepEqual(ABI.find((f) => f.name === 'recoverLeftoverEth').inputs.map((i) => `${i.type} ${i.name}`), ['address wallet']);
+  assert.match(warnings[2], /comes back when the round is finalized or, if the refund fails then, when anyone calls recoverLeftoverEth on the wallet of that round\.$/);
   assert.match(section(1), /A late claim, on a listing that takes no commit any more \(section 3, "Late claims"\), pays no award in any outcome/);
 
   // the command: the flag is the parser's and commit's, a first run is a dry run as a commit's is, and the later verbs
@@ -1144,6 +1150,16 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.match(ERROR_TEXTS.LATE_CLAIMS_ONLY, /commit --late/);
   assert.ok(block.includes('The wrong kind is refused before anything is pinned or sent: `commit` without --late on a listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).'));
   assert.match(section(3), /One that takes none may take a late claim instead \("Late claims", after step 8\)\./);
+
+  // a late claim is not signed while the wallet has a transaction pending, which may be the same claim sent some
+  // other way with no log to find yet; a commit is signed as it always was
+  assert.match(commit, /if \(late\) await noPendingOfWallet\(ctx, state\.hunter, 'A late claim signed now could be a second one, for a second bond\.'\);/);
+  assert.match(/async function noPendingOfWallet[\s\S]*?\n\}/.exec(commit)[0], /if \(pending > latest\) throw fail\('WALLET_BUSY'/);
+  assert.equal(new ToolError('WALLET_BUSY').exitCode, 4);
+  assert.ok(block.includes('It signs nothing while your wallet has a transaction that is not mined yet (WALLET_BUSY, exit 4): that one may be this late claim, sent some other way, and a second one would pay a second bond.'));
+  // the amount printed is the amount sent: a fee that moved since the terms is said before the signature
+  assert.match(commit, /if \(price !== quoted\) ctx\.notice\(priceMovedNotice\(\{ late, quoted, price \}\)\);\s*const data = ctx\.encode\(/);
+  assert.match(section(4), /A commit or a late claim whose fee moved between its terms and its signature says the new amount before it signs\./);
 
   // a resume: the flag is read until something is signed, and the saved transaction decides from then on
   assert.match(section(4), /Once a commit or a late claim is signed, a later run resumes that one, with --late or without it\./);

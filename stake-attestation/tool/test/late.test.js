@@ -195,6 +195,7 @@ test('commit --late without --yes sends nothing: the terms, the price, no award,
   assert.ok(text.includes(`The fix window is ${on.fixWindow} s from your disclosure, the reveal window ${on.revealWindow} s, the dispute window ${on.disputeWindow} s.`));
   assert.match(text, /No other claim on this listing is open now, so a late claim sent now would be first in commit order\./);
   assert.match(text, /Disclosure key: age1/);
+  assert.match(text, /Read the scope, the known issues and the rubric before working\./);
   assert.match(text, /Run check before committing/);
   // and nothing an ordinary commit says of an award
   assert.doesNotMatch(text, /^Awards: /m);
@@ -549,7 +550,7 @@ test('a stopped late claim resumed without --late: before anything is signed it 
   const resumed = await runCli(w, ['commit', dir2, '--listing', String(l2.listingId)]);
   assert.equal(resumed.code, 0, resumed.stderr);
   assert.match(resumed.stdout, /^Late claim /m);
-  assert.match(resumed.stdout, /filed with --late/);
+  assert.match(resumed.stdout, /is a late claim: this run goes on with it as that, and it pays no award\./);
   assert.equal(await w.claimCount(), count + 2n);
   const claim = await w.sa.getClaim(readJson(statePath(dir2)).claimId);
   assert.equal(claim.late, true);
@@ -617,16 +618,212 @@ test('the same late claim went out another way: that claim is adopted, signed or
     assert.equal((await child(dir, l.listingId, step)).signal, 'SIGKILL', step);
     const saved = readJson(statePath(dir));
     const price = await w.sa.commitPrice(l.listingId);
-    await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price, gasPrice: 10n ** 10n })).wait();
+    const other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price, gasPrice: 10n ** 10n })).wait();
     const heldNow = await w.provider.getBalance(w.address);
     const r = await late({ claimDir: dir, listingId: l.listingId });
     assert.equal(r.stage, 'disclosed', step);
     assert.equal(r.claimId, count + 1n, step);
     assert.equal(r.late, true, step);
+    // the transaction it names is the one that made the claim, not the saved one that never did
+    assert.equal(r.commitTx, other.hash, step);
+    assert.notEqual(saved.commitTx?.hash, other.hash, step);
+    assert.deepEqual(readJson(statePath(dir)).commitTx, { hash: other.hash }, step);
     assert.equal(await w.claimCount(), count + 1n, `${step}: one claim, the one that exists`);
     assert.equal(await w.provider.getBalance(w.address), heldNow, `${step}: nothing more was paid`);
     assert.equal(readJson(statePath(dir)).late, true, step);
   }
+});
+
+// Round 1 of the review: a claim with the folder's hashes that is already on the chain, sent some other way, has its
+// bond. So it is found before anything can refuse the run or remove the keys it needs.
+test('a prepared folder whose claim is already on the chain is adopted before the flag, the wallet\'s balance or --restart is asked', async () => {
+  // no --late on the resume: adopted, never refused for the flag
+  {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    const count = await w.claimCount();
+    assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+    const saved = readJson(statePath(dir));
+    const other = await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    const cli = await runCli(w, ['commit', dir, '--listing', String(l.listingId)]);
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /^Late claim /m);
+    assert.match(cli.stdout, /is a late claim: this run goes on with it as that/);
+    assert.equal(await w.claimCount(), count + 1n);
+    assert.deepEqual(readJson(statePath(dir)).commitTx, { hash: other.hash });
+    assert.notEqual((await w.sa.getClaim(count + 1n)).ciphertextCid, '', 'disclosed');
+  }
+  // --restart: refused, and the keys that claim needs stay where they are
+  {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    const count = await w.claimCount();
+    assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+    const saved = readJson(statePath(dir));
+    const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
+    await (await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    await assert.rejects(late({ claimDir: dir, listingId: l.listingId, restart: true }), (e) => e.code === 'RESTART_REFUSED');
+    assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys, 'the keys of the claim on the chain');
+    assert.equal(readJson(statePath(dir)).stage, 'committed');
+    assert.equal((await late({ claimDir: dir, listingId: l.listingId })).stage, 'disclosed');
+    assert.equal(await w.claimCount(), count + 1n);
+  }
+  // a wallet with enough for the disclosure and not for a second claim: no check of the price stands in the way
+  {
+    const l = await rolled();
+    const dir = makeClaimDir();
+    const count = await w.claimCount();
+    const price = await w.sa.commitPrice(l.listingId);
+    const poor = ethers.Wallet.createRandom().connect(w.provider);
+    const { maxFeePerGas } = await w.provider.getFeeData();
+    await (await w.signers[8].sendTransaction({ to: poor.address, value: price + 1_200_000n * maxFeePerGas })).wait();
+    const crash = (step) => { if (step === 'prepare:saved') throw new Error('crash'); };
+    await w.hunter({ signer: poor, onStep: crash }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch(() => {});
+    const saved = readJson(statePath(dir));
+    assert.equal(saved.stage, 'prepared');
+    await (await w.sa.connect(poor).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price })).wait();
+    assert.ok(await w.provider.getBalance(poor.address) < price, 'it could not pay for a second claim');
+    const r = await w.hunter({ signer: poor }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
+    assert.equal(r.stage, 'disclosed');
+    assert.equal(r.claimId, count + 1n);
+    assert.equal(await w.claimCount(), count + 1n);
+  }
+});
+
+test('a late claim sent some other way and not mined yet: nothing is signed while the wallet has a transaction pending, and once it is mined that claim is adopted', async () => {
+  const l = await rolled();
+  const dir = makeClaimDir();
+  const count = await w.claimCount();
+  assert.equal((await child(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL');
+  const saved = readJson(statePath(dir));
+  const price = await w.sa.commitPrice(l.listingId);
+  let other;
+  await w.rpc('evm_setAutomine', [false]);
+  try {
+    other = await w.sa.connect(w.hunterWallet).lateClaim(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: price });
+    // run twice: the refusal leaves nothing behind that a second run could send
+    for (const run of ['first', 'second']) {
+      const err = await late({ claimDir: dir, listingId: l.listingId }).catch((e) => e);
+      assert.equal(err.code, 'WALLET_BUSY', run);
+      assert.equal(err.exitCode, 4, 'run the same command again');
+      assert.match(err.message, /second bond/);
+      assert.match(err.message, /Nothing was sent\./);
+    }
+    // nor are its keys removed: --restart is refused the same way
+    const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
+    const restart = await late({ claimDir: dir, listingId: l.listingId, restart: true }).catch((e) => e);
+    assert.equal(restart.code, 'WALLET_BUSY');
+    assert.match(restart.message, /--restart would remove the keys it needs/);
+    assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys);
+    const now = readJson(statePath(dir));
+    assert.equal(now.stage, 'prepared');
+    assert.equal(now.commitTx ?? null, null, 'nothing was signed');
+    assert.equal((await w.rpc('eth_getBlockByNumber', ['pending', false])).transactions.length, 1, 'only the one sent the other way waits');
+    await w.mine();
+  } finally {
+    await w.rpc('evm_setAutomine', [true]);
+  }
+  const r = await late({ claimDir: dir, listingId: l.listingId });
+  assert.equal(r.stage, 'disclosed');
+  assert.equal(r.commitTx, other.hash);
+  assert.equal(await w.claimCount(), count + 1n, 'one claim, one bond');
+});
+
+test('an ordinary commit is signed as it always was while another transaction of the wallet is pending', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const count = await w.claimCount();
+  await w.rpc('evm_setAutomine', [false]);
+  try {
+    await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n });
+    const stop = await w.hunter({ waitMs: 30 }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }).catch((e) => e);
+    assert.equal(stop.code, 'TX_PENDING', 'signed and sent behind it, as before');
+    assert.equal(readJson(statePath(dir)).stage, 'commit-signed');
+    assert.equal((await w.rpc('eth_getBlockByNumber', ['pending', false])).transactions.length, 2);
+    await w.mine();
+  } finally {
+    await w.rpc('evm_setAutomine', [true]);
+  }
+  assert.equal((await w.hunter().commit({ claimDir: dir, listingId: l.listingId })).stage, 'disclosed');
+  assert.equal(await w.claimCount(), count + 1n);
+});
+
+test('a fee that moves between the terms and the signature is said before it is signed: the amount printed is the amount sent', async () => {
+  try {
+    for (const [name, make, lateClaim] of [['a late claim', rolled, true], ['a commit', () => w.listing(), false]]) {
+      await (await w.aggregator.setFeeMultiplier(3n)).wait();
+      const l = await make();
+      const dir = makeClaimDir();
+      const quoted = await w.sa.commitPrice(l.listingId);
+      const said = [];
+      const onStep = async (step) => {
+        said.push(step);
+        if (step === 'prepare:saved') await (await w.aggregator.setFeeMultiplier(5n)).wait();
+      };
+      const r = await w.hunter({ onStep, onNotice: (t) => said.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: lateClaim, acknowledge: true });
+      const price = await w.sa.commitPrice(l.listingId);
+      assert.ok(price > quoted, name);
+      assert.equal((await w.provider.getTransaction(r.commitTx)).value, price, name);
+      const line = `The live fee moved since the terms above were said: this ${lateClaim ? 'late claim' : 'commit'} sends ${eth(price)} now, not ${eth(quoted)}.`;
+      assert.ok(said.includes(line), `${name}: ${said.filter((t) => /moved/.test(t)).join(' | ')}`);
+      assert.ok(said.indexOf(line) < said.indexOf('commit:signed'), `${name}: said before it is signed`);
+      assert.ok(said.some((t) => t.includes(`sends ${eth(quoted)}: the bond`)), `${name}: the terms named the first price`);
+    }
+    // a fee that did not move adds no line
+    const l = await rolled();
+    const quiet = [];
+    await w.hunter({ onNotice: (t) => quiet.push(t) }).commit({ claimDir: makeClaimDir(), listingId: l.listingId, late: true, acknowledge: true });
+    assert.doesNotMatch(quiet.join('\n'), /The live fee moved/);
+  } finally {
+    await (await w.aggregator.setFeeMultiplier(3n)).wait();
+  }
+});
+
+test('the nonce goes to another transaction while the first send waits, and no claim comes of it: the run says so, discloses nothing, and a run again signs anew', async () => {
+  for (const [name, make, lateClaim] of [['a late claim', rolled, true], ['a commit', () => w.listing(), false]]) {
+    const l = await make();
+    const dir = makeClaimDir();
+    const m = await mark();
+    const notices = [];
+    const onStep = async (step) => {
+      if (step === 'commit:signed') await (await w.hunterWallet.sendTransaction({ to: w.hunterWallet.address, value: 0n })).wait();
+    };
+    const err = await w.hunter({ onStep, onNotice: (t) => notices.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: lateClaim, acknowledge: true }).catch((e) => e);
+    assert.equal(err.code, 'COMMIT_REPLACED', `${name}: ${err.message}`);
+    assert.match(err.message, /no claim exists and nothing was pinned/, name);
+    assert.doesNotMatch(notices.join('\n'), /undefined/, `${name}: no notice of a claim that does not exist`);
+    assert.equal(await w.claimCount(), m.claims, name);
+    assert.equal(w.ipfs.uploads.length, m.uploads, name);
+    const saved = readJson(statePath(dir));
+    assert.equal(saved.stage, 'prepared', name);
+    assert.equal(saved.commitTx, null, name);
+    assert.equal(Object.hasOwn(saved, 'late'), false, `${name}: a prepared folder names no kind`);
+    const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: lateClaim, acknowledge: true });
+    assert.equal(r.stage, 'disclosed', name);
+    assert.equal(r.late, lateClaim, name);
+    assert.equal(await w.claimCount(), m.claims + 1n, name);
+  }
+});
+
+test('an RPC that does not answer whether the listing takes late claims is said as that; a lens that cannot say leaves the refusal a commit always had', async () => {
+  const l = await rolled();
+  const selector = iface.getFunction('acceptsLateClaims').selector;
+  const failing = (message) => new Proxy(w.provider, {
+    get(target, prop) {
+      if (prop === 'call') return async (tx, ...rest) => {
+        if (String(tx?.data ?? '').startsWith(selector)) throw new Error(message);
+        return target.call(tx, ...rest);
+      };
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  const m = await mark();
+  const down = await w.hunter({ provider: failing('socket hang up') }).commit({ claimDir: makeClaimDir(), listingId: l.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(down.code, 'RPC_UNAVAILABLE');
+  const noLens = await w.hunter({ provider: failing('execution reverted: unknown function') }).commit({ claimDir: makeClaimDir(), listingId: l.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(noLens.code, 'LISTING_NOT_ACCEPTING');
+  await assertNothingSent(m, null, 'either way');
 });
 
 test('a saved late claim that may not have gone out is not sent if the keys it needs are gone', async () => {

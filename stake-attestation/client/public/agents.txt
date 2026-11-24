@@ -113,7 +113,8 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
                           none is open
     escrowRemainingWei    what is left to pay awards from
     owedWei               awards already owed to earlier hunters
-    invited               true: only the wallets the maker listed may claim
+    invited               true: only the wallets the maker listed may commit (a late claim, section 3,
+                          is open to every wallet)
     valueAtRiskUsd        the value the maker says the code holds, in USD; 0 when none is declared
     labels                how the site labels the stake: `stake` (scanned, staked or under-staked,
                           by its top award and the declared value), `invited`, `lapsed`, and
@@ -304,7 +305,8 @@ of `commit`. `verdikta-attest commit` files one with --late.
   recorded on the record, under "later". The bond is forfeited on INVALID, as on any claim: it
   goes to the maker, unless the INVALID is narrow. On any other outcome it comes back, with no
   award. The prepay is spent on the evaluation whatever the verdict: what a round does not spend
-  comes back when the round is finalized.
+  comes back when the round is finalized or, if the refund fails then, when anyone calls
+  recoverLeftoverEth on the wallet of that round.
 - Everything else is a claim's: steps 2 to 8 above, with the listing's own windows. It is open to
   every wallet, invited listing or not. It reveals in commit order with the listing's other
   claims: behind every claim still open there, the stake's own and earlier late claims, and
@@ -314,6 +316,9 @@ of `commit`. `verdikta-attest commit` files one with --late.
   `lateClaim`, then pins and discloses as a commit does. `status`, `reveal`, `claim` and `appeal`
   then work as on any claim, and `status` says it is a late claim with no award (with --json,
   `late` is true).
+- It signs nothing while your wallet has a transaction that is not mined yet (WALLET_BUSY, exit
+  4): that one may be this late claim, sent some other way, and a second one would pay a second
+  bond. Run the same command again once it is mined.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
@@ -350,6 +355,8 @@ contract's own address):
 Or let the tool say it: `commit` on a folder with no commit signed yet, `reveal`,
 `reveal --retrigger` and `appeal` print what they will send and send nothing without --yes
 (exit 3). The amount printed is the amount sent; a reveal reads its top-up again as it signs.
+A commit or a late claim whose fee moved between its terms and its signature says the new amount
+before it signs.
 Once a commit is signed, `commit` resumes it on every run, --yes or not: it sends the saved
 commit and then the disclose. So read a price for a claim already under way with cast, not with
 `commit`. `commit --late` is a dry run in the same way. Once a commit or a late claim is signed,

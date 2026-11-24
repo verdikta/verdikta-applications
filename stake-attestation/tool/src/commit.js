@@ -15,13 +15,18 @@
 // no commit. The flag is read only until something is signed: a signed transaction is saved with its kind, a resume
 // sends those bytes whatever flag it has, and a claim that exists is the kind the chain says. Both events are looked
 // for before a signature, a commit's and a late claim's, so neither kind is ever paid for twice.
+//
+// A claim with the folder's two hashes that is already on the chain, sent some other way, is adopted before anything
+// else is asked of a prepared folder: before the listing, the wallet's balance or --restart can refuse the run or
+// remove the keys that claim needs. A late claim is not signed while the wallet has a transaction that is not mined
+// yet: that one may be this very claim, and its log is not there to find.
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { codeReview } from './common.js';
 import { fail, ToolError } from './errors.js';
 import { rawCid, isRawSha256Cid, isStorableCid, sha256Hex0x, gatewayGet } from './ipfs.js';
 import { archiveDisclosureKeyHex, readListing, runnerFilesOf, termsForNotice } from './listing.js';
-import { commitNotice, kindNotice } from './notices.js';
+import { commitNotice, kindNotice, priceMovedNotice } from './notices.js';
 import { requirementWarnings } from './report.js';
 import { lintObservable } from './observable.js';
 import { openWorkspace } from './workspace.js';
@@ -130,7 +135,7 @@ async function findCommitted(ctx, state) {
     for (const log of logs) {
       const parsed = ctx.parseLog(log);
       if (CLAIM_MADE.includes(parsed?.name) && parsed.args.archiveHash === state.archiveSha256 && parsed.args.ciphertextSha256 === state.ciphertextSha256) {
-        return { claimId: parsed.args.claimId, blockNumber: log.blockNumber };
+        return { claimId: parsed.args.claimId, blockNumber: log.blockNumber, txHash: log.transactionHash };
       }
     }
   }
@@ -186,19 +191,23 @@ async function adoptLogged(ctx, ws, state, found) {
   const until = ctx.now() + ctx.waitMs;
   for (;;) {
     const head = await ctx.rpc(() => ctx.provider.getBlockNumber());
-    if (head - found.blockNumber + 1 >= ctx.confirmations) return adoptClaim(ctx, ws, state, found.claimId);
+    if (head - found.blockNumber + 1 >= ctx.confirmations) return adoptClaim(ctx, ws, state, found.claimId, found.txHash);
     if (ctx.now() >= until) throw fail('TX_PENDING', `Claim ${found.claimId} is not deep enough yet.`);
     await ctx.sleep(ctx.pollMs ?? 2000);
   }
 }
 
-async function adoptClaim(ctx, ws, state, claimId) {
+/**
+ * @param {string|null} [txHash] the transaction that made the claim: the saved one's, or, for a claim found by its log,
+ *   that log's, which is another transaction when the claim went out some other way
+ */
+async function adoptClaim(ctx, ws, state, claimId, txHash = state.commitTx?.hash ?? null) {
   const claim = await ctx.readSettled('getClaim', [claimId]);
   const same = claim.hunter.toLowerCase() === state.hunter.toLowerCase() && String(claim.listingId) === state.listingId
     && claim.archiveHash === state.archiveSha256 && claim.ciphertextSha256 === state.ciphertextSha256;
   if (!same) throw fail('CLAIM_MISMATCH', `Claim ${claimId}.`);
   // the kind is the chain's from here on: a claim that went out another way is adopted as what it is
-  const next = { ...withKind(state, claim.late === true), stage: 'committed', claimId: String(claimId), commitTx: state.commitTx ? { hash: state.commitTx.hash } : null };
+  const next = { ...withKind(state, claim.late === true), stage: 'committed', claimId: String(claimId), commitTx: txHash ? { hash: txHash } : null };
   ws.saveState(next);
   await ctx.step('commit:saved');
   return next;
@@ -264,8 +273,12 @@ async function commitPreflight(ctx, listingId, hunter, late = false) {
     }
   } else {
     if (!await ctx.read('acceptsCommits', [listingId])) {
-      // which refusal it is, and no more: a lens that cannot say leaves the refusal a commit always had
-      const lateOnly = await ctx.read('acceptsLateClaims', [listingId]).catch(() => false);
+      // which refusal it is, and no more: a lens that cannot say leaves the refusal a commit always had; an RPC that
+      // did not answer is said as that, since a run again may get the answer
+      const lateOnly = await ctx.read('acceptsLateClaims', [listingId]).catch((err) => {
+        if (err.code === 'CONTRACT_REFUSED') return false;
+        throw err;
+      });
       throw fail(lateOnly ? 'LATE_CLAIMS_ONLY' : 'LISTING_NOT_ACCEPTING', `Listing ${listingId}.`);
     }
     if (!await ctx.read('isAllowed', [listingId, hunter])) throw fail('NOT_ALLOWED');
@@ -276,13 +289,33 @@ async function commitPreflight(ctx, listingId, hunter, late = false) {
   return price;
 }
 
-/** Signs and sends the commit, or with `late` the late claim: never twice, and only with everything on disk. */
-async function sendCommit(ctx, ws, state, listingId, late) {
+/**
+ * A late claim is not signed, and a late claim's prepared keys are not removed, while this wallet has a transaction
+ * that is not mined yet: it may be this folder's late claim, sent some other way. `why` says what is held back.
+ */
+async function noPendingOfWallet(ctx, hunter, why) {
+  const [latest, pending] = await Promise.all([
+    ctx.rpc(() => ctx.provider.getTransactionCount(hunter, 'latest')),
+    ctx.rpc(() => ctx.provider.getTransactionCount(hunter, 'pending')),
+  ]);
+  if (pending > latest) throw fail('WALLET_BUSY', why);
+}
+
+/**
+ * Signs and sends the commit, or with `late` the late claim: never twice, and only with everything on disk.
+ * @param {bigint} quoted the price this run's notice named: a live price that differs is said before it is signed
+ */
+async function sendCommit(ctx, ws, state, listingId, late, quoted) {
   const existing = await findCommitted(ctx, state);
   if (existing) return adoptLogged(ctx, ws, state, existing);
+  // No log of it is not proof for a late claim: one sent some other way and not mined yet has none. Only a late
+  // claim asks this: a commit is signed as it always was.
+  if (late) await noPendingOfWallet(ctx, state.hunter, 'A late claim signed now could be a second one, for a second bond.');
 
   readProvenFiles(ctx, ws, state);
   const price = await commitPreflight(ctx, listingId, state.hunter, late); // read just before signing: the live fee
+  // the amount printed is the amount sent: a fee that moved since the terms were said is said before it is signed
+  if (price !== quoted) ctx.notice(priceMovedNotice({ late, quoted, price }));
   const data = ctx.encode(late ? 'lateClaim' : 'commit', [listingId, state.archiveSha256, state.ciphertextSha256]);
   let estimate;
   try {
@@ -432,14 +465,15 @@ async function readyToCommit(ctx, ws, state, listingId, hunter, acknowledge, lat
   // report.md's requirement section is advice (owner, 2026-11-10, Q73 #2): said again here, never a refusal
   for (const w of [...warnings, ...lintObservable({ finding, pocPatch: inputs.pocPatch, baseline }), ...requirementWarnings(inputs.report)]) ctx.notice(`${w.code}: ${w.detail}`);
   if (!acknowledge) throw fail('NEEDS_ACKNOWLEDGEMENT');
-  return { listing, inputs };
+  return { listing, inputs, price };
 }
 
 /**
  * commit, or a resume of one; with `late` (--late, node P43) a late claim, on a listing that takes those and no
  * commit. See the top of this file.
  */
-export async function runCommit(ctx, { claimDir, listingId, late = false, acknowledge = false, restart = false, acceptUnreadPin = false }) {
+export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = false, acknowledge = false, restart = false, acceptUnreadPin = false }) {
+  const late = Boolean(lateFlag);
   const hunter = await ctx.hunterAddress();
   // The warning and the diligence text must reach someone: a library caller gives them somewhere to go.
   if (!ctx.onNotice) throw fail('USAGE', 'commit needs onNotice, for what must be said before anyone pays.');
@@ -448,8 +482,17 @@ export async function runCommit(ctx, { claimDir, listingId, late = false, acknow
   return ws.withLock(async () => {
     let state = ws.loadState();
     if (state) checkBinding(state, { ...bindingOf(ctx, hunter), listingId: listingId ?? undefined });
+    // A prepared folder's claim may be on the chain already, sent some other way with these two hashes. That is asked
+    // first: the claim has its bond, so nothing may refuse the run (the listing, the wallet's balance, the flag) or
+    // remove its keys (--restart) before it is found and disclosed.
+    if (state?.stage === 'prepared') {
+      const existing = await findCommitted(ctx, state);
+      if (existing) state = await adoptLogged(ctx, ws, state, existing);
+    }
     if (state && restart && state.stage !== 'prepared') throw fail('RESTART_REFUSED');
     if (state && restart) {
+      // the keys go with this, and a late claim of these hashes that is sent and not mined yet would lose them
+      if (late) await noPendingOfWallet(ctx, hunter, 'It may be this folder\'s late claim, and --restart would remove the keys it needs.');
       ws.removePrepared();
       state = null;
     }
@@ -458,13 +501,16 @@ export async function runCommit(ctx, { claimDir, listingId, late = false, acknow
 
     if (state?.stage === 'commit-signed') state = await settleCommit(ctx, ws, state);
     if (!state || state.stage === 'prepared') {
-      const { listing, inputs } = await readyToCommit(ctx, ws, state, id, hunter, acknowledge, late);
+      const { listing, inputs, price } = await readyToCommit(ctx, ws, state, id, hunter, acknowledge, late);
       if (!state) state = await prepare(ctx, ws, listing, inputs, hunter, id);
-      state = await sendCommit(ctx, ws, state, id, late);
+      state = await sendCommit(ctx, ws, state, id, late, price);
+      // The signed bytes' nonce went to another transaction while this run waited, and no claim came of it: there is
+      // none to disclose. The folder is prepared again, and a run again signs anew.
+      if (state.stage === 'prepared') throw fail('COMMIT_REPLACED');
     }
-    // The claim exists, and is the kind it was signed as. A run whose flag says the other kind goes on all the same,
+    // The claim exists, and is the kind the chain says. A run whose flag says the other kind goes on all the same,
     // since the bond is paid and only the disclosure keeps it, and says which kind the folder holds.
-    if ((state.late === true) !== (late === true)) ctx.notice(kindNotice({ claimId: state.claimId, late: state.late === true }));
+    if ((state.late === true) !== late) ctx.notice(kindNotice({ claimId: state.claimId, late: state.late === true }));
     while (state.stage !== 'disclosed') state = await disclose(ctx, ws, state, { acceptUnreadPin });
     const result = await resultOf(ctx, state);
     // What this run says of the reveal, recorded (node P32): status compares the chain's deadline with it, and says

@@ -1356,6 +1356,14 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   folder's two hashes, so neither kind is paid for twice. `status`, `reveal`, `claim` and `appeal` then work as on any
   claim: `status` and `claim` print "Late claim" and that no award rides on it (`late` with `--json`), and `appeal`'s
   notice says an overturned INVALID returns the bond and pays nothing more.
+- **A claim that went out some other way.** A prepared folder whose two hashes already have a claim on the chain, a
+  commit's or a late claim's, is adopted first, before the listing, the wallet's balance, the flag or `--restart` can
+  refuse the run or remove the keys that claim needs, and the transaction it records is the one that made the claim.
+  A late claim is not signed while the wallet has a transaction that is not mined yet (`WALLET_BUSY`, exit 4): that
+  one may be the same late claim, and it has no log to find. A commit is signed as it always was. A live fee that
+  moved between the terms and the signature is said before it is signed, for either kind. And a signed commit whose
+  nonce went to another transaction while the run waited, with no claim made, ends with `COMMIT_REPLACED`: nothing was
+  pinned, and a run again signs anew.
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. Then, as `commit`,

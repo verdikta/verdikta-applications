@@ -1,8 +1,8 @@
 // The listing feed (design §15): what a hunter needs to choose a listing, for every listing that
-// takes commits at the indexed block. Candidates are the listings the events say opened and have
-// not rolled forward or closed; each is then read on-chain at that block, and kept only while it
-// is Open and its paid period has not ended (a lapsed listing stays Open for its pending claims
-// but leaves the feed, §13.1). Which of them the site offers (those that count) is decided when the
+// takes commits at the indexed block. Candidates are the listings the events say opened, have not
+// rolled forward or closed, and are not held by their maker (below); each is then read on-chain at
+// that block, and kept only while it is Open and its paid period has not ended (a lapsed listing
+// stays Open for its pending claims but leaves the feed, §13.1). Which of them the site offers (those that count) is decided when the
 // answer is made (site/index.js, src/control/counting.js), as the proofs change between blocks. Its identity (repo, commit) comes from its Listed event, its image
 // and scope from its listing archive (archives.js), everything else from getListing.
 //
@@ -13,8 +13,18 @@
 // Tester bounty 400 (2026-11) adds two more, and changes none: pendingClaims, how many claims on the listing are
 // neither settled nor expired, and headClaim, the earliest of them (null when there is none). Claims on a listing
 // reveal in commit order (decision D5; ClaimLogic.revealDeadline), so these are the claims a new one would wait
-// behind, and a hunter had no way to see them before paying. A listing in the feed is Open, and a late claim is only
-// taken on a Rolled or Closed one, so here every claim in the queue is one of pendingClaims.
+// behind, and a hunter had no way to see them before paying. Every claim in an entry's queue is one of pendingClaims:
+// no entry has ever taken a late claim (below).
+//
+// The maker's hold (node P40; owner, 2026-11-23; StakeAttestation.hold). A held listing stays Open or Depleted for its
+// pending claims, takes no commit and takes late claims instead (acceptsCommits, acceptsLateClaims), so it is not an
+// entry, as a lapsed one is not: the projection's heldAt says so, from the indexed Held event, at the answer's block.
+// No call is made for it, so a contract from before the hold, which has no such event and no heldAt view, answers as
+// it did. That is also why the queue fields still mean what they say. A late claim is taken only on a Rolled, a Closed
+// or a held listing, and none of the three is ever an entry again: Rolled and Closed are final, and a hold has no
+// resume (it ends only in a roll forward or a close). So an entry has never taken a late claim, and every claim in its
+// queue is one of pendingClaims, each ahead of a claim committed now. Had a held listing stayed an entry, its headClaim
+// could name a late claim, which pendingClaims does not count.
 import { disclosureRecipientOf } from '@verdikta/stake-attestation-shared/disclosure-key';
 
 import { SEVERITY_CLASSES } from '../chain/abi.js';
@@ -35,7 +45,7 @@ const DAY = 86400;
  * @param {number} o.discloseWindow - the contract's DISCLOSE_WINDOW
  */
 export async function buildFeed({ read, projection, block, archives, labels, discloseWindow }) {
-  const candidates = [...projection.listings.values()].filter((l) => l.opened && !l.rolled && !l.closed);
+  const candidates = [...projection.listings.values()].filter((l) => l.opened && !l.rolled && !l.closed && l.heldAt === null);
   const entries = [];
   const states = new Map();
   for (const l of candidates) {
@@ -45,7 +55,8 @@ export async function buildFeed({ read, projection, block, archives, labels, dis
     const { lapsed } = states.get(l.listingId);
     if (onchain.state !== 'Open' || lapsed || BigInt(onchain.escrowWei) < BigInt(onchain.awards[3])) continue;
     const invited = onchain.allowlist.length > 0;
-    const asRecord = { listingId: l.listingId, state: onchain.state, lapsed, invited, awards: onchain.awards, valueAtRiskUsd: onchain.valueAtRiskUsd };
+    // heldAt is null here: a held listing is no candidate
+    const asRecord = { listingId: l.listingId, state: onchain.state, lapsed, heldAt: l.heldAt, invited, awards: onchain.awards, valueAtRiskUsd: onchain.valueAtRiskUsd };
     entries.push({
       listingId: l.listingId,
       artifactHash: l.artifactHash,

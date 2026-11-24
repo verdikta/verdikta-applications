@@ -12,6 +12,10 @@
 // Each one is shown with its state and lapsed as getListing has them at the answer's block, as the feed reads its own
 // entries (feed.js); whether it counts is decided when the answer is made (site/index.js), as the record decides it
 // for its own listings.
+//
+// And with heldAt (node P40): the time its maker held it, while it is on hold, else null, from the projection of the
+// events up to the same block (projection.js). A held listing's state is still the chain's, Open or Depleted: this
+// field is what says it takes no commit.
 import { outputJson } from '../chain/codec.js';
 
 const byId = (a, b) => (BigInt(a.listingId) < BigInt(b.listingId) ? -1 : BigInt(a.listingId) > BigInt(b.listingId) ? 1 : 0);
@@ -43,13 +47,13 @@ export function stateReader(read, block, known = new Map()) {
  * @param {string} o.repo - an artifact.repo, as a Listed event stored it
  * @param {(l: object) => boolean} o.except
  * @param {(listingId: string) => Promise<{ state: string, lapsed: boolean }>} o.stateOf
- * @returns {Promise<{ listingId: string, artifactHash: string, artifact: object, state: string, lapsed: boolean, page: string }[]>}
+ * @returns {Promise<{ listingId: string, artifactHash: string, artifact: object, state: string, lapsed: boolean, heldAt: number|null, page: string }[]>}
  */
 export async function sameRepository({ listings, repo, except, stateOf }) {
   const out = [];
   for (const l of [...listings.values()].filter((x) => x.opened && x.artifact.repo === repo && !except(x)).sort(byId)) {
     const { state, lapsed } = await stateOf(l.listingId);
-    out.push({ listingId: l.listingId, artifactHash: l.artifactHash, artifact: { ...l.artifact }, state, lapsed, page: `/#/fund/${l.listingId}` });
+    out.push({ listingId: l.listingId, artifactHash: l.artifactHash, artifact: { ...l.artifact }, state, lapsed, heldAt: l.heldAt, page: `/#/fund/${l.listingId}` });
   }
   return out;
 }

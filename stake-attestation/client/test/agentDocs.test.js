@@ -1160,7 +1160,7 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   // at that nonce: a transaction that takes it afterwards leaves the signature unusable
   const at = /async function nonceAndClaimAt[\s\S]*?\n\}/.exec(commit)?.[0];
   assert.ok(at, 'tool/src/commit.js: nonceAndClaimAt');
-  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await countAt\(ctx, state\.hunter, head\.number\);\s*const existing = await findCommitted\(ctx, state, head\.number\);\s*const pending = existing \? nonce : await countAt\(ctx, state\.hunter, 'pending'\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
+  assert.match(at, /const head = await blockIdAt\(ctx\);[\s\S]*?const nonce = await countAt\(ctx, state\.hunter, head\.number\);\s*const existing = await findCommitted\(ctx, state, head\.number, rolledBack\);\s*const pending = existing \? nonce : await countAt\(ctx, state\.hunter, 'pending'\);\s*if \(\(await blockIdAt\(ctx, head\.number\)\)\?\.hash !== head\.hash\) throw fail\('RPC_UNAVAILABLE'/, 'the nonce and the logs at one block, then the pending count, then that block again by its hash');
   // each of those reads is the node's own answer (provider.send), never a provider's memory of an earlier one
   for (const method of ['eth_blockNumber', 'eth_getBlockByNumber', 'eth_getTransactionCount', 'eth_getLogs']) assert.ok(commit.includes(`ctx.provider.send('${method}'`), `${method} is asked of the node`);
   assert.doesNotMatch(commit, /ctx\.provider\.getLogs\(|ctx\.provider\.getTransactionCount\(/, 'none of them through a method the provider may answer from memory');
@@ -1183,6 +1183,21 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.match(setAside, /for \(const name of \['archive\.zip', 'keys\.json', 'ciphertext\.age', 'state\.json'\]\) \{\s*const bytes = readOptional\(name\);\s*if \(bytes === null\) continue;\s*writePrivate\(`\$\{name\}\.set-aside-\$\{stamp\}`, bytes\);/);
   assert.match(setAside, /copied\.push\(name\);\s*\}[\s\S]*?fs\.rmSync\(pathOf\('state\.json'\), \{ force: true \}\);\s*fsyncDir\(dir\);\s*for \(const name of copied\) fs\.rmSync\(pathOf\(name\), \{ force: true \}\);/, 'every copy is written before an original is removed, and state.json is removed first');
   assert.match(section(9), /--restart starts over with new keys, and sets the old files aside in the same folder: it deletes nothing/);
+
+  // a claim of the folder's hashes that is on the chain already is found before the acknowledgement is read, and the
+  // scan starts a page below the height the folder was prepared at; so a run without --yes is no dry run there
+  const runBody = /export async function runCommit[\s\S]*$/.exec(commit)[0];
+  assert.ok(runBody.indexOf('if (state?.stage === \'prepared\') {') < runBody.indexOf('await readyToCommit('), 'adopted before the terms and --yes');
+  // the logs are read from the block the folder was prepared at, saved with its hash; when that height holds another
+  // block the chain was rolled back under it: the logs are read from a page below, and a late claim is not signed
+  assert.match(commit, /startBlock: start\.number,\s*startBlockHash: start\.hash,/);
+  assert.match(/async function rolledBackBelow[\s\S]*?\n\}/.exec(commit)[0], /if \(!state\.startBlockHash\) return false;[\s\S]*return now\.hash !== state\.startBlockHash;/);
+  assert.match(commit, /const start = \(rolledBack \?\? await rolledBackBelow\(ctx, state\)\) \? Math\.max\(0, state\.startBlock - ctx\.logPageBlocks\) : state\.startBlock;/);
+  assert.match(commit, /if \(late && at\.rolledBack\) throw fail\('CHAIN_REORGANIZED'\);/);
+  assert.match(ERROR_TEXTS.CHAIN_REORGANIZED, /--restart/);
+  assert.ok(block.includes('Nor does it sign after the chain was reorganized below the block the folder was prepared at (CHAIN_REORGANIZED): run it again with --restart, which draws new keys.'));
+  assert.match(section(4), /A folder that `commit` has prepared and whose two hashes already have a claim on the chain, sent some other way than by this tool, is under way too: any run of `commit` there adopts that claim, pins its ciphertext and sends the disclose, --yes or not/);
+  assert.match(toolSrc('usage.js').replace(/\s+/g, ' '), /a claim of the folder's two hashes that is on the chain already, sent some other way, is under way like a signed one: any run adopts it and discloses it, --yes or not/);
 
   // a resume: the flag is read until something is signed, and the saved transaction decides from then on
   assert.match(section(4), /Once a commit or a late claim is signed, a later run resumes that one, with --late or without it\./);

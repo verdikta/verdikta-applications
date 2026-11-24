@@ -39,6 +39,8 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
   commit <claim-dir> --listing <id> [--late] [--yes] [--restart] [--accept-unread-pin]
                      on a folder with no commit signed yet, without --yes it prints the terms, the price and how
                      many claims on the listing are open ahead of yours, and sends nothing
+                     a claim of the folder's two hashes that is on the chain already, sent some other way, is
+                     under way like a signed one: any run adopts it and discloses it, --yes or not
                      --late files a late claim, on a listing that takes no commit any more: its stake has rolled
                      forward, or closed after it opened, or its maker holds it. A late claim is judged and recorded,
                      and pays no award. It costs what a commit costs; the bond is forfeited on INVALID, and the

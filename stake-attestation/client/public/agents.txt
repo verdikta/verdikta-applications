@@ -319,7 +319,9 @@ of `commit`. `verdikta-attest commit` files one with --late.
   `late` is true).
 - It signs nothing while your wallet has a transaction that is not mined yet (WALLET_BUSY, exit
   4): that one may be this late claim, sent some other way, and a second one would pay a second
-  bond. Run the same command again once it is mined.
+  bond. Run the same command again once it is mined. Nor does it sign after the chain was
+  reorganized below the block the folder was prepared at (CHAIN_REORGANIZED): run it again with
+  --restart, which draws new keys.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
@@ -361,7 +363,10 @@ before it signs.
 Once a commit is signed, `commit` resumes it on every run, --yes or not: it sends the saved
 commit and then the disclose. So read a price for a claim already under way with cast, not with
 `commit`. `commit --late` is a dry run in the same way. Once a commit or a late claim is signed,
-a later run resumes that one, with --late or without it.
+a later run resumes that one, with --late or without it. A folder that `commit` has prepared and
+whose two hashes already have a claim on the chain, sent some other way than by this tool, is
+under way too: any run of `commit` there adopts that claim, pins its ciphertext and sends the
+disclose, --yes or not, since its bond is paid and its disclose window is running.
 
 A dry run needs the wallet key (for your address, the balance and the allowlist: it signs
 nothing), the gateway and VERDIKTA_PIN_BACKEND, not VERDIKTA_PIN_TOKEN, which is read only when

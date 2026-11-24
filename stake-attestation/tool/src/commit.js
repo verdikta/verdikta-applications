@@ -28,6 +28,10 @@
 // so a transaction that takes it afterwards leaves the signature unusable: it is found gone, and the claim adopted.
 // --restart asks the same, whatever the flag, since a prepared folder names no kind; and it sets the prepared files
 // aside rather than deleting them, for the one case no read can see: a claim someone holds and has not sent yet.
+//
+// The logs are read from the block the folder was prepared at, which is saved with its hash. When that height holds
+// another block, the chain was rolled back under it, and a claim sent since may be in a block below: the logs are then
+// read from a page below it, and a late claim is not signed on them at all (CHAIN_REORGANIZED: --restart draws new keys).
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
 import { CLAIM_STATES, EXPIRIES } from './abi.js';
 import { codeReview } from './common.js';
@@ -145,16 +149,40 @@ async function countAt(ctx, address, at) {
   return Number(BigInt(await ctx.rpc(() => ctx.provider.send('eth_getTransactionCount', [address, typeof at === 'number' ? quantity(at) : at]))));
 }
 
+/** A block's number and hash, asked of the node: the latest, or the one at `number`. Null when there is none. */
+async function blockIdAt(ctx, number = null) {
+  const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [number === null ? 'latest' : quantity(number), false]));
+  return block ? { number: Number(BigInt(block.number)), hash: block.hash } : null;
+}
+
 /**
- * A Committed or a LateClaim log of this hunter, listing and these two hashes, since the block the folder was prepared
- * at. Either kind is a claim on these hashes that has its bond: one filter, the two events' topics in its first place.
+ * Whether the chain was reorganized below the block the folder was prepared at: that height holds another block now.
+ * No claim of the folder's hashes is older than the hashes, so a scan from that height up sees every one, unless a
+ * reorganization rolled the chain back under it: a claim sent since can then be mined in a block below it. A folder
+ * prepared before this was saved (no startBlockHash) cannot say, and is read as it always was.
  */
-async function findCommitted(ctx, state, upTo = null) {
+async function rolledBackBelow(ctx, state) {
+  if (!state.startBlockHash) return false;
+  const now = await blockIdAt(ctx, state.startBlock);
+  // no block at that height on the node asked: a node that is behind, or a chain not yet as long again: run again
+  if (!now) throw fail('RPC_UNAVAILABLE', 'The block this folder was prepared at could not be read.');
+  return now.hash !== state.startBlockHash;
+}
+
+/**
+ * A Committed or a LateClaim log of this hunter, listing and these two hashes. Either kind is a claim on these hashes
+ * that has its bond: one filter, the two events' topics in its first place.
+ *
+ * The scan starts at the block the folder was prepared at, as it always did, or one page of blocks below it when the
+ * chain was reorganized under that block (`rolledBack`, rolledBackBelow's answer, asked here when not given).
+ */
+async function findCommitted(ctx, state, upTo = null, rolledBack = null) {
   const [first, ...indexed] = ctx.topics('Committed', [null, BigInt(state.listingId), state.hunter]);
   const topics = [[first, ctx.topics('LateClaim', [])[0]], ...indexed];
   // up to the head as it is now, or up to the block a caller has read something else at (nonceAndClaimAt)
   const head = upTo ?? await headNow(ctx);
-  for (let from = state.startBlock; from <= head; from += ctx.logPageBlocks) {
+  const start = (rolledBack ?? await rolledBackBelow(ctx, state)) ? Math.max(0, state.startBlock - ctx.logPageBlocks) : state.startBlock;
+  for (let from = start; from <= head; from += ctx.logPageBlocks) {
     const to = Math.min(head, from + ctx.logPageBlocks - 1);
     const logs = await ctx.rpc(() => ctx.provider.send('eth_getLogs', [{ address: ctx.contract, topics, fromBlock: quantity(from), toBlock: quantity(to) }]));
     for (const log of logs) {
@@ -165,12 +193,6 @@ async function findCommitted(ctx, state, upTo = null) {
     }
   }
   return null;
-}
-
-/** A block's number and hash, asked of the node: the latest, or the one at `number`. Null when there is none. */
-async function blockIdAt(ctx, number = null) {
-  const block = await ctx.rpc(() => ctx.provider.send('eth_getBlockByNumber', [number === null ? 'latest' : quantity(number), false]));
-  return block ? { number: Number(BigInt(block.number)), hash: block.hash } : null;
 }
 
 /**
@@ -190,15 +212,21 @@ async function blockIdAt(ctx, number = null) {
  *
  * A transaction sent after the last read is not seen by any read. A caller that signs at `nonce` shuts it out all the
  * same: only one transaction can be mined at a nonce.
+ *
+ *   - `rolledBack`: the chain was reorganized below the block the folder was prepared at (rolledBackBelow). The logs
+ *     were then read from a page below it, and a claim found there is `existing`. With none found, the logs cannot
+ *     show that none was made: how far down the chain was rolled back is not known. A caller that would sign holds
+ *     back (CHAIN_REORGANIZED): new keys have new hashes, which no block holds.
  */
 async function nonceAndClaimAt(ctx, state) {
   const head = await blockIdAt(ctx);
   if (!head) throw fail('RPC_UNAVAILABLE');
+  const rolledBack = await rolledBackBelow(ctx, state);
   const nonce = await countAt(ctx, state.hunter, head.number);
-  const existing = await findCommitted(ctx, state, head.number);
+  const existing = await findCommitted(ctx, state, head.number, rolledBack);
   const pending = existing ? nonce : await countAt(ctx, state.hunter, 'pending');
   if ((await blockIdAt(ctx, head.number))?.hash !== head.hash) throw fail('RPC_UNAVAILABLE', 'The chain was reorganized while it was read, so nothing was signed.');
-  return { existing, nonce, pending };
+  return { existing, nonce, pending, rolledBack };
 }
 
 /** The state with its kind: `late: true` on a late claim's, and no such key on a commit's, which stays as it was. */
@@ -208,7 +236,9 @@ function withKind(state, late) {
 }
 
 async function prepare(ctx, ws, listing, inputs, hunter, listingId) {
-  const startBlock = await ctx.rpc(() => ctx.provider.getBlockNumber());
+  // the block the hashes cannot be older than, by its number and its hash (rolledBackBelow)
+  const start = await blockIdAt(ctx);
+  if (!start) throw fail('RPC_UNAVAILABLE');
   ws.keepAside();
   const built = buildClaimArchive(inputs);
   ws.write('archive.zip', built);
@@ -237,7 +267,8 @@ async function prepare(ctx, ws, listing, inputs, hunter, listingId) {
     archiveSha256: sha256Hex0x(archive),
     ciphertextSha256: sha256Hex0x(ciphertext),
     disclosureKey,
-    startBlock,
+    startBlock: start.number,
+    startBlockHash: start.hash,
   };
   readProvenFiles(ctx, ws, state);
   ws.saveState(state);
@@ -372,6 +403,8 @@ async function sendCommit(ctx, ws, state, listingId, late, quoted) {
   if (at.existing) return adoptLogged(ctx, ws, state, at.existing);
   // No log of it is not proof for a late claim: one sent some other way and not in those blocks has none there.
   if (late && at.pending > at.nonce) throw fail('WALLET_BUSY', 'A late claim signed now could be a second one, for a second bond.');
+  // nor are the logs proof once the chain was rolled back under the folder's own start
+  if (late && at.rolledBack) throw fail('CHAIN_REORGANIZED');
 
   readProvenFiles(ctx, ws, state);
   const price = await commitPreflight(ctx, listingId, state.hunter, late); // read just before signing: the live fee

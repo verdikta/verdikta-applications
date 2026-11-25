@@ -746,7 +746,8 @@ test('node P35: every field agents.txt lists for a feed entry or a record is one
   const m = /`sameRepository` names (?:them|the others), each with its ([^.]+)\./.exec(flat);
   assert.ok(m, 'agents.txt says what each related listing holds');
   const named = m[1].replace(/\([^)]*\)/g, '').split(/,| and /).map((x) => x.trim()).filter(Boolean);
-  assert.deepEqual(named, ['listingId', 'artifactHash', 'artifact', 'state', 'lapsed', 'counted', 'page']);
+  // node P41: `heldAt` among them, where the server writes it, beside `lapsed` (sameRepository.js, node P40)
+  assert.deepEqual(named, ['listingId', 'artifactHash', 'artifact', 'state', 'lapsed', 'heldAt', 'counted', 'page']);
   for (const name of named) assert.ok(serverWrites(name), `${name} is a field of a related listing`);
   assert.match(flat, /artifact\.repo` exactly as/);
   // R1-F1: the record is the version's, which listings of one artifactHash share; the contract's artifactHashOf hashes
@@ -849,12 +850,14 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   assert.match(feed, /claimsSoFar: Number\(onchain\.claimsCommitted\)/);
   assert.match(flat, /`claimsSoFar` counts every claim ever committed there, open or not\./);
   // and, since batch 2, the queue itself: the contract's count of open claims and the earliest of them, null for none.
-  // A feed entry is an Open listing, and a late claim is taken on a Rolled or Closed one or, since the maker's hold
-  // (node P39), on one its maker has held. So on an entry that is not held every claim in the queue is one of
-  // pendingClaims: each is ahead of a claim committed now. A held listing stays Open and takes no commit; until the
-  // feed leaves it out (node P40) an entry can be one, with late claims in its queue that pendingClaims does not count.
+  // A late claim is taken on a Rolled or a Closed listing or, since the maker's hold (node P39), on a listing on hold,
+  // which stays Open or Depleted. None of the three is a feed entry: an entry is an Open listing, and the feed leaves
+  // a listing on hold out by the projection's heldAt (node P40). So every claim in an entry's queue is one of
+  // pendingClaims, each ahead of a claim committed now, and agents.txt says why (node P41).
   assert.match(feed, /pendingClaims: Number\(onchain\.pendingClaims\),\s*headClaim: onchain\.headClaim === '0' \? null : onchain\.headClaim,/);
   assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\|/, 'only an Open listing is an entry');
+  assert.match(feed, /const candidates = \[\.\.\.projection\.listings\.values\(\)\]\.filter\(\(l\) => l\.opened && !l\.rolled && !l\.closed && l\.heldAt === null\);/, 'and no listing on hold is one');
+  assert.match(flat, /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\. That holds for a listing on hold too, though it still reads Open: it is not a feed entry \("A listing on hold", below\)\./);
   const commitBody = /function commit\([\s\S]*?\n {4}\}/.exec(logic)[0];
   assert.match(commitBody, /s == StakeAttestation\.ListingState\.Rolled\s*\|\| \(s == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\)\s*\|\| listingHeld,\s*"not accepting late claims"/, 'a late claim needs a listing that is Rolled, Closed after it opened, or held');
   // held is the contract's own record of a hold (_heldAt, read through heldAt): lateClaim hands it to commit, only
@@ -872,9 +875,9 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   assert.deepEqual(table.slice(table.indexOf('claimsSoFar'), table.indexOf('claimsSoFar') + 3), ['claimsSoFar', 'pendingClaims', 'headClaim'], 'the feed table lists both beside claimsSoFar');
   assert.match(flat, /pendingClaims claims on it that are open now: neither settled nor expired headClaim the earliest of those, by its claim id, a string of digits; null when none is open/);
   // and no listing comes back to Open from Rolled or Closed: the two places that set Open start from Listed (the
-  // opening fund) and from Depleted (a top-up), so an entry that is not held never holds a late claim from an earlier
-  // life. A Depleted listing can be held, take late claims and be topped up to Open: it is held still, for the hold
-  // is written in one place and nothing clears it
+  // opening fund) and from Depleted (a top-up), so an entry never holds a late claim from an earlier life. A Depleted
+  // listing can be put on hold, take late claims and be topped up to Open: it is on hold still, and so no entry, for
+  // the hold is written in one place and nothing clears it
   const host = read('onchain', 'contracts', 'StakeAttestation.sol');
   assert.equal(`${host}\n${logic}`.split('heldAt[listingId] = ').length - 1, 1, 'the hold is set in one place only');
   assert.doesNotMatch(`${host}\n${logic}`, /delete _?heldAt|heldAt\[[^\]]*\] = 0\b/, 'and never cleared');
@@ -1075,7 +1078,11 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
   assert.ok(block.includes('A listing that never opened takes neither a commit nor a late claim.'));
   for (const state of ['Open', 'Depleted', 'Rolled', 'Closed']) assert.ok(solidityEnum('ListingState').includes(state), `${state} is a listing state`);
   assert.match(commit, /ctx\.read\('acceptsLateClaims', \[listingId\]\)/, 'the tool asks the lens whether the listing takes a late claim');
-  assert.doesNotMatch(toolSources(), /\('heldAt'|\('hold'/, 'and reads no hold: a contract without one answers acceptsLateClaims all the same');
+  // and for a late claim it reads no hold: a contract without one answers acceptsLateClaims all the same. The tool's
+  // source names `hold` nowhere and, since node P41, `heldAt` in one place, which only an ordinary commit's refusal
+  // reaches (the node P41 test below holds where)
+  assert.doesNotMatch(toolSources(), /\('hold'/, 'the tool never calls hold');
+  assert.equal(toolSources().split('(\'heldAt\'').length - 1, 1, 'and reads heldAt in one place');
   assert.ok(raw.includes('\n      cast call "$VERDIKTA_CONTRACT" "acceptsLateClaims(uint256)(bool)" <listingId> --rpc-url https://sepolia.base.org\n'), 'the line that reads it');
   const view = ABI.find((f) => f.name === 'acceptsLateClaims');
   assert.deepEqual([view.inputs.map((i) => `${i.type} ${i.name}`), view.outputs.map((o) => o.type)], [['uint256 listingId'], ['bool']]);
@@ -1163,7 +1170,8 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
     assert.ok(block.includes(`(${code})`), `agents.txt names ${code}`);
   }
   assert.match(ERROR_TEXTS.LATE_CLAIMS_ONLY, /commit --late/);
-  assert.ok(block.includes('The wrong kind is refused before anything is pinned or sent: `commit` without --late on a listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).'));
+  // node P41: of the listings that take late claims only, one on hold has a refusal of its own
+  assert.ok(block.includes('The wrong kind is refused before anything is pinned or sent: `commit` without --late on a listing on hold (LISTING_ON_HOLD, which says since when) or on one that rolled forward or closed after it opened (LATE_CLAIMS_ONLY), --late on a listing that takes commits (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).'));
   assert.match(section(3), /A listing that takes none may take a late claim instead \("Late claims", after step 8\)\./);
 
   // the price it signs is the price its terms named: read again as it signs, and a price that changed stops the run
@@ -1244,4 +1252,161 @@ test('node P43: the command lines agents.txt had are as they were, character for
   assert.doesNotMatch(block, /--late/, 'and the late claim\'s lines stand apart from it');
   // and the guide describes nothing this change does not build (the guards against a second bond are other work)
   for (const name of ['COMMIT_REPLACED', 'START_UNPROVEN', 'anchor', 'set aside', 'set-aside']) assert.ok(!text.includes(name), `agents.txt does not name ${name}`);
+});
+
+// ------------------------------------------------------------------------------------------------ node P41
+
+// A listing on hold (issue #228; the contract's hold is node P39, the site's `heldAt` node P40). A maker's hold stops
+// new commits at once and leaves the listing's state as it was, so an agent that reads only states would commit into
+// a refusal, or wait for a resume that never comes. Each statement agents.txt makes of a hold is held here to the
+// contract's source, the server's or the tool's: what a hold is, where it shows, and what stops a commit there.
+test('node P41: a listing on hold is what the contract, the site and the tool make of it: what it is, where it shows, and what stops a commit there', () => {
+  const text = agents();
+  const at = text.indexOf('\nA listing on hold. ');
+  assert.ok(at > text.indexOf('\n## 2. ') && at < text.indexOf('\n## 3. '), 'agents.txt section 2 says what a listing on hold is');
+  assert.ok(at > text.indexOf('\nListings of one repository. ') && at < text.indexOf('\nThe disclosure key. '), 'after the listings of one repository, whose states it adds to');
+  const raw = text.slice(at, text.indexOf('\n\nThe disclosure key. '));
+  const para = raw.replace(/\s+/g, ' ');
+  const logic = read('onchain', 'contracts', 'libraries', 'ClaimLogic.sol');
+  const host = read('onchain', 'contracts', 'StakeAttestation.sol');
+  const commit = toolSrc('commit.js');
+  const code = (source) => lines(source).filter((l) => !/^\s*\/\//.test(l)).join('\n');
+
+  // what it is: the maker's call, which takes effect in its own block: no commit from then on, late claims only
+  assert.ok(para.includes('A maker may put a listing on hold with `hold(listingId)`, the first step of replacing it with a fixed version.'));
+  const holdBody = /function hold\([\s\S]*?\n {4}\}/.exec(logic)[0];
+  assert.match(holdBody, /require\(msg\.sender == l\.maker, "not maker"\);/);
+  assert.match(holdBody, /heldAt\[listingId\] = uint64\(block\.timestamp\);/);
+  assert.ok(para.includes('From that block on the listing takes no new commit, only late claims (section 3, "Late claims").'));
+  assert.match(host, /&& l\.escrowWei >= l\.awards\[3\]\s*&& _heldAt\[listingId\] == 0;/, 'acceptsCommits is false on a listing on hold');
+  assert.match(read('onchain', 'contracts', 'StakeAttestationLens.sol'), /\|\| host\.heldAt\(listingId\) != 0;/, 'and acceptsLateClaims true');
+  // no resume: a second hold is refused, nothing clears the first, and the view answers 0 only once the listing is
+  // neither Open nor Depleted, which a roll forward and a close make it
+  assert.ok(para.includes('A hold has no resume: it ends when the maker rolls the stake forward to another listing or closes this one, and the listing takes no commit again.'));
+  assert.match(holdBody, /require\(heldAt\[listingId\] == 0, "already held"\);/);
+  assert.doesNotMatch(`${host}\n${logic}`, /delete _?heldAt|heldAt\[[^\]]*\] = 0\b/, 'the hold is never cleared');
+  const view = /function heldAt\([\s\S]*?\n {4}\}/.exec(host)?.[0];
+  assert.ok(view, 'StakeAttestation.sol: heldAt');
+  assert.match(view, /return s == ListingState\.Open \|\| s == ListingState\.Depleted \? _heldAt\[listingId\] : 0;/);
+  // not a state: hold needs an Open or a Depleted listing and sets none
+  assert.ok(para.includes('A hold is not a state, so a listing on hold still reads Open or Depleted.'));
+  assert.match(holdBody, /require\(s == StakeAttestation\.ListingState\.Open \|\| s == StakeAttestation\.ListingState\.Depleted, "not rollable"\);/);
+  assert.doesNotMatch(holdBody, /\.state = /, 'hold sets no state');
+  // pending claims are left alone: the contract reads the hold in hold, lateClaim, acceptsCommits and the view, and
+  // the library in commit and hold. Nothing a claim goes through after its commit reads it
+  assert.ok(para.includes('Claims committed before the hold are left alone: each is disclosed, revealed, judged, settled and paid from the escrow as on any listing.'));
+  assert.equal(lines(code(host)).filter((l) => /_heldAt\b/.test(l)).length, 5, 'the mapping, hold, lateClaim, acceptsCommits and the view');
+  const afterCommit = code(logic).replace(/\n {4}function commit\([\s\S]*?\n {4}\}/, '').replace(/\n {4}function hold\([\s\S]*?\n {4}\}/, '');
+  assert.ok(afterCommit.length < code(logic).length - 500, 'commit and hold were taken out');
+  assert.doesNotMatch(afterCommit, /heldAt|listingHeld/, 'disclose, reveal, finalize, dispute, settle and expire read no hold');
+
+  // where it shows. The feed: no entry, so no entry's queue holds a late claim; an entry's own labels say null
+  assert.ok(para.includes('The feed: a listing on hold is not an entry of `listings`, so `pendingClaims` and `headClaim` are only ever a queue of the stake\'s own claims, as said above. Every entry\'s own `labels.heldAt` is null.'));
+  const feed = read('server', 'src', 'site', 'feed.js');
+  assert.match(feed, /const candidates = \[\.\.\.projection\.listings\.values\(\)\]\.filter\(\(l\) => l\.opened && !l\.rolled && !l\.closed && l\.heldAt === null\);/);
+  assert.match(feed, /const asRecord = \{ listingId: l\.listingId, state: onchain\.state, lapsed, heldAt: l\.heldAt,/, 'an entry\'s labels are made with the candidate\'s heldAt, which is null');
+  assert.match(section(2), /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\. That holds for a listing on hold too, though it still reads Open: it is not a feed entry \("A listing on hold", below\)\./);
+  // `heldAt`, where the site writes it: the time of the Held event, a number, until a roll forward or a close
+  assert.ok(para.includes('`heldAt` in an entry of `sameRepository`, a feed entry\'s or a record\'s, and in the record\'s `labels.listings[<listingId>]` (GET /api/records/<artifactHash>): the time of the hold, in unix seconds, while the listing is on hold, and null otherwise. A record\'s `notCounted.listings` entries carry it too.'));
+  assert.match(read('server', 'src', 'site', 'sameRepository.js'), /state, lapsed, heldAt: l\.heldAt, page: /);
+  const labels = read('server', 'src', 'record', 'labels.js');
+  assert.match(labels, /const heldAt = listing\.heldAt \?\? null;\s*return \{[\s\S]*?\n {4}heldAt,\n/);
+  const siteIndex = read('server', 'src', 'site', 'index.js');
+  assert.match(siteIndex, /listings: Object\.fromEntries\(rec\.listings\.map\(\(l\) => \[l\.listingId, listingLabels\(\{ \.\.\.l, heldAt: heldAtOf\(l\) \}, ctx\)\]\)\),/, 'labels.listings is keyed by the listing\'s id');
+  assert.match(siteIndex, /lapsed: l\.lapsed, heldAt: view\.labels\.listings\[id\]\?\.heldAt \?\? null, reason: /, 'notCounted.listings');
+  const projection = read('server', 'src', 'site', 'projection.js');
+  assert.match(projection, /\} else if \(e\.name === 'Held'\) \{\s*const l = listings\.get\(a\.listingId\);\s*if \(l\) l\.heldAt = Number\(a\.heldAt\);/);
+  assert.match(projection, /l\.rolled = true;\s*l\.heldAt = null;/);
+  assert.match(projection, /l\.closed = true;\s*l\.heldAt = null;/);
+  assert.match(section(2), /\n? {4}labels\.listings +each listing's labels, by listingId, `heldAt` among them/);
+  assert.ok(listedFields('- GET https://verifiers.verdikta.org/api/records/<artifactHash>').includes('labels.listings'), 'the record\'s field is listed');
+  // the badge: when no listing of the version takes commits and one is on hold, with the hold's UTC day
+  assert.ok(para.includes('The badge of a version whose listing is on hold, with no other listing of it taking commits, reads "stake on hold since YYYY-MM-DD", the hold\'s day in UTC.'));
+  const badge = read('server', 'src', 'record', 'badge.js');
+  assert.match(badge, /if \(!live\.length\) \{[\s\S]*?if \(held\) return plain\('ended', `stake on hold since \$\{utcDay\(heldAtOf\(held\)\)\}`, held\.listingId\);/);
+  assert.match(badge, /const utcDay = \(seconds\) => new Date\(seconds \* 1000\)\.toISOString\(\)\.slice\(0, 10\);/);
+  // the event: every event that carries a listingId is a feed event, with its arguments
+  assert.ok(para.includes('A `Held` event in /api/feed/events, with its listingId and, in `args.heldAt`, the time. It stays there after the hold has ended.'));
+  const heldEvent = JSON.parse(read('tool', 'src', 'abi', 'StakeAttestation.json')).find((x) => x.type === 'event' && x.name === 'Held');
+  assert.deepEqual(heldEvent.inputs.map((i) => `${i.type} ${i.name}`), ['uint256 listingId', 'uint64 heldAt']);
+  assert.match(read('server', 'src', 'chain', 'abi.js'), /\.filter\(\(f\) => f\.type === 'event' && f\.inputs\.some\(\(i\) => i\.name === 'listingId' \|\| i\.name === 'claimId'\)\)/);
+  assert.match(projection, /return \{ \.\.\.base, args: e\.args \};/);
+  // the chain: the view, by the line that reads it, at the RPC every other line of the guide uses
+  assert.ok(para.includes('On the chain, `heldAt(listingId)`: the time while the listing is on hold, 0 otherwise:'));
+  assert.ok(raw.includes('\n      cast call "$VERDIKTA_CONTRACT" "heldAt(uint256)(uint64)" <listingId> --rpc-url https://sepolia.base.org\n'), 'the line that reads it');
+  const abiView = ABI.find((f) => f.name === 'heldAt');
+  assert.deepEqual([abiView.inputs.map((i) => `${i.type} ${i.name}`), abiView.outputs.map((o) => o.type)], [['uint256 listingId'], ['uint64']]);
+  assert.deepEqual([...new Set([...text.matchAll(/--rpc-url (\S+)/g)].map((m) => m[1]))], ['https://sepolia.base.org'], 'one RPC, the one the guide had');
+  // no network and no faucet beyond what the guide said before: the paragraph names neither, and the guide's one
+  // faucet sentence and its chain id are where they were
+  assert.doesNotMatch(para, /faucet|bridge|mainnet|chain id/i);
+  assert.equal(text.split(/faucet/i).length - 1, 1, 'the faucet is named once, where it was, in section 1');
+  assert.match(section(1), /Take it from a Base Sepolia faucet: /);
+  assert.deepEqual([...new Set([...text.matchAll(/chain id (\d+)/g)].map((m) => m[1]))], ['84532']);
+
+  // what stops a commit there: a refusal of its own, decided before the terms are said, so no price is printed
+  assert.ok(para.includes('`verdikta-attest commit` refuses a listing on hold with LISTING_ON_HOLD, before anything is pinned or sent, and says since when (section 3, step 1).'));
+  assert.ok(Object.hasOwn(ERROR_TEXTS, 'LISTING_ON_HOLD'), 'LISTING_ON_HOLD is an error of the tool');
+  assert.equal(new ToolError('LISTING_ON_HOLD').exitCode, 1);
+  assert.match(ERROR_TEXTS.LISTING_ON_HOLD, /\bon hold\b/);
+  assert.match(ERROR_TEXTS.LISTING_ON_HOLD, /commit --late/);
+  assert.match(ERROR_TEXTS.LISTING_ON_HOLD, /Nothing was pinned or sent\.$/);
+  const preflight = /async function commitPreflight[\s\S]*?\n\}/.exec(commit)[0];
+  assert.ok(preflight.includes('\'LISTING_ON_HOLD\''), 'decided before anything is drawn, pinned or signed');
+  assert.match(preflight, /on hold since \$\{heldAt\} \(\$\{new Date\(Number\(heldAt\) \* 1000\)\.toISOString\(\)\}\)/, 'with the hold\'s time, in unix seconds and in UTC');
+  const ready = /async function readyToCommit[\s\S]*?\n\}/.exec(commit)[0];
+  assert.ok(ready.indexOf('commitPreflight(') >= 0 && ready.indexOf('commitPreflight(') < ready.indexOf('ctx.notice(commitNotice('), 'the listing is asked before the terms and the price are said');
+  // where the tool reads the hold: one function, called once, for an ordinary commit the listing refused; it asks
+  // the view only of an Open or a Depleted listing, and a contract that refuses the view is not on hold
+  const since = /async function onHoldSince[\s\S]*?\n\}/.exec(commit)?.[0];
+  assert.ok(since, 'tool/src/commit.js: onHoldSince');
+  assert.match(since, /const \{ state \} = await ctx\.read\('getListing', \[listingId\]\);\s*if \(!\['Open', 'Depleted'\]\.includes\(LISTING_STATES\[Number\(state\)\]\)\) return null;/);
+  assert.match(since, /await ctx\.read\('heldAt', \[listingId\]\)/);
+  assert.match(since, /if \(err\.code === 'CONTRACT_REFUSED'\) return null;\s*throw err;/, 'an RPC that did not answer is passed on as that');
+  assert.equal(commit.split('onHoldSince(').length - 1, 2, 'defined, and called once');
+  assert.match(preflight, /if \(!late && !await ctx\.read\('acceptsCommits', \[listingId\]\)\) \{[\s\S]*?await onHoldSince\(ctx, listingId\)/, 'only an ordinary commit that the listing refused reaches it');
+  assert.equal(toolSources().split('(\'heldAt\'').length - 1, 1, 'and nothing else in the tool reads the hold');
+  for (const state of ['Open', 'Depleted']) assert.ok(solidityEnum('ListingState').includes(state), state);
+
+  // section 3: step 1 names the code and what is left to do, and "Late claims" names it among the wrong kinds
+  const s3 = section(3);
+  assert.match(s3, /A listing that takes none may take a late claim instead \("Late claims", after step 8\)\. One its maker holds \(section 2, "A listing on hold"\) is such a listing: `verdikta-attest commit` refuses it with LISTING_ON_HOLD, before anything is pinned or sent, and says since when\. It takes no commit again\. What is left there is a late claim, judged and recorded for no award \(`commit --late`\); or claim on another listing: if the maker rolls the stake forward, the fixed version is a listing of its own, and your proof must fail at that listing's baseCommit\./);
+  assert.match(s3, /A feed entry's and a record's `sameRepository` give each related listing's state, and `heldAt` while its maker holds it; read the answer itself from the contract:/);
+  // section 4: no price for a commit there
+  assert.match(section(4), /Read the price for such a folder with cast too\. For a listing on hold, `commit` prints no terms and no price: it is refused \(LISTING_ON_HOLD\), and `commit --late` prints a late claim's\./);
+  // the exit codes: exit 1's line names it
+  const exits = text.slice(text.indexOf('\nExit codes:\n') + 1).split('\n\n')[0];
+  assert.match(exits, /\n {2}1 {2}[^\n]+\n {5}LISTING_ON_HOLD: `commit` on a listing its maker holds; nothing was sent, and section 3,\n {5}step 1, says what is left to do\n {2}2 {2}/);
+
+  // the words: "on hold" or "its maker holds it". `Held` names the event, and is a dispute result in this contract,
+  // so the guide's one "held" is the feed line's "not held by its maker" (node P43)
+  assert.ok(solidityEnum('DisputeResult').includes('Held'));
+  for (const [name, doc] of docs()) {
+    for (const m of doc.matchAll(/\bheld\b/gi)) {
+      const around = doc.slice(Math.max(0, m.index - 6), m.index + 20);
+      assert.ok(/^.{5}`Held` event/s.test(around) || /held by its maker/.test(around), `${name}: "${around.trim()}"`);
+    }
+  }
+
+  // the index names it too
+  assert.match(read('client', 'public', 'llms.txt'), /a listing on hold \(its maker stopped new commits on it: late claims only, and not in the feed\)/);
+});
+
+// The lines a hunter types and a published film shows are as they were before node P41: the hold's one command line is
+// a new `cast call`, and nothing is reworded.
+test('node P41: the command lines agents.txt had are as they were, node P43\'s among them, and the hold adds one cast line', () => {
+  const text = agents();
+  for (const line of [
+    '    verdikta-attest commit ./claim --listing <listingId> --late         # first run: its terms and the price; sends nothing',
+    '    verdikta-attest commit ./claim --listing <listingId> --late --yes   # late claim, pin, disclose',
+    '      cast call "$VERDIKTA_CONTRACT" "acceptsLateClaims(uint256)(bool)" <listingId> --rpc-url https://sepolia.base.org',
+    '    cast call "$VERDIKTA_CONTRACT" "commitPrice(uint256)(uint256)" <listingId> --rpc-url https://sepolia.base.org',
+    '      cast balance <your address> --rpc-url https://sepolia.base.org',
+    '    ln -sf verdikta-attest.js bin/verdikta-attest && export PATH="$PWD/bin:$PATH"',
+    '    export VERDIKTA_CONTRACT="$(curl -fsS https://verifiers.verdikta.org/api/status | jq -r .contract)"',
+  ]) assert.ok(text.includes(`\n${line}\n`), line.trim());
+  const casts = lines(text).filter((l) => /^\s+cast /.test(l)).map((l) => l.trim());
+  assert.deepEqual(casts.filter((l) => /heldAt/.test(l)), ['cast call "$VERDIKTA_CONTRACT" "heldAt(uint256)(uint64)" <listingId> --rpc-url https://sepolia.base.org']);
+  assert.equal(casts.length, 7, 'the six the guide had, and the hold\'s');
+  assert.equal(lines(text).filter((l) => /^ {4,}verdikta-attest /.test(l)).length, 10, 'and the tool\'s command lines are the ten it had');
 });

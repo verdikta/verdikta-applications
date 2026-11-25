@@ -417,19 +417,21 @@ test('--late is refused before anything is pinned or sent on a listing that take
 });
 
 test('an ordinary commit on a listing that takes late claims only is refused, before anything is pinned or sent, with a text that names --late', async () => {
-  for (const [name, make] of [['rolled forward', rolled], ['closed after it opened', closed], ['held by its maker', held]]) {
+  // a listing its maker holds takes late claims only too, and since node P41 its refusal is one of its own, which
+  // names the hold (test/hold.test.js): what this test holds is true of both codes
+  for (const [name, make, code] of [['rolled forward', rolled, 'LATE_CLAIMS_ONLY'], ['closed after it opened', closed, 'LATE_CLAIMS_ONLY'], ['held by its maker', held, 'LISTING_ON_HOLD']]) {
     const l = await make();
     assert.equal(await w.sa.acceptsLateClaims(l.listingId), true, name);
     const dir = makeClaimDir();
     const m = await mark();
     const err = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }).catch((e) => e);
-    assert.equal(err.code, 'LATE_CLAIMS_ONLY', name);
+    assert.equal(err.code, code, name);
     assert.equal(err.exitCode, 1, name);
     assert.match(err.message, /--late/, name);
     assert.match(err.message, /no award/, name);
     assert.match(err.message, /Nothing was pinned or sent\./, name);
     await assertNothingSent(m, dir, name);
-    assert.equal((await w.hunter().commit({ claimDir: dir, listingId: l.listingId }).catch((e) => e)).code, 'LATE_CLAIMS_ONLY', `${name}, no --yes`);
+    assert.equal((await w.hunter().commit({ claimDir: dir, listingId: l.listingId }).catch((e) => e)).code, code, `${name}, no --yes`);
     await assertNothingSent(m, dir, `${name}, no --yes`);
   }
   // the CLI
@@ -1388,8 +1390,12 @@ test('against a contract with no hold, a late claim works on a Rolled listing an
   assert.equal(o.stage, 'disclosed');
   await assert.rejects(hunter().commit({ claimDir: makeClaimDir(), listingId: open.listingId, late: true, acknowledge: true }), (e) => e.code === 'LISTING_TAKES_COMMITS');
   assert.deepEqual(old.asked, [], 'no read or call of the hold, which that contract does not have');
-  const src = fs.readdirSync(new URL('../src', import.meta.url)).filter((f) => f.endsWith('.js')).map((f) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')).join('\n');
-  assert.doesNotMatch(src, /\('heldAt'|\('hold'/, 'and the tool\'s source names neither');
+  // The tool's source names `hold` nowhere, and since node P41 `heldAt` in one place: the refusal of an ordinary
+  // commit, for a listing that takes late claims while its state is Open or Depleted. That contract's lens says late
+  // claims of a Rolled or a Closed listing only, so the read is never reached there (test/hold.test.js).
+  const src = fs.readdirSync(new URL('../src', import.meta.url)).filter((f) => f.endsWith('.js')).map((f) => [f, fs.readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')]);
+  assert.doesNotMatch(src.map(([, text]) => text).join('\n'), /\('hold'/, 'the tool\'s source never names hold');
+  assert.deepEqual(src.filter(([, text]) => /\('heldAt'/.test(text)).map(([f, text]) => [f, text.split('(\'heldAt\'').length - 1]), [['commit.js', 1]], 'and names heldAt once, in commit.js');
   // and it did go through this provider: the reads and the calls a late claim's life makes
   for (const name of ['commitPrice', 'acceptsLateClaims', 'acceptsCommits', 'isAllowed', 'getListing', 'lateClaim', 'commit', 'disclose', 'getClaim', 'claimState', 'claimTimes', 'reveal', 'finalize', 'settle']) assert.ok(old.called.has(name), `${name} was called through it`);
 });

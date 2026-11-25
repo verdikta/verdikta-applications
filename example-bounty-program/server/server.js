@@ -98,7 +98,14 @@ const ipfsClient = new IPFSClient({
 // public-gateway round trips. Bounded LRU so a long-running server doesn't
 // grow without limit.
 const IPFS_CACHE_MAX = 256;
+// Bytes, not only entries: any CID an on-chain bounty or submission names is fetched on
+// request, so 256 large CIDs used to pin gigabytes here. Big buffers are not cached, and
+// one larger than IPFS_FETCH_MAX_BYTES is refused (@verdikta/common reads the whole body).
+const IPFS_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const IPFS_CACHE_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
+const { DEFAULT_BODY_MAX_BYTES } = require('./utils/safeZip');
 const ipfsCache = new Map();
+let ipfsCacheBytes = 0;
 const _origFetchFromIPFS = ipfsClient.fetchFromIPFS.bind(ipfsClient);
 ipfsClient.fetchFromIPFS = async function fetchFromIPFSCached(cid) {
   const key = String(cid).trim();
@@ -110,10 +117,18 @@ ipfsClient.fetchFromIPFS = async function fetchFromIPFSCached(cid) {
     return buf;
   }
   const buf = await _origFetchFromIPFS(cid);
+  const size = buf?.length || 0;
+  if (size > DEFAULT_BODY_MAX_BYTES) {
+    throw new Error(`IPFS content for ${key.slice(0, 80)} is ${size} bytes (limit ${DEFAULT_BODY_MAX_BYTES})`);
+  }
+  if (size > IPFS_CACHE_ENTRY_MAX_BYTES) return buf;
   ipfsCache.set(key, buf);
-  if (ipfsCache.size > IPFS_CACHE_MAX) {
+  ipfsCacheBytes += size;
+  while (ipfsCache.size > IPFS_CACHE_MAX || ipfsCacheBytes > IPFS_CACHE_MAX_BYTES) {
     const oldest = ipfsCache.keys().next().value;
-    if (oldest !== undefined) ipfsCache.delete(oldest);
+    if (oldest === undefined) break;
+    ipfsCacheBytes -= ipfsCache.get(oldest)?.length || 0;
+    ipfsCache.delete(oldest);
   }
   return buf;
 };
@@ -127,7 +142,7 @@ app.locals.archivalService = archivalService;
 
 // Constants
 const UPLOAD_TIMEOUT = 60000; // 60 seconds
-const CID_REGEX = /^Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[1-9A-HJ-NP-Za-km-z]{48}|F[0-9A-F]{50}$/i;
+const CID_REGEX = /^(?:Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[1-9A-HJ-NP-Za-km-z]{48}|F[0-9A-F]{50})$/i; // grouped: the anchors bind every alternative
 
 // Ensure tmp directory exists
 const TMP_BASE = config.tmpDir || path.join(os.tmpdir(), 'verdikta');
@@ -224,6 +239,8 @@ app.set('trust proxy', true);
 // Middleware
 app.use(cors());
 app.options('*', cors());
+// Before every route: no JSON response carries a secret (ethers errors embed the RPC URL).
+app.use(require('./utils/redactSecrets').redactJsonResponses);
 // Campaign owns its small JSON parser and sanitized errors before general request logging.
 require('./campaign').install(app, () => require('./campaign/config').loadConfig(), config.rpcUrl, process.env.ZEALY_API_KEY);
 app.use(express.json({ limit: '2mb' }));

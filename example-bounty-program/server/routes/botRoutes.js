@@ -39,8 +39,20 @@ function saveBots(registry) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(BOTS_FILE, JSON.stringify(registry, null, 2));
+  // Atomic: a crash mid-write used to leave a truncated file, which loadBots reads as an
+  // empty registry, and the next registration then overwrote every bot's key.
+  const tmp = `${BOTS_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(registry, null, 2));
+  fs.renameSync(tmp, BOTS_FILE);
 }
+
+// Registration is free and every keyed request reads this registry, so it is limited per
+// client address (it used to grow without bound: one request, one more bot forever).
+const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
+const registerLimiter = createRateLimiter({
+  windowMs: Number(process.env.BOT_REGISTER_WINDOW_MS) || 60 * 60 * 1000,
+  max: Number(process.env.BOT_REGISTER_MAX) || 10,
+});
 
 /**
  * Generate a secure API key for bots
@@ -58,7 +70,26 @@ function generateApiKey() {
  */
 router.post('/register', async (req, res) => {
   try {
-    const { name, ownerAddress, description } = req.body;
+    const limit = registerLimiter.hit(clientAddress(req));
+    if (!limit.allowed) {
+      res.set('Retry-After', String(limit.retryAfterSeconds));
+      return sendError(res, 429, {
+        code: ErrorCodes.RATE_LIMIT,
+        message: 'Too many bot registrations',
+        details: `Registrations are limited per client address. Retry in ${limit.retryAfterSeconds}s.`,
+        fix: 'Reuse the API key you already have; one key serves every request.',
+      });
+    }
+    const { name, ownerAddress, description } = req.body || {};
+    if ((name != null && typeof name !== 'string') || (ownerAddress != null && typeof ownerAddress !== 'string') ||
+        (description != null && (typeof description !== 'string' || description.length > 1000))) {
+      return sendError(res, 400, {
+        code: ErrorCodes.BOT_MISSING_FIELDS,
+        message: 'Invalid fields',
+        details: 'name and ownerAddress must be strings; description an optional string of at most 1000 characters',
+        fix: 'POST /api/bots/register with JSON body: { "name": "MyBot", "ownerAddress": "0x..." }',
+      });
+    }
 
     // Validate required fields
     if (!name || !ownerAddress) {
@@ -204,3 +235,4 @@ router.delete('/:id', (req, res) => {
 });
 
 module.exports = router;
+module.exports.registerLimiter = registerLimiter;

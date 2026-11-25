@@ -210,7 +210,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
 
     /// @notice The N counted reveals arrive (phase 5): the round finalizes on the cluster mean, which
     ///         the mock takes as the mean of all reveals. Reveals may differ in length, as on the real
-    ///         aggregator: the result has the most common length (ties: the shorter), each reveal resized
+    ///         aggregator: the result has the most common length (ties: the longer), each reveal resized
     ///         to it for the mean (truncated, or zero-filled), while getOutcomeScores returns each reveal
     ///         as sent (0 for an outcome a short reveal lacks).
     function scriptReveals(bytes32 aggId, uint256[][] calldata reveals, string calldata justifications) external {
@@ -562,14 +562,15 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         emit FulfillAIEvaluation(aggId, agg, justifications);
     }
 
-    /// @dev The most common reveal length, ties to the shorter (AggregatorLib.normalizeToModal).
+    /// @dev The most common reveal length, ties to the longer (ScoringLib._normalize: exactly half the
+    ///      reveals cannot cut a two-outcome result to one number).
     function _modalLength(uint256[][] memory reveals) private pure returns (uint256 modal) {
         uint256 best = 0;
         for (uint256 i = 0; i < reveals.length; i++) {
             uint256 li = reveals[i].length;
             uint256 c = 0;
             for (uint256 j = 0; j < reveals.length; j++) if (reveals[j].length == li) c++;
-            if (c > best || (c == best && li < modal)) (best, modal) = (c, li);
+            if (c > best || (c == best && li > modal)) (best, modal) = (c, li);
         }
     }
 

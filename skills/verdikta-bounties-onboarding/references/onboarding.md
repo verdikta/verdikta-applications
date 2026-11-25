@@ -9,7 +9,7 @@ Run `node onboard.js` in a human-controlled terminal. Select the network explici
 ## Individual helpers
 
 1. Configure the variables below outside the agent-writable workspace.
-2. `node wallet_init.js --out <keystore>` creates an encrypted wallet; `--import` prompts the human for an existing key. It writes the destination, so use a new path unless replacement is explicitly intended.
+2. `node wallet_init.js --out <keystore>` creates an encrypted wallet; `--import` prompts the human for an existing key. It refuses an existing destination (which may hold a funded key) unless `--overwrite` is passed.
 3. `node funding_instructions.js --address <wallet>` prints funding guidance for the selected network. The owner sends ETH on that network; Base Sepolia needs test ETH. Reserve gas plus additional L1 data fees.
 4. `node funding_check.js` reads the configured wallet’s balance. No token approval or swap is part of this flow.
 5. `node bot_register.js --name <name> --owner <wallet> --out <bot-file>` registers an identity and saves the API key with restrictive permissions. This is an external write requiring owner approval.

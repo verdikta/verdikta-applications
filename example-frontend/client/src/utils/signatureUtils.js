@@ -79,11 +79,12 @@ export async function signAndSend(action, url, method = 'POST', additionalData =
     headers: {
       'Content-Type': 'application/json',
     },
+    // The server accepts the signature only for this action with exactly this
+    // data (server/middleware/adminAuth.js), so the data goes in unchanged and
+    // the proof travels beside it.
     body: JSON.stringify({
-      message,
-      signature,
-      address,
-      ...additionalData
+      ...additionalData,
+      auth: { message, signature, address },
     }),
   });
 

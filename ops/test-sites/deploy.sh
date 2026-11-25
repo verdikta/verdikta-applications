@@ -24,8 +24,12 @@ die() { echo "deploy: $*" >&2; exit 1; }
 git -C "$TEST" rev-parse --git-dir >/dev/null 2>&1 || die "$TEST is not a git checkout"
 [ -z "$(git -C "$TEST" status --porcelain --untracked-files=no)" ] || die "$TEST has local changes to tracked files; the test checkout is deploy-only"
 
+# Resolve the ref to a commit before using it: a ref that starts with "-" would be read by git as
+# an option, and anything that is not a commit is refused here rather than by checkout.
+case "$REF" in -*|"") die "refusing ref '$REF'";; esac
 git -C "$TEST" fetch -q origin
-git -C "$TEST" checkout -q --detach "$REF"
+SHA=$(git -C "$TEST" rev-parse --verify --quiet --end-of-options "$REF^{commit}") || die "unknown ref: $REF"
+git -C "$TEST" checkout -q --detach "$SHA"
 echo "deploy: $TEST at $(git -C "$TEST" log -1 --format='%h %s')"
 
 # packages: npm ci where the lockfile changed (a stamp in node_modules records the last one installed)

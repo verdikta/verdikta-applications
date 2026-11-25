@@ -449,6 +449,25 @@ describe("MockVerdiktaAggregator (v2)", function () {
       expect((await aggregator.getEvaluation(id)).valid).to.equal(true);
     });
 
+    it("reveals of mixed length: the most common length wins, a tie goes to the LONGER (ScoringLib._normalize)", async function () {
+      const { aggregator, hunter, other } = await deploy();
+      const id = await request(aggregator, hunter);
+      await draw(aggregator, id, hunter);
+      await aggregator.scriptCommits(id, 6);
+      await mine(1);
+      await aggregator.connect(other).promote(id);
+      await aggregator.scriptReveals(id, [[200_000, 800_000], [200_000, 800_000], [1_000_000], [1_000_000]], "QmA");
+      expect((await aggregator.getEvaluation(id))[0]).to.deep.equal([600_000n, 400_000n]);   // 2 vs 2: two outcomes
+      expect((await aggregator.getOutcomeScores(id, 1)).scores).to.deep.equal([800_000n, 800_000n, 0n, 0n]);
+      const id2 = await request(aggregator, hunter);
+      await draw(aggregator, id2, hunter);
+      await aggregator.scriptCommits(id2, 6);
+      await mine(1);
+      await aggregator.connect(other).promote(id2);
+      await aggregator.scriptReveals(id2, [[200_000, 800_000], [1_000_000], [1_000_000], [1_000_000]], "QmA");
+      expect((await aggregator.getEvaluation(id2))[0]).to.deep.equal([800_000n]);           // 3 vs 1: one number
+    });
+
     it("closeCommits after T+ with at least M commits (WrongPhase before T+ or below M)", async function () {
       const { aggregator, hunter } = await deploy();
       const id = await request(aggregator, hunter);

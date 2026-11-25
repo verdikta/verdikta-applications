@@ -29,7 +29,7 @@ router.get('/', async (req, res) => {
  * Updates the list of contracts (requires admin with signature)
  * Requires an array of contract objects in request body
  */
-router.put('/', requireAdminWithSignature, async (req, res) => {
+router.put('/', requireAdminWithSignature('Update Contract'), async (req, res) => {
   try {
     const { contracts } = req.body;
     
@@ -107,7 +107,7 @@ router.put('/', requireAdminWithSignature, async (req, res) => {
  * POST /api/contracts
  * Adds a new contract to the list (requires admin with signature)
  */
-router.post('/', requireAdminWithSignature, async (req, res) => {
+router.post('/', requireAdminWithSignature('Add Contract'), async (req, res) => {
   try {
     const { address, name, class: contractClassInput, network: networkInput } = req.body;
 
@@ -184,7 +184,7 @@ router.post('/', requireAdminWithSignature, async (req, res) => {
  * DELETE /api/contracts/:address
  * Removes a contract from the list (requires admin with signature)
  */
-router.delete('/:address', requireAdminWithSignature, async (req, res) => {
+router.delete('/:address', requireAdminWithSignature('Delete Contract', { targetParam: 'address' }), async (req, res) => {
   try {
     const { address } = req.params;
     

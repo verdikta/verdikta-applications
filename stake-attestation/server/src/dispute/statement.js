@@ -15,7 +15,7 @@
 // and the claim read before the signature is checked, so a refusal for either costs the maker no
 // challenge. Refusals: 400 a malformed claim id, body or statement; 413 a statement over the
 // limit (STATEMENT_TOO_LONG) or a body over BODY_LIMIT; 404 no such claim; 409
-// CLAIM_NOT_DISPUTABLE; walletAuth's 401 and 429; 403 NOT_THE_MAKER; 502 PIN_FAILED; 503
+// CLAIM_NOT_DISPUTABLE; walletAuth's 401; 403 NOT_THE_MAKER; 502 PIN_FAILED; 503
 // CHAIN_NOT_CONFIGURED or CHAIN_UNAVAILABLE; 502 PIN_CID_UNVERIFIED when the backend answers a
 // CID other than the statement's raw CID (CIDv1, raw, sha2-256), the only form the maker's page
 // can check against the bytes. Every answer is no-store. Nothing else changes: the
@@ -136,8 +136,8 @@ export function disputeStatementRouter({ site, pinner, auth, logger }) {
   router.post('/api/claims/:claimId/dispute-statement', noStore, body, route(async (req, res, claimId) => {
     const b = req.body && typeof req.body === 'object' ? req.body : {};
     const bytes = statementBytes(b.statement);
-    await disputeTarget(site.provider, site.contract, claimId);
-    const v = auth.verify({ action: PIN_DISPUTE, resource: resourceOf(claimId), nonce: b.nonce, signature: b.signature });
+    const { maker } = await disputeTarget(site.provider, site.contract, claimId);
+    const v = auth.verify({ action: PIN_DISPUTE, resource: resourceOf(claimId), address: maker, nonce: b.nonce, signature: b.signature });
     if (!v.ok && v.status === 403) return res.status(403).json({ error: 'NOT_THE_MAKER', detail: `${v.detail}, the listing's maker` });
     if (!v.ok) return res.status(v.status).json({ error: v.code, detail: v.detail });
     const cid = await pinner.pin(bytes, { name: `dispute-statement-claim-${claimId}.txt` });

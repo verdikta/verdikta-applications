@@ -56,7 +56,8 @@ function isSignatureRecent(message) {
     const now = Date.now();
     const fiveMinutes = 5 * 60 * 1000;
 
-    return (now - messageTimestamp) < fiveMinutes;
+    // Both sides: a timestamp in the future must not make a signature valid forever.
+    return Math.abs(now - messageTimestamp) <= fiveMinutes;
   } catch (error) {
     console.error('Error checking signature timestamp:', error);
     return false;

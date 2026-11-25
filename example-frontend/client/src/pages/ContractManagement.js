@@ -90,7 +90,7 @@ const ContractManagement = ({ onContractsUpdated, walletAddress }) => {
         'Delete Contract',
         `${SERVER_URL}/api/contracts/${address}`,
         'DELETE',
-        {}
+        { target: address } // signed, so the signature removes only this one
       );
 
       toast.success('Contract removed successfully');

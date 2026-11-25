@@ -4,8 +4,10 @@
  */
 
 const { ethers } = require('ethers');
+const { readEntry, readEntryText, readBodyCapped } = require('../utils/safeZip');
 const { bountyAmountWei, bountyAmountFields } = require('../utils/bountyAmounts');
 const express = require('express');
+const { limitPins } = require('../utils/pinLimit');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
@@ -33,6 +35,7 @@ const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
 const { createTtlCache } = require('../utils/ttlCache');
 const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
+const { requireAdmin } = require('../utils/adminAuth');
 const { sanitizeCreateAttempt, isUnlinked, appendAttempt, attemptSummary, ADDRESS_RE } = require('../utils/createAttempts');
 const { rubricTemplateRecord, summarizeTemplateUsage, classifyRubric } = require('../utils/templateUsage');
 const { expandRubricTemplate } = require('../utils/rubricTemplates');
@@ -50,6 +53,9 @@ const { SUBMISSION_STATUSES } = require('../utils/aggregatorAbi');
 
 function readBool(v) { return /^(1|true|yes|on)$/i.test(String(v || '').trim()); }
 const DEV_ENV_FAKE = readBool(process.env.DEV_FAKE_RUBRIC_CID);
+// ?dev=1 (fake CIDs, nothing pinned) only on a development server: on a live one any
+// client could mint unpinned jobs that still take a jobId.
+const DEV_QUERY_ALLOWED = process.env.NODE_ENV === 'development' || DEV_ENV_FAKE;
 
 // ---- Unevaluable-bounty gate (issue #39) ---------------------------------
 // A job whose evaluation package has a deterministic ERROR (see
@@ -652,7 +658,7 @@ function roundUsdCents(value) {
  *  - rubricTemplate: string (a GET /api/templates key; the server fills in its rubric)
  * Uses ipfsClient.uploadToIPFS for the Primary archive.
  */
-router.post('/create', async (req, res) => {
+router.post('/create', limitPins, async (req, res) => {
   const keys = Object.keys(req.body || {});
   logger.info('[jobs/create] incoming keys', { keys });
 
@@ -743,6 +749,11 @@ router.post('/create', async (req, res) => {
     // ---- Validate commons ----
     if (!title || !description || !creator) {
       return res.status(400).json({ error: 'Missing required fields', details: 'title, description, creator required' });
+    }
+    // Strings only: an array title broke every /api/jobs?search= (title.toLowerCase) for an hour.
+    if (typeof title !== 'string' || typeof description !== 'string' || typeof creator !== 'string' ||
+        (workProductType != null && typeof workProductType !== 'string') || title.length > 300) {
+      return res.status(400).json({ error: 'Invalid fields', details: 'title (at most 300 characters), description, creator and workProductType must be strings' });
     }
     if (!/^0x[a-fA-F0-9]{40}$/.test(creator)) {
       return res.status(400).json({ error: 'Invalid creator address', details: 'Must be a valid Ethereum address' });
@@ -968,7 +979,7 @@ router.post('/create', async (req, res) => {
       };
 
       try {
-        const devQuery = readBool(req.query?.dev);
+        const devQuery = DEV_QUERY_ALLOWED && readBool(req.query?.dev);
         const devBypass = devQuery || DEV_ENV_FAKE;
         if (devBypass) {
           rubricCid = `dev-rubric-${Date.now()}.json`;
@@ -1009,7 +1020,7 @@ router.post('/create', async (req, res) => {
     // ---- Pin evaluation archive (file) ----
     let evaluationCid;
     try {
-      const devQuery = readBool(req.query?.dev);
+      const devQuery = DEV_QUERY_ALLOWED && readBool(req.query?.dev);
       const devBypass = devQuery || DEV_ENV_FAKE;
 
       if (devBypass) {
@@ -1188,8 +1199,9 @@ router.post('/sync/now', async (req, res) => {
   try {
     const { getSyncService } = require('../utils/syncService');
     const syncService = getSyncService();
-    syncService.syncNow();
-    return res.json({ success: true, message: 'Blockchain sync triggered', status: syncService.getStatus() });
+    const pending = syncService.requestSync();
+    pending.catch(() => {});
+    return res.json({ success: true, message: 'Blockchain sync requested (at most one manual sync per 30 s)', status: syncService.getStatus() });
   } catch (error) {
     return res.status(500).json({ error: 'Failed to trigger sync', details: error.message });
   }
@@ -1448,7 +1460,7 @@ router.get('/admin/template-usage', async (req, res) => {
   }
 });
 
-router.post('/admin/orphans/mark', async (req, res) => {
+router.post('/admin/orphans/mark', requireAdmin, async (req, res) => {
   try {
     const result = await jobStorage.markOrphanedJobs();
     return res.json({ 
@@ -1462,7 +1474,7 @@ router.post('/admin/orphans/mark', async (req, res) => {
   }
 });
 
-router.delete('/admin/orphans', async (req, res) => {
+router.delete('/admin/orphans', requireAdmin, async (req, res) => {
   try {
     // Require confirmation query param to prevent accidental deletion
     if (req.query.confirm !== 'yes') {
@@ -2767,8 +2779,39 @@ router.patch('/admin/:jobId/status', async (req, res) => {
       });
     }
     
-    const job = await jobStorage.updateJobStatus(jobId, status);
-    return res.json({ success: true, job });
+    // Security: any client can call this (the website key is public, bot keys are free),
+    // so the body is a hint, never the truth. A linked bounty takes the CHAIN's status
+    // (that is what the website pushes); an unlinked one may only be closed or cancelled,
+    // after the same 5-minute grace as DELETE. It used to set any status on any job:
+    // AWARDED/CLOSED/CANCELLED hid live, funded bounties from the listing.
+    const requested = String(status).toUpperCase();
+    let job;
+    try { job = await jobStorage.getJob(jobId); } catch { return res.status(404).json({ error: `Job ${jobId} not found` }); }
+    if (job.onChain || job.syncedFromBlockchain) {
+      let chainStatus;
+      try {
+        chainStatus = String((await getContractService().getBounty(Number(job.jobId))).status || '').toUpperCase();
+      } catch (e) {
+        return res.status(503).json({ error: 'Could not read the bounty status on chain', details: e.message, retryAfterSeconds: 10 });
+      }
+      if (!validStatuses.includes(chainStatus)) {
+        return res.status(503).json({ error: 'Unexpected on-chain status', details: chainStatus });
+      }
+      const updated = job.status === chainStatus ? job : await jobStorage.updateJobStatus(job.jobId, chainStatus);
+      if (requested !== chainStatus) {
+        return res.status(409).json({ error: 'Status differs from the chain', details: `On-chain status is ${chainStatus}; the stored status follows the chain.`, job: updated });
+      }
+      return res.json({ success: true, job: updated });
+    }
+    if (!['CLOSED', 'CANCELLED'].includes(requested)) {
+      return res.status(400).json({ error: 'Invalid status for an unlinked job', details: 'A job that never went on chain can only be set to CLOSED or CANCELLED.' });
+    }
+    const ageSeconds = Math.floor(Date.now() / 1000) - (job.createdAt || 0);
+    if (ageSeconds < 300) {
+      return res.status(400).json({ error: `Job ${jobId} was created ${ageSeconds}s ago. Wait 5 minutes (on-chain creation may still be in progress).` });
+    }
+    const updated = await jobStorage.updateJobStatus(job.jobId, requested);
+    return res.json({ success: true, job: updated });
   } catch (error) {
     logger.error('[admin/status] error', { msg: error.message });
     return res.status(500).json({ error: 'Failed to update job status', details: error.message });
@@ -3779,7 +3822,7 @@ router.get('/:jobId/evaluation-package', async (req, res) => {
       e.entryName === 'manifest.json' || e.entryName.endsWith('/manifest.json')
     );
     if (manifestEntry) {
-      manifest = JSON.parse(zip.readAsText(manifestEntry));
+      manifest = JSON.parse(readEntryText(manifestEntry));
     }
 
     // Extract primary_query.json
@@ -3788,7 +3831,7 @@ router.get('/:jobId/evaluation-package', async (req, res) => {
       e.entryName === 'primary_query.json' || e.entryName.endsWith('/primary_query.json')
     );
     if (queryEntry) {
-      primaryQuery = JSON.parse(zip.readAsText(queryEntry));
+      primaryQuery = JSON.parse(readEntryText(queryEntry));
     }
 
     // Fetch the grading rubric from IPFS if referenced
@@ -3891,7 +3934,7 @@ router.get('/:jobId/task-spec', async (req, res) => {
         e.entryName === 'primary_query.json' || e.entryName.endsWith('/primary_query.json')
       );
       if (primaryEntry) {
-        const primary = JSON.parse(zip.readAsText(primaryEntry));
+        const primary = JSON.parse(readEntryText(primaryEntry));
         // Same reader as the chain sync, so the expanded text and a synced
         // job's description agree.
         taskSpec = extractTaskDescription(primary?.query);
@@ -3982,7 +4025,7 @@ async function loadJobRubric(job, ipfsClient) {
       );
 
       if (manifestEntry) {
-        const manifestText = zip.readAsText(manifestEntry);
+        const manifestText = readEntryText(manifestEntry);
         const manifest = JSON.parse(manifestText);
 
         // Extract jury nodes from manifest.juryParameters.AI_NODES
@@ -4019,7 +4062,7 @@ async function loadJobRubric(job, ipfsClient) {
           e.entryName === 'rubric.json' || e.entryName.endsWith('/rubric.json')
         );
         if (rubricEntry) {
-          const rubricText = zip.readAsText(rubricEntry);
+          const rubricText = readEntryText(rubricEntry);
           rubricContent = JSON.parse(rubricText);
           fromPackage = true;
 
@@ -5201,7 +5244,7 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
   }
 });
 
-router.post('/:jobId/submit', async (req, res) => {
+router.post('/:jobId/submit', limitPins, async (req, res) => {
   let uploadedFiles = [];
   try {
     await new Promise((resolve, reject) => upload(req, res, (err) => err ? reject(err) : resolve()));
@@ -5542,6 +5585,17 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
       if (chainOnChainStatus) {
         submission.onChainStatus = chainOnChainStatus;
       }
+      // Security: who submitted what is the CHAIN's record. Anyone can call /confirm first for
+      // someone else's prepared submission, and the first record wins (the sync only fills a
+      // missing hunterCid), so a body hunter/hunterCid used to replace the real work on the
+      // page the creator reviews before approving.
+      if (chainSub.hunter && !/^0x0{40}$/i.test(String(chainSub.hunter))) submission.hunter = String(chainSub.hunter);
+      if (chainSub.hunterCid) submission.hunterCid = String(chainSub.hunterCid);
+      if (String(hunter).toLowerCase() !== String(submission.hunter).toLowerCase() || hunterCid !== submission.hunterCid) {
+        logger.warn('[submissions/confirm] body hunter/hunterCid differ from the chain; using the chain', { jobId, submissionId });
+        submission.files = [];
+        submission.fileCount = 0;
+      }
       submission.creatorWindowEnd = Number(chainSub.creatorWindowEnd) || null;
       submission.ethMaxBudget = chainSub.ethMaxBudget?.toString() || submission.ethMaxBudget;
       submission.submittedAt = Number(chainSub.submittedAt) || submission.submittedAt;
@@ -5578,12 +5632,24 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
           fix: 'Re-parse the SubmissionPrepared event from your prepareSubmission tx receipt and use its submissionId (submissions are 0-indexed per bounty), not the bountyId.'
         });
       }
-      logger.warn('[submissions/confirm] chain read failed, keeping skeleton (sync will heal later)', {
+      // Nothing from the body is stored unverified: the record would never be corrected.
+      logger.warn('[submissions/confirm] chain read failed; asking the caller to retry', {
         jobId, submissionId, error: chainErr.message
+      });
+      return sendError(res, 503, {
+        code: ErrorCodes.INTERNAL_ERROR,
+        message: 'Could not read the submission on chain right now',
+        details: 'The submission is recorded from its on-chain record; the read failed. Nothing was changed.',
+        fix: 'Retry in a few seconds with the same body (the sync also records it on its own).',
       });
     }
 
-    submission.archiveShape = await archiveShapePromise;
+    // The shape check ran on the body CID; re-run it if the chain names another.
+    const shapePromise = submission.hunterCid === hunterCid ? archiveShapePromise
+      : archiveShapeValidator.fetchAndValidateArchiveShape(submission.hunterCid, { totalTimeoutMs: CONFIRM_SHAPE_CHECK_BUDGET_MS })
+        .then(archiveShapeValidator.archiveShapeLabel).catch(() => 'unknown');
+
+    submission.archiveShape = await shapePromise;
     if (submission.archiveShape.startsWith('malformed')) {
       logger.warn('[submissions/confirm] hunter archive failed shape check', {
         jobId, submissionId, hunterCid, archiveShape: submission.archiveShape
@@ -5673,7 +5739,7 @@ const bundleEscrowIface = new ethers.Interface(BUNDLE_ESCROW_ABI);
  * After broadcasting step 1, call POST /submit/bundle/complete with the txHash
  * to get exact calldata for the remaining steps (start funded with ETH, then finalize).
  */
-router.post('/:jobId/submit/bundle', async (req, res) => {
+router.post('/:jobId/submit/bundle', limitPins, async (req, res) => {
   let uploadedFiles = [];
   try {
     // Support both JSON and multipart
@@ -6481,7 +6547,24 @@ function deadlineMismatchWarning(job, chainBounty) {
 router.patch('/:jobId/bountyId', async (req, res) => {
   try {
     const { jobId } = req.params;
-    const { bountyId, txHash, blockNumber } = req.body;
+    const { bountyId, txHash, blockNumber } = req.body || {};
+
+    // Security: a link must be proven by the createBounty receipt. Without txHash this
+    // route used to renumber any job to any bountyId and mark it onChain, so a caller
+    // could pin its own title/description on someone else's escrow (or fake an on-chain
+    // bounty that does not exist). Every caller (website, skill, scripts) sends it.
+    if (!Number.isSafeInteger(Number(bountyId)) || Number(bountyId) < 0) {
+      return res.status(400).json({ success: false, error: 'Invalid bountyId', details: 'bountyId must be a non-negative integer (from the BountyCreated event)' });
+    }
+    // (shape only; the receipt lookup below is the proof)
+    if (typeof txHash !== 'string' || !/^0x[0-9A-Za-z]{1,128}$/.test(txHash)) {
+      return res.status(400).json({
+        success: false,
+        error: 'txHash required',
+        details: 'Send txHash: the 0x-prefixed 32-byte hash of your createBounty transaction. The server reads its BountyCreated event to link this job.',
+        fix: 'PATCH /api/jobs/:jobId/bountyId with { bountyId, txHash, blockNumber } from the createBounty receipt.'
+      });
+    }
 
     const storage = await jobStorage.readStorage();
     const job = storage.jobs.find(j => j.jobId === parseInt(jobId));
@@ -6490,6 +6573,9 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     // Verify the txHash actually emitted a BountyCreated event with the claimed bountyId
     // on the current contract. This prevents phantom entries from old/wrong contracts.
     const currentContract = jobStorage.getCurrentContractAddress();
+    if (!currentContract) {
+      return res.status(503).json({ success: false, error: 'Server has no escrow address configured', details: 'Cannot verify the createBounty receipt.' });
+    }
     let eventEvaluationCid = null; // from the receipt's BountyCreated — identifies the job authoritatively
     if (txHash && currentContract) {
       try {
@@ -6604,9 +6690,10 @@ router.patch('/:jobId/bountyId', async (req, res) => {
       // id is not it.
       let freshJob = store.jobs.find(j => j.jobId === parseInt(jobId));
       const isUnlinked = (j) => !j.onChain && !j.syncedFromBlockchain && j.status !== 'ORPHANED';
-      if (eventEvaluationCid && (!freshJob || (freshJob.evaluationCid && freshJob.evaluationCid !== eventEvaluationCid))) {
-        const byCid = store.jobs.find(j => isUnlinked(j) && j.evaluationCid === eventEvaluationCid)
-          || store.jobs.find(j => j.evaluationCid === eventEvaluationCid && j.jobId === Number(bountyId));
+      // A record with another package, or none, is not this bounty's job.
+      if (!eventEvaluationCid || !freshJob || freshJob.evaluationCid !== eventEvaluationCid) {
+        const byCid = eventEvaluationCid && (store.jobs.find(j => isUnlinked(j) && j.evaluationCid === eventEvaluationCid)
+          || store.jobs.find(j => j.evaluationCid === eventEvaluationCid && j.jobId === Number(bountyId)));
         if (byCid) {
           logger.info('[jobs/bountyId] located job by the receipt evaluationCid (record at the named id is a different job)', {
             namedJobId: parseInt(jobId), foundJobId: byCid.jobId, bountyId: Number(bountyId)
@@ -6803,6 +6890,37 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       freshJob.lastSyncedAt = Math.floor(Date.now() / 1000);
     };
 
+    // Security: link only the job that IS this bounty (its own evaluationCid equals the
+    // BountyCreated event's), and never onto an id another linked record holds. Before
+    // this, any caller could renumber its own job onto someone else's bounty (from their
+    // txHash, or a creator address it names) and the site showed its title and description.
+    const linkResolved = async (resolvedBountyId, eventCid, chainBounty, extra = {}) => {
+      if (!eventCid) return { status: 409, error: 'BountyCreated event has no evaluationCid' };
+      return jobStorage.withStorage((store, ctx) => {
+        ctx.skipWrite = true;
+        const freshJob = store.jobs.find(j => j.jobId === parseInt(jobIdParam));
+        if (!freshJob) return { status: 404, error: `Job ${jobIdParam} not found` };
+        if (freshJob.evaluationCid !== eventCid) {
+          return { status: 409, error: `On-chain bounty #${resolvedBountyId} has evaluationCid ${eventCid}; job ${jobIdParam} has ${freshJob.evaluationCid}. It is a different bounty.` };
+        }
+        const colliding = store.jobs.find(j => j !== freshJob && j.jobId === resolvedBountyId);
+        if (colliding) {
+          if (colliding.onChain || colliding.syncedFromBlockchain) {
+            return { status: 409, error: `On-chain bounty #${resolvedBountyId} is already tracked by another record` };
+          }
+          colliding.jobId = freshJob.jobId; // unlinked sibling: swap ids, as PATCH /bountyId does
+        }
+        freshJob.jobId = resolvedBountyId;
+        freshJob.onChain = true;
+        Object.assign(freshJob, extra);
+        const currentContract = jobStorage.getCurrentContractAddress();
+        if (currentContract) freshJob.contractAddress = currentContract;
+        applyBackfill(freshJob, chainBounty, resolvedBountyId);
+        ctx.skipWrite = false;
+        return { status: 200, job: freshJob };
+      });
+    };
+
     if (txHash) {
       try {
         const receipt = await cs.provider.getTransactionReceipt(txHash);
@@ -6811,32 +6929,23 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
             "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
           ]);
           let resolvedBountyId = null;
+          let resolvedCid = null;
           for (const log of receipt.logs) {
             if ((log.address || '').toLowerCase() !== (ESCROW || '').toLowerCase()) continue;
             try {
               const ev = iface.parseLog(log);
               resolvedBountyId = Number(ev.args.bountyId);
+              resolvedCid = ev.args.evaluationCid || null;
               break;
             } catch {}
           }
           if (resolvedBountyId != null) {
             // Chain I/O outside the lock, then apply to the fresh job inside it.
             const chainBounty = await fetchChainBounty(resolvedBountyId);
-            const updated = await jobStorage.withStorage((store, ctx) => {
-              const freshJob = store.jobs.find(j => j.jobId === parseInt(jobIdParam));
-              if (!freshJob) { ctx.skipWrite = true; return null; }
-              freshJob.jobId = resolvedBountyId;
-              freshJob.onChain = true;
-              freshJob.txHash = freshJob.txHash ?? txHash;
-              const currentContract = jobStorage.getCurrentContractAddress();
-              if (currentContract) freshJob.contractAddress = currentContract;
-              applyBackfill(freshJob, chainBounty, resolvedBountyId);
-              return freshJob;
-            });
-            if (updated) {
-              logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId: resolvedBountyId });
-              return res.json({ success: true, method: 'tx', bountyId: resolvedBountyId, job: updated });
-            }
+            const linked = await linkResolved(resolvedBountyId, resolvedCid, chainBounty, { txHash: (job.txHash ?? txHash) });
+            if (linked.status !== 200) return res.status(linked.status).json({ success: false, error: linked.error });
+            logger.info('[resolve] via tx', { jobId: jobIdParam, bountyId: resolvedBountyId });
+            return res.json({ success: true, method: 'tx', bountyId: resolvedBountyId, job: linked.job });
           }
         }
       } catch (txErr) {
@@ -6850,7 +6959,10 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       const currentBlock = await cs.getBlockNumber();
       const deploymentBlock = config.deploymentBlock || 0;
       const wantCreator = String(creator).toLowerCase();
-      const wantCid = rubricCid ? String(rubricCid) : '';
+      // Only this job's own evaluation package can match (the client's rubricCid hint is
+      // not an evaluationCid, and "no CID" used to match any bounty by that creator).
+      const wantCid = String(job.evaluationCid || '');
+      void rubricCid;
 
       // Query BountyCreated events indexed by creator
       const creatorTopic = ethers.zeroPadValue(wantCreator, 32);
@@ -6867,6 +6979,7 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       });
 
       let best = null;
+      let bestCid = null;
       let bestDelta = Number.POSITIVE_INFINITY;
 
       for (const log of logs) {
@@ -6876,10 +6989,11 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
           const bCid = ev.args.evaluationCid || '';
           const bDeadline = Number(ev.args.submissionDeadline || 0);
           const delta = Math.abs(bDeadline - deadlineSec);
-          const cidOk = !wantCid || wantCid === bCid;
+          const cidOk = !!wantCid && wantCid === bCid;
           const deadlineOk = delta <= 300;
           if ((cidOk && deadlineOk) || (cidOk && delta < bestDelta)) {
             best = bountyId;
+            bestCid = bCid;
             bestDelta = delta;
             if (delta === 0) break;
           }
@@ -6889,24 +7003,16 @@ router.patch('/:id/bountyId/resolve', async (req, res) => {
       if (best != null) {
         // Chain I/O outside the lock, then apply to the fresh job inside it.
         const chainBounty = await fetchChainBounty(best);
-        const updated = await jobStorage.withStorage((store, ctx) => {
-          const freshJob = store.jobs.find(j => j.jobId === parseInt(jobIdParam));
-          if (!freshJob) { ctx.skipWrite = true; return null; }
-          freshJob.jobId = best;
-          freshJob.onChain = true;
-          const currentContract = jobStorage.getCurrentContractAddress();
-          if (currentContract) freshJob.contractAddress = currentContract;
-          applyBackfill(freshJob, chainBounty, best);
-          return freshJob;
-        });
-        if (!updated) return res.status(404).json({ success: false, error: `Job ${jobIdParam} not found` });
+        const linked = await linkResolved(best, bestCid, chainBounty);
+        if (linked.status !== 200) return res.status(linked.status).json({ success: false, error: linked.error });
         logger.info('[resolve] via event query', { jobId: jobIdParam, resolvedId: best, delta: bestDelta });
-        return res.json({ success: true, method: 'event', bountyId: best, delta: bestDelta, job: updated });
+        return res.json({ success: true, method: 'event', bountyId: best, delta: bestDelta, job: linked.job });
       }
 
       await jobStorage.withStorage((store, ctx) => {
         const freshJob = store.jobs.find(j => j.jobId === parseInt(jobIdParam));
-        if (!freshJob) { ctx.skipWrite = true; return; }
+        // A failed lookup (any caller can make one) never unlinks a linked job.
+        if (!freshJob || freshJob.onChain || freshJob.syncedFromBlockchain) { ctx.skipWrite = true; return; }
         freshJob.onChain = false;
       });
       return res.status(404).json({ success: false, error: 'No matching on-chain bounty', onChain: false });
@@ -8212,7 +8318,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
         throw new Error(`Gateway returned ${response.status}`);
       }
 
-      archiveBuffer = Buffer.from(await response.arrayBuffer());
+      archiveBuffer = await readBodyCapped(response); // capped: hunterCid is whatever the hunter put on chain
       logger.info('[content] Archive fetched', { jobId, submissionId, size: archiveBuffer.length });
     } catch (ipfsErr) {
       logger.error('[content] Failed to fetch archive', { hunterCid, msg: ipfsErr.message });
@@ -8246,7 +8352,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
     const manifestEntry = zipEntries.find(e => e.entryName === 'manifest.json');
     if (manifestEntry) {
       try {
-        manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+        manifest = JSON.parse(readEntry(manifestEntry).toString('utf8'));
       } catch (e) {
         logger.warn('[content] Failed to parse manifest.json', { msg: e.message });
       }
@@ -8257,7 +8363,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
     const queryEntry = zipEntries.find(e => e.entryName === 'primary_query.json');
     if (queryEntry) {
       try {
-        const queryData = JSON.parse(queryEntry.getData().toString('utf8'));
+        const queryData = JSON.parse(readEntry(queryEntry).toString('utf8'));
         narrative = queryData.query || null;
       } catch (e) {
         logger.warn('[content] Failed to parse primary_query.json', { msg: e.message });
@@ -8297,7 +8403,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
         });
       }
 
-      const fileData = fileEntry.getData();
+      const fileData = readEntry(fileEntry);
       const fileInfo = submissionFiles.find(f => f.filename === requestedFile || f.path === fileEntry.entryName);
 
       // For text files, return as string; for binary, return base64
@@ -8331,7 +8437,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
           if (isSmallTextFile) {
             return {
               ...f,
-              content: entry.getData().toString('utf8'),
+              content: readEntry(entry).toString('utf8'),
               encoding: 'utf8'
             };
           }

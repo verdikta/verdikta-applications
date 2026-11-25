@@ -57,7 +57,7 @@ import ArbiterActionModal from '../components/ArbiterActionModal';
 import RegisterArbiterSection from '../components/RegisterArbiterSection';
 import ReportingKeysSection from '../components/ReportingKeysSection';
 import {
-  buildDescriptor, downloadJson, exitView, formatDuration, reasonLines, STATUS_LABELS, FLAG_PAUSED,
+  buildDescriptor, downloadJson, exitView, formatDuration, reasonLines, STATUS_LABELS, FLAG_PAUSED, keeperForResume,
 } from '../utils/arbiterRegistration';
 import { estQueriesFor, fmtQueries } from '../utils/funding';
 import '../styles/funding.css';
@@ -979,7 +979,7 @@ function MyArbiters() {
           jobId={resetTarget.job.jobId}
           fee={resetTarget.job.fee}
           classes={resetTarget.job.classes}
-          keeperAddress={resetTarget.keeperAddress || data?.keeperAddress}
+          keeperAddress={keeperForResume(data?.keeperAddress, resetTarget.keeperAddress)}
           network={selectedNetwork}
           owner={address}
           chain={chain}

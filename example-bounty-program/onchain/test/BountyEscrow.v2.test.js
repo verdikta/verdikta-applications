@@ -296,7 +296,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
 
   describe("reveals of mixed length, as the real aggregator reads them", function () {
     // The real aggregator accepts any valid length, gives the result the most common one (ties: the
-    // shorter) and returns each reveal as sent from getOutcomeScores (0 for an outcome it lacks).
+    // longer) and returns each reveal as sent from getOutcomeScores (0 for an outcome it lacks).
     it("one one-number reveal among two-outcome reveals is read at FUND index 1, where it scores 0", async function () {
       const f = await loadFixture(fixture);
       const { bountyId } = await createBounty(f);
@@ -310,15 +310,52 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       expect([s.status, s.passCount]).to.deep.equal([3n, 3n]);                // 3 of 4: a pass
     });
 
-    it("a tie between lengths is read as one number, so two-outcome reveals count their DONT_FUND score", async function () {
+    it("a tie between lengths keeps two outcomes, so the one-number reveals score 0 at FUND", async function () {
       const f = await loadFixture(fixture);
       const { bountyId } = await createBounty(f);
       const { submissionId } = await submit(f, bountyId);
       const aggId = await runRound(f, bountyId, submissionId, [yes(), yes(), [900_000n], [900_000n]]);
       const agg = await aggOf(f, bountyId);
-      expect((await agg.getEvaluation(aggId))[0]).to.have.length(1);
-      expect((await agg.getOutcomeScores(aggId, 0))[0]).to.deep.equal([100_000n, 100_000n, 900_000n, 900_000n]);
+      expect((await agg.getEvaluation(aggId))[0]).to.have.length(2);
+      expect((await agg.getOutcomeScores(aggId, 1))[0]).to.deep.equal([900_000n, 900_000n, 0n, 0n]);
       expect((await f.escrow.getOracleResult(bountyId, submissionId)).outcome).to.equal(3);   // 2 of 4: soft fail
+    });
+  });
+
+  describe("security review: the result's shape is the bounty's, not the jurors'", function () {
+    // Bounty packages have two outcomes [DONT_FUND, FUND]. A one-number result exists only if most
+    // counted jurors reveal one number; reading it as [FUND] would read every other juror's DONT_FUND
+    // as its FUND, so a majority below Q could pass work the rest reject. It is no result instead.
+    it("a majority of one-number reveals below Q cannot pass work the others reject: no result, re-run", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f, { jury: LARGE, quota: 5, forfeitLine: 3 });   // N = 7, Q = 5
+      const { submissionId } = await submit(f, bountyId);
+      const reject = [900_000n, 100_000n];                                    // DONT_FUND 0.9, FUND 0.1
+      const aggId = await runRound(f, bountyId, submissionId,
+        [[1_000_000n], [1_000_000n], [1_000_000n], [1_000_000n], reject, reject, reject]);   // 4 of 7 collude
+      expect((await f.agg.getEvaluation(aggId))[0]).to.have.length(1);       // the majority's length
+      expect((await f.escrow.getOracleResult(bountyId, submissionId)).outcome).to.equal(1);   // no result
+      await f.escrow.connect(f.other).finalizeSubmission(bountyId, submissionId);
+      const s = await f.escrow.getSubmission(bountyId, submissionId);
+      expect([s.status, s.passCount, s.bondHeld]).to.deep.equal([6n, 0n, BOND]);   // AwaitingRerun
+      expect((await f.escrow.getBounty(bountyId)).status).to.equal(0n);       // still Open, not awarded
+    });
+
+    it("a jury the aggregator refuses after creation strands nothing: the bond returns, the bounty closes", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId, deadline } = await createBounty(f, { jury: LARGE, quota: 5, forfeitLine: 3 });
+      const { submissionId } = await submit(f, bountyId);
+      await runRound(f, bountyId, submissionId, mix(7, 4));                 // soft fail
+      await f.escrow.finalizeSubmission(bountyId, submissionId);
+      await f.agg.setLimits(8, 3600);                                       // the owner lowers maxJury below K = 10
+      await expect(f.escrow.connect(f.hunter).rerunSubmission(bountyId, submissionId,
+        { value: await f.escrow.requiredPrepay(bountyId) })).to.be.revertedWithCustomError(f.agg, "BadJury");
+      await time.increase(2 * HOUR + 1);
+      await expect(f.escrow.connect(f.other).expireRerun(bountyId, submissionId))
+        .to.emit(f.escrow, "BondReturned").withArgs(bountyId, submissionId, f.hunter.address, BOND);
+      await time.increaseTo(deadline);
+      await expect(f.escrow.connect(f.other).closeExpiredBounty(bountyId))
+        .to.emit(f.escrow, "BountyClosed").withArgs(bountyId, f.creator.address, BOUNTY);
     });
   });
 

@@ -131,6 +131,18 @@ export function parseDescriptor(text) {
   };
 }
 
+/**
+ * The keeper a resumed re-registration writes to. Always the live keeper the
+ * server reports for this network: an entry saved in localStorage (or imported
+ * from a descriptor) can name a keeper that has since been redeployed, and
+ * approving wVDKA to it then staking there would lock the stake in a dead
+ * contract. The stored address is only a fallback while the live one is unknown.
+ */
+export function keeperForResume(liveKeeper, storedKeeper) {
+  if (isValidAddress(liveKeeper)) return liveKeeper;
+  return isValidAddress(storedKeeper) ? storedKeeper : null;
+}
+
 /** Trigger a client-side download of `obj` as pretty-printed JSON. */
 export function downloadJson(filename, obj) {
   const blob = new Blob([serializeDescriptor(obj)], { type: 'application/json' });

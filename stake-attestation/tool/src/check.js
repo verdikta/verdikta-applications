@@ -115,6 +115,8 @@ export async function runCheck(ctx, { claimDir, listingId, listingArchive, deadl
     throw fail('RUNNER_NOT_CONFIGURED');
   }
   if (!ctx.runner?.token) throw fail('RUNNER_NOT_CONFIGURED');
+  // a runner off this machine gets the plaintext and the token over TLS, or not at all
+  if (!isLoopback(runnerUrl) && ctx.runner.allowRemote && runnerUrl.protocol !== 'https:') throw fail('RUNNER_NOT_HTTPS');
   if (ctx.runner.allowRemote) ctx.notice(REMOTE_RUNNER_NOTICE);
   else if (!isLoopback(runnerUrl)) throw fail('RUNNER_NOT_LOCAL');
 

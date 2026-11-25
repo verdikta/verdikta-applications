@@ -238,6 +238,16 @@ async function loadContracts() {
 }
 
 /**
+ * A contract name as stored in contracts.json and written into client/.env
+ * (REACT_APP_CONTRACT_NAMES, comma-separated). Line breaks would let a name add
+ * arbitrary lines to that .env (e.g. REACT_APP_SERVER_URL for the next build),
+ * and a comma would shift every later name onto the wrong address.
+ */
+function sanitizeContractName(name) {
+  return String(name).replace(/[\r\n,]+/g, ' ').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
+}
+
+/**
  * Saves contracts to the contracts.json file
  * @param {Array} contracts - Array of contract objects
  * @returns {Promise<boolean>} Success status
@@ -259,6 +269,7 @@ async function saveContracts(contracts) {
         console.warn(`Invalid contract name for address ${contract.address}, using default name`);
         contract.name = `Contract ${contract.address.slice(0, 6)}`;
       }
+      contract.name = sanitizeContractName(contract.name) || `Contract ${contract.address.slice(0, 6)}`;
 
       if (contract.class === undefined || typeof contract.class !== 'number' || contract.class < 0 || contract.class > 99999) {
         console.warn(`Invalid or missing class for address ${contract.address}, defaulting to 128`);
@@ -346,7 +357,8 @@ async function updateEnvFile(contracts) {
       const regex = new RegExp(`^${key}=.*$`, 'm');
       if (regex.test(newEnvContent)) {
         // Update existing line
-        newEnvContent = newEnvContent.replace(regex, `${key}=${value}`);
+        // A function replacement: a string one would expand "$&", "$`" etc. in the value.
+        newEnvContent = newEnvContent.replace(regex, () => `${key}=${value}`);
       } else {
         // Add new line at the end
         newEnvContent += `\n${key}=${value}`;
@@ -387,5 +399,6 @@ module.exports = {
   saveContracts,
   isValidEthereumAddress,
   isValidNetwork,
-  syncOnShutdown
-}; 
+  syncOnShutdown,
+  sanitizeContractName
+};

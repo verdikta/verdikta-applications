@@ -53,7 +53,7 @@ const consoleLogger = {
  *
  *   POST /api/listings/:id/scan/challenge   {} -> 200 { action, resource, address, nonce, issuedAt,
  *                            expiresAt, message }: the message the maker's wallet signs as it is;
- *                            404 no such listing, 429 too many challenges waiting
+ *                            404 no such listing (a challenge takes no room until answered)
  *   POST /api/listings/:id/scan              { nonce, signature } -> 200 { id, maker, status, scan,
  *                            error }: the builder's scan-findings.json; 400 no nonce or signature,
  *                            401 an unknown, used, expired or mismatched challenge or a bad
@@ -109,9 +109,9 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
   const cli = (builder || buildRuns) && scanner ? null : createCliBuilder(config.builder, { logger });
   const pins = pinner ?? createPinner(config.pinning);
   const signIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs });
-  // anyone can ask for a listing's challenge, so those wait apart: a flood of them cannot take a
-  // maker's sign-in for a scan or a dispute with it
-  const listingSignIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs, maxOutstanding: 2000 });
+  // the listing requests' challenges under a key of their own: one action's nonce is never another's.
+  // Asking for challenges takes no room from anyone (walletAuth.js), so no flood of them stops a maker
+  const listingSignIn = auth ?? createWalletAuth({ ttlMs: config.auth.challengeTtlMs });
   const noDeployment = async () => {
     throw new ListingControlError('CHAIN_NOT_CHECKED', 'this server has no deployment configured, and a deployment proof names one', 503);
   };
@@ -211,7 +211,7 @@ export function createApp({ config = loadConfig(process.env), builder, scanner, 
     // before the signature is checked, so asking early costs the maker no challenge
     if (!access.result) return res.status(409).json({ error: 'SCAN_NOT_READY', scan: access.scan });
     const body = req.body && typeof req.body === 'object' ? req.body : {};
-    const v = signIn.verify({ action: 'read-scan', resource: resourceOf(access.id), nonce: body.nonce, signature: body.signature });
+    const v = signIn.verify({ action: 'read-scan', resource: resourceOf(access.id), address: access.maker, nonce: body.nonce, signature: body.signature });
     if (!v.ok && v.status === 403) return res.status(403).json({ error: 'NOT_THE_MAKER', detail: `${v.detail}, the listing's maker` });
     if (!v.ok) return res.status(v.status).json({ error: v.code, detail: v.detail });
     return res.json({ id: access.id, maker: access.maker, status: access.scan.status, scan: access.result.doc, error: access.result.error });

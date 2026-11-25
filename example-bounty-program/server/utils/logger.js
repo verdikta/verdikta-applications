@@ -3,6 +3,9 @@
  * Provides structured logging with different levels
  */
 
+const util = require('util');
+const { redact } = require('./redactSecrets');
+
 const LOG_LEVELS = {
   ERROR: 'ERROR',
   WARN: 'WARN',
@@ -37,7 +40,8 @@ class Logger {
     };
 
     if (this.shouldLog(level)) {
-      console.log(`${color}[${timestamp}] [${level}] ${message}${reset}`, meta);
+      // Redacted: ethers errors embed the RPC URL (and its key) in their messages.
+      console.log(redact(util.format(`${color}[${timestamp}] [${level}] ${message}${reset}`, meta)));
     }
   }
 

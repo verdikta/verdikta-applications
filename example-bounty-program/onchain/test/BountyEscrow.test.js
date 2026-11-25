@@ -1837,14 +1837,15 @@ describe("BountyEscrow", function () {
     });
 
     describe("Malformed score vectors", function () {
-      // The aggregator returns one score per outcome in the evaluation package: [DONT_FUND, FUND],
-      // or a one-number [FUND]. Any other length is no usable result: never a pass, never a revert.
+      // The aggregator returns one score per outcome in the evaluation package: [DONT_FUND, FUND].
+      // Any other length, a one-number result included, is no usable result: never a pass, never a revert.
       // As a round with no result is not the hunter's fault, it awaits a re-run (item 12), keeping
       // the submission's place and bond.
       const THREE_SCORES = [100000n, 800000n, 100000n];
       const FOUR_SCORES = [250000n, 250000n, 250000n, 250000n];
 
       for (const [label, scores] of [
+        ["1 score (a one-number result, even at FUND 1.0)", [1000000n]],
         ["3 scores", THREE_SCORES],
         ["4 scores", FOUR_SCORES],
       ]) {
@@ -1885,20 +1886,6 @@ describe("BountyEscrow", function () {
           ).to.be.revertedWith("not pending");
         });
       }
-
-      it("A one-number result [FUND] is judged like the FUND entry of a two-outcome result", async function () {
-        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
-          await loadFixture(deployBountyEscrowFixture);
-        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-        const low = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
-        await verdiktaAggregator.setEvaluation(low.aggId, [690000n], JUST_CIDS, true);   // 69 < 70
-        await expect(bountyEscrow.finalizeSubmission(bountyId, low.submissionId))
-          .to.emit(bountyEscrow, "SubmissionFinalized").withArgs(bountyId, low.submissionId, false, false, 69, 31, JUST_CIDS);
-        const high = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
-        await verdiktaAggregator.setEvaluation(high.aggId, [700000n], JUST_CIDS, true);  // 70: passes
-        await expect(bountyEscrow.finalizeSubmission(bountyId, high.submissionId))
-          .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter2.address, BOUNTY_WEI);
-      });
 
       it("Should never pay out on a malformed vector even if a value would pass the threshold", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter } =

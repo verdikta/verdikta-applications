@@ -322,6 +322,9 @@ class VerdiktaService {
     // In-memory caches that let the by-class, by-owner and My Arbiters paths
     // share work. getAllOracles is the heavy enumeration; owner() is static.
     this._oraclesCache = null;          // { data, ts }
+    this._oraclesInflight = null;       // { startedAt, promise } — the running registry walk
+    this._oraclesQueued = null;         // promise of the one walk queued behind it
+    this._jobSenderInflight = new Map(); // opLower|jobIds → in-flight sender scan
     this._registryScan = null;          // { toBlock, events: [] } — keeper logs scanned so far
     this._registryPromise = null;       // in-flight incremental scan (shared)
     this._statusCtx = null;             // { value, ts } — keeper/aggregator config status derivation needs
@@ -661,9 +664,40 @@ class VerdiktaService {
    * than failing the whole dataset, so partial data still renders.
    */
   async getAllOracles({ maxAgeMs = 60000 } = {}) {
-    if (this._oraclesCache && Date.now() - this._oraclesCache.ts < maxAgeMs) {
+    const askedAt = Date.now();
+    if (this._oraclesCache && askedAt - this._oraclesCache.ts < maxAgeMs) {
       return this._oraclesCache.data;
     }
+    // Coalesce: at most one walk runs at a time. A caller joins the running walk
+    // when it started recently enough for its maxAgeMs; otherwise it waits for one
+    // queued walk that starts after the running one ends (so a "fresh" read never
+    // gets data from before it asked). Without this, every anonymous
+    // /api/arbiters/owned request (maxAgeMs 0) paid 3 RPC calls per arbiter.
+    const running = this._oraclesInflight;
+    if (running && running.startedAt >= askedAt - maxAgeMs) return running.promise;
+    if (running) {
+      if (!this._oraclesQueued) {
+        this._oraclesQueued = running.promise.catch(() => {}).then(() => {
+          this._oraclesQueued = null;
+          return this._startOraclesWalk();
+        });
+      }
+      return this._oraclesQueued;
+    }
+    return this._startOraclesWalk();
+  }
+
+  /** One registry walk, registered as the in-flight walk until it settles. */
+  _startOraclesWalk() {
+    const entry = { startedAt: Date.now(), promise: null };
+    entry.promise = this._walkOracles().finally(() => {
+      if (this._oraclesInflight === entry) this._oraclesInflight = null;
+    });
+    this._oraclesInflight = entry;
+    return entry.promise;
+  }
+
+  async _walkOracles() {
     try {
       const [registry, ctx] = await Promise.all([this.getRegistry(), this._getStatusCtx()]);
       const entries = [...registry.values()];
@@ -800,17 +834,19 @@ class VerdiktaService {
     // Distinct operator contracts (skip keys that failed to read).
     const operatorAddrs = [...new Set(oracles.filter(o => !o.error && o.oracle).map(o => o.oracle))];
 
-    // Read owner() + withdrawable() per operator, tolerating failures so one
-    // bad operator doesn't sink the whole list.
+    // owner() per operator from the shared cache (re-read after 60 s, so an
+    // ownership transfer shows within a minute), then withdrawable() only for
+    // the operators this wallet owns. Reading both for every operator on every
+    // anonymous request let any caller make the server spend 2 RPC calls per
+    // operator. Failures are tolerated so one bad operator doesn't sink the list.
+    const ownerMap = await this.getOwnerMap(operatorAddrs, { maxAgeMs: 60_000 });
+    const mine = operatorAddrs.filter((a) => String(ownerMap[a.toLowerCase()] || '').toLowerCase() === target);
+    const withdrawableMap = mine.length ? await this.getWithdrawableMap(mine) : {};
     const ownerInfo = {};
-    await Promise.all(operatorAddrs.map(async (addr) => {
-      const op = new ethers.Contract(addr, OPERATOR_ABI, this.provider);
-      const [owner, withdrawable] = await Promise.all([
-        withRetry(() => op.owner()).catch(() => null),
-        withRetry(() => op.withdrawable()).catch(() => null)
-      ]);
-      ownerInfo[addr.toLowerCase()] = { owner: owner ? String(owner) : null, withdrawable };
-    }));
+    for (const addr of operatorAddrs) {
+      const k = addr.toLowerCase();
+      ownerInfo[k] = { owner: ownerMap[k] || null, withdrawable: withdrawableMap[k] ?? null };
+    }
 
     const byOperator = {};
     for (const oracle of oracles) {
@@ -1098,7 +1134,18 @@ class VerdiktaService {
         wantLower.every((j) => cached.attempted.has(j))) {
       return cached.map;
     }
+    // Concurrent requests for the same operator share one scan (up to 25 s of
+    // getLogs) instead of each starting its own.
+    const flightKey = `${opLower}|${[...wantLower].sort().join(',')}`;
+    const running = this._jobSenderInflight.get(flightKey);
+    if (running) return running;
+    const p = this._scanJobSenders(operatorAddress, jobIds, opLower, wantLower)
+      .finally(() => this._jobSenderInflight.delete(flightKey));
+    this._jobSenderInflight.set(flightKey, p);
+    return p;
+  }
 
+  async _scanJobSenders(operatorAddress, jobIds, opLower, wantLower) {
     const provider = this._getLogProvider();
     const iface = new ethers.Interface(ORACLE_EVENTS_ABI);
     const reqTopic = iface.getEvent('OracleRequest').topicHash;

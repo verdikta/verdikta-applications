@@ -365,8 +365,7 @@ router.post('/refresh', async (req, res) => {
       const { getSyncService } = require('../utils/syncService');
       const syncService = getSyncService();
       if (syncService) {
-        await syncService.syncNow();
-        syncTriggered = true;
+        syncTriggered = await syncService.requestSync();
         logger.info('Blockchain sync triggered via analytics refresh');
       }
     } catch (syncErr) {

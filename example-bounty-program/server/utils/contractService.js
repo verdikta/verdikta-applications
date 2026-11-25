@@ -80,13 +80,13 @@ function normalizeDecisionSettings(bounty) {
 }
 
 /**
- * The aggregated scores as percentages: [DONT_FUND, FUND] or a one-number [FUND].
- * Returns { acceptance, rejection } on 0..100 (rejection = 100 - acceptance for one number).
+ * The aggregated scores as percentages. Only a two-outcome [DONT_FUND, FUND] result counts
+ * (BountyRules.judge); any other shape, a one-number result included, is "no result" (null).
+ * Returns { acceptance, rejection } on 0..100.
  */
 function scoresToPercent(aggregated) {
   const v = (aggregated || []).map((x) => Number(x));
   if (v.length === 2) return { acceptance: v[1] / 10000, rejection: v[0] / 10000 };
-  if (v.length === 1) return { acceptance: v[0] / 10000, rejection: 100 - v[0] / 10000 };
   return null;
 }
 

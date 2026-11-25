@@ -15,10 +15,14 @@ import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 ///        HardFail   fewer than R: the bond goes to the creator
 ///        NoResult   the round ended, or must end, without a usable result: failed (phase 8),
 ///                   cancelled (9), past its deadline unsettled, never drawn within a day, or a
-///                   corrupt result (an unexpected length, or an aggregated score above SCORE_SCALE).
+///                   corrupt result (not two outcomes, or an aggregated score above SCORE_SCALE).
 ///                   Not the hunter's fault: it may re-run, keeping place and bond.
-///      FUND is outcome 1 of a two-outcome result [DONT_FUND, FUND], or outcome 0 of a one-number
-///      result [FUND]. A score above SCORE_SCALE never counts (a corrupt value must not pass).
+///      FUND is outcome 1 of the two-outcome result [DONT_FUND, FUND] every bounty package asks for.
+///      Any other length is no result. In particular a one-number result is never read as [FUND]: it
+///      only arises when most counted jurors reveal one number (the aggregator gives the result the most
+///      common length), and getOutcomeScores(aggId, 0) would then return every other juror's DONT_FUND
+///      score, so a majority below Q could pass work the rest reject. A score above SCORE_SCALE never
+///      counts (a corrupt value must not pass).
 library BountyRules {
     uint256 internal constant SCORE_SCALE = 1_000_000;
     uint256 internal constant SCORE_DIVISOR = 10_000;
@@ -43,7 +47,7 @@ library BountyRules {
         bool hasResult;      // the aggregator reported a result (NoResult with a result: a malformed one)
         uint256 passCount;   // scores at or above T
         uint256 acceptance;  // the aggregated FUND score, 0..100
-        uint256 rejection;   // DONT_FUND (two outcomes) or 100 - acceptance (one number), 0..100
+        uint256 rejection;   // the aggregated DONT_FUND score, 0..100
         string justificationCids;
     }
 
@@ -65,13 +69,11 @@ library BountyRules {
         }
         v.hasResult = true;
         v.justificationCids = cids;
-        uint256 len = aggregated.length;
-        if (len != 1 && len != 2) { v.outcome = Outcome.NoResult; return v; }
-        for (uint256 i = 0; i < len; ++i) {
-            if (aggregated[i] > SCORE_SCALE) { v.outcome = Outcome.NoResult; return v; }
+        if (aggregated.length != 2 || aggregated[0] > SCORE_SCALE || aggregated[1] > SCORE_SCALE) {
+            v.outcome = Outcome.NoResult;
+            return v;
         }
-        uint256 fundIdx = len - 1;
-        (uint256[] memory scores, bool valid) = agg.getOutcomeScores(aggId, fundIdx);
+        (uint256[] memory scores, bool valid) = agg.getOutcomeScores(aggId, 1);
         if (!valid) { v.outcome = Outcome.NoResult; return v; }
 
         uint256 t = threshold * SCORE_DIVISOR;
@@ -82,12 +84,8 @@ library BountyRules {
             unchecked { ++i; }
         }
         v.passCount = count;
-        v.acceptance = aggregated[fundIdx] / SCORE_DIVISOR;
-        if (len == 2) {
-            v.rejection = aggregated[0] / SCORE_DIVISOR;
-        } else {
-            v.rejection = 100 - v.acceptance;
-        }
+        v.acceptance = aggregated[1] / SCORE_DIVISOR;
+        v.rejection = aggregated[0] / SCORE_DIVISOR;
         if (count >= quota) v.outcome = Outcome.Pass;
         else if (count >= forfeitLine) v.outcome = Outcome.SoftFail;
         else v.outcome = Outcome.HardFail;

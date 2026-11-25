@@ -11,6 +11,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 require('dotenv').config({ path: process.env.VERDIKTA_SECRETS_FILE || path.join(__dirname, '..', '..', '..', 'secrets', '.env.secrets') });
 
 const logger = require('./utils/logger');
+const { redact } = require('./utils/redact');
 const statusRoutes = require('./routes/statusRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
 const contractsRoutes = require('./routes/contractsRoutes');
@@ -31,6 +32,18 @@ const PORT = parseInt(process.env.PORT, 10) || 5008;
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
+// Never let a configured secret (an RPC URL's API key) leave in a response:
+// RPC errors quote the request URL and reach `details`/`error` fields and the
+// analytics cache. See utils/redact.js.
+app.use((_req, res, next) => {
+  res.json = (body) => {
+    const text = redact(JSON.stringify(body));
+    if (!res.get('Content-Type')) res.type('application/json');
+    return res.send(text);
+  };
+  next();
+});
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'example-arbiters', uptime: process.uptime() });
 });
@@ -47,8 +60,11 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  logger.info(`example-arbiters server listening on port ${PORT}`);
+// Loopback by default: nginx is the only intended client. Set HOST=0.0.0.0 to
+// expose the API directly (e.g. a dev box without nginx).
+const HOST = process.env.HOST || '127.0.0.1';
+app.listen(PORT, HOST, () => {
+  logger.info(`example-arbiters server listening on ${HOST}:${PORT}`);
   // Confirm which endpoint reads resolve to. Log the host ONLY — never the full
   // URL, which carries the Infura API key in its path.
   try {

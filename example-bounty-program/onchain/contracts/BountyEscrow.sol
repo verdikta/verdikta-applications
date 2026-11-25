@@ -244,7 +244,7 @@ contract BountyEscrow {
     string public constant ADDENDUM = "";
 
     /// @notice Score semantics. Each arbiter's FUND score is on 0..SCORE_SCALE (outcome 1 of
-    ///         [DONT_FUND, FUND], or the single value of a one-number result); the threshold is
+    ///         [DONT_FUND, FUND]; any other result shape is no result); the threshold is
     ///         0..100, so a score counts when score >= threshold x SCORE_DIVISOR. See BountyRules —
     ///         the single interpreter used by finalize, the sibling scans and the lens.
     uint256 public constant SCORE_SCALE = BountyRules.SCORE_SCALE;

@@ -15,11 +15,12 @@
 //   Resource: <resource>              listing:<the listing's 32-hex id>, claim:<the claim's id>,
 //                                     list-request:<the request's SHA-256>
 //   Address: <EIP-55 address>         the address that must sign
-//   Nonce: <32 lowercase hex>         16 random bytes, issued once
+//   Nonce: <32 lowercase hex>         its issue time, random bits and the server's MAC (createWalletAuth)
 //   Issued At: <UTC, ISO 8601, whole seconds, Z>
 //   Expiration Time: <the same form>  Issued At + the challenge's lifetime
 //
-// A nonce answers one attempt, whatever its outcome, and nothing after its expiry. Only ECDSA
+// A nonce answers one attempt, whatever its outcome, and nothing after its expiry. Challenges take no
+// room until answered (createWalletAuth), so no one can use up another wallet's sign-in by asking for them. Only ECDSA
 // signatures from externally owned accounts are checked (no EIP-1271 contract wallets).
 import crypto from 'node:crypto';
 import { getAddress, isAddress, verifyMessage } from 'ethers';
@@ -72,75 +73,99 @@ export function authMessage({ action, resource, address, nonce, issuedAt, expire
 
 const refuse = (status, code, detail) => ({ ok: false, status, code, detail });
 
+/** 32 bits of the server's HMAC over the fields, as 8 hex digits. */
+function tag(key, ...fields) {
+  return crypto.createHmac('sha256', key).update(fields.join('\n')).digest().subarray(0, 4).toString('hex');
+}
+const sameHex = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+
 /**
- * Challenges kept in memory, each until it is answered or expires.
+ * The sign-in's challenges. They hold no state until they are answered: the nonce carries its own issue time
+ * and the server's MAC over the action, resource and address it was issued for, so whoever asks for challenges,
+ * as many as they like, takes no room from anyone (a hunter could otherwise keep a listing's maker from ever
+ * getting the challenge for a dispute statement in its window). The nonce, 32 hex digits:
+ *
+ *   issued (8: whole seconds) | random (8) | MAC of issued and random (8) | MAC of those and the target (8)
+ *
+ * Only answered nonces are kept, each until its challenge expires, so a nonce still answers once.
  * @param {object} [o]
  * @param {number} [o.ttlMs] - a challenge's lifetime (300000, five minutes)
- * @param {number} [o.maxOutstanding] - challenges awaiting an answer, in all (10000)
- * @param {number} [o.maxPerResource] - and per resource (32)
+ * @param {number} [o.maxUsed] - answered nonces kept until their expiry (100000); past it the oldest go first
  * @param {() => number} [o.now] - the clock, in ms
+ * @param {Buffer} [o.key] - the MAC key (random, per process: a restart ends every open challenge)
  */
-export function createWalletAuth({ ttlMs = 300000, maxOutstanding = 10000, maxPerResource = 32, now = Date.now } = {}) {
-  const open = new Map();
+export function createWalletAuth({ ttlMs = 300000, maxUsed = 100000, now = Date.now, key = crypto.randomBytes(32) } = {}) {
+  /** nonce -> when its challenge expires, in ms */
+  const used = new Map();
 
   function prune(t) {
-    for (const [nonce, c] of open) if (t > c.expiresAtMs) open.delete(nonce);
+    for (const [nonce, expiresAtMs] of used) if (t > expiresAtMs) used.delete(nonce);
+    while (used.size > maxUsed) used.delete(used.keys().next().value);
   }
+
+  const timesOf = (issuedSec) => {
+    const issuedMs = issuedSec * 1000;
+    return { issuedAt: iso(issuedMs), expiresAt: iso(issuedMs + ttlMs), expiresAtMs: issuedMs + ttlMs };
+  };
 
   return {
     ttlMs,
     /**
      * @returns {{ action: string, resource: string, address: string, nonce: string, issuedAt: string, expiresAt: string, message: string }}
      * @throws {TypeError} an unknown action, a malformed resource, an address that cannot sign
-     * @throws {AuthError} 429 TOO_MANY_CHALLENGES
      */
     challenge({ action, resource, address }) {
       checkedTarget(action, resource);
       const signer = checkedAddress(address);
-      const t = now();
-      prune(t);
-      if (open.size >= maxOutstanding) throw new AuthError(429, 'TOO_MANY_CHALLENGES', 'too many sign-in challenges are waiting for an answer; try again in a few minutes');
-      let forResource = 0;
-      for (const c of open.values()) if (c.resource === resource) forResource += 1;
-      if (forResource >= maxPerResource) throw new AuthError(429, 'TOO_MANY_CHALLENGES', 'too many sign-in challenges for this resource are waiting for an answer; try again in a few minutes');
       // whole seconds, so the expiry the message states is the one enforced
-      const issuedMs = Math.floor(t / 1000) * 1000;
-      const c = {
-        action,
-        resource,
-        address: signer,
-        nonce: crypto.randomBytes(16).toString('hex'),
-        issuedAt: iso(issuedMs),
-        expiresAt: iso(issuedMs + ttlMs),
-      };
+      const issuedSec = Math.floor(now() / 1000);
+      const head = `${issuedSec.toString(16).padStart(8, '0')}${crypto.randomBytes(4).toString('hex')}`;
+      const ours = tag(key, 'issued', head);
+      const nonce = `${head}${ours}${tag(key, 'target', head, ours, action, resource, signer)}`;
+      const { issuedAt, expiresAt } = timesOf(issuedSec);
+      const c = { action, resource, address: signer, nonce, issuedAt, expiresAt };
       c.message = authMessage(c);
-      open.set(c.nonce, { ...c, expiresAtMs: issuedMs + ttlMs });
       return c;
     },
 
     /**
-     * Checks a signed challenge for `action` on `resource`. The nonce is used up by any attempt
-     * that names it.
+     * Checks a signed challenge for `action` on `resource`, which `address` must sign. The nonce is used up by
+     * any attempt that names it.
      * @returns {{ ok: true, address: string, issuedAt: string, expiresAt: string } | { ok: false, status: 400|401|403, code: string, detail: string }}
      */
-    verify({ action, resource, nonce, signature } = {}) {
+    verify({ action, resource, address, nonce, signature } = {}) {
       const malformed = () => refuse(400, 'AUTH_REQUEST_INVALID', 'send { nonce, signature }: the challenge\'s nonce and the wallet\'s signature of its message, as 0x hex');
       if (typeof nonce !== 'string' || !NONCE.test(nonce)) return malformed();
-      // an attempt that names an open challenge uses it up, whatever else is wrong with it
-      const c = open.get(nonce);
-      open.delete(nonce);
+      const t = now();
+      prune(t);
+      const head = nonce.slice(0, 16);
+      const ours = nonce.slice(16, 24);
+      const unknown = () => refuse(401, 'CHALLENGE_UNKNOWN', 'no open challenge has this nonce: it was answered already, it expired, or it was never issued; ask for a new one');
+      const issued = sameHex(ours, tag(key, 'issued', head));
+      const open = issued && !used.has(nonce);
+      const times = timesOf(Number.parseInt(nonce.slice(0, 8), 16));
+      // an attempt that names a challenge this server issued uses it up, whatever else is wrong with it
+      if (issued) used.set(nonce, times.expiresAtMs);
       if (typeof signature !== 'string' || !SIGNATURE.test(signature)) return malformed();
-      if (!c) return refuse(401, 'CHALLENGE_UNKNOWN', 'no open challenge has this nonce: it was answered already, it expired, or it was never issued; ask for a new one');
-      if (now() > c.expiresAtMs) return refuse(401, 'CHALLENGE_EXPIRED', `the challenge expired at ${c.expiresAt}; ask for a new one`);
-      if (c.action !== action || c.resource !== resource) return refuse(401, 'CHALLENGE_MISMATCH', 'the challenge was issued for another action or resource');
+      if (!open) return unknown();
+      if (t > times.expiresAtMs) return refuse(401, 'CHALLENGE_EXPIRED', `the challenge expired at ${times.expiresAt}; ask for a new one`);
       let signer;
       try {
-        signer = verifyMessage(c.message, signature);
+        checkedTarget(action, resource);
+        signer = checkedAddress(address);
+      } catch {
+        signer = null;
+      }
+      if (!signer || !sameHex(nonce.slice(24), tag(key, 'target', head, ours, action, resource, signer))) return refuse(401, 'CHALLENGE_MISMATCH', 'the challenge was issued for another action or resource');
+      const message = authMessageText({ action, resource, address: signer, nonce, issuedAt: times.issuedAt, expiresAt: times.expiresAt });
+      let recovered;
+      try {
+        recovered = verifyMessage(message, signature);
       } catch {
         return refuse(401, 'SIGNATURE_INVALID', 'the signature is not a valid signature of the challenge\'s message');
       }
-      if (signer !== c.address) return refuse(403, 'WRONG_ADDRESS', `the message is signed by ${signer}, not by ${c.address}`);
-      return { ok: true, address: signer, issuedAt: c.issuedAt, expiresAt: c.expiresAt };
+      if (recovered !== signer) return refuse(403, 'WRONG_ADDRESS', `the message is signed by ${recovered}, not by ${signer}`);
+      return { ok: true, address: signer, issuedAt: times.issuedAt, expiresAt: times.expiresAt };
     },
   };
 }

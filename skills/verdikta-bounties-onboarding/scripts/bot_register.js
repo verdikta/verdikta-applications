@@ -21,7 +21,8 @@ if (!name || !owner) {
 const resp = await fetch(`${baseUrl}/api/bots/register`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ name, ownerAddress: owner, description })
+  body: JSON.stringify({ name, ownerAddress: owner, description }),
+  redirect: 'error',
 });
 
 const data = await resp.json();

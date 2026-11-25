@@ -699,7 +699,7 @@ export default function ScoreSpreadSection({ refreshKey }) {
           </>
         )}
         <p className="spread-footnote">
-          Scores are each counted arbiter&apos;s FUND score (the one the escrow judges: a one-number result, or the second of two outcomes), ÷ 10,000, on 0–100. A round&apos;s SD is the sample standard deviation over its N counted reveals, in reveal order (getOutcomeScores). Late reveals are scored by quality but store no scores, so they are not in it. Pass / Q counts the scores at or above the threshold against the bounty&apos;s quota.
+          Scores are each counted arbiter&apos;s FUND score (the one the escrow judges: the second of a two-outcome [DONT_FUND, FUND] result; any other shape, a one-number result included, is no result to the escrow), ÷ 10,000, on 0–100. A round&apos;s SD is the sample standard deviation over its N counted reveals, in reveal order (getOutcomeScores). Late reveals are scored by quality but store no scores, so they are not in it. Pass / Q counts the scores at or above the threshold against the bounty&apos;s quota.
           {' '}{cov.submissions != null && <>In this window: {cov.submissions} evaluated submissions, {cov.rounds} rounds{cov.pending ? `, ${cov.pending} not read yet` : ''}{cov.noResult ? `, ${cov.noResult} with no result` : ''}{cov.badShape ? `, ${cov.badShape} with a result the escrow cannot judge` : ''}{cov.tooFewReveals ? `, ${cov.tooFewReveals} with fewer than 2 reveals` : ''}{cov.lateReveals ? `, ${cov.lateReveals} late reveals` : ''}.</>}
           {data?.lastRunAt && <> Chain data read {new Date(data.lastRunAt).toLocaleString()}.</>}
         </p>

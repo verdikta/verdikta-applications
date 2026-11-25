@@ -17,6 +17,7 @@
  */
 
 const AdmZip = require('adm-zip');
+const { readEntryText } = require('./safeZip');
 const logger = require('./logger');
 
 /**
@@ -36,7 +37,7 @@ async function packageRubricHash(ipfsClient, evaluationCid) {
       (e) => e.entryName === 'manifest.json' || e.entryName.endsWith('/manifest.json')
     );
     if (!manifestEntry) return null;
-    const manifest = JSON.parse(zip.readAsText(manifestEntry));
+    const manifest = JSON.parse(readEntryText(manifestEntry));
     const gradingRubricRef = manifest.additional?.find((a) => a.name === 'gradingRubric');
     return gradingRubricRef?.hash || null;
   } catch (err) {

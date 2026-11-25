@@ -94,7 +94,7 @@ const Administration = ({ walletAddress, onNavigateToContractManagement }) => {
         'Remove Administrator',
         `${SERVER_URL}/api/admins/${address}`,
         'DELETE',
-        {}
+        { target: address } // signed, so the signature removes only this one
       );
 
       toast.success('Administrator removed successfully');

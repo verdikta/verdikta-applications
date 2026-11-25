@@ -12,8 +12,10 @@
  * A late reveal (after finalization) stores only its quality code, never its
  * scores, so it is counted (lateReveals) but not in the spread.
  *
- * Metric: the FUND score, the one the escrow judges (BountyRules.judge): index
- * len - 1 of a one-number or two-outcome result, divided by 10,000 (0..100).
+ * Metric: the FUND score, the one the escrow judges (BountyRules.judge): index 1
+ * of a two-outcome [DONT_FUND, FUND] result, divided by 10,000 (0..100). Any other
+ * shape, a one-number result included, is "no result" to the escrow (a re-run), so
+ * it is counted under badShape and has no spread.
  * A round's spread is the sample standard deviation of those scores across its
  * counted reveals. The pooled sd across rounds, sqrt(sum (n-1) var / sum (n-1)),
  * is the per-response noise and is the headline number.
@@ -41,7 +43,7 @@ const { AGGREGATOR_ABI } = require('./aggregatorAbi');
 
 const NETWORK = config.network || 'base-sepolia';
 const STATE_FILE = path.join(__dirname, `../data/${NETWORK}/scoreSpread.json`);
-const STATE_VERSION = 3;   // 3: FUND scores, cluster from BonusPayment, late reveals, arbiter keys
+const STATE_VERSION = 4;   // 4: only [DONT_FUND, FUND] results are judged; 3: FUND scores, cluster from BonusPayment, late reveals, arbiter keys
 
 const LOOKBACK_DAYS = parseFloat(process.env.SCORE_SPREAD_LOOKBACK_DAYS) || 30; // rounds collected
 const MAX_REPORT_DAYS = LOOKBACK_DAYS;
@@ -215,7 +217,8 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
         if (rec.notFound) { coverage.notFound++; return; }
         coverage.lateReveals += (rec.late || []).length;
         if (!rec.finalized) { if (rec.settled) coverage.noResult++; return; }
-        if (rec.badShape) { coverage.badShape++; return; }
+        // outcomes !== 2 too: a record cached before one-number results stopped counting
+        if (rec.badShape || (rec.outcomes != null && rec.outcomes !== 2)) { coverage.badShape++; return; }
         const reveals = rec.reveals || [];
         const sp = roundSpread(reveals.map((r) => fundScore(r.fund)));
         if (!sp) { coverage.tooFewReveals++; return; }
@@ -477,12 +480,17 @@ async function fetchRound(ctx, aggregator, aggId, hintTs = 0) {
     return { ...base, finalized: false, finalAccept: null, settled: true, reveals: [], ...(await roundMoney(ctx, aggAddr, aggId, info, phase)) };
   }
 
-  // The result's shape decides the FUND index (BountyRules.judge: len - 1, len 1 or 2 only).
+  // BountyRules.judge counts only a two-outcome [DONT_FUND, FUND] result; any other shape
+  // (a one-number result too) is "no result" to the escrow, so it has no FUND score here.
   const ev = await aggCall(ctx, aggAddr, 'getEvaluation', [aggId]);
   const len = ev.aggregated.length;
-  const badShape = len !== 1 && len !== 2;
-  const fundIdx = Math.max(0, len - 1);
-  const finalAccept = len ? round2(fundScore(ev.aggregated[fundIdx])) : null;
+  const badShape = len !== 2;
+  const fundIdx = 1;
+  if (badShape) {
+    return { ...base, finalized: true, finalAccept: null, outcomes: len, badShape, settled: true, arbitersKnown: false,
+      cluster: null, late: [], reveals: [], ...(await roundMoney(ctx, aggAddr, aggId, info, phase)) };
+  }
+  const finalAccept = round2(fundScore(ev.aggregated[fundIdx]));
   const os = await aggCall(ctx, aggAddr, 'getOutcomeScores', [aggId, fundIdx]);
   const fund = os.valid ? os.scores.map((x) => x.toString()) : [];
   const n = fund.length;

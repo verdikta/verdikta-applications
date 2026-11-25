@@ -1,0 +1,43 @@
+# PROPOSED changes to /etc/nginx/sites-available/arbiters.verdikta.org (and the same for
+# ops/test-sites/nginx/test.arbiters.verdikta.org with port 6008). Only the changed blocks are shown;
+# everything else stays as it is. Needs nginx/verdikta-ratelimit.conf in conf.d.
+#
+# 1. proxy_pass to 127.0.0.1, not localhost: the server now binds 127.0.0.1 by default, and
+#    "localhost" also resolves to ::1, so nginx would try [::1] first and log a failure per request.
+# 2. A per-IP rate limit on the API, and a tighter one on the endpoint that does a fresh registry walk.
+# 3. ^~ on /api/ so the "ends in an extension" regex location (and the hardening regexes) cannot grab
+#    API paths such as /api/analytics/agg-history/12.json.
+# 4. The API answers JSON only: no reason for a 25 MB body (express.json is capped at 1 MB anyway).
+
+    location = /health {
+        proxy_pass http://127.0.0.1:5008/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /api/arbiters/owned {
+        limit_req zone=verdikta_heavy burst=10 nodelay;
+        proxy_pass http://127.0.0.1:5008/api/arbiters/owned;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ^~ /api/ {
+        limit_req  zone=verdikta_api burst=40 nodelay;
+        limit_conn verdikta_conn 20;
+        client_max_body_size 1m;
+        proxy_read_timeout 90s;
+        proxy_pass http://127.0.0.1:5008/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        # Overwrite, not append ($proxy_add_x_forwarded_for keeps whatever the client sent).
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }

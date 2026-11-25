@@ -337,8 +337,13 @@ function QueryDefinition({
               onClick={() => {
                 if (linkInput.trim()) {
                   try {
-                    // Basic URL validation
-                    new URL(linkInput.trim());
+                    // Basic URL validation: http(s) only. new URL() alone also
+                    // accepts javascript: and data: URLs, which the link below
+                    // would then run when clicked.
+                    const parsed = new URL(linkInput.trim());
+                    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                      throw new Error('not an http(s) URL');
+                    }
                     const newUrl = {
                       url: linkInput.trim(),
                       description: '',

@@ -160,3 +160,25 @@ describe('POST /:jobId/submissions/confirm archiveShape', () => {
     expect(res.body.submission.archiveShape).toBe('unknown');
   });
 });
+
+describe('POST /:jobId/submissions/confirm takes hunter and hunterCid from the chain', () => {
+  it('a front-running caller cannot record its own hunter/hunterCid for the submission', async () => {
+    serve(conforming);
+    const ATTACKER = '0x' + 'a7'.repeat(20);
+    const FAKE = 'Qm' + 'Z'.repeat(44);
+    const res = await request(app).post('/api/jobs/7/submissions/confirm')
+      .send({ submissionId: 0, hunter: ATTACKER, hunterCid: FAKE, files: [{ filename: 'decoy.md' }] });
+    expect(res.status).toBe(200);
+    const sub = mockStorageData.jobs[0].submissions[0];
+    expect(sub.hunter.toLowerCase()).toBe(HUNTER.toLowerCase());
+    expect(sub.hunterCid).toBe(CID);
+    expect(sub.files).toEqual([]);
+  });
+
+  it('a failed chain read stores nothing', async () => {
+    mockGetSubmission = jest.fn().mockRejectedValue(new Error('RPC down'));
+    const res = await request(app).post('/api/jobs/7/submissions/confirm').send({ submissionId: 0, hunter: HUNTER, hunterCid: CID });
+    expect(res.status).toBe(503);
+    expect(mockStorageData.jobs[0].submissions).toHaveLength(0);
+  });
+});

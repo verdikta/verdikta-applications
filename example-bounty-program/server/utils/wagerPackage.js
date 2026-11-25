@@ -15,6 +15,7 @@
  * now throws, so callers fail closed (503 / unknown state) and nothing is cached.
  */
 const crypto = require('crypto');
+const { readEntry } = require('./safeZip');
 const AdmZip = require('adm-zip');
 const wager = require('../../shared/mutualWager');
 const { evaluationPackageFiles } = require('./archiveGenerator');
@@ -58,8 +59,8 @@ async function verifyWagerPackage({ evaluationCid, description, ipfsClient }) {
   if (!sameJson(files, ['manifest.json', 'primary_query.json'])) { problems.push(`holds ${files.join(', ') || 'no files'}, not exactly manifest.json and primary_query.json`); return done(); }
   let manifest, primary;
   try {
-    manifest = JSON.parse(zip.getEntry('manifest.json').getData().toString('utf8'));
-    primary = JSON.parse(zip.getEntry('primary_query.json').getData().toString('utf8'));
+    manifest = JSON.parse(readEntry(zip.getEntry('manifest.json')).toString('utf8'));
+    primary = JSON.parse(readEntry(zip.getEntry('primary_query.json')).toString('utf8'));
   } catch { problems.push('has a manifest or primary query that is not JSON'); return done(); }
 
   // The jury the manifest actually names, for the counter check (it compares juries with the caller's).

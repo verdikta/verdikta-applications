@@ -144,6 +144,13 @@ describe('POST /api/claims/:id/dispute-statement: refusals', () => {
     assert.equal(api.pinner.pins.length, 0);
   });
 
+  test('a hunter asking for the claim\'s challenge again and again does not keep the maker from pinning', async () => {
+    // anyone may ask for it: 40 strangers' asks were enough to refuse the maker's own for five minutes, all window long
+    for (let i = 0; i < 40; i += 1) assert.equal((await api.post(`/api/claims/${claimId}/dispute-statement/challenge`, {})).status, 200);
+    const res = await pin({ ...(await challenge(ctx.maker)), statement: STATEMENT });
+    assert.equal(res.status, 200);
+  });
+
   test('a nonce answers once', async () => {
     const auth = await challenge(ctx.maker);
     assert.equal((await pin({ ...auth, statement: STATEMENT })).status, 200);

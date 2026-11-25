@@ -220,6 +220,16 @@ router.post('/', async (req, res) => {
   if (!check.ok) {
     return res.status(401).json({ success: false, error: check.error });
   }
+  // Registry first (one cached enumeration shared by every event): an
+  // unregistered operator is turned away before any per-address RPC. Doing the
+  // owner() lookup first let anyone with a throwaway key make the server read
+  // owner() (with retries) on, and cache, any number of random addresses.
+  const registered = await isRegisteredOperator(networkKey, operator);
+  if (registered === false) {
+    logger.warn('[alerts] rejected event for unregistered operator', { network: networkKey, operator });
+    return res.status(422).json({ success: false, error: 'Operator is not registered on this network' });
+  }
+
   let owner = null;
   try {
     const service = getVerdiktaService(networkKey);
@@ -244,9 +254,11 @@ router.post('/', async (req, res) => {
       // Gate on keeper registration first: `owner()` exists on plenty of
       // contracts, so without this anyone could seed an unbounded number of
       // operator keys into the store by pointing events at arbitrary addresses.
-      if ((await isRegisteredOperator(networkKey, operator)) !== false) {
-        reporters.recordPending({ operator, signer: check.signer, hostname: body.hostname });
-      }
+      // (Registration was checked above: false never gets here.)
+      reporters.recordPending({
+        operator, signer: check.signer,
+        hostname: typeof body.hostname === 'string' ? body.hostname.slice(0, 100) : null,
+      });
       logger.warn('[alerts] signer is not the operator owner or a delegate', {
         network: networkKey, operator, signer: check.signer, owner,
       });
@@ -256,12 +268,6 @@ router.post('/', async (req, res) => {
           + 'The owner can authorize this address on the My Arbiters page.',
       });
     }
-  }
-
-  const registered = await isRegisteredOperator(networkKey, operator);
-  if (registered === false) {
-    logger.warn('[alerts] rejected event for unregistered operator', { network: networkKey, operator });
-    return res.status(422).json({ success: false, error: 'Operator is not registered on this network' });
   }
 
   try {

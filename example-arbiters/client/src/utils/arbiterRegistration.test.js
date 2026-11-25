@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ethers } from 'ethers';
 import {
   parseFee, parseClasses, buildDescriptor, parseDescriptor, serializeDescriptor,
-  exitView, formatDuration, reasonLines, DESCRIPTOR_VERSION,
+  exitView, formatDuration, reasonLines, DESCRIPTOR_VERSION, keeperForResume,
 } from './arbiterRegistration';
 import { arbiterKey } from '../services/arbiterContracts';
 
@@ -88,5 +88,17 @@ describe('arbiterKey', () => {
     expect(arbiterKey(OP, JOB)).toBe(ethers.keccak256(packed));
     // value read from the v2 keeper on a local node for this (oracle, jobId)
     expect(arbiterKey(OP, JOB)).toBe('0x806802346f2a1046a24eeef0f819fffe8ca052ce96ee5d283484cd0a4457c8a0');
+  });
+});
+
+describe('keeperForResume', () => {
+  const LIVE = '0x1111111111111111111111111111111111111111';
+  const OLD = '0x2222222222222222222222222222222222222222';
+  it('uses the live keeper over a stored (possibly redeployed) one', () => {
+    expect(keeperForResume(LIVE, OLD)).toBe(LIVE);
+  });
+  it('falls back to the stored keeper only while the live one is unknown', () => {
+    expect(keeperForResume(undefined, OLD)).toBe(OLD);
+    expect(keeperForResume(null, 'junk')).toBe(null);
   });
 });

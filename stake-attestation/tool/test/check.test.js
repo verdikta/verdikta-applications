@@ -541,6 +541,11 @@ test('Q35, in plain words: a date-keyed trap is not caught; a tamper flag costs 
 test('a runner off the machine is refused unless asked for, and then the tool says it reads the plaintext', async () => {
   const hunter = w.hunter({ runner: { url: 'http://192.0.2.1:8090', token: TOKEN }, signer: undefined });
   await assert.rejects(hunter.check({ claimDir: makeClaimDir(), listingId: l.listingId }), (e) => e.code === 'RUNNER_NOT_LOCAL');
+  // asked for, it is still https: the proof and the token never cross a network in the clear
+  const plain = w.hunter({ runner: { url: 'http://192.0.2.1:8090', token: TOKEN, allowRemote: true }, signer: undefined });
+  const before = runner.requests.length;
+  await assert.rejects(plain.check({ claimDir: makeClaimDir(), listingId: l.listingId }), (e) => e.code === 'RUNNER_NOT_HTTPS');
+  assert.equal(runner.requests.length, before);
   const notices = [];
   const allowed = w.hunter({ runner: { url: runner.url.replace('127.0.0.1', 'localhost'), token: TOKEN, allowRemote: true }, signer: undefined, onNotice: (t) => notices.push(t) });
   await allowed.check({ claimDir: makeClaimDir(), listingId: l.listingId }).catch(() => {});

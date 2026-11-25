@@ -82,7 +82,7 @@ describe('createWalletAuth', () => {
     const auth = createWalletAuth();
     const maker = wallet();
     const { c, signature } = await signed(auth, maker);
-    assert.deepEqual(auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature }), { ok: true, address: maker.address, issuedAt: c.issuedAt, expiresAt: c.expiresAt });
+    assert.deepEqual(auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature }), { ok: true, address: maker.address, issuedAt: c.issuedAt, expiresAt: c.expiresAt });
   });
 
   test('another wallet signs the same challenge: 403', async () => {
@@ -90,7 +90,7 @@ describe('createWalletAuth', () => {
     const maker = wallet();
     const other = wallet();
     const c = auth.challenge({ action: 'read-scan', resource: RESOURCE, address: maker.address });
-    const r = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: await other.signMessage(c.message) });
+    const r = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature: await other.signMessage(c.message) });
     assert.equal(r.ok, false);
     assert.equal(r.status, 403);
     assert.equal(r.code, 'WRONG_ADDRESS');
@@ -101,7 +101,7 @@ describe('createWalletAuth', () => {
     const maker = wallet();
     const c = auth.challenge({ action: 'read-scan', resource: RESOURCE, address: maker.address });
     const edited = c.message.replace(/Expiration Time: .*/, 'Expiration Time: 2099-01-01T00:00:00Z');
-    const r = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: await maker.signMessage(edited) });
+    const r = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature: await maker.signMessage(edited) });
     assert.equal(r.status, 403);
   });
 
@@ -109,8 +109,8 @@ describe('createWalletAuth', () => {
     const auth = createWalletAuth();
     const maker = wallet();
     const { c, signature } = await signed(auth, maker);
-    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature }).ok, true);
-    const again = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature });
+    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature }).ok, true);
+    const again = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature });
     assert.deepEqual([again.ok, again.status, again.code], [false, 401, 'CHALLENGE_UNKNOWN']);
   });
 
@@ -118,8 +118,8 @@ describe('createWalletAuth', () => {
     const auth = createWalletAuth();
     const maker = wallet();
     const c = auth.challenge({ action: 'read-scan', resource: RESOURCE, address: maker.address });
-    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: await wallet().signMessage(c.message) }).status, 403);
-    const late = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: await maker.signMessage(c.message) });
+    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature: await wallet().signMessage(c.message) }).status, 403);
+    const late = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature: await maker.signMessage(c.message) });
     assert.deepEqual([late.status, late.code], [401, 'CHALLENGE_UNKNOWN']);
   });
 
@@ -129,11 +129,11 @@ describe('createWalletAuth', () => {
     const maker = wallet();
     const { c, signature } = await signed(auth, maker);
     t.advance(60000);
-    const r = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature });
+    const r = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature });
     assert.deepEqual([r.ok, r.status, r.code], [false, 401, 'CHALLENGE_EXPIRED']);
     // and it stays used: no second try once the clock is wound back
     t.advance(-60000);
-    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature }).code, 'CHALLENGE_UNKNOWN');
+    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature }).code, 'CHALLENGE_UNKNOWN');
   });
 
   test('a challenge is good until its expiry instant', async () => {
@@ -142,27 +142,27 @@ describe('createWalletAuth', () => {
     const maker = wallet();
     const { c, signature } = await signed(auth, maker);
     t.advance(60000);
-    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature }).ok, true);
+    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature }).ok, true);
   });
 
   test('a challenge for one resource or action does not open another', async () => {
     const auth = createWalletAuth();
     const maker = wallet();
     const { c, signature } = await signed(auth, maker);
-    const r = auth.verify({ action: 'read-scan', resource: `listing:${'f'.repeat(32)}`, nonce: c.nonce, signature });
+    const r = auth.verify({ action: 'read-scan', resource: `listing:${'f'.repeat(32)}`, address: maker.address, nonce: c.nonce, signature });
     assert.deepEqual([r.status, r.code], [401, 'CHALLENGE_MISMATCH']);
   });
 
   test('a nonce the server never issued, or a malformed signature, is refused', async () => {
     const auth = createWalletAuth();
     const maker = wallet();
-    const unknown = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: 'a'.repeat(32), signature: await maker.signMessage('x') });
+    const unknown = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: 'a'.repeat(32), signature: await maker.signMessage('x') });
     assert.deepEqual([unknown.status, unknown.code], [401, 'CHALLENGE_UNKNOWN']);
     const c = auth.challenge({ action: 'read-scan', resource: RESOURCE, address: maker.address });
-    const bad = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: `0x${'00'.repeat(65)}` });
+    const bad = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature: `0x${'00'.repeat(65)}` });
     assert.deepEqual([bad.status, bad.code], [401, 'SIGNATURE_INVALID']);
     for (const body of [{}, { nonce: 'xyz', signature: '0x00' }, { nonce: c.nonce, signature: 42 }, { nonce: c.nonce }]) {
-      const r = auth.verify({ action: 'read-scan', resource: RESOURCE, ...body });
+      const r = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, ...body });
       assert.deepEqual([r.status, r.code], [400, 'AUTH_REQUEST_INVALID'], JSON.stringify(body));
     }
   });
@@ -172,24 +172,59 @@ describe('createWalletAuth', () => {
     const maker = wallet();
     for (const malformed of ['0x00', 42, undefined, `0x${'zz'.repeat(65)}`]) {
       const c = auth.challenge({ action: 'read-scan', resource: RESOURCE, address: maker.address });
-      const first = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: malformed });
+      const first = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature: malformed });
       assert.deepEqual([first.status, first.code], [400, 'AUTH_REQUEST_INVALID']);
-      const then = auth.verify({ action: 'read-scan', resource: RESOURCE, nonce: c.nonce, signature: await maker.signMessage(c.message) });
+      const then = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature: await maker.signMessage(c.message) });
       assert.deepEqual([then.ok, then.status, then.code], [false, 401, 'CHALLENGE_UNKNOWN'], String(malformed));
     }
   });
 
-  test('outstanding challenges are bounded, per resource and in all; expired ones make room', () => {
+  test('a stranger asking for challenges, as many as they like, never stops the maker\'s sign-in', async () => {
+    // a hunter who would keep a maker from pinning a dispute statement in its window asks for that claim's challenge
+    // again and again: each is for the maker's address, so only the maker could answer it, and none takes room
+    const auth = createWalletAuth();
+    const maker = wallet();
+    for (let i = 0; i < 20000; i += 1) auth.challenge({ action: 'pin-dispute', resource: 'claim:7', address: maker.address });
+    const c = auth.challenge({ action: 'pin-dispute', resource: 'claim:7', address: maker.address });
+    const r = auth.verify({ action: 'pin-dispute', resource: 'claim:7', address: maker.address, nonce: c.nonce, signature: await maker.signMessage(c.message) });
+    assert.equal(r.ok, true);
+  });
+
+  test('a nonce is the server\'s: one with an edited issue time, or from another server\'s key, is unknown', async () => {
     const t = clock();
-    const auth = createWalletAuth({ ttlMs: 60000, maxOutstanding: 5, maxPerResource: 3, now: t.now });
-    const address = wallet().address;
-    for (let i = 0; i < 3; i += 1) auth.challenge({ action: 'read-scan', resource: RESOURCE, address });
-    assert.throws(() => auth.challenge({ action: 'read-scan', resource: RESOURCE, address }), (err) => err.status === 429 && err.code === 'TOO_MANY_CHALLENGES');
-    auth.challenge({ action: 'read-scan', resource: `listing:${'1'.repeat(32)}`, address });
-    auth.challenge({ action: 'read-scan', resource: `listing:${'2'.repeat(32)}`, address });
-    assert.throws(() => auth.challenge({ action: 'read-scan', resource: `listing:${'3'.repeat(32)}`, address }), (err) => err.status === 429);
+    const auth = createWalletAuth({ ttlMs: 60000, now: t.now });
+    const maker = wallet();
+    const c = auth.challenge({ action: 'read-scan', resource: RESOURCE, address: maker.address });
+    // a later issue time would stretch the challenge's life
+    const later = `${(Number.parseInt(c.nonce.slice(0, 8), 16) + 3600).toString(16).padStart(8, '0')}${c.nonce.slice(8)}`;
+    const forged = { ...c, nonce: later, issuedAt: '2026-11-02T11:00:00Z', expiresAt: '2026-11-02T11:01:00Z' };
+    const r = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: later, signature: await maker.signMessage(authMessage(forged)) });
+    assert.deepEqual([r.status, r.code], [401, 'CHALLENGE_UNKNOWN']);
+    const other = createWalletAuth({ ttlMs: 60000, now: t.now });
+    const o = other.challenge({ action: 'read-scan', resource: RESOURCE, address: maker.address });
+    const r2 = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: o.nonce, signature: await maker.signMessage(o.message) });
+    assert.deepEqual([r2.status, r2.code], [401, 'CHALLENGE_UNKNOWN']);
+  });
+
+  test('a challenge for another address does not open this one\'s', async () => {
+    const auth = createWalletAuth();
+    const maker = wallet();
+    const stranger = wallet();
+    const c = auth.challenge({ action: 'read-scan', resource: RESOURCE, address: stranger.address });
+    const r = auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature: await stranger.signMessage(c.message) });
+    assert.deepEqual([r.status, r.code], [401, 'CHALLENGE_MISMATCH']);
+  });
+
+  test('an answered nonce stays refused: used until its expiry, expired after', async () => {
+    const t = clock();
+    const auth = createWalletAuth({ ttlMs: 60000, maxUsed: 3, now: t.now });
+    const maker = wallet();
+    const { c, signature } = await signed(auth, maker);
+    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature }).ok, true);
+    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature }).code, 'CHALLENGE_UNKNOWN');
     t.advance(60001);
-    assert.doesNotThrow(() => auth.challenge({ action: 'read-scan', resource: RESOURCE, address }));
+    // expired: still refused, now by its expiry
+    assert.equal(auth.verify({ action: 'read-scan', resource: RESOURCE, address: maker.address, nonce: c.nonce, signature }).code, 'CHALLENGE_EXPIRED');
   });
 
   test('a challenge for an unknown action, a bad resource or a non-address is refused', () => {

@@ -1,0 +1,48 @@
+# PROPOSED changes to /etc/nginx/sites-available/playground.verdikta.org. Needs
+# nginx/verdikta-ratelimit.conf in conf.d.
+#
+# - /api/upload is an unauthenticated IPFS pinning proxy on the operator's Pinata key; the
+#   playground's own uploads are query packages, so 20 MB and a per-IP rate are plenty.
+#   (Today nginx's default 1 MB applies to every /api/ body, which makes uploads over 1 MB fail;
+#   the Express limit is 50 MB.)
+# - /api/fetch proxies any IPFS CID and buffers the whole object in memory; rate-limit it.
+# - 127.0.0.1 instead of localhost (the server now binds loopback by default).
+# - The static client on :3001 is plain `serve`; serve the build directly from nginx instead and stop
+#   verdikta-frontend-client.service, which runs as root and listens on every interface.
+
+    root /root/verdikta/applications/example-frontend/client/build;
+    index index.html;
+
+    location ^~ /static/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        include /etc/nginx/snippets/verdikta-security-headers.conf;
+        try_files $uri =404;
+    }
+    location / {
+        try_files $uri /index.html;
+    }
+
+    location = /api/upload {
+        limit_req zone=verdikta_heavy burst=5;
+        client_max_body_size 20m;
+        proxy_request_buffering on;
+        proxy_pass http://127.0.0.1:5000/api/upload;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ^~ /api/ {
+        limit_req  zone=verdikta_api burst=40 nodelay;
+        limit_conn verdikta_conn 20;
+        client_max_body_size 1m;
+        proxy_pass http://127.0.0.1:5000/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }

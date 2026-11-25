@@ -1,4 +1,5 @@
 const express = require('express');
+const { limitPins } = require('../utils/pinLimit');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
@@ -36,7 +37,7 @@ const upload = multer({
  * POST /api/bounties/:bountyId/submit
  * Upload deliverable to IPFS for submission
  */
-router.post('/bounties/:bountyId/submit', async (req, res) => {
+router.post('/bounties/:bountyId/submit', limitPins, async (req, res) => {
   let uploadedFile = null;
 
   try {

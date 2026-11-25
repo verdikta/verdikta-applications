@@ -6,9 +6,13 @@
 const logger = require('./logger');
 
 class AnalyticsCacheService {
-  constructor(ttlMs = 2 * 60 * 1000) { // 2 minutes default
+  constructor(ttlMs = 2 * 60 * 1000, maxEntries = 500) { // 2 minutes default
     this.cache = new Map();
     this.ttlMs = ttlMs;
+    // Bound on entries: some keys come from the request (agg-history caches one
+    // entry per round id asked for), and expired entries are only dropped when
+    // read again, so without a cap any client could grow the map without limit.
+    this.maxEntries = maxEntries;
   }
 
   /** TTL that applies to an entry: its own override, else the cache default. */
@@ -73,7 +77,12 @@ class AnalyticsCacheService {
    */
   set(key, data, ttlMs) {
     const timestamp = Date.now();
+    // Re-insert so Map order is least-recently-set first, then evict from the front.
+    this.cache.delete(key);
     this.cache.set(key, { data, timestamp, ttlMs: ttlMs > 0 ? ttlMs : undefined });
+    while (this.cache.size > this.maxEntries) {
+      this.cache.delete(this.cache.keys().next().value);
+    }
     logger.info('Cache set', { key });
   }
 

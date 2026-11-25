@@ -108,6 +108,18 @@ export function estimateMaxTotalFee(maxFee = 0n, minFee = 0n, withBeacons = fals
 }
 
 /**
+ * Is the contract asking for more than this request can legitimately cost?
+ * The honest worst case is at most estimateMaxTotalFee() (the aggregator clamps
+ * the fee to maxOracleFee); twice it leaves room for the owner raising the bonus
+ * multiplier or rewards. Anything above that means the selected address is not
+ * the aggregator it claims to be (a tampered contract list, a wrong network) or
+ * a misconfiguration, and the user should not be asked to sign it.
+ */
+export function prepayLooksWrong(required, maxFee = 0n, minFee = 0n, withBeacons = false, jury = DEFAULT_JURY) {
+  return required > 2n * estimateMaxTotalFee(maxFee, minFee, withBeacons, jury);
+}
+
+/**
  * Read the round once. When it holds a result, push it into the page state, load the
  * justification and return true; otherwise return false. driveRound() calls it once the
  * round reaches the final phase.
@@ -669,6 +681,13 @@ const handleRunQuery = async () => {
 
       const { required, credit, value } = await computeEthFunding(readContract, maxFee, minFee, withBeacons, jury, walletAddress);
       ethValue = value;
+      if (prepayLooksWrong(required, maxFee, minFee, withBeacons, jury)) {
+        throw new Error(
+          `The contract at ${contractAddress} asks for ${ethers.formatEther(required)} ETH, more than twice ` +
+          `the ${ethers.formatEther(estimateMaxTotalFee(maxFee, minFee, withBeacons, jury))} ETH this jury can cost. ` +
+          'Not sending: check that this is the Verdikta aggregator for this network.'
+        );
+      }
       console.log(
         `ETH funding — required: ${ethers.formatEther(required)} ETH, ` +
         `credit: ${ethers.formatEther(credit)} ETH, attaching: ${ethers.formatEther(value)} ETH`

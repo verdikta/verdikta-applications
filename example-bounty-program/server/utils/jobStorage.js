@@ -258,8 +258,11 @@ async function getJob(jobId) {
     }
     const id = parseInt(jobId);
     const currentContract = getCurrentContractAddress();
-    // Prefer the job on the current contract when there are duplicates
-    const job = storage.jobs.find(j => j.jobId === id && (j.contractAddress || '').toLowerCase() === currentContract)
+    // Prefer the chain-linked job on the current contract when there are duplicates: an unlinked
+    // API job sitting on the same id must never be served as the on-chain bounty.
+    const onCurrent = (j) => j.jobId === id && (j.contractAddress || '').toLowerCase() === currentContract;
+    const job = storage.jobs.find(j => onCurrent(j) && (j.syncedFromBlockchain || j.onChain))
+             || storage.jobs.find(onCurrent)
              || storage.jobs.find(j => j.jobId === id);
 
     if (!job) {
@@ -683,7 +686,8 @@ async function deleteJob(jobId) {
       const job = storage.jobs[index];
 
       // Safety check: don't delete jobs that are on-chain (they have real escrow)
-      if (job.onChain === true) {
+      // syncedFromBlockchain too: a bounty created on chain without the PATCH link has only that flag.
+      if (job.onChain === true || job.syncedFromBlockchain === true) {
         throw new Error(`Job ${jobId} exists on-chain and cannot be deleted. Use close instead.`);
       }
 

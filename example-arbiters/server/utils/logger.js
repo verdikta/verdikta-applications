@@ -3,6 +3,18 @@
  * Provides structured logging with different levels
  */
 
+const { redact } = require('./redact');
+
+/** A copy of `v` with every string passed through redact() (RPC keys in error messages). */
+function redactDeep(v, depth = 0) {
+  if (typeof v === 'string') return redact(v);
+  if (!v || typeof v !== 'object' || depth > 4) return v;
+  if (Array.isArray(v)) return v.map((x) => redactDeep(x, depth + 1));
+  const out = {};
+  for (const [k, x] of Object.entries(v)) out[k] = redactDeep(x, depth + 1);
+  return out;
+}
+
 const LOG_LEVELS = {
   ERROR: 'ERROR',
   WARN: 'WARN',
@@ -30,7 +42,7 @@ class Logger {
     const reset = this.enableColors ? colors.RESET : '';
 
     if (this.shouldLog(level)) {
-      console.log(`${color}[${timestamp}] [${level}] ${message}${reset}`, meta);
+      console.log(`${color}[${timestamp}] [${level}] ${redact(String(message))}${reset}`, redactDeep(meta));
     }
   }
 

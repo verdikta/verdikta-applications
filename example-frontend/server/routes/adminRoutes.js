@@ -66,7 +66,7 @@ router.get('/', requireAdmin, async (req, res) => {
  * POST /api/admins
  * Adds a new admin (requires admin with signature)
  */
-router.post('/', requireAdminWithSignature, async (req, res) => {
+router.post('/', requireAdminWithSignature('Add Administrator'), async (req, res) => {
   try {
     const { newAdminAddress } = req.body;
     const addedBy = req.verifiedAddress;
@@ -98,7 +98,7 @@ router.post('/', requireAdminWithSignature, async (req, res) => {
  * DELETE /api/admins/:address
  * Removes an admin (requires admin with signature)
  */
-router.delete('/:address', requireAdminWithSignature, async (req, res) => {
+router.delete('/:address', requireAdminWithSignature('Remove Administrator', { targetParam: 'address' }), async (req, res) => {
   try {
     const { address } = req.params;
 

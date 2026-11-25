@@ -164,7 +164,8 @@ export function juryKey(provider, model) {
  */
 export async function getSupportedModelsForClass(baseUrl, apiKey, classId) {
   const url = `${baseUrl.replace(/\/+$/, '')}/api/classes/${classId}/models`;
-  const res = await fetch(url, { headers: { 'X-Bot-API-Key': apiKey } });
+  // redirect: 'error': fetch forwards custom headers such as X-Bot-API-Key across origins on a redirect.
+  const res = await fetch(url, { headers: { 'X-Bot-API-Key': apiKey }, redirect: 'error' });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`Failed to fetch supported models for class ${classId}: HTTP ${res.status} ${text}`);

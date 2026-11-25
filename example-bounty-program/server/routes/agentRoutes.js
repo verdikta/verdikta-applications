@@ -88,6 +88,20 @@ function getBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
+/**
+ * A job field as one short line of plain text. Titles (and other job fields) come from
+ * whoever created the job — any API caller, or an IPFS package — and /api/jobs.txt is
+ * read by agents: a line break would let a title forge listing lines or instructions.
+ */
+function oneLine(value, max = 160) {
+  const s = String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const chars = Array.from(s);
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : s;
+}
+
 /* ==========================
    GET /agents.txt
    ========================== */
@@ -1910,9 +1924,9 @@ router.get('/api/jobs.txt', async (req, res) => {
       const windowInfo = job.creatorAssessmentWindowSize > 0
         ? ` | approval window: ${job.creatorAssessmentWindowSize >= 3600 ? (job.creatorAssessmentWindowSize / 3600).toFixed(1) + 'h' : Math.round(job.creatorAssessmentWindowSize / 60) + 'm'} (creator: ${job.creatorDeterminationPayment || '?'} ETH / oracle: ${job.arbiterDeterminationPayment || '?'} ETH)`
         : '';
-      lines.push(`#${job.jobId} | ${job.title || 'Untitled'} | ${amount} | deadline: ${deadline} | ${timeLeft} | ${subCount} submission${subCount !== 1 ? 's' : ''}${windowInfo}`);
-      lines.push(`     Threshold: ${job.threshold || 0}% | Class: ${job.classId || 'unknown'}`);
-      lines.push(`     ${base}/api/jobs/${job.jobId}`);
+      lines.push(oneLine(`#${job.jobId} | ${oneLine(job.title).replace(/\|/g, '/') || 'Untitled'} | ${amount} | deadline: ${deadline} | ${timeLeft} | ${subCount} submission${subCount !== 1 ? 's' : ''}${windowInfo}`, 600));
+      lines.push(`     ${oneLine(`Threshold: ${job.threshold || 0}% | Class: ${job.classId || 'unknown'}`, 120)}`);
+      lines.push(`     ${oneLine(`${base}/api/jobs/${job.jobId}`, 200)}`);
     }
 
     lines.push('');
@@ -1927,7 +1941,7 @@ router.get('/api/jobs.txt', async (req, res) => {
 
     for (const job of closed) {
       const subCount = job.submissionCount || 0;
-      lines.push(`#${job.jobId} | ${job.title || 'Untitled'} | ${job.status} | ${subCount} submission${subCount !== 1 ? 's' : ''}`);
+      lines.push(oneLine(`#${job.jobId} | ${oneLine(job.title).replace(/\|/g, '/') || 'Untitled'} | ${job.status} | ${subCount} submission${subCount !== 1 ? 's' : ''}`, 400));
     }
 
     lines.push('');
@@ -2218,3 +2232,4 @@ Sitemap: ${base}/sitemap.xml
 });
 
 module.exports = router;
+module.exports._internals = { oneLine };

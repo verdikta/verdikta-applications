@@ -16,6 +16,7 @@ const logger = require('../utils/logger');
 const { analyticsCache } = require('../utils/analyticsCacheService');
 const { getVerdiktaService } = require('../utils/verdiktaService');
 const { networks, normalizeNetwork } = require('../config');
+const { refreshAllowed } = require('./analyticsRoutes');
 
 /**
  * Assemble addresses + live config for the three contracts. Aggregator data is
@@ -131,6 +132,10 @@ router.get('/overview', async (req, res) => {
 router.post('/refresh', (req, res) => {
   const network = normalizeNetwork(req.query.network || req.body?.network);
   try {
+    // Unauthenticated: at most once per 30 s per network (see analyticsRoutes).
+    if (!refreshAllowed(`contracts_${network}`)) {
+      return res.json({ success: true, network, throttled: true });
+    }
     analyticsCache.invalidate(`contracts_overview_${network}`);
     logger.info('[contracts/refresh] cache cleared', { network });
     return res.json({ success: true, network });

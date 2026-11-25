@@ -3,7 +3,7 @@
  * simulating it, to the right contract; never resends while a tx may be in flight; leaves finalize to
  * others; withdraws its own rewards. Contracts are stubs.
  */
-const { RoundKeeper, IN_FLIGHT_MS } = require('../utils/roundKeeper');
+const { RoundKeeper, IN_FLIGHT_MS, MAX_SENDS_PER_STEP } = require('../utils/roundKeeper');
 const classPresets = require('../../shared/classPresets');
 
 const quiet = { info() {}, warn() {}, debug() {} };
@@ -172,4 +172,18 @@ describe('RoundKeeper gas near the per-transaction cap', () => {
     await keeper.tend(2, 0, { nextAction: 'DRAW' });
     expect(calls[1].opts.gasLimit).toBe(16_500_000n);
   });
+
+  test('a step that simulates but never moves the round is not resent forever (gas griefing)', async () => {
+    const { keeper, calls, advance } = makeKeeper();
+    for (let i = 0; i < 50; i++) {               // 50 in-flight windows, ~75 minutes, nextAction stuck on DRAW
+      await keeper.tend(9, 0, { nextAction: 'DRAW', aggId: AGG_ID });
+      advance(IN_FLIGHT_MS + 1);
+      keeper.prune();
+    }
+    expect(calls).toHaveLength(MAX_SENDS_PER_STEP);
+    expect((await keeper.tend(9, 0, { nextAction: 'DRAW', aggId: AGG_ID })).reason).toBe('send_cap_reached');
+    // A new round (re-run: new aggId) of the same submission is tended again.
+    expect((await keeper.tend(9, 0, { nextAction: 'DRAW', aggId: '0x' + '00'.repeat(31) + '08' })).sent).toBe(true);
+  });
 });
+

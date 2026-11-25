@@ -15,12 +15,34 @@ const router = express.Router();
 // The escrow's own ABI (v2 structs), as built from the contracts.
 const ESCROW_ABI = require('../../onchain/abi/BountyEscrow.json');
 
+// One read-only provider for every receipt request. A provider per request costs an extra
+// eth_chainId call each time, and while the RPC is unreachable every one of them keeps
+// retrying network detection once a second forever (ethers v6), so anonymous /r/ and /og/
+// hits would pile up timers. staticNetwork skips detection when the chain id is known.
+let _providerRO = null;
+let _providerUrl = null;
 function providerRO() {
-  return new ethers.JsonRpcProvider(config.rpcUrl);
+  if (!_providerRO || _providerUrl !== config.rpcUrl) {
+    const chainId = Number(config.chainId);
+    _providerRO = Number.isSafeInteger(chainId) && chainId > 0
+      ? new ethers.JsonRpcProvider(config.rpcUrl, chainId, { staticNetwork: true })
+      : new ethers.JsonRpcProvider(config.rpcUrl);
+    _providerUrl = config.rpcUrl;
+  }
+  return _providerRO;
 }
 
 function escrowRO() {
   return new ethers.Contract(config.bountyEscrowAddress, ESCROW_ABI, providerRO());
+}
+
+// A paid winner's on-chain record never changes, so its chain reads are cached: repeat hits
+// on a public receipt (crawlers, unfurlers, anyone looping on /og/*.png) cost no RPC calls.
+const PAID_CACHE_MAX = 500;
+const paidChainCache = new Map();
+function cachePaid(key, value) {
+  paidChainCache.set(key, value);
+  if (paidChainCache.size > PAID_CACHE_MAX) paidChainCache.delete(paidChainCache.keys().next().value);
 }
 
 function getReceiptSalt() {
@@ -117,11 +139,19 @@ async function loadReceiptData(jobId, submissionId) {
       throw err;
     }
 
-    const c = escrowRO();
-    const [bounty, submission] = await Promise.all([
-      c.getBounty(onChainId),
-      c.getSubmission(onChainId, submissionId)
-    ]);
+    const cacheKey = `${(config.bountyEscrowAddress || '').toLowerCase()}:${onChainId}:${submissionId}`;
+    let bounty;
+    let submission;
+    if (paidChainCache.has(cacheKey)) {
+      ({ bounty, submission } = paidChainCache.get(cacheKey));
+    } else {
+      const c = escrowRO();
+      [bounty, submission] = await Promise.all([
+        c.getBounty(onChainId),
+        c.getSubmission(onChainId, submissionId)
+      ]);
+      if (isPaidWinner({ bounty, submission })) cachePaid(cacheKey, { bounty, submission });
+    }
 
     // Get local submission data for clientType
     const localSubmission = job.submissions?.find(s => s.submissionId === submissionId);
@@ -405,13 +435,13 @@ function generateReceiptSvg({ jobId, submissionId, onChainId, amountEth, amountU
   <text x="100" y="240" font-family="Arial, sans-serif" font-weight="900" font-size="74" fill="#ffffff">${escapeHtml(amountEth)} ETH</text>
   ${amountUSD ? `<text x="100" y="280" font-family="Arial, sans-serif" font-weight="600" font-size="32" fill="#9a9aa3">$${escapeHtml(amountUSD)} USD</text>` : ''}
 
-  <text x="100" y="${amountUSD ? '330' : '300'}" font-family="Arial, sans-serif" font-weight="600" font-size="28" fill="#d7d7db">${escapeHtml(title).slice(0, 70)}</text>
+  <text x="100" y="${amountUSD ? '330' : '300'}" font-family="Arial, sans-serif" font-weight="600" font-size="28" fill="#d7d7db">${escapeHtml(Array.from(String(title)).slice(0, 70).join(''))}</text>
 
   <text x="100" y="${amountUSD ? '390' : '370'}" font-family="monospace" font-size="22" fill="#9a9aa3">Winner: ${escapeHtml(winnerLabel)} (${winnerTypeText}) · Bounty #${onChainId} · Submission #${submissionDisplay}</text>
 
   <rect x="100" y="420" width="1000" height="6" fill="url(#accent)" opacity="0.7"/>
 
-  <text x="100" y="485" font-family="monospace" font-size="18" fill="#8ab4ff">${publicUrl.replace(/^https?:\/\//, '')}/r/${jobId}/${submissionId}</text>
+  <text x="100" y="485" font-family="monospace" font-size="18" fill="#8ab4ff">${escapeHtml(String(publicUrl).replace(/^https?:\/\//, ''))}/r/${jobId}/${submissionId}</text>
   <text x="100" y="525" font-family="Arial, sans-serif" font-size="16" fill="#9a9aa3">Powered by Verdikta · Trust at Machine Speed · On-chain proof</text>
 </svg>`;
 }
@@ -542,3 +572,4 @@ router.get('/verdikta-logo.png', (req, res) => {
 });
 
 module.exports = router;
+module.exports._internals = { generateReceiptSvg, providerRO, paidChainCache };

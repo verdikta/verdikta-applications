@@ -36,6 +36,12 @@ const GAS_MARGIN_PCT = 25n;
 // A 50-juror draw uses ~13.5M, so estimate + 25% would pass the per-tx cap: the limit is clamped to it.
 const { TX_GAS_CAP } = require('./gasLimits');
 const IN_FLIGHT_MS = 90_000;            // don't resend the same step while its tx may still land
+// A step that simulates but never moves the round (its tx reverts or no-ops on chain, which the keeper
+// does not watch) would otherwise be resent every IN_FLIGHT_MS for as long as the round lives, each
+// time at up to TX_GAS_CAP. Cap the sends per round and step (a beacon draw legitimately takes two);
+// past it the step is left to anyone else (the calldata endpoints). Records expire after a day.
+const MAX_SENDS_PER_STEP = 4;
+const ATTEMPT_TTL_MS = 24 * 60 * 60_000;
 const LOW_BALANCE_WEI = 2_000_000_000_000_000n;   // 0.002 ETH
 const BALANCE_CHECK_MS = 10 * 60_000;
 const WITHDRAW_EVERY_MS = 60 * 60_000;
@@ -54,6 +60,7 @@ class RoundKeeper {
     this.logger = logger;
     this.now = now;
     this.inFlight = new Map();          // `${bountyId}:${submissionId}:${action}` -> { hash, at }
+    this.attempts = new Map();          // `${bountyId}:${submissionId}:${aggId}:${action}` -> { count, first }
     this.lastBalanceCheck = 0;
     this.lastWithdraw = 0;
     this.sent = 0;
@@ -78,6 +85,9 @@ class RoundKeeper {
     const key = `${bountyId}:${submissionId}:${action}`;
     const prior = this.inFlight.get(key);
     if (prior && this.now() - prior.at < IN_FLIGHT_MS) return { action, sent: false, reason: 'in_flight', hash: prior.hash };
+    const attemptKey = `${bountyId}:${submissionId}:${state.aggId || ''}:${action}`;
+    const attempts = this.attempts.get(attemptKey);
+    if (attempts && attempts.count >= MAX_SENDS_PER_STEP) return { action, sent: false, reason: 'send_cap_reached' };
 
     let contract;
     if (spec.target === 'escrow') {
@@ -108,6 +118,11 @@ class RoundKeeper {
     try {
       const tx = await contract[spec.fn](...args, { gasLimit });
       this.inFlight.set(key, { hash: tx.hash, at: this.now() });
+      this.attempts.set(attemptKey, { count: (attempts ? attempts.count : 0) + 1, first: attempts ? attempts.first : this.now() });
+      if (attempts && attempts.count + 1 >= MAX_SENDS_PER_STEP) {
+        this.logger.warn('[keeper] step sent the maximum number of times without the round moving on; leaving it to others',
+          { bountyId, submissionId, action, sends: attempts.count + 1 });
+      }
       this.sent++;
       this.logger.info('[keeper] sent', { bountyId, submissionId, action, hash: tx.hash });
       return { action, sent: true, hash: tx.hash };
@@ -121,6 +136,8 @@ class RoundKeeper {
   prune() {
     const cutoff = this.now() - IN_FLIGHT_MS;
     for (const [k, v] of this.inFlight) if (v.at < cutoff) this.inFlight.delete(k);
+    const attemptCutoff = this.now() - ATTEMPT_TTL_MS;
+    for (const [k, v] of this.attempts) if (v.first < attemptCutoff) this.attempts.delete(k);
   }
 
   /**
@@ -170,4 +187,4 @@ function createRoundKeeper(contractService, privateKey, opts = {}) {
   return new RoundKeeper({ contractService, signer, ...opts });
 }
 
-module.exports = { RoundKeeper, createRoundKeeper, ACTIONS, IN_FLIGHT_MS };
+module.exports = { RoundKeeper, createRoundKeeper, ACTIONS, IN_FLIGHT_MS, MAX_SENDS_PER_STEP };

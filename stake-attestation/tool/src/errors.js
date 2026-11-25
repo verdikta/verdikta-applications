@@ -63,6 +63,7 @@ export const ERROR_TEXTS = Object.freeze({
   RUNNER_ANSWER_INVALID: 'The code-runner answered something this tool cannot read.',
   RUNNER_BODY_TOO_LARGE: 'The code-runner refused the request for its size.',
   RUNNER_NOT_CONFIGURED: 'check needs CODE_RUNNER_URL and CODE_RUNNER_TOKEN.',
+  RUNNER_NOT_HTTPS: 'CODE_RUNNER_URL is not this machine and not https: the plaintext claim and the runner\'s token would cross the network in the clear. Nothing was sent.',
   RUNNER_NOT_LOCAL: 'CODE_RUNNER_URL is not this machine, and a runner reads the plaintext claim. Pass --remote-runner if you mean it.',
   RUNNER_UNAUTHORIZED: 'The code-runner refused the token in CODE_RUNNER_TOKEN.',
   RUNNER_UNREACHABLE: 'The code-runner could not be reached at CODE_RUNNER_URL.',

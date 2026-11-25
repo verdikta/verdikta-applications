@@ -15,6 +15,7 @@
  */
 
 const logger = require('./logger');
+const { readEntry, readBodyCapped } = require('./safeZip');
 const { bountyAmountFields } = require('./bountyAmounts');
 const { extractTaskDescription } = require('./taskDescription');
 const jobStorage = require('./jobStorage');
@@ -43,6 +44,9 @@ const METADATA_HEAL_MAX_DELAY_SEC = 6 * 60 * 60;
 // Per-request timeout for evaluation package / rubric fetches. Node's built-in
 // fetch ignores a `timeout` option, so this goes through AbortSignal.timeout.
 const IPFS_FETCH_TIMEOUT_MS = 15000;
+// An evaluation package or rubric is a few KB; anyone can name any CID on chain.
+const IPFS_PACKAGE_MAX_BYTES = 20 * 1024 * 1024;
+const PACKAGE_JSON_ENTRY_MAX_BYTES = 1024 * 1024; // manifest.json / primary_query.json are a few KB
 
 // Defaults addJobFromBlockchain writes when the evaluation package can't be read.
 const DEFAULT_SYNCED_DESCRIPTION = 'Fetched from blockchain';
@@ -112,7 +116,8 @@ async function fetchFromGateway(gateway, cid) {
       logger.debug('IPFS gateway returned an error', { gateway, cid, status: response.status });
       return null;
     }
-    return Buffer.from(await response.arrayBuffer());
+    // Capped: an evaluationCid is whatever the bounty creator put on chain.
+    return await readBodyCapped(response, IPFS_PACKAGE_MAX_BYTES);
   } catch (error) {
     logger.debug('IPFS gateway request failed', { gateway, cid, error: error.message });
     return null;
@@ -156,7 +161,7 @@ async function fetchEvaluationMetadata(evaluationCid) {
       const manifestEntry = zip.getEntry('manifest.json');
       if (manifestEntry) {
         try {
-          const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+          const manifest = JSON.parse(readEntry(manifestEntry, PACKAGE_JSON_ENTRY_MAX_BYTES).toString('utf8'));
           if (manifest.name) {
             title = manifest.name.replace(/ - Evaluation(?: for Payment Release)?$/, '');
           }
@@ -187,7 +192,7 @@ async function fetchEvaluationMetadata(evaluationCid) {
       const queryEntry = zip.getEntry('primary_query.json');
       if (queryEntry) {
         try {
-          const query = JSON.parse(queryEntry.getData().toString('utf8'));
+          const query = JSON.parse(readEntry(queryEntry, PACKAGE_JSON_ENTRY_MAX_BYTES).toString('utf8'));
 
           if (query.description && !description) {
             description = query.description;
@@ -281,6 +286,37 @@ async function fetchEvaluationMetadata(evaluationCid) {
  * EARLIER job win over the exact-CID match further down the array — with several bounties
  * created in parallel by one creator with near-identical deadlines that paired them wrong.
  */
+/**
+ * After the sync links (or adds) the record for on-chain `bountyId`, move any UNLINKED API job that
+ * still sits on the same id (nextId ran ahead of bountyCount: abandoned creates, or someone spamming
+ * POST /jobs/create) off it, so it cannot shadow the real bounty (_findJob / getJob take the first
+ * match) or lend it its off-chain fields in the merge. The squatter keeps its data: it moves to the id
+ * the linked job vacated when that is free, else to the next free id. Returns the moves made.
+ */
+const MANUAL_SYNC_MIN_MS = 30_000;
+
+function evictUnlinkedSquatters(storage, bountyId, currentContract, vacatedId = null) {
+  const sameContract = (j) => !j.contractAddress || (j.contractAddress || '').toLowerCase() === currentContract;
+  const linked = storage.jobs.find((j) => j.jobId === bountyId && j.syncedFromBlockchain && sameContract(j));
+  if (!linked) return [];
+  const moves = [];
+  for (const j of storage.jobs) {
+    if (j === linked || j.jobId !== bountyId || !sameContract(j) || j.syncedFromBlockchain || j.onChain) continue;
+    let target;
+    if (vacatedId != null && vacatedId !== bountyId && !storage.jobs.some((o) => o.jobId === vacatedId)) {
+      target = vacatedId;
+      vacatedId = null;
+    } else {
+      target = Math.max(storage.nextId || 0, bountyId + 1);
+      while (storage.jobs.some((o) => o.jobId === target)) target++;
+    }
+    j.jobId = target;
+    storage.nextId = Math.max(storage.nextId || 0, target + 1);
+    moves.push({ from: bountyId, to: target, evaluationCid: j.evaluationCid });
+  }
+  return moves;
+}
+
 function findPendingJobForBountyCreated(jobs, { evaluationCid, creator, deadline }) {
   const candidates = (jobs || []).filter((j) => !j.syncedFromBlockchain && j.status !== 'ORPHANED');
   if (evaluationCid) {
@@ -577,6 +613,19 @@ class SyncService {
   // ==========================================================================
   // Main sync loop
   // ==========================================================================
+
+  /**
+   * A sync asked for by an API caller (POST /jobs/sync/now, /analytics/refresh). Keys are free, so
+   * these are throttled: at most one manual sync per MANUAL_SYNC_MIN_MS, or a caller could keep the
+   * sync (and its RPC budget) running back to back. Returns false when skipped.
+   */
+  async requestSync() {
+    const now = Date.now();
+    if (this._lastManualSyncAt && now - this._lastManualSyncAt < MANUAL_SYNC_MIN_MS) return false;
+    this._lastManualSyncAt = now;
+    await this.syncNow();
+    return true;
+  }
 
   async syncNow() {
     if (this.isSyncing) {
@@ -1328,6 +1377,7 @@ class SyncService {
         }
 
         const pendingJob = findPendingJobForBountyCreated(storage.jobs, { evaluationCid, creator, deadline });
+        let vacatedId = null;
 
         if (pendingJob) {
           // Link pending job (API-created, not yet on-chain)
@@ -1336,6 +1386,7 @@ class SyncService {
             bountyId,
             matchedBy: pendingJob.evaluationCid === evaluationCid ? 'evaluationCid' : 'creator+deadline'
           });
+          vacatedId = pendingJob.jobId;
           pendingJob.jobId = bountyId;
           pendingJob.syncedFromBlockchain = true;
           pendingJob.contractAddress = currentContract;
@@ -1365,6 +1416,10 @@ class SyncService {
           } catch (err) {
             logger.warn('[event] Failed to fetch BountyCreated bounty', { bountyId, error: err.message });
           }
+        }
+        {
+          const moves = evictUnlinkedSquatters(storage, bountyId, currentContract, vacatedId);
+          if (moves.length) logger.warn('[event] BountyCreated: moved unlinked job(s) off the on-chain id', { bountyId, moves });
         }
         break;
       }
@@ -2023,10 +2078,9 @@ class SyncService {
   // ==========================================================================
 
   _findJob(storage, bountyId, currentContract) {
-    return storage.jobs.find(j =>
-      j.jobId === bountyId &&
-      (j.contractAddress || '').toLowerCase() === currentContract
-    );
+    const matches = (j) => j.jobId === bountyId && (j.contractAddress || '').toLowerCase() === currentContract;
+    // Prefer the chain-linked record: an unlinked API job on the same id must never take its events.
+    return storage.jobs.find((j) => matches(j) && j.syncedFromBlockchain) || storage.jobs.find(matches);
   }
 
   /**
@@ -2057,12 +2111,29 @@ class SyncService {
       'publicSubmissions', 'publicSubmissionsUpdatedAt'
     ];
 
+    // Two records with different evaluationCids are different jobs even when they share a jobId
+    // (the sync just moved one onto the id the other held): never merge one into the other, or the
+    // linked bounty inherits a squatter's off-chain fields. Each fresh record is matched once.
+    const cidsDiffer = (a, b) => a.evaluationCid && b.evaluationCid && a.evaluationCid !== b.evaluationCid;
+    const matched = new Set();
     for (const modifiedJob of modifiedStorage.jobs) {
       const modifiedContract = (modifiedJob.contractAddress || '').toLowerCase();
       let freshJob = freshStorage.jobs.find(j =>
+        !matched.has(j) &&
         j.jobId === modifiedJob.jobId &&
-        (j.contractAddress || '').toLowerCase() === modifiedContract
+        (j.contractAddress || '').toLowerCase() === modifiedContract &&
+        !cidsDiffer(j, modifiedJob)
       );
+      // The sync renumbered a job (linked a pending one, or moved a squatter off an on-chain id):
+      // find its fresh copy, still unlinked and at the old id, by evaluationCid.
+      if (!freshJob && modifiedJob.evaluationCid) {
+        freshJob = freshStorage.jobs.find(j =>
+          !matched.has(j) &&
+          !j.syncedFromBlockchain &&
+          j.evaluationCid === modifiedJob.evaluationCid &&
+          (j.contractAddress || '').toLowerCase() === modifiedContract
+        );
+      }
 
       // If no match by jobId+contract, try matching by evaluationCid — covers the case where
       // sync linked a pending job (changed its jobId from null to the on-chain ID)
@@ -2073,6 +2144,7 @@ class SyncService {
       // would cause them to overwrite each other and oscillate every sync cycle.
       if (!freshJob && modifiedJob.evaluationCid) {
         freshJob = freshStorage.jobs.find(j =>
+          !matched.has(j) &&
           j.evaluationCid === modifiedJob.evaluationCid &&
           (j.contractAddress || '').toLowerCase() === modifiedContract &&
           (j.jobId == null || modifiedJob.jobId == null)
@@ -2080,6 +2152,7 @@ class SyncService {
       }
 
       if (freshJob) {
+        matched.add(freshJob);
         // Save PATCH fields from fresh storage
         const preservedValues = {};
         for (const field of patchPreserveFields) {
@@ -2318,5 +2391,5 @@ module.exports = {
   initializeSyncService,
   getSyncService,
   SyncService,
-  applyChainBountyFields, findPendingJobForBountyCreated, needsChainFieldHeal,
+  applyChainBountyFields, findPendingJobForBountyCreated, evictUnlinkedSquatters, needsChainFieldHeal,
   needsMetadataHeal, applyEvaluationMetadata, healJobMetadata, fetchEvaluationMetadata };

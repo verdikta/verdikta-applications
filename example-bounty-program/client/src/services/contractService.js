@@ -1422,8 +1422,8 @@ class ContractService {
       const phase = Number(r.phase);
       const raw = [...(r.scores || [])].map(Number);
       const scores = !r.hasResult ? null
-        : raw.length === 2 ? { acceptance: raw[1] / 10000, rejection: raw[0] / 10000 }
-          : raw.length === 1 ? { acceptance: raw[0] / 10000, rejection: 100 - raw[0] / 10000 } : null;
+        // Only a two-outcome [DONT_FUND, FUND] result is judged by the escrow; any other shape is no result.
+        : raw.length === 2 ? { acceptance: raw[1] / 10000, rejection: raw[0] / 10000 } : null;
       return {
         started: Boolean(r.started),
         hasResult: Boolean(r.hasResult),

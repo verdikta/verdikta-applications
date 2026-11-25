@@ -114,7 +114,7 @@ describe('the site\'s sign-in, for a wallet with a 7702 designator', () => {
       [LIST_ACTION, `list-request:${crypto.createHash('sha256').update('a request').digest('hex')}`],
     ]) {
       const c = auth.challenge({ action, resource, address: wallet.address });
-      const r = auth.verify({ action, resource, nonce: c.nonce, signature: await wallet.signMessage(c.message) });
+      const r = auth.verify({ action, resource, address: wallet.address, nonce: c.nonce, signature: await wallet.signMessage(c.message) });
       assert.deepEqual(r, { ok: true, address: wallet.address, issuedAt: c.issuedAt, expiresAt: c.expiresAt }, action);
     }
   });

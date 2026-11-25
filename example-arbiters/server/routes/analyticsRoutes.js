@@ -20,6 +20,33 @@ const { normalizeNetwork } = require('../config');
 const { classMap } = require('@verdikta/common');
 
 /**
+ * The look-back windows /oracle-health serves. Each window is its own cold
+ * archive scan and cache entry, so accepting any 1..60 let one client start 60
+ * scans per network; a request is snapped up to the nearest window here (the
+ * page asks for 14 and 1). These are also the keys POST /refresh clears.
+ */
+const ORACLE_HEALTH_WINDOWS = [1, 7, 14, 30, 60];
+function oracleHealthWindow(raw) {
+  const d = parseInt(raw, 10);
+  if (!(d > 0)) return 14;
+  return ORACLE_HEALTH_WINDOWS.find((w) => w >= d) ?? ORACLE_HEALTH_WINDOWS[ORACLE_HEALTH_WINDOWS.length - 1];
+}
+
+/**
+ * POST /refresh is unauthenticated and makes the next reads pay for cold RPC
+ * scans; honour it at most once per REFRESH_MIN_INTERVAL_MS per network so a
+ * client cannot keep the caches permanently cold.
+ */
+const REFRESH_MIN_INTERVAL_MS = 30 * 1000;
+const lastRefreshAt = new Map();
+function refreshAllowed(key, now = Date.now()) {
+  const last = lastRefreshAt.get(key) || 0;
+  if (now - last < REFRESH_MIN_INTERVAL_MS) return false;
+  lastRefreshAt.set(key, now);
+  return true;
+}
+
+/**
  * Arbiter availability per class (ClassID): the selectable count (the jury
  * size is per request; a draw short of K repeats arbiters and fails only with
  * none selectable), the aggregator's maxJury and the keeper's scansAll(cls),
@@ -241,7 +268,7 @@ router.get('/owners', async (req, res) => {
  */
 router.get('/oracle-health', async (req, res) => {
   const network = normalizeNetwork(req.query.network);
-  const days = Math.min(60, Math.max(1, parseInt(req.query.days, 10) || 14));
+  const days = oracleHealthWindow(req.query.days);
   try {
     const { data, cached, stale, refreshing, cachedAt } = await oracleHealthLoader.load(network, days);
     return res.json({ success: true, data, cached, stale, refreshing, ...(cachedAt ? { cachedAt } : {}) });
@@ -291,13 +318,16 @@ router.get('/agg-history/:aggId', async (req, res) => {
 router.post('/refresh', (req, res) => {
   const network = normalizeNetwork(req.query.network || req.body?.network);
   try {
+    if (!refreshAllowed(`analytics_${network}`)) {
+      return res.json({ success: true, network, throttled: true });
+    }
     analyticsCache.invalidate(`analytics_overview_${network}`);
     analyticsCache.invalidate(`analytics_arbiters_${network}`);
     analyticsCache.invalidate(`analytics_owners_${network}`);
     // oracle-health keys are suffixed by window size; clear the common ones.
     // (Deleting, not just expiring: an explicit Refresh should pay for a cold
     // scan rather than be handed the stale copy by stale-while-revalidate.)
-    for (const d of [1, 7, 14, 30, 60]) analyticsCache.invalidate(oracleHealthLoader.cacheKey(network, d));
+    for (const d of ORACLE_HEALTH_WINDOWS) analyticsCache.invalidate(oracleHealthLoader.cacheKey(network, d));
     logger.info('[analytics/refresh] cache cleared', { network });
     return res.json({ success: true, network });
   } catch (error) {
@@ -311,3 +341,5 @@ router.post('/refresh', (req, res) => {
 });
 
 module.exports = router;
+module.exports.oracleHealthWindow = oracleHealthWindow;
+module.exports.refreshAllowed = refreshAllowed;

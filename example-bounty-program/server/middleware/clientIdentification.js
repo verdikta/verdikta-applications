@@ -21,15 +21,25 @@ const BOTS_FILE = path.join(__dirname, '..', 'data', 'bots.json');
 /**
  * Load bot registry from disk
  */
+// Parsed once per file change, not once per request: every keyed request looks a bot up.
+let _botsCache = { mtimeMs: -1, size: -1, byKey: new Map() };
 function loadBots() {
   try {
     if (fs.existsSync(BOTS_FILE)) {
-      return JSON.parse(fs.readFileSync(BOTS_FILE, 'utf8'));
+      let st = null;
+      try { st = fs.statSync(BOTS_FILE); } catch { /* no stat: parse every time */ }
+      if (!st || st.mtimeMs !== _botsCache.mtimeMs || st.size !== _botsCache.size) {
+        const registry = JSON.parse(fs.readFileSync(BOTS_FILE, 'utf8'));
+        const byKey = new Map();
+        for (const b of registry.bots || []) if (b && typeof b.apiKey === 'string') byKey.set(b.apiKey, b);
+        _botsCache = { mtimeMs: st ? st.mtimeMs : -1, size: st ? st.size : -1, byKey };
+      }
+      return _botsCache;
     }
   } catch (e) {
     logger.error('Failed to load bots registry', e);
   }
-  return { bots: [] };
+  return { byKey: new Map() };
 }
 
 // Paths that don't require authentication (bot registration, health checks, diagnostics, receipts, agent discovery)
@@ -126,9 +136,7 @@ function clientIdentification(req, res, next) {
   logger.info('Client auth check', {
     path: req.path,
     hasClientKey: !!clientKey,
-    clientKeyValue: clientKey ? clientKey.substring(0, 8) + '...' : 'none',
     clientKeyMatch: clientKey === process.env.FRONTEND_CLIENT_KEY,
-    expectedKey: process.env.FRONTEND_CLIENT_KEY ? process.env.FRONTEND_CLIENT_KEY.substring(0, 8) + '...' : 'NOT SET',
     origin: origin || '(none)',
     allHeaders: Object.keys(req.headers).join(', '),
   });
@@ -153,9 +161,8 @@ function clientIdentification(req, res, next) {
 
   // Check for bot API key authentication
   if (botApiKey) {
-    const registry = loadBots();
-    const bot = registry.bots.find(b => b.apiKey === botApiKey && b.active);
-    if (bot) {
+    const bot = typeof botApiKey === 'string' ? loadBots().byKey.get(botApiKey) : null;
+    if (bot && bot.active) {
       req.clientType = 'bot';
       req.clientId = bot.id;
       req.botInfo = bot;

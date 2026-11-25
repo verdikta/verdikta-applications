@@ -201,7 +201,8 @@ async function registerBot({ baseUrl, name, ownerAddress, description }) {
   const res = await fetch(`${baseUrl}/api/bots/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, ownerAddress, description })
+    body: JSON.stringify({ name, ownerAddress, description }),
+    redirect: 'error',
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`Bot registration failed: HTTP ${res.status} - ${text}`);
@@ -414,7 +415,8 @@ async function main() {
 
     // 9) Smoke test: list jobs
     const jobsRes = await fetch(`${baseUrl}/api/jobs?status=OPEN&minHoursLeft=0`, {
-      headers: { 'X-Bot-API-Key': apiKey }
+      headers: { 'X-Bot-API-Key': apiKey },
+      redirect: 'error',
     });
     const jobsText = await jobsRes.text();
     if (!jobsRes.ok) {

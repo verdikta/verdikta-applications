@@ -67,7 +67,7 @@ function check(name, pass, detail) {
 // 1. API job exists and is OPEN
 let job = null;
 try {
-  const res = await fetch(`${baseUrl}/api/jobs/${jobId}`, { headers });
+  const res = await fetch(`${baseUrl}/api/jobs/${jobId}`, { headers, redirect: 'error' });
   if (!res.ok) {
     check('API job exists', false, `HTTP ${res.status}`);
   } else {
@@ -83,7 +83,7 @@ try {
 // 2. Evaluation package valid
 if (job) {
   try {
-    const res = await fetch(`${baseUrl}/api/jobs/${jobId}/validate`, { headers });
+    const res = await fetch(`${baseUrl}/api/jobs/${jobId}/validate`, { headers, redirect: 'error' });
     if (res.ok) {
       const data = await res.json();
       const errors = (data.issues || []).filter(i => i.severity === 'error');

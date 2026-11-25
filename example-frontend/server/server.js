@@ -32,7 +32,7 @@ const IPFS_FETCH_TIMEOUT = 45000; // 45 seconds base timeout
 const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY = 2000;
 const INITIAL_PROPAGATION_DELAY = 3000; // Wait 3 seconds before first attempt
-const CID_REGEX = /^Qm[1-9A-HJ-NP-Za-km-z]{44}|b[A-Za-z2-7]{58}|B[A-Z2-7]{58}|z[1-9A-HJ-NP-Za-km-z]{48}|F[0-9A-F]{50}$/i;
+const { isValidCid } = require('./utils/cid');
 
 // Error handling middleware
 const errorHandler = (err, req, res, next) => {
@@ -339,7 +339,7 @@ app.get('/api/fetch/:cid', async (req, res) => {
   if (isMultiCID) {
     const cidArray = cid.split(',').map(c => c.trim()).filter(c => c);
     for (const singleCID of cidArray) {
-      if (!CID_REGEX.test(singleCID)) {
+      if (!isValidCid(singleCID)) {
         logger.error('Invalid CID format in multi-CID request:', singleCID);
         return res.status(400).json({
           error: 'Invalid CID format',
@@ -349,7 +349,7 @@ app.get('/api/fetch/:cid', async (req, res) => {
     }
   } else {
     // Validate single CID format
-    if (!CID_REGEX.test(cid)) {
+    if (!isValidCid(cid)) {
       logger.error('Invalid CID format:', cid);
       return res.status(400).json({
         error: 'Invalid CID format',
@@ -464,7 +464,9 @@ const startServer = async () => {
     await initializeTmpDirectory();
 
     const PORT = process.env.PORT || 5000;
-    const HOST = process.env.HOST || '0.0.0.0';
+    // Loopback by default: nginx (playground.verdikta.org /api/) is the intended
+    // client. Set HOST=0.0.0.0 only where the API must be reached directly.
+    const HOST = process.env.HOST || '127.0.0.1';
     const server = app.listen(PORT, HOST, () => {
       logger.info(`Server listening on ${HOST}:${PORT}`);
       logger.info('Environment:', {

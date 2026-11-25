@@ -509,7 +509,7 @@ export function createListingService({ config, builder, scanner, pinner, logger,
         refusals.count(['MAKER_SIGNATURE_REQUIRED']);
         throw new MakerSignatureError(401, 'MAKER_SIGNATURE_REQUIRED', PROOF_REFUSALS.MAKER_SIGNATURE_REQUIRED);
       }
-      const v = auth.verify({ action: LIST_ACTION, resource: `list-request:${request.digest}`, nonce: a.nonce, signature: a.signature });
+      const v = auth.verify({ action: LIST_ACTION, resource: `list-request:${request.digest}`, address: request.maker, nonce: a.nonce, signature: a.signature });
       if (!v.ok) {
         refusals.count(['MAKER_SIGNATURE_INVALID']);
         throw new MakerSignatureError(v.status, 'MAKER_SIGNATURE_INVALID', `${PROOF_REFUSALS.MAKER_SIGNATURE_INVALID} ${v.detail}`);

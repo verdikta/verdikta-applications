@@ -9,6 +9,12 @@ import { createPrompt, walletPassword } from './_secret.js';
 
 const importMode = hasFlag('import');
 const outArg = arg('out', `${defaultSecretsDir()}/verdikta-wallet.json`);
+// Never replace a keystore silently: it may hold the only copy of a funded key.
+const out = resolvePath(outArg);
+if (!hasFlag('overwrite') && await fs.access(out).then(() => true, () => false)) {
+  console.error(`${out} already exists; it may hold a funded wallet. Nothing was changed. Choose a new --out path, or pass --overwrite only after backing it up and moving its funds.`);
+  process.exit(1);
+}
 // The password encrypts the keystore and is not stored: keep it in your secret store (references/onboarding.md).
 const prompt = createPrompt();
 let password;
@@ -40,7 +46,6 @@ if (importMode) {
 }
 
 const json = await wallet.encrypt(password);
-const out = resolvePath(outArg);
 
 await ensureDir(path.dirname(out));
 await fs.writeFile(out, json, { mode: 0o600 });

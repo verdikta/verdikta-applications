@@ -6,6 +6,7 @@
  */
 
 const logger = require('./logger');
+const { readEntryText } = require('./safeZip');
 const { unlistedClassWarning, classMapVersion } = require('./classPolicy');
 const { PRIMARY_QUERY_MAX_CHARS } = require('@verdikta/common');
 
@@ -222,7 +223,7 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
 
     if (manifestEntry) {
       try {
-        const manifestText = zip.readAsText(manifestEntry);
+        const manifestText = readEntryText(manifestEntry);
         manifest = JSON.parse(manifestText);
 
         // Extract jury configuration from manifest.juryParameters.AI_NODES
@@ -279,7 +280,7 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
 
         if (primaryEntry) {
           try {
-            const primaryQuery = JSON.parse(zip.readAsText(primaryEntry));
+            const primaryQuery = JSON.parse(readEntryText(primaryEntry));
 
             // Check for WRONG format: {title, description, outcomes}
             // Oracles require: {query, references, outcomes}
@@ -371,7 +372,7 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
 
       if (rubricEntry) {
         try {
-          const rubricContent = zip.readAsText(rubricEntry);
+          const rubricContent = readEntryText(rubricEntry);
           rubric = JSON.parse(rubricContent);
 
           // Legacy format may have jury in rubric

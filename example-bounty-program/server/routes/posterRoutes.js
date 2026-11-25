@@ -9,6 +9,8 @@
 const express = require('express');
 const AdmZip = require('adm-zip');
 const path = require('path');
+const { requireAdmin } = require('../utils/adminAuth');
+const { readBodyCapped } = require('../utils/safeZip');
 const router = express.Router();
 const logger = require('../utils/logger');
 const jobStorage = require('../utils/jobStorage');
@@ -571,7 +573,9 @@ router.get('/jobs/:jobId/submissions/:submissionId/preview', async (req, res) =>
             details: `ZIP is ${contentLength} bytes; max ${PREVIEW_ZIP_MAX_BYTES}. Use download instead.`,
           });
         }
-        const arrayBuffer = await resp.arrayBuffer();
+        // Capped while streaming: a chunked response has no Content-Length to check above.
+        let arrayBuffer;
+        try { arrayBuffer = await readBodyCapped(resp, PREVIEW_ZIP_MAX_BYTES); } catch (e) { if (e.code !== 'TOO_LARGE') throw e; arrayBuffer = { byteLength: Infinity }; }
         if (arrayBuffer.byteLength > PREVIEW_ZIP_MAX_BYTES) {
           return res.status(413).json({
             success: false,
@@ -864,7 +868,8 @@ router.get('/jobs/:jobId/submissions/:submissionId/file', async (req, res) => {
             details: `ZIP is ${contentLength} bytes; max ${FILE_STREAM_MAX_BYTES}.`
           });
         }
-        const arrayBuffer = await resp.arrayBuffer();
+        let arrayBuffer;
+        try { arrayBuffer = await readBodyCapped(resp, FILE_STREAM_MAX_BYTES); } catch (e) { if (e.code !== 'TOO_LARGE') throw e; arrayBuffer = { byteLength: Infinity }; }
         if (arrayBuffer.byteLength > FILE_STREAM_MAX_BYTES) {
           return res.status(413).json({ success: false, error: 'Archive too large to stream' });
         }
@@ -921,6 +926,12 @@ router.get('/jobs/:jobId/submissions/:submissionId/file', async (req, res) => {
     // something more dangerous than what we declared. The frontend additionally
     // renders HTML inside <iframe sandbox=""> so script execution is blocked.
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    // Hunter-supplied bytes: even opened directly (not in the SPA's sandboxed iframe) they get no
+    // script, no same-origin access and no forms on this origin.
+    // (HTML and SVG only: a sandboxed PDF will not render in Chrome's viewer.)
+    if (/html|svg|xml/i.test(mimeType)) {
+      res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'");
+    }
     return res.end(data);
 
   } catch (error) {
@@ -1051,7 +1062,7 @@ router.get('/archival/status', (req, res) => {
  * POST /api/archival/run
  * Manually trigger archival processing (admin endpoint)
  */
-router.post('/archival/run', async (req, res) => {
+router.post('/archival/run', requireAdmin, async (req, res) => {
   try {
     const archivalService = getArchivalService();
     if (!archivalService) {

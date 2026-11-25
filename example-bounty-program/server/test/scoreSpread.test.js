@@ -106,7 +106,7 @@ function fixture() {
       { submissionId: 3, verdiktaAggId: id(6), submittedAt: NOW - 600 } // not collected yet
     ] }
   ];
-  return { state: { version: 3, rounds: keyed(rounds, jobs), lastRunAt: 5, lastError: null }, jobs };
+  return { state: { version: 4, rounds: keyed(rounds, jobs), lastRunAt: 5, lastError: null }, jobs };
 }
 
 describe('buildReport', () => {
@@ -166,13 +166,13 @@ describe('buildReport', () => {
     expect(rep.bounties[1]).toMatchObject({ rounds: 1, pooledSd: 0 });
   });
 
-  test('a one-number result: the length-1 score is the FUND score', () => {
+  test('a one-number result is no result to the escrow: counted as badShape, not in the spread', () => {
     const state = { rounds: { ['1:' + id(1)]: fin({ aggId: id(1), startTs: NOW - DAY, outcomes: 1, cluster: null,
       reveals: [reveal(0, 60), reveal(1, 70)] }) } };
     const jobs = [{ jobId: 1, threshold: 65, decisionSettings: { quota: 1, forfeitLine: 1 }, submissions: [{ submissionId: 0, verdiktaAggId: id(1), submittedAt: NOW - DAY }] }];
-    const s = ss.buildReport(state, jobs, { days: 14, now: NOW }).samples[0];
-    expect(s.reveals.map((r) => r.accept)).toEqual([60, 70]);
-    expect(s).toMatchObject({ passCount: 1, outcome: 'pass' });
+    const rep = ss.buildReport(state, jobs, { days: 14, now: NOW });
+    expect(rep.samples).toHaveLength(0);
+    expect(rep.coverage.badShape).toBe(1);
   });
 
   test('per-arbiter gap from the other arbiters in the same round', () => {
@@ -319,10 +319,15 @@ describe('fetchRound (v2)', () => {
     expect(rec.late).toEqual([{ slot: 3, qcode: 2, block: 1102 }]);
   });
 
-  test('a one-number result reads outcome 0; no BonusPayment leaves the cluster unknown', async () => {
+  test('a one-number result has no FUND score (the escrow re-runs it)', async () => {
     const rec = await ss.fetchRound(ctx(provider({ aggregated: [700000], bonuses: [] })), AGG, id(5));
-    expect(rec).toMatchObject({ outcomes: 1, finalAccept: 70, cluster: null });
-    expect(rec.reveals).toHaveLength(3);
+    expect(rec).toMatchObject({ outcomes: 1, badShape: true, finalAccept: null, cluster: null });
+    expect(rec.reveals).toHaveLength(0);
+  });
+
+  test('no BonusPayment leaves the cluster unknown', async () => {
+    const rec = await ss.fetchRound(ctx(provider({ bonuses: [] })), AGG, id(5));
+    expect(rec).toMatchObject({ outcomes: 2, cluster: null });
   });
 
   test('a running round is re-read later; a dead one is final, with where its prepay went', async () => {

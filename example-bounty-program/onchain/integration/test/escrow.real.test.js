@@ -414,7 +414,8 @@ describe("BountyEscrow x real v2 aggregator", function () {
   });
 
   // ------------------------------------------------------------------ 6. one number
-  it("6a. one-number result [FUND]: pass at 3 of 4", async () => {
+  // A bounty package has two outcomes: a one-number result is no result (BountyRules), never a pass.
+  it("6a. one-number result [FUND]: no result, awaits a re-run with the bond", async () => {
     const scn = "6a one-number";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
@@ -428,7 +429,8 @@ describe("BountyEscrow x real v2 aggregator", function () {
     const sub = await escrow.getSubmission(b, s);
     results[scn] = { aggregatedLen: scoresOut.length, aggregated: scoresOut.map(String).join("/"), status: sub.status, passCount: sub.passCount, acceptance: sub.acceptance, rejection: sub.rejection };
     expect(scoresOut.length).to.equal(1);
-    expect(sub.status).to.equal(3n);
+    expect(sub.status).to.equal(6n);
+    expect(sub.bondHeld).to.equal(BOND);
   });
 
   it("6b. mixed lengths (one juror reveals one number among two-outcome reveals)", async () => {
@@ -444,6 +446,42 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await escrow.connect(other).finalizeSubmission(b, s);
     const sub = await escrow.getSubmission(b, s);
     results[scn] = { aggregatedLen: scoresOut.length, fundScores: scores.map(String).join("/"), status: sub.status, passCount: sub.passCount };
+  });
+
+  // A majority of the counted jurors (5 of 8, below Q = 6) reveals one number [1.0]; the other 3 reject
+  // the work [DONT_FUND 0.9, FUND 0.1]. The real aggregator gives the result the majority's length, 1,
+  // and getOutcomeScores(aggId, 0) returns the others' DONT_FUND. Read as [FUND], that is 8 of 8 at the
+  // threshold: a pass the rule (Q = 6) would refuse. A bounty package has two outcomes, so a one-number
+  // result is no result: the submission awaits a re-run with its bond.
+  it("6c. a one-number majority below Q cannot pass work the rest reject (12/10/8/4, Q=6)", async () => {
+    const scn = "6c one-number majority";
+    const { b, evalCid } = await createBounty({ jury: J12, quota: 6, forfeitLine: 4 });
+    const { s, aggId } = await prepareStart(b, evalCid, "j12");
+    const round = { aggId, slots: {}, drv: drvFor() };
+    await mine(1);
+    await draw(round, b, s, "drawJury (K=12)");
+    const slots = Object.keys(round.slots).map(Number).sort((x, y) => x - y).slice(0, 11);   // M+ = 11
+    const reject = [900_000n, 100_000n];
+    for (let i = 0; i < 11; i++) {
+      round.slots[slots[i]].colluder = i < 6;
+      await round.drv.commit(round, slots[i], i < 6 ? [1_000_000n] : reject);
+    }
+    await mine(1);
+    await round.drv.promote(round, { by: other, waitBlocks: 0 });
+    const prom = round.drv.promotedSlots(round);
+    const order = [...prom.filter((x) => round.slots[x].colluder).slice(0, 5), ...prom.filter((x) => !round.slots[x].colluder).slice(0, 3)];
+    expect(order.length).to.equal(8);
+    for (const x of order) await round.drv.reveal(round, x);
+    const [aggregated] = await agg.getEvaluation(aggId);
+    expect(aggregated.length).to.equal(1);
+    await lens(scn, "result", b, s, "FINALIZE");
+    expect((await escrow.getOracleResult(b, s)).outcome).to.equal(1n);   // no result
+    await escrow.connect(other).finalizeSubmission(b, s);
+    const sub = await escrow.getSubmission(b, s);
+    results[scn] = { aggregatedLen: aggregated.length, status: sub.status, passCount: sub.passCount };
+    expect(sub.status).to.equal(6n);                                     // AwaitingRerun, not PassedPaid
+    expect(sub.bondHeld).to.equal(BOND);
+    expect((await escrow.getBounty(b)).status).to.equal(0n);
   });
 
   // ------------------------------------------------------------------ 7. beacons (jumbo)

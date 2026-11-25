@@ -5,6 +5,9 @@ const fs = require('fs').promises;
 const logger = require('../utils/logger');
 const { config } = require('../config');
 
+const { requireAdmin } = require('../utils/adminAuth');
+const { readBodyCapped } = require('../utils/safeZip');
+const { limitPins } = require('../utils/pinLimit');
 const router = express.Router();
 const TMP_DIR = path.join(__dirname, '..', 'tmp');
 
@@ -82,7 +85,7 @@ async function pinJsonToPinata(contentObj, name = 'verdikta-json') {
 }
 
 // -------------------- RUBRICS: pin JSON (no file streaming) --------------------
-router.post('/rubrics', async (req, res) => {
+router.post('/rubrics', limitPins, async (req, res) => {
   const t0 = Date.now();
   try {
     const { rubric, classId } = req.body || {};
@@ -161,7 +164,7 @@ async function fetchWithFallback(cid, ipfsClient, timeoutMs) {
         continue; // Try next gateway
       }
 
-      const text = await response.text();
+      const text = (await readBodyCapped(response)).toString('utf8');
       logger.info('[fetch] Success via public gateway', { gateway, cid });
       return text;
     } catch (gwErr) {
@@ -179,8 +182,10 @@ router.get('/fetch/:cid', async (req, res) => {
     const ipfs = req.app.locals.ipfsClient;
     const cid = req.params.cid;
     
-    if (!cid || cid.length < 10) {
-      return res.status(400).json({ error: 'Invalid CID' });
+    // A bare CID only: params are URL-decoded, so "..%2F" or "%3F" would otherwise walk the
+    // gateway's other paths (with the operator gateway token attached).
+    if (typeof cid !== 'string' || !/^[A-Za-z0-9]{46,100}$/.test(cid)) {
+      return res.status(400).json({ error: 'Invalid CID', details: 'A bare IPFS CID (46-100 letters and digits)' });
     }
 
     const data = await fetchWithFallback(cid, ipfs, PIN_TIMEOUT_MS);
@@ -208,7 +213,7 @@ router.get('/diagnostics/ipfs', async (req, res) => {
 });
 
 // Auth probe
-router.get('/diagnostics/ipfs/auth', async (req, res) => {
+router.get('/diagnostics/ipfs/auth', requireAdmin, async (req, res) => {
   try {
     if (!PINATA_AUTH_HEADER) {
       return res.status(400).json({ success: false, error: 'IPFS_PINNING_KEY not set' });
@@ -229,7 +234,7 @@ router.get('/diagnostics/ipfs/auth', async (req, res) => {
 });
 
 // JSON pin probe
-router.post('/diagnostics/ipfs/pin', async (req, res) => {
+router.post('/diagnostics/ipfs/pin', requireAdmin, async (req, res) => {
   try {
     const cid = await pinJsonToPinata({ probe: true, t: Date.now() }, 'verdikta-probe');
     return res.json({ success: true, cid });

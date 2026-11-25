@@ -31,9 +31,18 @@ const MAX_QUERY_LEN = BCID_QUERY_MAX_CHARS;
 // value from smuggling a path or query string into the gateway URL.
 const BARE_CID_RE = /^[A-Za-z0-9]{46,100}$/;
 
-// POST /:jobId/submit accepts up to 10 work-product files of MAX_FILE_SIZE
-// each, so no archive it builds can exceed this. Larger downloads are cut off.
-const MAX_ARCHIVE_BYTES = 11 * MAX_FILE_SIZE;
+// The arbiters download at most this many bytes of one archive (@verdikta/common ipfs.maxBytes, the
+// verdikta-arbiter external adapter's default). A larger archive fails every honest arbiter's fetch
+// ("IPFS response exceeds maxBytes"), an error no arbiter commits on: the submission can never be
+// evaluated, and in a round where any slot still commits, every honest juror is charged the no-commit
+// penalty (sec6 e2e: an 80 MiB submission the site accepted blocked four honest arbiters).
+const ARBITER_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+
+// POST /:jobId/submit accepts up to 10 work-product files of MAX_FILE_SIZE each (up to 11 x
+// MAX_FILE_SIZE as an archive), but no archive may exceed what the arbiters download: the routes that
+// build an archive refuse a larger one before pinning, and /submit/prepare refuses a larger hunterCid.
+// Larger downloads are cut off.
+const MAX_ARCHIVE_BYTES = Math.min(11 * MAX_FILE_SIZE, ARBITER_MAX_DOWNLOAD_BYTES);
 
 // manifest.json and the primary query are small JSON files (the query itself is
 // capped at BCID_QUERY_MAX_CHARS). Entries declaring more than this are never inflated,
@@ -69,7 +78,7 @@ function gatewayList() {
 }
 
 function tooLargeError(bytes) {
-  const err = new Error(`Archive exceeds ${MAX_ARCHIVE_BYTES} bytes${bytes ? ` (got at least ${bytes})` : ''}.`);
+  const err = new Error(`Archive exceeds ${MAX_ARCHIVE_BYTES} bytes${bytes ? ` (got at least ${bytes})` : ''}, the most an arbiter downloads.`);
   err.tooLarge = true;
   return err;
 }
@@ -317,6 +326,7 @@ function archiveShapeLabel(result) {
 }
 
 module.exports = {
+  ARBITER_MAX_DOWNLOAD_BYTES,
   ARBITER_MAX_ENTRIES,
   ARBITER_MAX_EXTRACTED_BYTES,
   validateArchiveShape,

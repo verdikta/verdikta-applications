@@ -15,6 +15,8 @@ const {
   archiveShapeLabel,
   CONFORMING_SHAPE_EXAMPLE,
   MAX_JSON_ENTRY_BYTES,
+  MAX_ARCHIVE_BYTES,
+  ARBITER_MAX_DOWNLOAD_BYTES,
 } = require('../utils/archiveShapeValidator');
 
 function zipOf(files) {
@@ -262,6 +264,18 @@ describe('fetchAndValidateArchiveShape', () => {
     const result = await fetchAndValidateArchiveShape(CID, { perGatewayTimeoutMs: 5000, totalTimeoutMs: 300 });
     expect(result.gatewayFailure).toBe(true);
     expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('by default refuses an archive larger than the arbiters download (sec6 e2e)', async () => {
+    // @verdikta/common's ipfs.maxBytes (64 MiB) bounds every arbiter's fetch: an archive over it is an
+    // error on every honest arbiter, never a commit. The site accepted up to 11 x 20 MB before.
+    expect(MAX_ARCHIVE_BYTES).toBe(ARBITER_MAX_DOWNLOAD_BYTES);
+    expect(ARBITER_MAX_DOWNLOAD_BYTES).toBe(64 * 1024 * 1024);
+    global.fetch = jest.fn(async () => new Response(conforming, { headers: { 'content-length': String(80 * 1024 * 1024) } }));
+    const result = await fetchAndValidateArchiveShape(CID);
+    expect(result.ok).toBe(false);
+    expect(result.check).toBe('archive-too-large');
+    expect(result.gatewayFailure).toBeUndefined();
   });
 
   it('rejects an archive whose content-length exceeds the cap without downloading it', async () => {

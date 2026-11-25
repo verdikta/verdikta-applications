@@ -5,7 +5,7 @@
 
 const { untrustedContent } = require('../utils/untrustedContent');
 const { ethers } = require('ethers');
-const { readEntry, readEntryText, readBodyCapped } = require('../utils/safeZip');
+const { readEntry, readEntryText, readBodyCapped, DEFAULT_BODY_MAX_BYTES: DEFAULT_CONTENT_READ_BYTES } = require('../utils/safeZip');
 const { bountyAmountWei, bountyAmountFields } = require('../utils/bountyAmounts');
 const express = require('express');
 const { limitPins } = require('../utils/pinLimit');
@@ -4889,6 +4889,23 @@ async function pinnedArchiveSize(archivePath) {
   }
 }
 
+/**
+ * The error body for a built submission archive larger than the arbiters download
+ * (archiveShapeValidator.MAX_ARCHIVE_BYTES), or null. Such an archive fails every honest
+ * arbiter's fetch: no commit, so the submission is never evaluated, and honest jurors are
+ * charged the no-commit penalty whenever another slot commits. Refused before pinning.
+ */
+function oversizedArchiveError(archiveSize) {
+  const max = archiveShapeValidator.MAX_ARCHIVE_BYTES;
+  if (archiveSize <= max) return null;
+  return {
+    code: ErrorCodes.PAYLOAD_TOO_LARGE,
+    message: 'Submission archive is larger than arbiters download',
+    details: `The work product archive is ${archiveSize} bytes; arbiters download at most ${max} bytes of a submission and could not evaluate it.`,
+    fix: `Keep the files under ${Math.floor(max / (1024 * 1024))} MiB in total (they are zipped as sent). Use POST /api/jobs/:id/submit/dry-run to pre-check.`
+  };
+}
+
 
 /**
  * POST /api/jobs/:jobId/submit/dry-run
@@ -5382,6 +5399,11 @@ router.post('/:jobId/submit', limitPins, async (req, res) => {
     // empty/corrupt archive without the latency/false-negatives of a post-pin gateway
     // readback. CID is content-addressed, so non-empty archive ⟹ non-empty pinned content.
     const archiveSize = await pinnedArchiveSize(hunterArchive.archivePath);
+    const tooLarge = oversizedArchiveError(archiveSize);
+    if (tooLarge) {
+      await fs.unlink(hunterArchive.archivePath).catch(() => {});
+      return sendError(res, 413, tooLarge);
+    }
 
     const ipfsClient = req.app.locals.ipfsClient;
     let hunterCid;
@@ -5871,6 +5893,11 @@ router.post('/:jobId/submit/bundle', limitPins, async (req, res) => {
       // gateway-readback latency/false-negatives. CID is content-addressed, so a non-empty
       // archive ⟹ non-empty pinned content.
       const archiveSize = await pinnedArchiveSize(hunterArchive.archivePath);
+      const tooLarge = oversizedArchiveError(archiveSize);
+      if (tooLarge) {
+        await fs.unlink(hunterArchive.archivePath).catch(() => {});
+        return sendError(res, 413, tooLarge);
+      }
       const ipfsClient = req.app.locals.ipfsClient;
       try {
         hunterCid = await ipfsClient.uploadToIPFS(hunterArchive.archivePath);
@@ -8356,7 +8383,8 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
         throw new Error(`Gateway returned ${response.status}`);
       }
 
-      archiveBuffer = await readBodyCapped(response); // capped: hunterCid is whatever the hunter put on chain
+      // capped: hunterCid is whatever the hunter put on chain; any archive the site accepts is readable
+      archiveBuffer = await readBodyCapped(response, Math.max(archiveShapeValidator.MAX_ARCHIVE_BYTES, DEFAULT_CONTENT_READ_BYTES));
       logger.info('[content] Archive fetched', { jobId, submissionId, size: archiveBuffer.length });
     } catch (ipfsErr) {
       logger.error('[content] Failed to fetch archive', { hunterCid, msg: ipfsErr.message });

@@ -1862,7 +1862,7 @@ What this round cannot, because the real thing is not in it:
 - gVisor in the same round; the AI Node's production build; real jurors with real latency.
 - Real pinning and gateways.
 - The v2 keeper's points on real operators (§12's penalties, as the v2 keeper applies them: −400 timeliness to a
-  juror that did not commit in a round that failed for lack of commits, −500 to a promoted juror that did not reveal
+  juror that did not commit in a round that failed for lack of commits with at least one commit, −500 to a promoted juror that did not reveal
   in a failed round), and a real re-trigger.
 - The production builder key (C6), once it exists.
 

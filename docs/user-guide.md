@@ -529,8 +529,8 @@ These scores are updated when a round is settled (`settle(aggId)`, after its dea
 | Promoted and revealed, but the round failed | 0 | +20 |
 | Promoted but never revealed, round finished | 0 | −200 |
 | Promoted but never revealed, round failed | 0 | −500 |
-| Never committed, and the round failed for lack of commits | 0 | −400 |
-| Committed but not promoted, or not committed in a round that did not fail for lack of commits | 0 | 0 |
+| Never committed, and the round failed for lack of commits, though some juror committed | 0 | −400 |
+| Committed but not promoted, or not committed in a round that did not fail for lack of commits or in which nobody committed (the request's or a shared outage's failure, not the jurors') | 0 | 0 |
 
 The ETH *bonus* (fee × `bonusMultiplier()`, 3 by default) goes to the *P* arbiters whose answers form the cluster, which is decided separately from these quality classes. Every juror keeps its base fee in all cases: it is credited at the draw. An arbiter that was frozen at the round's deadline (an unanswered health call) is not scored at all, unless it committed in that round: a commit proves it was up.
 

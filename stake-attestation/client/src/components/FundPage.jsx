@@ -63,6 +63,8 @@ export function FundPage({ listingId }) {
   const [, redraw] = useState(0);
   const happened = useCallback((event) => {
     record.current = pageAfter(record.current, event);
+    // a read that says no listing is here takes the opening's own line with it: a listing read later is drawn from its read
+    if (record.current.read?.missing) setOpenedHere(false);
     redraw((n) => n + 1);
   }, []);
   const loaded = record.current.read; // { listing, hold, block } | { missing, block } | { failed } | null

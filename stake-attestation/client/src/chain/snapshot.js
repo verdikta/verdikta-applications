@@ -13,8 +13,12 @@
 //     that does not take the form: either way the read fails, and nothing is read by number in its place. The deploy
 //     notes say the address must take it;
 //   - a wallet's node: by the block's number. What a wallet does with a block parameter it does not know is its own,
-//     so it is never sent one; its answers are held to the block by the hash before and after alone.
+//     so it is never sent one; its answers are held to the block by the hash before and after alone. A wallet can
+//     change network at any moment, so it is also held to the site's chain: it is asked its chain after the calls of
+//     every try, and a try it reported a change of network during is not taken.
 // The nodes behind one address are taken to agree on the chain, and a node to answer truly for a block hash it names.
+import { CONFIG } from '../config.js';
+import { verifyChain } from './wallet.js';
 
 /** How many times a read is made before it fails, when the block it was made at did not keep its hash. */
 export const SNAPSHOT_TRIES = 3;
@@ -36,6 +40,10 @@ export function siteReader(provider) {
   return provider;
 }
 
+/** How many changes of network the wallet has reported (chain/wallet.js hears them, and tells them here). */
+let switches = 0;
+export const walletSwitched = () => { switches += 1; };
+
 const quantity = (n) => `0x${n.toString(16)}`;
 /** A block's header by tag or number, with a raw call: ethers shares and caches getBlock() and getBlockNumber(). */
 const header = (provider, tag) => provider.send('eth_getBlockByNumber', [typeof tag === 'number' ? quantity(tag) : tag, false]);
@@ -48,10 +56,13 @@ const hashOf = (block) => (typeof block?.hash === 'string' && /^0x[0-9a-f]{64}$/
  * @param {(at: { call: Function }) => Promise<T>} read - the calls of this read, each made on a contract of `at`
  *        (chain/wallet.js stakeAttestation): such a contract reads at this block and at no other, and can send nothing
  * @returns {Promise<{ value: T, block: number, blockHash: string }>} Rejects with the read's own error when the read
- *          failed on a block that kept its hash, and with SnapshotError when no try was of one block.
+ *          failed on a block that kept its hash, with SnapshotError when no try was of one block, and with wrongChain
+ *          when a wallet's node is not on the site's chain (`chainId`, which only a test, having no build, passes).
  */
-export async function snapshot(provider, read, { tries = SNAPSHOT_TRIES } = {}) {
+export async function snapshot(provider, read, { tries = SNAPSHOT_TRIES, chainId = CONFIG.chainId } = {}) {
+  const ofWallet = !SITE_READERS.has(provider);
   for (let i = 0; i < tries; i += 1) {
+    const reported = switches;
     const head = await header(provider, 'latest');
     const blockHash = hashOf(head);
     const block = Number(head?.number);
@@ -68,7 +79,11 @@ export async function snapshot(provider, read, { tries = SNAPSHOT_TRIES } = {}) 
       failure = err ?? new Error('the read failed');
     }
     // the block at that number, asked again after the calls: the same hash, and every answer above is that block's
-    if (hashOf(await header(provider, block)) === blockHash) {
+    const stood = hashOf(await header(provider, block)) === blockHash;
+    // A wallet on another network by now fails the read here, whatever its blocks say: no try is ever made again on
+    // that network. A try it reported a change during is not taken either: it may have gone there and come back.
+    if (ofWallet) await verifyChain(provider, chainId);
+    if (stood && (!ofWallet || switches === reported)) {
       // a read that failed while its block was being replaced is read again; one that failed on a block that stood, fails
       if (failure) throw failure;
       return { value, block, blockHash };

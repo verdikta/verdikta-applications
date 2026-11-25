@@ -32,7 +32,8 @@ function route() {
   const check = /^\/check(?:\/(\d{1,20}))?$/.exec(h);
   if (check) return { page: 'check', claimId: check[1] ?? null };
   const fund = /^\/fund(?:\/(\d{1,20}))?$/.exec(h);
-  if (fund) return { page: 'fund', listingId: fund[1] ?? null };
+  // one listing, one id: "001" is listing 1, and every reader of the id is given "1", as the chain and the record have it
+  if (fund) return { page: 'fund', listingId: fund[1] ? BigInt(fund[1]).toString() : null };
   if (h === '/list') return { page: 'list' };
   return { page: 'home' };
 }

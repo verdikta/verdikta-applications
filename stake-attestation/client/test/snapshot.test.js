@@ -452,7 +452,10 @@ test('every read of a hold on the listing\'s page is made on a snapshot\'s contr
   const lib = read('../src/chain/snapshot.js');
   assert.match(lib, /const head = await header\(provider, 'latest'\);/);
   assert.match(lib, /call: \(tx\) => provider\.send\('eth_call', \[\{ to: tx\.to, data: tx\.data \?\? '0x', \.\.\.\(tx\.from \? \{ from: tx\.from \} : \{\}\) \}, selector\]\),/);
-  assert.match(lib, /if \(hashOf\(await header\(provider, block\)\) === blockHash\) \{[\s\S]*?if \(failure\) throw failure;\s*return \{ value, block, blockHash \};\s*\}/);
+  // and, for a wallet's node, its chain asked after that header in every try, before any try is taken (R5-F2)
+  assert.match(lib, /const stood = hashOf\(await header\(provider, block\)\) === blockHash;\s*(?:\/\/[^\n]*\n\s*)*if \(ofWallet\) await verifyChain\(provider, chainId\);\s*if \(stood && \(!ofWallet \|\| switches === reported\)\) \{[\s\S]*?if \(failure\) throw failure;\s*return \{ value, block, blockHash \};\s*\}/);
+  assert.match(lib, /export async function snapshot\(provider, read, \{ tries = SNAPSHOT_TRIES, chainId = CONFIG\.chainId \} = \{\}\) \{\s*const ofWallet = !SITE_READERS\.has\(provider\);/);
+  assert.equal(lib.split('return {').length - 1, 1, 'a try is taken in one place');
   assert.match(lib, /throw new SnapshotError\(tries\);/);
   // nothing of a kept receipt is left in it: no heights asked for, no hashes carried
   assert.doesNotMatch(lib, /heights|hashes|parentHash/);

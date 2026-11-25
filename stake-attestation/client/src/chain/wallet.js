@@ -6,7 +6,7 @@ import { BrowserProvider, Contract, JsonRpcProvider } from 'ethers';
 
 import { CONFIG } from '../config.js';
 import { STAKE_ATTESTATION_ABI } from './abi.js';
-import { siteReader } from './snapshot.js';
+import { siteReader, walletSwitched } from './snapshot.js';
 
 const POLL_MS = 1000;
 
@@ -37,10 +37,19 @@ export async function stillConnected(wallet) {
   }
 }
 
+let heard = null;
+/** A wallet says when it changes network: one listener per wallet tells chain/snapshot.js, which takes no try of a read it changed during. */
+function hearWallet() {
+  if (heard === window.ethereum) return;
+  heard = window.ethereum;
+  heard.on?.('chainChanged', walletSwitched);
+}
+
 /** Asks the wallet for an account on the site's chain. Resolves { provider, signer, account }. */
 export async function connectWallet() {
   if (!CONFIG.contract || !CONFIG.chainId) throw new WalletError('notConfigured');
   if (!hasWallet()) throw new WalletError('none');
+  hearWallet();
   const provider = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
   await provider.send('eth_requestAccounts', []);
   let { chainId } = await provider.getNetwork();
@@ -80,6 +89,7 @@ export async function chainReader() {
     // here is asked that way. Without an address, reads go through the wallet's node, by the block's number.
     if (CONFIG.rpcUrl) reader = siteReader(new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId, { staticNetwork: true, pollingInterval: POLL_MS }));
     else if (hasWallet()) {
+      hearWallet();
       reader = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
       // a provider is bound to its network: after a chain change, make a new one
       window.ethereum.on?.('chainChanged', () => { reader = null; });

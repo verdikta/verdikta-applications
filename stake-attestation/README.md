@@ -1601,7 +1601,10 @@ goes in a URL.
   confirmations and the narrow INVALIDs by result, each listing's floor and size, and a finding's
   round kind (`client/e2e/safeguards.spec.js`). The hunter appeals with the tool, not the site.
 - **A listing's page** (`#/fund/<listingId>`): its stored terms and, while it is Listed, the
-  opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. Just
+  opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. The id in
+  the address is read once and has one form from there on, the decimal number with no leading
+  zeros: `#/fund/001` is the page of listing 1, and every part of the page is given `1`, the list
+  of the repository's other listings among them, which leaves this listing out by its id. Just
   before sending, the listing's state and fee are read at one block through the wallet: unless
   it is still Listed with the terms the page shows, nothing is sent, and the fee passed as
   `expectedFeeWei` makes an opening fund that lands first from elsewhere revert this one.
@@ -1710,6 +1713,13 @@ goes in a URL.
   is asked at the block's number, and is never sent the hash form. Either way the answers are
   taken only when the block at that number still has the hash it had before the calls; otherwise
   the read is made again, three times at most, and then it is a failed read.
+  A wallet can change network at any moment, so a read through one is also held to the site's
+  chain (`VITE_SA_CHAIN_ID`): the wallet is asked its chain after the calls of every try, and any
+  other chain is a failed read, said with the wallet's wrong-network message and never made again
+  on that network. A try during which the wallet reported a change of network (its `chainChanged`
+  event) is not taken either, since the wallet may have gone to another network and come back: the
+  read is made again, as for a replaced block. The site's read address is one chain's by how it is
+  made, and is asked neither.
   `test/snapshot.test.js` runs it against nodes whose blocks are replaced under it, and fails
   when a hold is read outside a snapshot.
   **The page reads; it does not watch.** It reads on load, after each of its own transactions and
@@ -1724,8 +1734,9 @@ goes in a URL.
   it: the read just before something is sent, and every read of the page where no read address
   is configured, are tied to their block only by its hash read before and after the calls, and
   for the rest stand on the assumption alone, that the nodes behind the wallet's address agree on
-  the chain. A site that wants what it shows of a hold tied to a block's hash configures the read
-  address. The case that is left: a hold whose block is replaced after the page read it, and
+  the chain. Such a read is held to the site's chain all the same: a wallet that is on another
+  network when it is asked, after the calls, fails the read. A site that wants what it shows of a
+  hold tied to a block's hash configures the read address. The case that is left: a hold whose block is replaced after the page read it, and
   after the maker acted on it. The design's order for the maker is "once the hold is mined, push
   the fix", and a page cannot undo a push; it says what the chain has at its next read.
   **How the page knows.** It reads `heldAt(listingId)` in the snapshot it reads the listing in. A

@@ -1397,13 +1397,20 @@ test('node P41: a listing on hold is what the contract, the site and the tool ma
   const s3 = section(3);
   assert.match(s3, /A listing that takes none may take a late claim instead \("Late claims", after step 8\)\. One its maker holds \(section 2, "A listing on hold"\) is such a listing: `verdikta-attest commit` refuses it with LISTING_ON_HOLD, before anything is pinned or sent, and says since when\. It takes no commit again\. What is left there is a late claim, judged and recorded for no award \(`commit --late`\); or claim on another listing: if the maker rolls the stake forward, the fixed version is a listing of its own, and your proof must fail at that listing's baseCommit\./);
   assert.match(s3, /A feed entry's and a record's `sameRepository` give each related listing's state, and `heldAt` while its maker holds it; read the answer itself from the contract:/);
-  // section 4: no price for a commit there, said of a folder with nothing saved. A claim under way is resumed on a
-  // listing on hold as on any other, by either command, so neither is a way to read its price (commit.js: a folder
-  // with something signed keeps its kind and is settled before the listing is asked)
-  assert.match(section(4), /Read the price for such a folder with cast too\. On a listing on hold, in a folder where `commit` has saved nothing yet, `commit` prints no terms and no price: it is refused \(LISTING_ON_HOLD\), and `commit --late` prints a late claim's, as above\. A hold changes nothing for a claim already under way: a commit signed or on the chain is resumed by `commit`, and by `commit --late`, on every run, --yes or not, and its disclose is sent\. Read the price of a claim under way with cast, never with either command\./);
+  // section 4: no price for a commit there, said of a folder with nothing saved. A commit this folder has signed is
+  // gone on with on a listing on hold as on any other, by either command, so neither is a way to read its price
+  // (commit.js: a folder with something signed keeps its kind and is settled before the listing is asked). What is
+  // said of it is what is so (review round 2, R2-F2): the saved transaction is sent if it is not mined, the disclose
+  // follows a commit that is on the chain, one first mined after the hold reverts (the contract's commit asks
+  // acceptsCommits), and a prepared folder whose commit went out some other way is not resumed by `commit`
+  assert.match(section(4), /Read the price for such a folder with cast too\. On a listing on hold, in a folder where `commit` has saved nothing yet, `commit` prints no terms and no price: it is refused \(LISTING_ON_HOLD\), and `commit --late` prints a late claim's, as above\. A hold changes nothing for a commit this folder has signed: `commit`, and `commit --late`, go on with it on every run, --yes or not\. They send the saved transaction if it is not mined yet, and once the commit is on the chain they pin and send its disclose\. A commit first mined after the hold reverts: no claim exists, and the next run is refused as above\. A prepared folder whose commit went out some other way is not resumed by `commit`: section 2, "A listing on hold", says what `commit --late` does there\. So read the price of a claim under way with cast, never with either command\./);
+  assert.doesNotMatch(section(4), /a commit signed or on the chain is resumed/, 'not every commit on the chain is resumed by `commit`: one sent some other way is not');
   const runCommit = /export async function runCommit[\s\S]*$/.exec(commit)[0];
   assert.ok(runCommit.indexOf('if (state?.stage === \'commit-signed\') state = await settleCommit(ctx, ws, state);') < runCommit.indexOf('await readyToCommit('), 'a signed commit is settled before the listing is asked anything');
   assert.match(runCommit, /if \(!state \|\| state\.stage === 'prepared'\) \{\s*const \{ listing, inputs \} = await readyToCommit\(/, 'and only a folder with nothing signed reaches the refusal');
+  assert.match(/function commit\(uint256 listingId[\s\S]*?\n {4}\}/.exec(host)[0], /require\(acceptsCommits\(listingId\), "not accepting commits"\);/, 'a commit mined on a listing on hold reverts');
+  assert.match(commit, /if \(receipt\.status !== 1\) \{\s*const hash = state\.commitTx\.hash;\s*const next = \{ \.\.\.state, stage: 'prepared', commitTx: null \};\s*ws\.saveState\(next\);\s*throw fail\('COMMIT_REVERTED', /, 'and the tool says so, with the folder prepared again');
+  assert.match(ERROR_TEXTS.COMMIT_REVERTED, /so no claim exists and nothing was pinned/);
   // the exit codes: exit 1's line names it
   const exits = text.slice(text.indexOf('\nExit codes:\n') + 1).split('\n\n')[0];
   assert.match(exits, /\n {2}1 {2}[^\n]+\n {5}LISTING_ON_HOLD: `commit` on a listing its maker holds; nothing was sent, and section 3,\n {5}step 1, says what is left to do\n {2}2 {2}/);

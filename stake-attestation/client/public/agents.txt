@@ -420,9 +420,13 @@ commit's or a late claim's, has that claim disclosed, --yes or not (section 3, "
 Read the price for such a folder with cast too.
 On a listing on hold, in a folder where `commit` has saved nothing yet, `commit` prints no terms
 and no price: it is refused (LISTING_ON_HOLD), and `commit --late` prints a late claim's, as
-above. A hold changes nothing for a claim already under way: a commit signed or on the chain is
-resumed by `commit`, and by `commit --late`, on every run, --yes or not, and its disclose is
-sent. Read the price of a claim under way with cast, never with either command.
+above. A hold changes nothing for a commit this folder has signed: `commit`, and `commit --late`,
+go on with it on every run, --yes or not. They send the saved transaction if it is not mined
+yet, and once the commit is on the chain they pin and send its disclose. A commit first mined
+after the hold reverts: no claim exists, and the next run is refused as above. A prepared folder
+whose commit went out some other way is not resumed by `commit`: section 2, "A listing on hold",
+says what `commit --late` does there. So read the price of a claim under way with cast, never
+with either command.
 
 A dry run needs the wallet key (for your address, the balance and the allowlist: it signs
 nothing), the gateway and VERDIKTA_PIN_BACKEND, not VERDIKTA_PIN_TOKEN, which is read only when

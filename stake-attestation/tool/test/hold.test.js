@@ -234,6 +234,31 @@ test('a hold that comes after the terms were said and before the commit is signe
   assert.equal(await w.claimCount(), m.claims + 1n);
 });
 
+test('a commit signed before the hold and first mined after it reverts: no claim exists, nothing is pinned, and the next run is refused for the hold', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const m = await mark();
+  let heldAt = null;
+  // the commit is signed and saved, and the maker's hold is mined before it
+  const onStep = async (step) => {
+    if (step === 'commit:signed') heldAt = await hold(l);
+  };
+  const err = await w.hunter({ onStep }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }).catch((e) => e);
+  assert.equal(err.code, 'COMMIT_REVERTED', err.message);
+  assert.match(err.message, /The contract says: not accepting commits\./);
+  assert.equal(await w.claimCount(), m.claims, 'no claim exists');
+  assert.equal(w.ipfs.uploads.length, m.uploads, 'nothing was pinned');
+  assert.equal(readJson(statePath(dir)).stage, 'prepared', 'the folder is prepared again, with nothing signed');
+  // the next run, with --late or without it and --yes or not, sends no saved transaction: commit is refused for the hold
+  for (const acknowledge of [true, false]) {
+    const again = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge }).catch((e) => e);
+    assert.equal(again.code, 'LISTING_ON_HOLD', again.message);
+    assert.equal(again.message, refusalOf({ ...l, heldAt }));
+  }
+  assert.equal(await w.claimCount(), m.claims);
+  assert.equal(w.ipfs.uploads.length, m.uploads);
+});
+
 // ------------------------------------------------------------------------- which refusal, and what is read for it
 
 test('a listing that rolled forward or closed keeps LATE_CLAIMS_ONLY, word for word, also when its maker held it first, and is not asked for a hold', async () => {

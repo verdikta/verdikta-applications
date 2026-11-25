@@ -1426,11 +1426,12 @@ never its value.
     discloses one it finds, `--yes` or not.
   - A commit this folder signed that is on the chain when the hold comes is a pending claim, which a hold leaves
     alone: `commit` goes on with it, to disclose and everything after. One first mined after the hold reverts
-    (`COMMIT_REVERTED`), and the next run is refused for the hold. A prepared folder whose commit went out some
-    other way is refused as any commit there is, on a listing on hold as on every listing that takes no commit:
-    an ordinary commit asks the listing before it looks for its hashes on the chain, and where it looks is other
-    work (verdikta-applications#238). `commit --late` in that folder finds the claim, adopts it as the commit it
-    is and discloses it, with no second bond.
+    (`COMMIT_REVERTED`) and leaves the folder prepared, with nothing signed: from then on `commit` is refused for
+    the hold, and `commit --late` is a late claim's run there, which prints its terms and with `--yes` files a late
+    claim. A prepared folder whose commit went out some other way is refused as any commit there is, on a listing
+    on hold as on every listing that takes no commit: an ordinary commit asks the listing before it looks for its
+    hashes on the chain, and where it looks is other work (verdikta-applications#238). `commit --late` in that
+    folder finds the claim, adopts it as the commit it is and discloses it, with no second bond.
   - The price it signs is the price its terms named. The price is read again as it signs, before the wallet's
     balance is asked, and one that changed in between ends the run with `LATE_PRICE_CHANGED` and the new amount,
     nothing signed; the next run prints the terms again. A rise between that read and the gas estimate makes the

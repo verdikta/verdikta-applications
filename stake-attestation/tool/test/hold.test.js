@@ -239,7 +239,7 @@ test('a hold that comes after the terms were said and before the commit is signe
   assert.equal(await w.claimCount(), m.claims + 1n);
 });
 
-test('a commit signed before the hold and first mined after it reverts: no claim exists, nothing is pinned, and the next run is refused for the hold', async () => {
+test('a commit signed before the hold and first mined after it reverts: no claim exists and nothing is pinned; from then on commit is refused for the hold, and commit --late is a late claim\'s run, which files one only with --yes', async () => {
   const l = await w.listing();
   const dir = makeClaimDir();
   const m = await mark();
@@ -254,7 +254,7 @@ test('a commit signed before the hold and first mined after it reverts: no claim
   assert.equal(await w.claimCount(), m.claims, 'no claim exists');
   assert.equal(w.ipfs.uploads.length, m.uploads, 'nothing was pinned');
   assert.equal(readJson(statePath(dir)).stage, 'prepared', 'the folder is prepared again, with nothing signed');
-  // the next run, with --late or without it and --yes or not, sends no saved transaction: commit is refused for the hold
+  // an ordinary run from then on, --yes or not: nothing saved is sent again, and commit is refused for the hold
   for (const acknowledge of [true, false]) {
     const again = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge }).catch((e) => e);
     assert.equal(again.code, 'LISTING_ON_HOLD', again.message);
@@ -262,6 +262,49 @@ test('a commit signed before the hold and first mined after it reverts: no claim
   }
   assert.equal(await w.claimCount(), m.claims);
   assert.equal(w.ipfs.uploads.length, m.uploads);
+  // a run with --late is not refused (review round 3, R3-F1): the folder has nothing signed, so it is a late
+  // claim's run. Without --yes it says a late claim's terms and its price, and sends nothing
+  const price = await w.sa.commitPrice(l.listingId);
+  const paid = await w.provider.getBalance(w.address);
+  const terms = [];
+  await assert.rejects(w.hunter({ onNotice: (t) => terms.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: true }), (e) => e.code === 'NEEDS_ACKNOWLEDGEMENT');
+  assert.ok(terms.join('\n').includes(`This late claim sends ${ethers.formatEther(price)} ETH`), terms.join('\n'));
+  assert.equal(await w.claimCount(), m.claims, 'the dry run files nothing');
+  assert.equal(await w.provider.getBalance(w.address), paid);
+  // and with --yes it files a late claim, for a bond and a prepay
+  const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
+  assert.equal(r.late, true);
+  assert.equal(await w.claimCount(), m.claims + 1n);
+  assert.equal((await w.sa.getClaim(r.claimId)).late, true);
+  assert.equal(await w.provider.getBalance(w.address), paid + price, 'the bond and the prepay of a late claim');
+});
+
+test('commit --late --yes on a folder whose signed commit is first mined after the hold: that run ends with the commit reverted, and the same command again files a late claim', async () => {
+  // The run that meets the signed commit goes on as a commit's, whatever the flag (node P43), and ends when it
+  // reverts. The folder then has nothing signed, so the same command again is a late claim's run, and --yes pays
+  // for one. agents.txt section 4 says so (review round 3, R3-F1).
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  assert.equal((await killedAt(dir, l.listingId, 'commit:signed')).signal, 'SIGKILL');
+  assert.equal(readJson(statePath(dir)).stage, 'commit-signed');
+  await hold(l);
+  const m = await mark();
+  const price = await w.sa.commitPrice(l.listingId);
+  const paid = await w.provider.getBalance(w.address);
+  const said = [];
+  const first = await w.hunter({ onNotice: (t) => said.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
+  assert.equal(first.code, 'COMMIT_REVERTED', first.message);
+  assert.deepEqual(said, [COMMIT_HERE], 'the run said it holds a commit, and no late claim\'s terms');
+  assert.equal(await w.claimCount(), m.claims, 'no claim exists');
+  assert.equal(w.ipfs.uploads.length, m.uploads, 'nothing was pinned');
+  assert.equal(await w.provider.getBalance(w.address), paid, 'and nothing was paid to the contract');
+  const saved = readJson(statePath(dir));
+  assert.equal(saved.stage, 'prepared');
+  assert.equal(Object.hasOwn(saved, 'late'), false, 'a commit\'s folder still, with nothing signed');
+  const again = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
+  assert.equal(again.late, true, 'the same command again is a late claim\'s run');
+  assert.equal(await w.claimCount(), m.claims + 1n);
+  assert.equal(await w.provider.getBalance(w.address), paid + price, 'which pays a late claim\'s bond and prepay');
 });
 
 // ------------------------------------------------------------------------- which refusal, and what is read for it
@@ -612,7 +655,8 @@ test('the README\'s hunter section says the refusal and where the hold is read, 
   // both refusals say in which folder `commit --late` is a dry run, in one sentence (review round 2, R2-F1)
   assert.match(flat, /Both refusals, `LATE_CLAIMS_ONLY` and `LISTING_ON_HOLD`, say of `commit --late` what is said below of its dry run, in one sentence \(`LATE_CLAIM_INSTEAD`, `src\/errors\.js`\): in a folder where nothing is saved yet it prints its terms and its price; in a prepared folder it first looks for a claim of these files on the chain, and discloses one it finds, `--yes` or not\./);
   // which commit goes on: one this folder signed. One sent some other way, in a folder still prepared, does not
-  assert.match(flat, /A commit this folder signed that is on the chain when the hold comes is a pending claim, which a hold leaves alone: `commit` goes on with it, to disclose and everything after\. One first mined after the hold reverts \(`COMMIT_REVERTED`\), and the next run is refused for the hold\./);
+  assert.match(flat, /A commit this folder signed that is on the chain when the hold comes is a pending claim, which a hold leaves alone: `commit` goes on with it, to disclose and everything after\. One first mined after the hold reverts \(`COMMIT_REVERTED`\) and leaves the folder prepared, with nothing signed: from then on `commit` is refused for the hold, and `commit --late` is a late claim's run there, which prints its terms and with `--yes` files a late claim\./);
+  assert.doesNotMatch(flat, /the next run is refused for the hold/, 'only an ordinary run is refused (review round 3, R3-F1)');
   assert.match(flat, /A prepared folder whose commit went out some other way is refused as any commit there is, on a listing on hold as on every listing that takes no commit: an ordinary commit asks the listing before it looks for its hashes on the chain, and where it looks is other work \(verdikta-applications#238\)\. `commit --late` in that folder finds the claim, adopts it as the commit it is and discloses it, with no second bond\./);
   assert.match(fs.readFileSync(new URL('../src/errors.js', import.meta.url), 'utf8'), /\nconst LATE_CLAIM_INSTEAD = '/);
   assert.doesNotMatch(flat, /so the tool reads no hold\b/, 'true of a late claim only, now');

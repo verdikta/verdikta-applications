@@ -1142,7 +1142,7 @@ export const STRINGS = {
     done: 'Topped up (transaction {tx}). The escrow now holds {eth} ETH.',
     doneOwed: 'Topped up (transaction {tx}). {owed} ETH went to hunters who were owed it, and the escrow now holds {eth} ETH.',
     reopened: 'The listing is open again.',
-    changed: 'Nothing was sent: listing {id} can no longer be topped up (it is {state}). It has been read again.',
+    changed: 'Nothing was sent: listing {id} can no longer be topped up (it is {state}). This page reads it again.',
   },
   renew: {
     title: 'Renew',
@@ -1161,7 +1161,7 @@ export const STRINGS = {
     sending: 'Sending renew()…',
     done: 'Renewed (transaction {tx}). The listing fee is paid until {until}.',
     feeChanged: 'Nothing was sent: the listing fee is now {fee} ETH. The figure above is updated; renew again to pay it.',
-    changed: 'Nothing was sent: listing {id} can no longer be renewed (it is {state}). It has been read again.',
+    changed: 'Nothing was sent: listing {id} can no longer be renewed (it is {state}). This page reads it again.',
   },
   close: {
     title: 'Close',
@@ -1181,7 +1181,7 @@ export const STRINGS = {
     doneDeferred:
       'Listing {id} is closed (transaction {tx}). The contract could not send the {eth} ETH of escrow to {account}, ' +
       'so it holds the amount for that wallet: withdraw it below.',
-    changed: 'Nothing was sent: listing {id} changed on-chain since this page read it. It has been read again.',
+    changed: 'Nothing was sent: listing {id} changed on-chain since this page read it. This page reads it again.',
   },
   withdraw: {
     title: 'Withdraw',

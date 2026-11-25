@@ -421,9 +421,10 @@ class ContractService {
   /**
    * Get bounty count from contract
    */
-  async getBountyCount() {
+  /** @param {number} [blockTag] read at this block (the sync's cursor) rather than the node's head */
+  async getBountyCount(blockTag) {
     try {
-      const count = await this.contract.bountyCount();
+      const count = blockTag === undefined ? await this.contract.bountyCount() : await this.contract.bountyCount({ blockTag });
       return Number(count);
     } catch (error) {
       logger.error('Error getting bounty count:', error);

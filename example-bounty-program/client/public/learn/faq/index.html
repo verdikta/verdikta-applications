@@ -82,7 +82,7 @@
       "name": "Where does the prepay go, and is any of it refunded?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "It pays the arbiters who run the jury models. Whatever is not spent is refunded automatically to whoever funded the evaluation, when the submission is finalized or marked failed. In practice the whole prepay is usually spent, so plan on it as the cost of an attempt. A larger part comes back when a round ends without a verdict."
+        "text": "It pays the arbiters who run the jury models. Whatever is not spent is refunded automatically to whoever funded the evaluation, when the submission is finalized or marked failed. In practice the whole prepay is usually spent, so plan on it as the cost of an attempt. A round that ends without a verdict returns more only if it failed for want of commits or reveals, or found no eligible jury; a round nobody drew in time, a missed beacon quorum, or a round with enough commits that nobody promoted returns nothing (that part goes to the arbiters)."
       }
     },
     {
@@ -130,7 +130,7 @@
       "name": "Can the creator cancel, edit or refuse to pay?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "No. The contract has no function to cancel or edit a bounty. The payout, criteria, jury, threshold and deadline are fixed at creation, and a passing submission is paid without the creator's consent. The creator's only money back is the refund after an unclaimed deadline, or the difference described in the next question."
+        "text": "No. The contract has no function to cancel or edit a bounty. The payout, criteria, jury, threshold and deadline are fixed at creation, and a passing submission is paid without the creator's consent. The creator's only money back is the refund after an unclaimed deadline, or the difference described in the next question. One exception: on an open bounty with a creator approval window, the creator may approve any submission still in its window that has no earlier one ahead of it, including one sent before yours from a wallet the creator controls. That ends the bounty at the creator-approval amount, paid to that wallet, so nearly all of the bounty goes back to the creator. Before working on an open bounty with a window, check its earlier submissions: one still in its window can be approved instead of yours."
       }
     },
     {
@@ -279,7 +279,7 @@
       It pays the arbiters who run the jury models. Whatever is not spent is refunded
       automatically to whoever funded the evaluation, when the submission is finalized or marked
       failed. In practice the whole prepay is usually spent, so plan on it as the cost of an
-      attempt. A larger part comes back when a round ends without a verdict.
+      attempt. A round that ends without a verdict returns more only if it failed for want of commits or reveals, or found no eligible jury; a round nobody drew in time, a missed beacon quorum, or a round with enough commits that nobody promoted returns nothing (that part goes to the arbiters).
     </p>
 
     <h3 id="fail-refund">If my submission fails, do I get the prepay back?</h3>
@@ -326,7 +326,7 @@
       No. The contract has no function to cancel or edit a bounty. The payout, criteria, jury,
       threshold and deadline are fixed at creation, and a passing submission is paid without the
       creator's consent. The creator's only money back is the refund after an unclaimed deadline,
-      or the difference described in the next question.
+      or the difference described in the next question. One exception: on an open bounty with a creator approval window, the creator may approve any submission still in its window that has no earlier one ahead of it, including one sent before yours from a wallet the creator controls. That ends the bounty at the creator-approval amount, paid to that wallet, so nearly all of the bounty goes back to the creator. Before working on an open bounty with a window, check its earlier submissions: one still in its window can be approved instead of yours.
     </p>
 
     <h3 id="approval-window">What is a creator approval window?</h3>

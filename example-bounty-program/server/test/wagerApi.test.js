@@ -778,6 +778,14 @@ describe('GET /api/wagers/status', () => {
     expect((await status('wagerId=VW-TEST-BOS-DET-1')).body.pairs[0].state).toBe('READY_TO_CLAIM');
     mockStorageData.jobs[0].submissions = [{ submissionId: 0, status: 'PENDING_EVALUATION', hunter: BOB }];
     expect((await status('wagerId=VW-TEST-BOS-DET-1')).body.pairs[0].state).toBe('CLAIM_PENDING');
+    // A claim awaiting a re-run is still held by the escrow (its close reverts): CLAIM_PENDING, with the
+    // re-run and expiry steps, not READY_TO_CLAIM or a close.
+    mockStorageData.jobs[0].submissions = [{ submissionId: 0, status: 'AWAITING_RERUN', onChainStatus: 'AwaitingRerun', hunter: BOB, rerunDeadline: NOW() + H }];
+    const rerun = (await status('wagerId=VW-TEST-BOS-DET-1')).body.pairs[0];
+    expect(rerun.state).toBe('CLAIM_PENDING');
+    expect(rerun.actions.map((x) => x.type).sort()).toEqual(['EXPIRE_RERUN', 'RERUN']);
+    expect(rerun.actions.find((x) => x.type === 'EXPIRE_RERUN').path).toBe('/api/jobs/73/submissions/0/expire-rerun');
+    mockStorageData.jobs[0].submissions = [{ submissionId: 0, status: 'PENDING_EVALUATION', hunter: BOB }];
     mockChain[73].status = 1n;
     mockChain[73].winner = BOB;
     const paid = (await status('wagerId=VW-TEST-BOS-DET-1')).body.pairs[0];

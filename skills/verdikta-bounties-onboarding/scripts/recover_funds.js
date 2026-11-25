@@ -32,8 +32,8 @@ export async function runRecover(lib, { withdraw = false, close = null, contract
 }
 
 // closeExpiredBounty needs the pending list empty: rounds in flight AND submissions awaiting a re-run. The lens's
-// canBeClosed counts only rounds in flight (activeEvaluations), so an AwaitingRerun claim would pass it and the close
-// would revert; both are checked.
+// canBeClosed reads that list too (pendingSubmissionIds; activeEvaluations alone would miss AwaitingRerun claims);
+// the list is also read here, so an escrow whose lens answered otherwise is still not closed blind.
 async function closable(escrow, jobId) {
   const [can, pending] = await Promise.all([escrow.canBeClosed(jobId), escrow.pendingSubmissionIds(jobId)]);
   return can && pending.length === 0;

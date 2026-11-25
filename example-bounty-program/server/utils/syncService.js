@@ -524,6 +524,19 @@ function applyChainBountyFields(localJob, chainBounty) {
   return changed;
 }
 
+/**
+ * The last block the event sync reads to: `head` less config.syncConfirmations, never below the
+ * cursor already reached. Reading to the head itself lost events for good: a block reorged out
+ * after it was read (its events applied, the replacement block's never read), or a getLogs answered
+ * by a node behind the one that gave the head (a load-balanced RPC) returning nothing for the newest
+ * blocks; either way the cursor had moved past them. And a head from a lagging node moved the cursor
+ * back, replaying events already applied.
+ */
+function syncHead(head, cursor) {
+  const conf = Number.isInteger(config.syncConfirmations) && config.syncConfirmations >= 0 ? config.syncConfirmations : 3;
+  return Math.max(Number(head) - conf, Number(cursor) || 0);
+}
+
 class SyncService {
   constructor(intervalMinutes = 2) {
     this.intervalMs = intervalMinutes * 60 * 1000;
@@ -694,7 +707,7 @@ class SyncService {
   async _bootstrap(contractService) {
     logger.info('[bootstrap] Starting event replay from deployment block...');
 
-    const currentBlock = await contractService.getBlockNumber();
+    const currentBlock = syncHead(await contractService.getBlockNumber(), 0);
     const deploymentBlock = config.deploymentBlock || 0;
 
     // Replay events in chunks
@@ -706,14 +719,18 @@ class SyncService {
         allEvents = allEvents.concat(chunk);
         logger.debug(`[bootstrap] Fetched events for blocks ${from}-${to}`, { count: chunk.length });
       } catch (error) {
+        // A chunk skipped here would be skipped for good: the cursor is set past it below, and the
+        // gap fill only restores bounties, not their submissions or results. Fail the bootstrap; the
+        // next cycle (with backoff) starts it again.
         logger.warn(`[bootstrap] Failed chunk ${from}-${to}`, { error: error.message });
+        throw new Error(`bootstrap: event chunk ${from}-${to} failed: ${error.message}`);
       }
     }
 
     logger.info(`[bootstrap] Replayed ${allEvents.length} events from ${deploymentBlock} to ${currentBlock}`);
 
     // Process all events to build/update job state
-    const storage = await jobStorage.readStorage();
+    const storage = await jobStorage.readStorageStrict();
     const currentContract = jobStorage.getCurrentContractAddress();
 
     for (const event of allEvents) {
@@ -721,7 +738,7 @@ class SyncService {
     }
 
     // Belt-and-suspenders: verify bounty count
-    const bountyCount = await contractService.getBountyCount();
+    const bountyCount = await contractService.getBountyCount(currentBlock);
     const knownBountyIds = new Set();
     for (const job of storage.jobs) {
       const jc = (job.contractAddress || '').toLowerCase();
@@ -780,11 +797,12 @@ class SyncService {
   // ==========================================================================
 
   async _eventSync(contractService, syncState) {
-    const storage = await jobStorage.readStorage();
+    const storage = await jobStorage.readStorageStrict();
     const currentContract = jobStorage.getCurrentContractAddress();
 
-    // Phase A: Event fetch (2 RPC calls)
-    const currentBlock = await contractService.getBlockNumber();
+    // Phase A: Event fetch (2 RPC calls). The cursor stays SYNC_CONFIRMATIONS behind the head and
+    // never moves back (see syncHead).
+    const currentBlock = syncHead(await contractService.getBlockNumber(), syncState.lastSyncedBlock);
     const fromBlock = syncState.lastSyncedBlock + 1;
 
     let events = [];
@@ -803,11 +821,24 @@ class SyncService {
       logger.info('[sync] Processed events', { count: eventsProcessed, fromBlock, toBlock: currentBlock });
     }
 
-    // Phase C: Hot polling — check oracle results for pending submissions
+    // Phase C: Hot polling — check oracle results for pending submissions. The hot set lives in
+    // memory and is otherwise filled only by events: a restarted process (a crash, a deploy) would
+    // neither poll nor keep any round already in flight until another event for its bounty arrived,
+    // so an undrawn round could reach cancelUnsealed (its prepay to the arbiter pool) and a closed
+    // one go unpromoted. The first cycle of a process loads it from the records.
+    if (!this._hotSetLoaded) {
+      for (const job of storage.jobs) {
+        if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
+        if ((job.submissions || []).some(needsHotPoll)) this.hotBountyIds.add(job.jobId);
+      }
+      this._hotSetLoaded = true;
+    }
     await this._pollHotBounties(storage, currentContract, contractService);
 
-    // Phase D: bountyCount check — fill any gaps from 0 to bountyCount
-    const bountyCount = await contractService.getBountyCount();
+    // Phase D: bountyCount check — fill any gaps from 0 to bountyCount. Read at the cursor's block:
+    // a count from a node behind it (a load-balanced RPC) would make the stale check below orphan
+    // bounties the events just recorded; a node that lacks the block errors instead, and the cycle retries.
+    const bountyCount = await contractService.getBountyCount(currentBlock);
     const knownIds = new Set(
       storage.jobs
         .filter(j => (j.contractAddress || '').toLowerCase() === currentContract && j.syncedFromBlockchain)
@@ -1234,7 +1265,7 @@ class SyncService {
 
   async _backfillAwardTxHashes(contractService) {
     try {
-      const storage = await jobStorage.readStorage();
+      const storage = await jobStorage.readStorageStrict();
       const currentContract = jobStorage.getCurrentContractAddress();
 
       const needsBackfill = storage.jobs.filter(j =>
@@ -1801,7 +1832,7 @@ class SyncService {
           }
 
           if (this.roundKeeper) {
-            await this.roundKeeper.tend(bountyId, sub.submissionId, { ...state, aggId });
+            await this.roundKeeper.tend(bountyId, sub.submissionId, { ...state, aggId: await this._roundAggId(contractService, bountyId, sub, state) });
           }
         } catch (err) {
           logger.debug('[hot-poll] Error checking round', {
@@ -1816,6 +1847,31 @@ class SyncService {
     if (this.roundKeeper) await this.roundKeeper.housekeeping();
     if (checksPerformed > 0) {
       logger.info('[hot-poll] Round checks completed', { checks: checksPerformed });
+    }
+  }
+
+  /**
+   * The aggId an aggregator step (CLOSE_COMMITS, PROMOTE) is sent for: the submission's current round
+   * on chain, not the local record's. The record's is the last WorkSubmitted the event sync applied;
+   * a re-run's event missed (a reorg, a lagging node) leaves it naming the previous round, whose
+   * steps never simulate, so the keeper sat out the live round. One chain read, only for those steps;
+   * the record is healed to it. Null (no send) when the read fails.
+   */
+  async _roundAggId(contractService, bountyId, sub, state) {
+    if (state.nextAction !== 'CLOSE_COMMITS' && state.nextAction !== 'PROMOTE') return sub.verdiktaAggId;
+    try {
+      const chainSub = await contractService.contract.getSubmission(bountyId, sub.submissionId);
+      const aggId = chainSub.verdiktaAggId;
+      if (!aggId || aggId === ethers.ZeroHash) return null;
+      if (aggId !== sub.verdiktaAggId) {
+        logger.warn('[hot-poll] local round id was stale; using the chain\'s', { bountyId, submissionId: sub.submissionId, local: sub.verdiktaAggId, chain: aggId });
+        sub.verdiktaAggId = aggId;
+        sub.aggIds = appendAggId(sub.aggIds, aggId);
+      }
+      return aggId;
+    } catch (err) {
+      logger.debug('[hot-poll] round id read failed', { bountyId, submissionId: sub.submissionId, error: err.message });
+      return null;
     }
   }
 
@@ -2390,6 +2446,6 @@ function getSyncService() {
 module.exports = {
   initializeSyncService,
   getSyncService,
-  SyncService,
+  SyncService, syncHead,
   applyChainBountyFields, findPendingJobForBountyCreated, evictUnlinkedSquatters, needsChainFieldHeal,
   needsMetadataHeal, applyEvaluationMetadata, healJobMetadata, fetchEvaluationMetadata };

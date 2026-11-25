@@ -199,7 +199,7 @@ async function createBounty() {
     oracle: {                                      // YOUR oracle settings, used for every evaluation
       maxOracleFee: ethers.parseEther('0.00002'),  // per-arbiter fee ceiling (<= the aggregator's live maxOracleFee(); clamped to it at start if it drops); also the eligibility filter
       alpha: 500n,                                 // quality-vs-timeliness blend, 0-1000
-      estimatedBaseCost: ethers.parseEther('0.00001'), // < maxOracleFee; 0 disables the price boost
+      estimatedBaseCost: ethers.parseEther('0.00001'), // < maxOracleFee; price-boost baseline (0 still boosts)
       maxFeeBasedScaling: 3n,                      // 1-1000; 1 disables the price boost
       minOracleFee: 0n,                            // fee floor: every juror (and beacon) is paid at least this (0 = none)
       withBeacons: false,                          // randomness beacons before the draw (the Jumbo class uses them)
@@ -389,7 +389,7 @@ def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth)
         (                                                 # oracle settings — yours, used for every evaluation
             w3.to_wei(0.00002, 'ether'),                  # maxOracleFee (<= the aggregator's live ceiling; eligibility filter)
             500,                                          # alpha 0-1000
-            w3.to_wei(0.00001, 'ether'),                  # estimatedBaseCost (< maxOracleFee; 0 disables price boost)
+            w3.to_wei(0.00001, 'ether'),                  # estimatedBaseCost (< maxOracleFee; 0 still boosts: only scaling 1 disables it)
             3,                                            # maxFeeBasedScaling 1-1000 (1 disables price boost)
             0,                                            # minOracleFee: fee floor per juror (0 = none)
             False,                                        # withBeacons

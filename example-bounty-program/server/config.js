@@ -102,6 +102,10 @@ const config = {
   // Blockchain sync settings
   useBlockchainSync: process.env.USE_BLOCKCHAIN_SYNC === 'true',
   syncIntervalSeconds: parseInt(process.env.SYNC_INTERVAL_SECONDS) || 20,
+  // Blocks the event sync stays behind the head (utils/syncService.js syncHead): a reorg or a lagging
+  // RPC node within this depth loses no events. Round state (the hot poll, the keeper) reads the head.
+  syncConfirmations: process.env.SYNC_CONFIRMATIONS !== undefined && /^\d+$/.test(process.env.SYNC_CONFIRMATIONS)
+    ? parseInt(process.env.SYNC_CONFIRMATIONS, 10) : 3,
 
   // Round keeper (utils/roundKeeper.js): a funded key that moves v2 rounds along (draw, close
   // commits, promote, close failed rounds, expire re-runs). Optional: without it every step stays

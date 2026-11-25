@@ -18,7 +18,10 @@ const wager = require('../../shared/mutualWager');
 const unix = (iso) => Math.floor(Date.parse(iso) / 1000);
 const isoOf = (sec) => (Number.isFinite(sec) ? new Date(sec * 1000).toISOString() : null);
 const lc = (a) => String(a || '').toLowerCase();
-const pendingSubs = (b) => (b.job?.submissions || []).filter((s) => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta');
+// A claim the escrow still holds (its pending list): in evaluation, or awaiting a re-run (a soft fail or a round
+// with no result). Either keeps closeExpiredBounty reverting, so neither is "no claim".
+const awaitingRerun = (s) => s.status === 'AWAITING_RERUN' || s.onChainStatus === 'AwaitingRerun';
+const pendingSubs = (b) => (b.job?.submissions || []).filter((s) => s.status === 'PENDING_EVALUATION' || s.onChainStatus === 'PendingVerdikta' || awaitingRerun(s));
 
 const expectOf = (b) => ({
   classId: b.status.classId, threshold: b.status.threshold, oracle: b.status.oracleSettings,
@@ -174,7 +177,15 @@ function actionsFor(pair, members) {
       break;
     case 'CLAIM_PENDING':
       for (const m of members) {
-        for (const s of pendingSubs(m)) out.push({ type: 'FINALIZE', actor: 'anyone', method: 'POST', path: `/api/jobs/${m.bountyId}/submissions/${s.submissionId}/finalize`, spendsFunds: false, retryable: true, note: 'Once the oracle has answered; AWAIT_ORACLE means retry later.' });
+        for (const s of pendingSubs(m)) {
+          if (!awaitingRerun(s)) {
+            out.push({ type: 'FINALIZE', actor: 'anyone', method: 'POST', path: `/api/jobs/${m.bountyId}/submissions/${s.submissionId}/finalize`, spendsFunds: false, retryable: true, note: 'Once the oracle has answered; AWAIT_ORACLE means retry later.' });
+            continue;
+          }
+          const until = Number(s.rerunDeadline) > 0 ? isoOf(Number(s.rerunDeadline)) : null;
+          out.push({ type: 'RERUN', actor: s.hunter || m.terms.claimant.wallet, method: 'POST', path: `/api/jobs/${m.bountyId}/submissions/${s.submissionId}/rerun`, ...(until ? { notAfter: until } : {}), spendsFunds: true, retryable: true, note: 'The claim soft-failed or got no result: a re-run keeps its place for a new round prepay, before the re-run deadline and the bounty deadline.' });
+          out.push({ type: 'EXPIRE_RERUN', actor: 'anyone', method: 'POST', path: `/api/jobs/${m.bountyId}/submissions/${s.submissionId}/expire-rerun`, ...(until ? { notBefore: until } : {}), spendsFunds: false, retryable: true, note: 'Once no re-run can happen (after the re-run deadline, or the bounty deadline): fails the claim so the bounty can be closed.' });
+        }
       }
       break;
     case 'UNKNOWN':

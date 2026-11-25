@@ -18,7 +18,8 @@ if (_envLocalResult.error) {
 // service, e.g. a test site's unit) points a separate deployment at its own file, so it never runs
 // with production's keys.
 const secretsPath = process.env.VERDIKTA_SECRETS_FILE || path.join(__dirname, '../../../secrets/.env.secrets');
-const _secretsResult = require('dotenv').config({ path: secretsPath, override: true });
+// Deploy and owner keys in that file (PRIVATE_KEY, PRIVATE_KEY_2) are never loaded: utils/loadSecrets.js.
+const _secretsResult = require('./utils/loadSecrets').loadSecrets(secretsPath, { override: true });
 if (_secretsResult.error) {
   console.warn('[boot] secrets .env.secrets load failed — falling back to defaults (e.g. public RPC). This is the most common cause of sync trouble.', {
     path: secretsPath,
@@ -26,7 +27,7 @@ if (_secretsResult.error) {
     code: _secretsResult.error.code
   });
 } else {
-  console.log('[boot] secrets loaded', { path: secretsPath, keysParsed: Object.keys(_secretsResult.parsed || {}).length });
+  console.log('[boot] secrets loaded', { path: secretsPath, keysParsed: Object.keys(_secretsResult.parsed || {}).length, deployKeysDropped: _secretsResult.dropped });
 }
 // Verify that critical keys ended up in process.env (existence only, no values).
 // If any are missing, log loudly so silent fallbacks (public RPC, no IPFS auth)

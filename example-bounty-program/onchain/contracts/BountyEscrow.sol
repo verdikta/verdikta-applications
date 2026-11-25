@@ -991,7 +991,8 @@ contract BountyEscrow {
         require(prepay == required, "wrong eth amount");
         s.ethMaxBudget = uint96(required); // what this round prepaid (== the value, so it fits)
 
-        // A previous round's deferred refund goes to ITS funder before this round's funder is set.
+        // A previous round's deferred refund goes to ITS funder before this round's funder is set
+        // (best effort: if this retry fails too, what it would have returned goes to the new funder).
         if (s.rounds > 0) _refundLeftoverEth(bountyId, submissionId);
 
         // CID array for Verdikta:
@@ -1111,8 +1112,10 @@ contract BountyEscrow {
     ///      wait is bounded: a dead round is closed by anyone (closeFailedRound), and a
     ///      submission awaiting a re-run (which keeps its priority, item 12) re-runs within
     ///      RERUN_WINDOW or is expired by anyone (expireRerun), at most MAX_ROUNDS times. No NEW
-    ///      earlier round can appear: starts happen in index order and
-    ///      _requireNoPassingSubmission refuses a start once any round is passing.
+    ///      earlier round can appear once a round passes: _requireNoPassingSubmission refuses every
+    ///      start and re-run while one does. Before that, starts need not follow index order: an
+    ///      earlier prepared submission that starts late takes priority over a later one in flight
+    ///      (its CID, and so its index, was public first).
     ///
     ///      Only submissions IN EVALUATION hold priority. A prepared-but-unstarted
     ///      submission holds none (it may never be funded), so a hunter must start promptly

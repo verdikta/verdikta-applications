@@ -218,7 +218,8 @@ contract BountyEscrowLens {
     ///   "DRAW"           — escrow.drawJury(bountyId, submissionId): the round is undrawn (from two
     ///                      blocks after its start), or its beacon stage has ended
     ///   "CLOSE_COMMITS"  — aggregator.closeCommits(aggId): T+ has passed with at least M commits
-    ///   "PROMOTE"        — aggregator.promote(aggId): the commit phase is closed (from two blocks on)
+    ///   "PROMOTE"        — aggregator.promote(aggId): the commit phase is closed (from two blocks on,
+    ///                      while blockhash(C+1) is in the 8,191-block history)
     ///   "AWAIT_ORACLE"   — the round is in progress (beacons, commits or reveals): wait
     ///   "AWAIT_EARLIER"  — a PASSING result exists but finalize would revert "earlier submission
     ///                      pending": a lower-index submission by another hunter still holds
@@ -308,7 +309,12 @@ contract BountyEscrowLens {
             (, uint8 m, , , ) = agg.getJury(aggId);
             return block.timestamp > windowEnd && commits >= m ? "CLOSE_COMMITS" : "AWAIT_ORACLE";
         }
-        if (phase == BountyRules.PH_CLOSING) return block.number >= closeBlock + 2 ? "PROMOTE" : "AWAIT_ORACLE";
+        if (phase == BountyRules.PH_CLOSING) {
+            // promote reads blockhash(C+1), readable for 8,191 blocks (SeedExpired after): then the
+            // round can only fail at its deadline (CLOSE_FAILED above). A block early at that end, as a
+            // transaction lands in the block after the one this view reads.
+            return block.number >= closeBlock + 2 && block.number < closeBlock + 1 + 8191 ? "PROMOTE" : "AWAIT_ORACLE";
+        }
         return "AWAIT_ORACLE";                                            // reveal
     }
 

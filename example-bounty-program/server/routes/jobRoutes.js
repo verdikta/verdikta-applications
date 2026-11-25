@@ -1502,7 +1502,8 @@ router.delete('/admin/orphans', requireAdmin, async (req, res) => {
  * An expired bounty can be closed if:
  * 1. On-chain status is Open
  * 2. Deadline has passed
- * 3. No submissions are in PendingVerdikta status
+ * 3. No submission is pending: in PendingVerdikta or AwaitingRerun (closeExpiredBounty requires
+ *    the escrow's pending list, which holds both, to be empty)
  */
 router.get('/admin/expired', async (req, res) => {
   try {
@@ -1581,12 +1582,16 @@ router.get('/admin/expired', async (req, res) => {
             for (let i = 0; i < subCount; i++) {
               try {
                 const chainSub = await contract.getSubmission(onChainBountyId, i);
-                if (Number(chainSub.status) === 1) { // PendingVerdikta
+                // PendingVerdikta, or AwaitingRerun: both keep closeExpiredBounty reverting
+                const st = Number(chainSub.status);
+                if (st === 1 || st === 6) {
                   hasPending = true;
                   bountyInfo.pendingSubmissions.push({
                     submissionId: i,
                     hunter: chainSub.hunter,
-                    submittedAt: Number(chainSub.submittedAt)
+                    submittedAt: Number(chainSub.submittedAt),
+                    onChainStatus: st === 1 ? 'PendingVerdikta' : 'AwaitingRerun',
+                    action: st === 1 ? 'finalize or close_failed' : 'expire_rerun'
                   });
                 }
               } catch (subErr) {
@@ -1599,7 +1604,7 @@ router.get('/admin/expired', async (req, res) => {
               bountyInfo.canClose = false;
               bountyInfo.blockedBy = `Chain read failed for ${subReadFailed} submission(s) — retry`;
             } else if (hasPending) {
-              bountyInfo.blockedBy = `${bountyInfo.pendingSubmissions.length} submission(s) still pending evaluation`;
+              bountyInfo.blockedBy = `${bountyInfo.pendingSubmissions.length} submission(s) still pending (in evaluation or awaiting a re-run)`;
               bountyInfo.canClose = false;
               summary.blockedByPendingEval++;
             } else {

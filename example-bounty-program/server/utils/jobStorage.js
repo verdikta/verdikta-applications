@@ -108,13 +108,25 @@ async function initStorage() {
  */
 async function readStorage() {
   try {
-    await initStorage();
-    const content = await fs.readFile(STORAGE_FILE, 'utf-8');
-    return JSON.parse(content);
+    return await readStorageStrict();
   } catch (error) {
     logger.error('Error reading storage:', error);
     return { jobs: [], nextId: 0 };
   }
+}
+
+/**
+ * Read all jobs, throwing on any error. Every write path reads through this: an empty view
+ * stands in for an unreadable file only where nothing is written back, or one transient read
+ * failure (EMFILE under load, a file torn by a second process) would be written over the real
+ * store, erasing every record and resetting nextId.
+ */
+async function readStorageStrict() {
+  await initStorage();
+  const content = await fs.readFile(STORAGE_FILE, 'utf-8');
+  const data = JSON.parse(content);
+  if (!data || !Array.isArray(data.jobs)) throw new Error('jobs.json has no jobs array');
+  return data;
 }
 
 /**
@@ -148,11 +160,14 @@ async function writeSyncState(syncState) {
 /**
  * Write jobs to storage
  */
+let _tmpSeq = 0;
 async function writeStorage(data) {
   try {
     // Atomic write: write to temp file then rename, so concurrent readers
     // never see a truncated/empty file (fs.writeFile truncates before writing).
-    const tmpFile = STORAGE_FILE + '.tmp';
+    // A temp file per write: with one fixed name, two writers (a second process on the same data
+    // dir, say) write into the same inode and the rename publishes their interleaved bytes.
+    const tmpFile = `${STORAGE_FILE}.${process.pid}.${Date.now()}.${(++_tmpSeq).toString(36)}.tmp`;
     await fs.writeFile(tmpFile, JSON.stringify(data, null, 2));
     await fs.rename(tmpFile, STORAGE_FILE);
   } catch (error) {
@@ -196,7 +211,7 @@ let _storageLock = Promise.resolve();
 
 async function withStorage(mutator) {
   const run = _storageLock.then(async () => {
-    const storage = await readStorage();
+    const storage = await readStorageStrict();
     const ctx = { skipWrite: false };
     const result = await mutator(storage, ctx);
     if (!ctx.skipWrite) {
@@ -817,6 +832,7 @@ async function getDiagnostics() {
 module.exports = {
   initStorage,
   readStorage,
+  readStorageStrict,
   writeStorage,
   withStorage,
   readSyncState,

@@ -9,13 +9,18 @@
 # - builds the clients once into dist-test-* (no watchers: the test sites change only when deployed)
 # - restarts the test servers whose systemd units are installed
 #
+# It runs as root on the production machine, so what it fetches is root there. It therefore installs
+# with --ignore-scripts (no dependency's install script runs; esbuild and sharp come as prebuilt
+# optional packages and need none) and keeps the sites' .env files at mode 600.
+#
 # One-time setup and the files it expects: ops/test-sites/README.md.
 set -euo pipefail
 
-TEST=/root/verdikta/applications-test
-LIVE=/root/verdikta/applications
+# The paths can be overridden only for ops/test-sites/test/deploy.test.sh.
+TEST="${VERDIKTA_DEPLOY_TEST_CHECKOUT:-/root/verdikta/applications-test}"
+LIVE="${VERDIKTA_DEPLOY_LIVE_CHECKOUT:-/root/verdikta/applications}"
 REF="${1:-origin/beacon}"
-NODE=/opt/node22/bin/node
+NODE="${VERDIKTA_DEPLOY_NODE:-/opt/node22/bin/node}"
 
 die() { echo "deploy: $*" >&2; exit 1; }
 
@@ -38,13 +43,14 @@ for pkg in skills/verdikta-discover example-bounty-program/server example-bounty
   sum=$(sha256sum "$dir/package-lock.json" | cut -d' ' -f1)
   if [ "$(cat "$dir/node_modules/.deploy-lock-sha" 2>/dev/null)" != "$sum" ]; then
     echo "deploy: npm ci in $pkg"
-    (cd "$dir" && npm ci --no-audit --no-fund --loglevel=error)
+    (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error)
     echo "$sum" > "$dir/node_modules/.deploy-lock-sha"
   fi
 done
 
 for f in example-bounty-program/server/.env example-bounty-program/client/.env example-arbiters/server/.env; do
   [ -f "$TEST/$f" ] || die "missing $TEST/$f (copy it from ops/test-sites/env/ and fill it in)"
+  chmod 600 "$TEST/$f"   # a plain cp leaves it world-readable, and it holds keys
 done
 
 # clients: one build per site, into the folders the test nginx sites serve

@@ -1905,8 +1905,8 @@ function CreateBounty({ walletState }) {
                         placeholder={ORACLE_DEFAULTS.oracleEstimatedBaseCostEth}
                       />
                       <small className="helper-text">
-                        Baseline for the price boost that favours cheaper arbiters. Must be below the max oracle fee;
-                        0 disables the boost.
+                        Baseline for the price boost that favours cheaper arbiters. Must be below the max oracle fee.
+                        A base cost of 0 does not disable the boost: only a scaling of 1 does.
                       </small>
                     </div>
                     <div className="form-group">

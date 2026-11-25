@@ -834,8 +834,9 @@ Easiest: POST /api/jobs/create and sign its onChain.transaction (the exact struc
   visible to hunters before they submit. maxOracleFee (wei, > 0, <= aggregator ceiling 0.0004 ETH;
   also the eligibility filter: arbiters priced above it are excluded, and it sizes the hunters'
   prepay), alpha (0-1000 quality-vs-timeliness blend, 500 = even), estimatedBaseCost (wei,
-  < maxOracleFee; 0 disables the price boost), maxFeeBasedScaling (1-1000; 1 disables the price
-  boost), minOracleFee (fee floor, wei: every juror and beacon is paid at least this; 0 = none),
+  < maxOracleFee; the price-boost baseline: a fee at or below it gets the full boost, and 0 still
+  boosts every fee below maxOracleFee, fully at maxOracleFee / scaling), maxFeeBasedScaling (1-1000;
+  only 1 disables the price boost), minOracleFee (fee floor, wei: every juror and beacon is paid at least this; 0 = none),
   withBeacons (beacon-drawn jury). Defaults the API uses: 0.00002 ETH / 500 / 0.00001 ETH / 3,
   floor and beacons from the size class. Reverts: "bad oracle fee",
   "oracle fee above ceiling", "base cost must be below fee", "bad fee scaling", "bad alpha",
@@ -891,6 +892,14 @@ evaluation, the creator CANNOT approve a newer one until it resolves — that ev
 your paid-for claim to the arbiter payment, and a cheap creator approval of the revision
 would void it. Your own finalize of the newer version is not blocked. Any earlier
 submission stops blocking once its window expires with no arbitration started.
+
+Hunters on an OPEN windowed bounty: the creator may approve any submission still in its window
+that has no earlier one ahead of it, including one from a wallet the creator controls prepared
+before yours. That awards the bounty at creatorDeterminationPayment to that wallet (the rest is
+refunded to the creator) and every later submission becomes unpayable. Before working on one, list
+its submissions (GET /api/jobs/:id/submissions): an earlier one still in its window (status
+PENDING_CREATOR_APPROVAL, creatorWindowEnd in the future) can end the bounty that way. A targeted
+bounty has no such risk: only the target can submit.
 
 Creator approval calldata: POST /api/jobs/:id/submissions/:subId/approve-as-creator
 Body: { "creator": "0xCreatorWallet" }

@@ -8,7 +8,8 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 // .env didn't already set (dotenv does not override existing process.env).
 // VERDIKTA_SECRETS_FILE (set by the service, e.g. a test site's unit) points a separate deployment at
 // its own file.
-require('dotenv').config({ path: process.env.VERDIKTA_SECRETS_FILE || path.join(__dirname, '..', '..', '..', 'secrets', '.env.secrets') });
+// Deploy and owner keys in that file (PRIVATE_KEY, PRIVATE_KEY_2) are never loaded: utils/loadSecrets.js.
+require('./utils/loadSecrets').loadSecrets(process.env.VERDIKTA_SECRETS_FILE || path.join(__dirname, '..', '..', '..', 'secrets', '.env.secrets'));
 
 const logger = require('./utils/logger');
 const { redact } = require('./utils/redact');

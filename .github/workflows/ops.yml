@@ -1,0 +1,28 @@
+name: Ops and workflow policy
+# deploy.sh runs as root on the production machine, and every workflow here runs third-party actions.
+# Both checks are plain bash, with no secret and no network.
+on:
+  pull_request:
+    paths:
+      - 'ops/**'
+      - '.github/**'
+  push:
+    branches: [main, beacon]
+    paths:
+      - 'ops/**'
+      - '.github/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Third-party actions are pinned to commit SHAs
+        run: bash .github/tests/actions-pinned.test.sh
+      - name: deploy.sh installs without lifecycle scripts and keeps .env files private
+        run: bash ops/test-sites/test/deploy.test.sh

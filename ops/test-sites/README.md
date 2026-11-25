@@ -53,12 +53,12 @@ The production equivalents are 5006, 5005 and 5008, served from `/root/verdikta/
    ```
    git -C /root/verdikta/applications worktree add --detach /root/verdikta/applications-test origin/beacon
    T=/root/verdikta/applications-test; E=$T/ops/test-sites/env
-   cp $E/bounty-server.env   $T/example-bounty-program/server/.env
-   cp $E/bounty-client.env   $T/example-bounty-program/client/.env
-   cp $E/arbiters-server.env $T/example-arbiters/server/.env
+   install -m 600 $E/bounty-server.env   $T/example-bounty-program/server/.env
+   install -m 600 $E/bounty-client.env   $T/example-bounty-program/client/.env
+   install -m 600 $E/arbiters-server.env $T/example-arbiters/server/.env
    ```
    Fill in the v2 addresses and deploy blocks from step 2, and the client key from step 4.
-6. **First deploy:** `ops/test-sites/deploy.sh`. It installs packages and builds the three clients.
+6. **First deploy:** `ops/test-sites/deploy.sh`. It installs packages (with `--ignore-scripts`: it runs as root here), sets the three `.env` files to mode 600, and builds the three clients. Its test: `bash ops/test-sites/test/deploy.test.sh`.
 7. **Servers.** Copy the units, then start Sepolia and the arbiters. Start the mainnet one only after a
    v2 mainnet test deployment exists.
    ```

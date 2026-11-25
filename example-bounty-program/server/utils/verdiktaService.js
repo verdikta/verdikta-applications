@@ -29,9 +29,11 @@ function juryK(jury) {
 // Event-scan tuning. Public RPCs (e.g. mainnet.base.org) reject eth_getLogs over a >10,000-block
 // range, so every scan is chunked and bounded to a window after the round's request block.
 const MAX_LOG_RANGE = 9000;          // < 10k RPC cap, per getLogs chunk
-// A round's events land within a day of its request (DRAW_GRACE), the commit/reveal part within its
-// deadline; at Base's 2 s blocks a day is 43,200 blocks. Scanned in chunks.
-const EVENT_WINDOW = 45000;
+// A round's events land within a day of its request (DRAW_GRACE) plus its own deadline (at most a day,
+// AggregatorLib.MAX_TIMEOUT) and the reveal window; at Base's 0.2 s blocks a day is 432,000 blocks
+// (measured 2026-11-25: 10,000 blocks in 2,000 s on mainnet and Sepolia), so two days plus a margin.
+// Scanned in MAX_LOG_RANGE chunks, and never past the chain head.
+const EVENT_WINDOW = 900000;
 
 // Outcome label for a drawn round that failed with zero commits from any juror: a request that no
 // arbiter ever committed to is most likely a malformed evaluation package, not a node failure.

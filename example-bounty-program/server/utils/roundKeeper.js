@@ -59,7 +59,7 @@ class RoundKeeper {
     this.signer = signer;
     this.logger = logger;
     this.now = now;
-    this.inFlight = new Map();          // `${bountyId}:${submissionId}:${action}` -> { hash, at }
+    this.inFlight = new Map();          // `${bountyId}:${submissionId}:${action}:${phase}` -> { hash, at }
     this.attempts = new Map();          // `${bountyId}:${submissionId}:${aggId}:${action}` -> { count, first }
     this.lastBalanceCheck = 0;
     this.lastWithdraw = 0;
@@ -82,7 +82,11 @@ class RoundKeeper {
     const action = state && state.nextAction;
     const spec = ACTIONS[action];
     if (!spec) return { action: action || null, sent: false, reason: 'not_a_keeper_step' };
-    const key = `${bountyId}:${submissionId}:${action}`;
+    // The round's phase is part of the key: a beacon round's DRAW is due twice (start the beacon
+    // stage, then draw once the quorum is in, usually within 30 s), and the second is not a resend
+    // of the first. Keyed by action alone it waited out IN_FLIGHT_MS, past the requester's 30 s draw
+    // priority, so anyone could take the draw reward (2 x fee) first.
+    const key = `${bountyId}:${submissionId}:${action}:${state.phase ?? ''}`;
     const prior = this.inFlight.get(key);
     if (prior && this.now() - prior.at < IN_FLIGHT_MS) return { action, sent: false, reason: 'in_flight', hash: prior.hash };
     const attemptKey = `${bountyId}:${submissionId}:${state.aggId || ''}:${action}`;

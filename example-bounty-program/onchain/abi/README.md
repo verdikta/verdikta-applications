@@ -31,7 +31,9 @@ to lack them. This file is the escrow ABI plus those lens entries.
 
 ## Where to get it without this repository or the website
 
-- IPFS (content-addressed; the CID commits to these exact bytes):
+- IPFS (content-addressed). **The CID below is the v1 ABI of the v0.5.0 deployment, not
+  this file:** `BountyEscrow.json` here is the v2 ABI (beacon branch), to be pinned and the CID
+  replaced at the v2 deployment. Until then the sha256 check below fails by design.
   `QmZa2NtTne6xj8c3ZBH7tPrLi2ZJwjaoKN1RyH2S6pLx59`
   e.g. https://gateway.pinata.cloud/ipfs/QmZa2NtTne6xj8c3ZBH7tPrLi2ZJwjaoKN1RyH2S6pLx59
   (where it is pinned), `ipfs cat QmZa2NtTne6xj8c3ZBH7tPrLi2ZJwjaoKN1RyH2S6pLx59`
@@ -45,7 +47,7 @@ to lack them. This file is the escrow ABI plus those lens entries.
   `GET /api/abi` (addresses + verification links) on bounties.verdikta.org and
   bounties-testnet.verdikta.org.
 
-## Deployed addresses (v0.5.0, 2026-09-12)
+## Deployed addresses (v0.5.0 on the v1 aggregator, 2026-09-12; v2 not deployed yet)
 
 See `../deployments/*.json` for the full records.
 

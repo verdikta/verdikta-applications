@@ -12,7 +12,7 @@
 // The v2 aggregator draws a round's jury in a second step (the lens's openRound gives the round's phase). Until it is
 // drawn the round waits, however long, and nothing times out: the site's keeper draws it, anyone may, and `claim`
 // does when drawJury's dry run passes (status itself sends nothing). Its timeout (the listing's jury, sent with the
-// request; getJury reads a round's own) runs from the draw; a round left undrawn for a day can only be cancelled, its whole prepay to the aggregator's treasury. Nothing here
+// request; getJury reads a round's own) runs from the draw; a round left undrawn can only be cancelled (about 8,191 blocks after the request if its seed was never stored, a day after it if it was), its whole prepay to the aggregator's treasury. Nothing here
 // reads a clock.
 //
 // The reveal deadline is the lens's. A release (or a roll-forward) ends the fix window early, and the deadline moves
@@ -359,7 +359,7 @@ function nextFor(s) {
       if (s.round && (s.round.phase === PHASE.DRAW || s.round.phase === PHASE.BEACONS)) {
         const stage = s.round.phase === PHASE.BEACONS ? ' (its beacon stage has started: a second draw follows once the beacon values are in)' : '';
         const how = s.ready === 'draw' ? 'its draw is due now: run claim to draw it (anyone may, and the site\'s keeper does; the draw reward goes to the round\'s wallet and comes back with its leftover)' : 'it can be drawn from two blocks after the request; the site\'s keeper draws it, and claim does once it may be';
-        return `${round} is still open, and its jury is not drawn yet${stage}: ${how}. An undrawn round never times out, but undrawn a day after the request it can only be cancelled, its whole prepay to the aggregator's treasury, and the round fails.${s.timedOut ? ' The time given is over: run status --wait again.' : ''}`;
+        return `${round} is still open, and its jury is not drawn yet${stage}: ${how}. An undrawn round never times out, but left undrawn it can only be cancelled (about 8,191 blocks after the request if its seed was never stored, a day after it if it was), its whole prepay to the aggregator's treasury, and the round fails.${s.timedOut ? ' The time given is over: run status --wait again.' : ''}`;
       }
       const until = s.round && s.round.deadline !== 0n ? ` Its deadline is ${s.round.deadline} on the chain's clock, the listing's jury timeout counted from the draw; after it the round is failed if it has not finished.` : '';
       if (s.timedOut) return `${round} is still open after the time given. It may be running slowly; run status --wait again, and claim once it is over.${until}`;

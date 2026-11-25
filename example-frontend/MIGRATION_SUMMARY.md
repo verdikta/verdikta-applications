@@ -8,7 +8,7 @@ aggregators.
 
 ## Aggregator addresses
 
-The v2 aggregators are **not deployed yet**. The v1 addresses were removed from
+The v2 aggregator (one per network, serving every jury size) is **not deployed yet**. The v1 addresses were removed from
 `client/.env.example`, the tracked `client/.env.backup`, `client/debug-contract.js` and the
 fallbacks in `server/utils/contractsManager.js`.
 
@@ -33,7 +33,7 @@ server's environment (`server/.env.example`).
 | the request polls the arbiters | the request only escrows; the requester moves the round: `drawJury` from block B+2 (twice with beacons), `closeCommits` after T+ if needed, `promote` from the close block + 2 |
 | `finalizeEvaluationTimeout(aggId)` after `responseTimeoutSeconds` from the request | `settle(aggId)` after the round's deadline (the jury's `timeout` from the draw); an undrawn round never times out, and `drawJury` reverts `DrawExpired` after a day |
 | `getAggregationStatus`, `getContractConfig`, `EvaluationTimedOut`, `NotTimedOut`, `AggregationComplete`, `InactiveOracle` | `getRoundInfo` (phase 1 draw … 9 cancelled), `getJury(aggId)`, `maxJury()`/`maxTimeout()`/`tPlus()`, `EvaluationFailed(aggId, uint8 phase)`, `BadJury`, `WrongPhase`, `TooEarly`, `NotDue`, `SeedExpired`, `DrawExpired` |
-| a failed round refunds the requester | refunded to the requester at settlement, except a missed beacon quorum, M commits never promoted, and cancelled rounds: those go to the treasury |
+| a failed round refunds the requester | refunded to the requester at settlement, except a missed beacon quorum, M commits never promoted, cancelled rounds, and a beacon round whose jury cannot be drawn after the stage while the keeper's walk does not cover the whole class list (`scansAll` false): those go to the treasury |
 | | rewards: the draw (2 × fee, only the requester within 30 s) and promote (1 × fee) callers, credited to `ethOwed` |
 
 ## Files changed

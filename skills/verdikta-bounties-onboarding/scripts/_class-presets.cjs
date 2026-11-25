@@ -18,7 +18,7 @@
  * M promoted, N counted, P clustered, and the round timeout in seconds (counted from the draw). The
  * aggregator checks it per request (K <= its maxJury and the keeper's shortlist, T+ < timeout <=
  * maxTimeout); the escrow checks the ordering at createBounty. Stake-attestation listings use the
- * same presets (a synced copy, stake-attestation/shared/classPresets.js, held equal by a parity test).
+ * same presets (a synced copy, stake-attestation/shared/src/classPresets.js, held equal by a parity test).
  *
  * Money is in USD; toBountyParams converts at a given ETH price. The fee is a fee floor
  * (minOracleFee): every juror (and beacon) is paid at least that, so an attempt costs at least

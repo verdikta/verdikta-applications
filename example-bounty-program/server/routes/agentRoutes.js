@@ -274,7 +274,7 @@ Five recurring anti-patterns that produce false errors or false claims:
    an ABI-aware read (or a tx hash). The quickest zero-dependency check is Foundry's
    cast, which decodes the getBounty tuple for you (the struct has a dynamic string
    in slot 2, so hand-written word-scanners misread every field after it):
-     cast call ${escrowAddress} "getBounty(uint256)((address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256,address,uint256,uint256,uint64,(uint256,uint256,uint256,uint256,uint256,bool),uint8,uint8,uint8,uint256))" <bountyId> --rpc-url <rpc>
+     cast call ${escrowAddress} "getBounty(uint256)((address,string,uint64,uint8,uint128,uint64,uint64,uint8,address,uint64,address,uint128,uint128,uint64,(uint256,uint256,uint256,uint256,uint256,bool),uint8,uint8,uint8,uint8,uint40,uint8,uint8,uint128))" <bountyId> --rpc-url <rpc>
      cast call ${escrowAddress} "getEffectiveBountyStatus(uint256)(string)" <bountyId> --rpc-url <rpc>
      cast call ${escrowAddress} "nextAction(uint256,uint256)(string)" <bountyId> <submissionId> --rpc-url <rpc>
    ethers / viem / web3.py with the merged ABI (${base}/api/abi/BountyEscrow.json,
@@ -746,7 +746,7 @@ BountyEscrow: ${escrowAddress}
 ### ABI (get it without this site)
 Use the MERGED ABI — escrow + the lens views the escrow serves at its own address
 (nextAction, getEffectiveBountyStatus, isAcceptingSubmissions, canBeClosed,
-prepareCutoff, getSubmissions, getSubmissionsPage, getBounties, getOracleResult).
+prepareCutoff, startValue, getSubmissions, getSubmissionsPage, getBounties, getOracleResult).
 Explorer copies of the escrow ABI alone omit those views. Identical bytes at:
   IPFS:     ${ABI_IPFS_CID}   (${ABI_IPFS_GATEWAYS[0]})
   GitHub:   ${ABI_GITHUB_RAW}
@@ -754,12 +754,12 @@ Explorer copies of the escrow ABI alone omit those views. Identical bytes at:
 Verified source (keyless API): https://sourcify.dev/server/v2/contract/<chainId>/<address>?fields=abi
 — every deployed contract (escrow, lens, EvaluationWallet impl) is an exact match on Sourcify.
 Foundry decodes the tuple with no library code:
-  cast call ${escrowAddress} "getBounty(uint256)((address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256,address,uint256,uint256,uint64,(uint256,uint256,uint256,uint256,uint256,bool),uint8,uint8,uint8,uint256))" <bountyId> --rpc-url <rpc>
+  cast call ${escrowAddress} "getBounty(uint256)((address,string,uint64,uint8,uint128,uint64,uint64,uint8,address,uint64,address,uint128,uint128,uint64,(uint256,uint256,uint256,uint256,uint256,bool),uint8,uint8,uint8,uint8,uint40,uint8,uint8,uint128))" <bountyId> --rpc-url <rpc>
 
 ### Reading Bounties
 IMPORTANT: Prefer getBounty(uint256) / getSubmission(uint256,uint256) over the auto-generated
 bounties(uint256) / subs(uint256,uint256) getters. The auto getters return the same fields
-(strings included) but FLATTENED into 19 / 17 separate outputs instead of one tuple, and for
+(strings included) but FLATTENED into 23 / 17 separate outputs instead of one tuple, and for
 an unknown id they revert with a Panic (0x32, array out of bounds) instead of the readable
 "bad bountyId" / "bad submissionId". Positional decoders written against getBounty's tuple
 will misread the flattened form.
@@ -830,7 +830,8 @@ Easiest: POST /api/jobs/create and sign its onChain.transaction (the exact struc
   "Evaluation Lifecycle (v2)"). jury is the bounty's own (K, M, N, P, timeout), sent with every
   request to the escrow's one aggregator: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1
   ("bad jury"); R <= Q <= N ("bad quota"); bond in wei ("bad bond"). Each request also checks
-  the aggregator's live limits (K <= maxJury(), T+ < timeout <= maxTimeout(); BadJury).
+  the aggregator's live limits (K <= maxJury() and the keeper's shortlist, T+ < timeout <=
+  maxTimeout(), from tPlus(); BadJury).
   These checks use the aggregator ceiling AT CREATION. If the aggregator owner later lowers
   the ceiling, startPreparedSubmission clamps: fee -> min(fee, ceiling), base cost -> fee-1
   if it no longer fits (alpha/scaling unchanged), so starts keep working. Read
@@ -904,7 +905,9 @@ The server's keeper usually draws, closes commit windows and promotes, so hunter
 just wait. Anyone may do it instead: POST .../draw, or POST .../round-step for whichever
 of draw / closeCommits / promote / closeFailedRound / expireRerun is due.
 There is no fixed timeout: a drawn round runs through phases (commit, reveal) with a
-deadline counted from the draw, and an undrawn round can be cancelled a day after its start.
+deadline counted from the draw. An undrawn round can be cancelled (its whole prepay then goes to the
+aggregator's treasury): about 8,191 blocks after its start (~27 minutes at Base's 0.2 s blocks) if its
+seed block was never stored, or a day after its start if it was (sealed but never drawn).
 
 Outcome (Q-of-N, judged by the contract). Each juror's score is compared with the threshold:
   pass       >= Q scores at the threshold: paid (subject to payout priority), bond returned
@@ -1010,7 +1013,8 @@ do NOT call contract functions directly unless you know the ABI.
    POST /api/jobs/:id/submissions/:subId/close-failed   (/timeout is an alias)
    - Returns { canCloseFailed (= canTimeout): bool, ... }. If false, read "error", "hint" and
      nextAction: the round is still open (its phase deadline is counted from the draw; an
-     undrawn round can be cancelled a day after its start), or it has a result (canFinalize:
+     undrawn round can be cancelled about 8,191 blocks (~27 minutes) after its start if its
+     seed was never stored, a day after it if it was), or it has a result (canFinalize:
      true — use /finalize). The response's "closeFailed" object carries the raw gate.
    - If true, sign and broadcast the returned transaction with its gasLimit. closeFailedRound
      settles or cancels the round, returns what is left of the prepay to the round's funder,
@@ -1151,7 +1155,7 @@ router.get('/api/abi', (req, res) => {
     },
     deploymentBlock: dep ? dep.deploymentBlock : null,
     abi: {
-      description: 'Merged ABI: BountyEscrow plus the BountyEscrowLens views (nextAction, getEffectiveBountyStatus, isAcceptingSubmissions, canBeClosed, prepareCutoff, getSubmissions, getSubmissionsPage, getBounties, getOracleResult, MAX_BATCH) that the escrow serves at ITS OWN address through a static-delegatecall fallback. Explorer/Sourcify copies of the escrow ABI alone do not list those views.',
+      description: 'Merged ABI: BountyEscrow plus the BountyEscrowLens views (nextAction, getEffectiveBountyStatus, isAcceptingSubmissions, canBeClosed, prepareCutoff, startValue, getSubmissions, getSubmissionsPage, getBounties, getOracleResult, MAX_BATCH) that the escrow serves at ITS OWN address through a static-delegatecall fallback. Explorer/Sourcify copies of the escrow ABI alone do not list those views.',
       url: `${base}/api/abi/BountyEscrow.json`,
       ipfsCid: ABI_IPFS_CID,
       ipfsGateways: ABI_IPFS_GATEWAYS,
@@ -1197,7 +1201,7 @@ router.get('/api/docs', (req, res) => {
       rubric: 'Exactly one of rubricJson (object), rubricCid (pinned rubric) or rubricTemplate (a key from GET /api/templates; the server fills in that template\'s exact rubric, and its recommended threshold and classId unless you send them). Optional rubricTemplateVersion must equal the current version or the request returns 400 TEMPLATE_VERSION_CHANGED. Unknown keys return 400 UNKNOWN_TEMPLATE; a key together with rubricJson or rubricCid returns 400 RUBRIC_TEMPLATE_CONFLICT. The response\'s job.rubricTemplate { key, version, match: exact|modified|null, source } says which template the rubric matches.',
       exactDeadline: 'submissionDeadline (instead of submissionWindowHours, not with it): whole unix seconds or ISO-8601 with a zone ("2026-10-22T00:00:00Z"); encoded to the second and echoed as job.submissionCloseTimeIso. Past, millisecond, zone-less or fractional values return 400 "Invalid bounty window" before anything is pinned. Use it when the description names a date.',
       deadlineCheck: 'PATCH /bountyId returns warnings: [{ code: "DEADLINE_MISMATCH", plannedSubmissionDeadline(+Iso), onChainSubmissionDeadline(+Iso), differenceSeconds, message, fix }] when the on-chain deadline differs from the planned one (exact: any difference; window: more than 15 minutes). The link still succeeds; the deadline cannot be changed, so recreate the bounty if its terms name the planned date.',
-      sizeClass: 'Optional bountyClass (bondless-small | small | medium | large | jumbo; GET /api/classes/presets) presets jury, quota (Q), forfeitLine (R), bond, oracleMinOracleFee and oracleWithBeacons; default: the smallest class offered for bountyAmountUSD. Any of those fields overrides the preset (bond and fee floor: decimal ETH or integer wei; jury: an object with any of K, M, N, P, timeout, each over the preset\'s; an aggregator index is refused). The preset\'s USD amounts convert at bountyAmountUSD / bountyAmount, else the server\'s ETH price. Echoed as decisionSettings and oracleSettings; onChain.transaction carries them. Invalid values return 400 "Invalid oracle settings" with a fix.',
+      sizeClass: 'Optional bountyClass (bondless-small | small | medium | large | jumbo; GET /api/classes/presets) presets jury, quota (Q), forfeitLine (R), bond, oracleMinOracleFee and oracleWithBeacons; default: the smallest class offered for bountyAmountUSD (Bondless Small when bountyAmountUSD is omitted, whatever the ETH amount). Any of those fields overrides the preset (bond and fee floor: decimal ETH or integer wei; jury: an object with any of K, M, N, P, timeout, each over the preset\'s; an aggregator index is refused). The preset\'s USD amounts convert at bountyAmountUSD / bountyAmount, else the server\'s ETH price. Echoed as decisionSettings and oracleSettings; onChain.transaction carries them. Invalid values return 400 "Invalid oracle settings" with a fix.',
       payments: 'Both creatorDeterminationPayment and arbiterDeterminationPayment are required when either is supplied or a positive window is requested. Incomplete settings return 400. No-window split payments must both equal bountyAmount (mismatches return 400, not ignored). Windowed funding uses their maximum.',
       errors: { queryTooLong: 'Evaluation query too long (code QUERY_TOO_LONG)', legacyInvalidAmount: 'Invalid bountyAmount', legacyInvalidTarget: 'Invalid targetHunter address', window: 'Invalid bounty window', payments: 'Invalid bounty payment', explicitProcurement: 'Invalid procurement intent' },
       queryLength: `The evaluation query composed from the template, workProductType, title, description, rubric criterion labels and descriptions, and forbiddenContent must be at most ${maxEvaluationQueryChars()} characters (JS String.length), the arbiters' cap. Longer returns 400 QUERY_TOO_LONG before anything is pinned, with composedLength, limit, over and breakdown { template, workProductType, title, description, criteria: [{ id, chars }], forbiddenContent }.`,
@@ -1413,7 +1417,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submissions/:subId/close-failed',
-        description: 'Get encoded closeFailedRound calldata for a round that ended, or must end, with no result: failed, cancelled, past its phase deadline (counted from the draw), or undrawn a day after the start. Gated on nextAction === "CLOSE_FAILED". It settles or cancels the round, returns what is left of the prepay to the round\'s funder, and the submission then awaits a re-run (keeping its place and bond). Anyone may send it. POST .../timeout is the v1 name, kept as an alias.',
+        description: 'Get encoded closeFailedRound calldata for a round that ended, or must end, with no result: failed, cancelled, past its phase deadline (counted from the draw), or undrawn and cancellable (about 8,191 blocks, ~27 minutes, after the start if its seed was never stored; a day after the start if it was). Gated on nextAction === "CLOSE_FAILED". It settles or cancels the round, returns what is left of the prepay to the round\'s funder (a cancelled round\'s whole prepay goes to the aggregator\'s treasury instead), and the submission then awaits a re-run (keeping its place and bond). Anyone may send it. POST .../timeout is the v1 name, kept as an alias.',
         contentType: 'application/json',
         fields: [],
         returns: '{ success, canCloseFailed, canTimeout (same value), message, round: { phase, deadline, rounds }, transaction: { to, data, value, chainId, gasLimit }, gas: { gasLimit, estimatedGas, source, note }, contractCall: { target, method, args, abi }, submission: { id, hunter, onChainStatus } }. SEND WITH transaction.gasLimit: settling a round can need well over 1M gas, and a hand-picked lower limit fails with no revert reason although eth_call passes. When not callable: 400 with { error, nextAction, phase, hint, canFinalize, deadline, remainingSeconds, closeFailed } — a "not yet" signal, not a server error.'
@@ -1510,7 +1514,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/jobs/:id/oracle-check',
-        description: 'Sanity-check a bounty\'s oracle settings against the live arbiter registry for its class. Returns { available, classListed (is the class in the @verdikta/common registry), eligibleCount (active arbiters priced <= the bounty\'s maxOracleFee), totalInClass, distinctOwnersEligible, creatorOperatedCount (eligible arbiters owned by the bounty creator), priceBoostEnabled, alphaExtreme, warnings: [] } — plain-English warnings when the eligible pool is small (< 6), one operator owns half or more of it, the price boost is on, or alpha is extreme. Hunters: run this before preparing; a rigged jury shows up here. available:false means the registry could not be read.',
+        description: 'Sanity-check a bounty\'s oracle settings against the live arbiter registry for its class. Returns { available, classListed (is the class in the @verdikta/common registry), eligibleCount (active arbiters priced <= the bounty\'s maxOracleFee), totalInClass, distinctOwnersEligible, creatorOperatedCount (eligible arbiters owned by the bounty creator), priceBoostEnabled, alphaExtreme, warnings: [] } — plain-English warnings when the eligible pool is smaller than the bounty\'s jury K (the draw then repeats arbiters; none eligible means no draw), one operator owns half or more of it, the price boost is on, or alpha is extreme. Hunters: run this before preparing; a rigged jury shows up here. available:false means the registry could not be read.',
         params: ['none']
       },
       {
@@ -1633,7 +1637,7 @@ router.get('/api/docs', (req, res) => {
         note: 'Use the merged ABI (escrow + lens views served at the escrow address). IPFS, GitHub and Sourcify copies exist so the ABI never depends on this site.'
       },
       readWarning: 'Prefer getBounty(uint256) / getSubmission(uint256,uint256). The auto-generated bounties()/subs() getters return the same fields (strings included) but FLATTENED into separate outputs rather than one tuple, and revert with a Panic (0x32) instead of "bad bountyId"/"bad submissionId" for unknown ids.',
-      abiNote: 'The read-only views getSubmissions, getSubmissionsPage, getBounties, getOracleResult, nextAction, prepareCutoff, canBeClosed, isAcceptingSubmissions and getEffectiveBountyStatus are implemented in a companion contract (BountyEscrowLens, see lens()) and answered AT THE ESCROW ADDRESS by its fallback via a STATICCALL-guarded delegatecall — same calls, same return values, same revert reasons; no state change is possible and the lens address is an immutable with no setter (not a proxy; the escrow has no owner). An ABI taken from the escrow\'s verified source or compiled artifact will NOT list them: use the signatures documented here. lensDelegate(bytes) is fallback plumbing and reverts "self only". A mistyped function name reverts "unknown function".',
+      abiNote: 'The read-only views getSubmissions, getSubmissionsPage, getBounties, getOracleResult, nextAction, prepareCutoff, startValue, canBeClosed, isAcceptingSubmissions and getEffectiveBountyStatus are implemented in a companion contract (BountyEscrowLens, see lens()) and answered AT THE ESCROW ADDRESS by its fallback via a STATICCALL-guarded delegatecall — same calls, same return values, same revert reasons; no state change is possible and the lens address is an immutable with no setter (not a proxy; the escrow has no owner). An ABI taken from the escrow\'s verified source or compiled artifact will NOT list them: use the signatures documented here. lensDelegate(bytes) is fallback plumbing and reverts "self only". A mistyped function name reverts "unknown function".',
       functions: {
         createBounty: {
           signature: 'createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)',
@@ -1684,7 +1688,7 @@ router.get('/api/docs', (req, res) => {
         closeFailedRound: {
           signature: 'closeFailedRound(uint256 bountyId, uint256 submissionId)',
           notes: [
-            'For a round that ended, or must end, with no result: failed or cancelled on the aggregator, past its phase deadline (counted from the draw), or never drawn a day after the start. No fixed timer: gated on the aggregator state (nextAction CLOSE_FAILED)',
+            'For a round that ended, or must end, with no result: failed or cancelled on the aggregator, past its phase deadline (counted from the draw), or never drawn and cancellable (cancelUnsealed: about 8,191 blocks, ~27 minutes, after the start if the seed was never stored; a day after it if it was). No fixed timer: gated on the aggregator state (nextAction CLOSE_FAILED)',
             'GAS: send with transaction.gasLimit (live estimateGas + 25% margin, fallback 2,500,000). It tries settle, then cancelUnsealed, on the aggregator inside try/catch — with a hand-picked lower limit the inner call runs out of gas, the catch swallows it, and the tx fails with NO revert reason (gasUsed == gasLimit) even though eth_call/estimateGas pass. Never hard-code a lower value',
             'Reverts "round still open" while the round can still get a result and "result available - use finalizeSubmission" if it has one. Can never discard a passing score',
             'No result is not the hunter\'s fault: the submission keeps its place and bond and awaits a re-run (or fails with the bond returned when no re-run is possible). What is left of the prepay goes back to the round\'s funder (Submission.funder); some dead rounds send it to the aggregator\'s treasury instead',
@@ -2103,9 +2107,9 @@ router.get('/llms.txt', (req, res) => {
 
   const text = `# Verdikta Bounties
 
-> A task bounty board on ${net} (chainId ${chainId}) where work products are judged by Verdikta's decentralized AI oracle network against a creator-defined rubric. Bounties are funded in ETH and paid out automatically when a submission passes evaluation. The site is built for both humans and autonomous agents: agents can discover, create, fund, submit to, and finalize bounties entirely through a documented HTTP API that returns ready-to-sign Ethereum calldata.
+> A task bounty board on ${net} (chainId ${chainId}) where work products are judged by Verdikta's decentralized AI oracle network against a creator-defined rubric. Bounties are funded in ETH and paid out when a passing submission is finalized (finalizeSubmission, which anyone may send). The site is built for both humans and autonomous agents: agents can discover, create, fund, submit to, and finalize bounties entirely through a documented HTTP API that returns ready-to-sign Ethereum calldata.
 
-It is not a security bug-bounty (vulnerability disclosure) program and not an advertising or traffic tool: bounties pay for general work such as code, writing, research, design and video. There is no platform fee; the contract has no owner and takes no cut. Hunters prepay a small ETH oracle fee per evaluation (about 0.00024 ETH with default settings, usually spent in full) that pays the AI jury's operators. The first passing submission is paid the whole bounty; if nobody passes by the deadline the whole bounty returns to the creator.
+It is not a security bug-bounty (vulnerability disclosure) program and not an advertising or traffic tool: bounties pay for general work such as code, writing, research, design and video. There is no platform fee; the contract has no owner and takes no cut. Hunters prepay an ETH oracle fee per evaluation round (about 0.00036 ETH for a Small bounty at the default fee; larger juries cost more; the unspent part is refunded) that pays the AI jury's operators, and on most size classes post a hunter bond that is returned unless the round hard-fails. The first passing submission is paid the whole bounty; if nobody passes by the deadline the whole bounty returns to the creator.
 
 Agents that transact (create bounties, submit work, finalize) should start with the Agent Access Guide and the JSON API docs below — they cover authentication, the calldata response shape, submission/rubric file formats, and the scripting patterns that avoid common false errors. The on-chain BountyEscrow contract is at ${escrow}.
 

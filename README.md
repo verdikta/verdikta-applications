@@ -36,6 +36,10 @@ verdikta-applications/
 │   ├── client/             # React frontend application
 │   ├── server/             # Node.js backend API
 │   └── onchain/            # BountyEscrow smart contracts
+├── example-arbiters/        # Verdikta Arbiters site: arbiter availability, registration, contract config
+├── stake-attestation/       # Stakes behind a code version, bug claims judged by the arbiter network
+├── example-agents/          # Example autonomous agents
+├── skills/                  # Agent skills
 └── README.md               # This file
 ```
 
@@ -72,18 +76,19 @@ A decentralized bounty platform where work submissions are automatically evaluat
 - 💰 **Smart Escrow**: ETH locked on-chain until passing submission or cancellation
 - 🤖 **AI Evaluation**: Verdikta's multi-arbiter system grades against rubric criteria
 - 📋 **Flexible Rubrics**: Define custom evaluation criteria with weights and thresholds
-- 🏆 **First-Past-Post**: First submission that passes automatically wins the bounty
-- 🔒 **Spam Protection**: Each submission prepays its own evaluation fee in ETH, which deters frivolous attempts; the part that is not spent is refunded
+- 📏 **Size Classes**: Presets from Bondless Small to Jumbo set each bounty's jury (K/M/N/P and round timeout), pass quota, forfeit line, fee floor and hunter bond
+- 🏆 **First-Past-Post**: The earliest-submitted submission that passes (at least Q of the N counted jurors at the threshold) wins the bounty; a narrow miss or a round with no result may be re-run
+- 🔒 **Spam Protection**: Each submission prepays its own evaluation fee in ETH and posts the bounty's hunter bond, which deters frivolous attempts; the unspent prepay is refunded, and the bond is returned unless the work clearly fails
 - 🌐 **Public Transparency**: All bounties and results are publicly accessible
 
 **Technology Stack:**
 - **Frontend**: React 19, Ethers.js v6
 - **Backend**: Node.js, Express, @verdikta/common
-- **Smart Contracts**: BountyEscrow + Verdikta Aggregator integration
+- **Smart Contracts**: BountyEscrow + the Verdikta v2 aggregator (one deployment serves every jury size)
 - **Blockchain**: Base Sepolia testnet, Base mainnet
 - **Storage**: IPFS for rubrics, deliverables, and evaluation reports
 
-**Status:** 🟢 Live at [bounties.verdikta.org](https://bounties.verdikta.org), with smart contracts deployed on Base (mainnet) and Base Sepolia (testnet)
+**Status:** 🟢 Live at [bounties.verdikta.org](https://bounties.verdikta.org), with the v0.5.0 contracts (v1 aggregator) deployed on Base (mainnet) and Base Sepolia (testnet). The `beacon` branch holds the v2 release (v0.6.0), which is not deployed yet
 
 **[📖 Program README →](example-bounty-program/README.md)**  
 **[👨‍💻 Developer Guide →](example-bounty-program/DEVELOPER-GUIDE.md)**

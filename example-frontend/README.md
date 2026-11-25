@@ -9,7 +9,7 @@ Verdikta Simple Frontend is a reference web application that showcases how to in
 3. Choose an **AI jury** (set of models or nodes) and submit the request to the **Verdikta Aggregator** (the v2 `ReputationAggregator`) on **Base** or **Base Sepolia**, prepaying the arbiters in ETH.
 4. Move the round on from the user's wallet (draw the jury, then promote the commits; each is a wallet transaction that earns the caller a reward), then fetch and render the **result vector** and the **AI‑generated justification**.
 
-> The client works with the **v2** aggregator only. The v2 aggregators are not deployed yet: `client/.env.example` holds placeholders for their addresses (see `MIGRATION_SUMMARY.md`).
+> The client works with the **v2** aggregator only. The v2 aggregator (one per network, serving every jury size) is not deployed yet: `client/.env.example` holds placeholders for its addresses (see `MIGRATION_SUMMARY.md`).
 
 This repository contains:
 

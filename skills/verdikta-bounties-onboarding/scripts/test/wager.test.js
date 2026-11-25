@@ -77,7 +77,7 @@ test('check refuses every bad counter, each for its own reason, standalone', () 
     ['Counter bounty #18: its decision settings (jury (K 6, M 5, N 4, P 3, timeout 300), quota 2, forfeitLine 1, bondWei 0) differ from yours (jury (K 6, M 5, N 4, P 3, timeout 300), quota 3, forfeitLine 1, bondWei 0): a claim on it would be judged by another rule.']);
   assert.match(report(bounty(18, { status: { decisionSettings: undefined } }), bob).problems.join('\n'), /the site does not show its decision settings/);
   const noDecision = fx(18, 'job').job.description.replace(`${DECISION_LINE}\n`, '');
-  assert.deepEqual(report(bounty(18, { job: { description: noDecision } }), bob).problems, ['The Decision settings line cannot be read back ("jury <index>, quota <Q>, forfeitLine <R>, bondWei 0.").']);
+  assert.deepEqual(report(bounty(18, { job: { description: noDecision } }), bob).problems, ['The Decision settings line cannot be read back ("jury (K <K>, M <M>, N <N>, P <P>, timeout <seconds>), quota <Q>, forfeitLine <R>, bondWei 0.").']);
 });
 
 test('check against the bettor\'s own posted terms: honest counter passes, bad counters refused', () => {

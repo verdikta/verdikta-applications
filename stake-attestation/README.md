@@ -659,7 +659,11 @@ and `HOME` (`SA_BUILDER_BUILD_ENV`, `SA_BUILDER_SIGN_ENV`, never one of the serv
 variables), the build queue, and the oracle parameters (`SA_ORACLE_*`; the class is common's
 `code-standard`). A listing's jury is its class preset's unless `SA_ORACLE_JURY="K,M,N,P,timeout"`
 gives every listing one jury (for a chain whose arbiters cannot seat the presets, or a longer
-round; the end-to-end run sets 6,5,4,3,900); it is checked as `list()` checks it. `SA_ORACLE_BEACONS=on`
+round; the end-to-end run sets 6,5,4,3,900); it is checked as `list()` checks it. The presets'
+timeouts are the bounty program's (300 s, Jumbo 600 s, from the draw), while an arbiter's job may take
+up to 840 s on a code-review evaluation (the arbiter's `chainlink-node/basicJobSpec`): commits are
+taken until the deadline, so a claim whose jurors run longer than the timeout ends with no result.
+`SA_ORACLE_JURY` sets a longer timeout, up to the aggregator's `maxTimeout` (3,600 s by default). `SA_ORACLE_BEACONS=on`
 asks for beacons on every listing; off, only a class that asks for them (Jumbo) has them. A credential is named by its variable and read when it is used, so the
 parsed config holds none.
 
@@ -1825,7 +1829,7 @@ the draw), and then `settle` fails it, which `StakeAttestation.finalize` tries.
 | Base fee to K payees at the draw, bonus to the P clustered at finalize, the draw and promote rewards; refund = received − base − bonus − rewards | The same formula in the mock. Each juror's fee is taken as the ceiling (or the floor) | `aggregatorRound.test.js`, `MockVerdiktaAggregator.test.js`; **G2** reads the real fee |
 | A slot whose dispatch reverts is an uncredited no-show | All K dispatch | A larger refund, which the contract takes |
 | The promotion draw, and the reveal requests to the M slots it names | The same draw (the port's `pickPromoted` on the real seed); the mock's `promote` only moves the phase | `aggregatorRound.test.js` on the real library's answers |
-| OracleRequest, Chainlink job, EA, `fulfillOracleRequestV`, `fulfill`: `gasLimit 6,000,000`, 2 confirmations | The bridge calls the EA with the job's body, up to the job's 840 s | **G2**: the real job and `ArbiterOperator` |
+| OracleRequest, Chainlink job, EA, `fulfillOracleRequestV`, `fulfill`: `gasLimit 9,000,000` (the arbiter's `beacon` branch; v1's job had 6,000,000), 2 confirmations | The bridge calls the EA with the job's body, up to the job's 840 s | **G2**: the real job and `ArbiterOperator` |
 | **The N-th reveal's gas.** `fulfill` runs `_finalize` (1.3M to 6.9M by answer length); a reveal out of gas is lost | `scriptResult` always fits | **G2**: the N-th `fulfill` under the job's gas limit |
 | **Timing.** The deadline is the request's jury timeout from the draw (the listing's, 900 s in this run), T+ 155 s, 120 s to reveal after `promote`; 3 to 6 minutes a round | The same rules on Hardhat's clock (the bridge sets T+ and the reveal window with `setTimeouts`, and the owner's bounds with `setLimits`); a round takes seconds | **G2**: a cold cache, real jurors, §11's budget |
 | **The failed round (E6).** `settle` after the deadline: failed in commit (refund), never promoted (treasury), reveal (refund); a missed beacon quorum and a cancelled round (treasury) | The same phases and routing; this round fails in commit, no commit at all | This round, commit phase; contract tests the rest |
@@ -1840,13 +1844,15 @@ The same on both: the input limits, fund-from-credit, sequential ids from 1, pol
 What this round cannot, because the real thing is not in it:
 
 - A real selection on class 5555 at `code-standard`'s fee, inside `SUBMISSION_GAS`.
-- The real Chainlink job and `ArbiterOperator`: the job's timeout, confirmations, the N-th `fulfill` under 6M gas.
+- The real Chainlink job and `ArbiterOperator`: the job's timeout, confirmations, the N-th `fulfill` under the job's 9M gas.
 - `finalize` of a really failed round: the keeper's and the tool's gas estimates, with `settle`'s K outcomes under the try/catch.
 - A 900 s round deadline (the listing's jury timeout) on the real aggregator, and a real round inside it: draw, commits, promote, reveals.
 - An identical report hash across hosts: several operators, and real clustering of real disagreement. One EA and scripted jurors say nothing about it.
 - gVisor in the same round; the AI Node's production build; real jurors with real latency.
 - Real pinning and gateways.
-- The −20 timeliness penalty on real abstaining operators (§12), and a real re-trigger.
+- The v2 keeper's points on real operators (§12's penalties, as the v2 keeper applies them: −400 timeliness to a
+  juror that did not commit in a round that failed for lack of commits, −500 to a promoted juror that did not reveal
+  in a failed round), and a real re-trigger.
 - The production builder key (C6), once it exists.
 
 ## CI

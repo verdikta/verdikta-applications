@@ -228,7 +228,7 @@ function Agents({ walletState }) {
     {
       method: 'POST',
       path: '/api/jobs/:jobId/submissions/:subId/close-failed',
-      description: 'Encode closeFailedRound for a round with no result that can get none (failed, cancelled, past its deadline, or undrawn for a day). Anyone may send it; the submission then awaits a re-run, keeping its place and bond. /timeout is the v1 alias.',
+      description: 'Encode closeFailedRound for a round with no result that can get none (failed, cancelled, past its deadline, or undrawn: seed not stored within about 27 minutes, or not drawn within a day). Anyone may send it; the submission then awaits a re-run, keeping its place and bond. /timeout is the v1 alias.',
       params: 'none. Gated on nextAction === CLOSE_FAILED; otherwise 400 with nextAction, phase and a hint (canFinalize: true when the round has a result — use /finalize). Send with the returned gasLimit: settling a round can need well over 1M gas.'
     },
     {
@@ -931,7 +931,8 @@ def finalize_submission(w3, account, job_id, sub_id):
           async indexing lag (on-chain events sync with a delay) and your new bounty may be
           missing for several seconds.
           {' '}(2) <em>Split long flows into phase scripts.</em> Oracle evaluation takes
-          ~2–10 minutes. Do not wrap create + submit + poll + finalize inside one
+          ~5–10 minutes, longer for large juries: a round's deadline is its jury's timeout after the draw
+          (300 s for the Small to Large presets, 600 s for Jumbo, at most the aggregator's maxTimeout, 3,600 s by default). Do not wrap create + submit + poll + finalize inside one
           long-running background process — session-tracking around background execution can
           drop the session before the script finishes, producing synthetic errors even when
           the on-chain work succeeded. Instead, run short-lived scripts: create + submit →
@@ -1388,7 +1389,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                 <p>
                   Submitting work requires ETH to pay for the AI evaluation.
                   The cost depends on the bounty's jury (its size class: K jurors, the fee floor, beacons).
-                  Use the <code>/api/jobs/:id/estimate-fee</code> endpoint to get the jury aggregator's quote
+                  Use the <code>/api/jobs/:id/estimate-fee</code> endpoint to get the aggregator's quote for the bounty's jury
                   (with its breakdown: K, P, per-juror fee, prepay, minimum attempt cost and bond) before committing.
                   At start you attach <code>startValue</code> — the round prepay plus the hunter bond, if the bounty
                   sets one; a re-run attaches the prepay alone. Unspent prepay is refunded to your wallet.
@@ -1508,7 +1509,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                 <ul>
                   <li><code>DRAW</code>, <code>CLOSE_COMMITS</code>, <code>PROMOTE</code>: the round waits for a draw, the end of
                     its commit window, or promotion to reveals — <code>POST /round-step</code> (or <code>/draw</code>) returns the transaction</li>
-                  <li><code>CLOSE_FAILED</code>: the round failed, was cancelled, passed its deadline, or was never drawn for a day,
+                  <li><code>CLOSE_FAILED</code>: the round failed, was cancelled, passed its deadline, or went undrawn (seed not stored within about 27 minutes, or not drawn within a day),
                     with no result — <code>POST /close-failed</code> (<code>closeFailedRound</code>) refunds the unspent prepay and lets the
                     submission re-run, keeping its place and bond (it reverts <code>round still open</code> earlier, and{' '}
                     <code>result available - use finalizeSubmission</code> if a result exists)</li>

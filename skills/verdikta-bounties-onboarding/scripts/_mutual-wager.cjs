@@ -936,7 +936,7 @@ function checkMutualWagerTerms(description, expect) {
   if (stakeWei == null || formWei == null || stakeWei !== formWei) add('WAGER_MISMATCH', `The stake in the terms (${f.stake}) is not the payout amount (${expect.stake} ETH).`);
   // A wager has no hunter bond (WAGER_BOND_WEI), whatever both bounties would agree on.
   const termsDecision = parseDecisionLine(f.decision);
-  if (!termsDecision) add('WAGER_TERMS', 'The "Decision settings" line must read "jury <index>, quota <Q>, forfeitLine <R>, bondWei 0."');
+  if (!termsDecision) add('WAGER_TERMS', 'The "Decision settings" line must read "jury (K <K>, M <M>, N <N>, P <P>, timeout <seconds>), quota <Q>, forfeitLine <R>, bondWei 0."');
   else {
     const why = decisionProblem(termsDecision);
     if (why) add('WAGER_TERMS', `The "Decision settings" line: ${why}`);

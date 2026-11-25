@@ -1377,7 +1377,7 @@ class ContractService {
   }
 
   // ==========================================================================
-  // ROUND STATE (v2: the escrow's lens; per-bounty aggregators)
+  // ROUND STATE (v2: the escrow's lens; one aggregator, the jury per bounty)
   // ==========================================================================
 
   _readEscrow() {

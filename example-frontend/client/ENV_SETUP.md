@@ -21,6 +21,8 @@ REACT_APP_CONTRACT_NAMES=Name1,Name2  # Corresponding names for each contract
 REACT_APP_CONTRACT_CLASSES=128,128  # Class IDs for each contract
 ```
 
+Each address must be a v2 `ReputationAggregator`; the v1 aggregators do not work with this client. One v2 aggregator per network serves every jury size (the jury is chosen on the Jury Selection page and sent with each request). It is not deployed yet: `.env.example` holds placeholders, and entries that are not addresses are skipped.
+
 #### Client Configuration  
 ```bash
 PORT=3000  # Port for React development server (default: 3000)

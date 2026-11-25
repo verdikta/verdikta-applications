@@ -15,10 +15,16 @@ Findings:
   `PUBLIC_PATHS` is open and unthrottled.
 - `POST /api/bots/register` hands out unlimited free keys, and keyed requests are
   never throttled, so "authenticated" endpoints are effectively open too.
-- Severity: availability only. Finalize / force-fail / close have no on-chain
-  expiry and can be sent directly to the contract, so an outage delays them but
-  loses no funds. The creator approval window is the only time-boxed action, and
-  creators can approve on-chain directly.
+- Severity: mostly availability. Finalize, `closeFailedRound` and close have no
+  on-chain expiry and can be sent directly to the contract, so an outage delays
+  them but loses no funds. On v2 some steps ARE time-boxed, though anyone can
+  send them directly too: the draw (the seed must be stored within 8,191 blocks,
+  about 27 minutes, and the jury drawn within a day, or the round is cancelled
+  and its prepay goes to the aggregator's treasury), `closeCommits` / `promote`
+  before the round's deadline (else the unspent prepay goes to the treasury), a
+  re-run within its 2-hour window, and the creator approval window (creators can
+  approve on-chain directly). An outage of the server's round keeper therefore
+  can cost hunters prepay if nobody else sends those steps.
 
 Tasks:
 

@@ -48,7 +48,7 @@ const aggId = receipt.logs
   .find((e) => e?.name === 'RequestAIEvaluation').args.aggRequestId;
 ```
 
-The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `minFee` = 0, `estimatedBaseCost` = 1% of `maxFee`, `maxFeeBasedScalingFactor` = 10 and class 128 (`client/src/App.js`). The jury and `withBeacons` come from the **Arbiter jury size** setting on the Jury Selection page (`client/src/utils/juryPresets.js`): Small `{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }` without beacons by default; Medium 8/5/4/3, 300 s; Large 21/16/13/10, 300 s; Jumbo 50/38/27/17, 600 s with beacons.
+The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `minFee` = 0, `estimatedBaseCost` = 1% of `maxFee`, `maxFeeBasedScalingFactor` = 10 (`client/src/App.js`), and the arbiter class chosen on the Jury Selection page (128 by default). The jury and `withBeacons` come from the **Arbiter jury size** setting on the Jury Selection page (`client/src/utils/juryPresets.js`): Small `{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }` without beacons by default; Medium 8/5/4/3, 300 s; Large 21/16/13/10, 300 s; Jumbo 50/38/27/17, 600 s with beacons.
 
 One aggregator serves every jury size. It refuses a request with `BadJury` unless K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, P ≥ 2 (unless N = 1), K ≤ `maxJury()` and the keeper's shortlist (60), and `tPlus()` < timeout ≤ `maxTimeout()`. With fewer than K eligible arbiters the draw repeats arbiters; only a class with none eligible fails the draw (refunded).
 
@@ -72,7 +72,7 @@ await contract.settle(aggId);
 - `requestAIEvaluationWithApproval()`: Submit evaluation request (10 arguments, the last the jury `(K, M, N, P, timeout)`; `payable`)
 - `maxTotalFee(maxFee, minFee, withBeacons, K, P)`: Worst-case fee in ETH (wei) that must be prepaid with a request for that jury
 - `drawJury()`, `closeCommits()`, `promote()`: Move a round on (anyone may call them)
-- `settle()`: Fail a round that passed its deadline without a result, and refund it
+- `settle()`: After a round's deadline: fail it if it has no result (crediting the unspent prepayment, see below) and report every slot's outcome to the keeper. A later request to the same aggregator also settles due rounds
 - `getRoundInfo()`: The round's phase (1 draw, 2 beacons, 3 commit, 4 closing, 5 reveal, 6 final, 7 settled, 8 failed, 9 cancelled), blocks, escrow, deadline, commit window end, commits and request time
 - `getEvaluation()`: Retrieve evaluation results, valid from phase 6
 - `getJury(aggId)`: The jury a round was requested with, `(K, M, N, P, timeout)`; the deadline is its timeout after the draw. The aggregator has no `K()`…`P()` or round timeout of its own
@@ -130,9 +130,9 @@ The system supports multiple AI providers through a unified interface:
 
 1. **Query Package**: Frontend packages query with supporting data
 2. **Blockchain Submission**: Transaction submitted to smart contract
-3. **Oracle Processing**: Chainlink oracle picks up the request
-4. **AI Evaluation**: Multiple AI models process the query
-5. **Result Aggregation**: Responses combined using weighted voting
+3. **Jury Draw**: `drawJury` draws the request's K arbiters, and each arbiter's Chainlink operator picks up the request
+4. **AI Evaluation**: On each arbiter, its AI models process the query (combined by their weights) and the arbiter commits a hash of its answer
+5. **Result Aggregation**: M commits are promoted and reveal; once N reveals are in, the aggregator takes the tightest cluster of P of them and averages it
 6. **Blockchain Storage**: Results stored on-chain with IPFS references
 
 ## IPFS Integration

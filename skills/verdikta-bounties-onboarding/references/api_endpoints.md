@@ -325,7 +325,7 @@ Returns detailed per-model scores and justification narratives. Use after finali
 
 `GET /api/jobs/:jobId/submissions`
 
-Returns simplified statuses: `PENDING_EVALUATION`, `EVALUATED_PASSED`, `EVALUATED_FAILED`, `WINNER`, `TIMED_OUT`.
+Returns simplified statuses: `PENDING_CREATOR_APPROVAL`, `PENDING_EVALUATION`, `EVALUATED_PASSED`, `EVALUATED_SOFT_FAIL` (soft fail, not yet finalized), `EVALUATED_FAILED`, `NO_RESULT` (a round with no result awaiting `closeFailedRound`, or failed with `failureReason` `NO_RESULT` / `RERUN_EXPIRED`), `AWAITING_RERUN`, `WINNER`, and `TIMED_OUT` (v1 records only).
 
 Note: `EVALUATED_PASSED` includes both finalized and pending-claim submissions.
 
@@ -410,7 +410,7 @@ Returns expired bounties with close eligibility.
 
 `POST /api/jobs/:jobId/close`
 
-Returns encoded calldata for `closeExpiredBounty`. While submissions are pending it returns 400 with `needsFinalize`, `needsCloseFailed`, `needsExpireRerun` and `stillEvaluating` (`needsTimeout` is the v1 name for everything but finalize).
+Returns encoded calldata for `closeExpiredBounty`. While submissions are pending it returns 400 with `needsFinalize`, `needsCloseFailed`, `needsExpireRerun` and `stillEvaluating` (`needsTimeout` is the v1 name, kept: everything but finalize, `stillEvaluating` included).
 
 ---
 

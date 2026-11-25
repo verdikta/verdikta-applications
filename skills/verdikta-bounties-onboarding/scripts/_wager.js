@@ -111,7 +111,7 @@ export function termsValues(t) {
   const decision = shared.wagerSpec(t).decision ? shared.parseDecisionLine(f.decision) : null;
   if (!juryLine) problems.push('The Jury line cannot be read back ("<Provider> <model> weight <w>, <n> run(s) + ...; <n> iteration(s).").');
   if (!oracle) problems.push('The Oracle settings line cannot be read back.');
-  if (shared.wagerSpec(t).decision && !decision) problems.push('The Decision settings line cannot be read back ("jury <index>, quota <Q>, forfeitLine <R>, bondWei 0.").');
+  if (shared.wagerSpec(t).decision && !decision) problems.push('The Decision settings line cannot be read back ("jury (K <K>, M <M>, N <N>, P <P>, timeout <seconds>), quota <Q>, forfeitLine <R>, bondWei 0.").');
   if (!both) problems.push('The "Both bounties" line cannot be read back.');
   if (!(wei(stake) > 0n)) problems.push('The Stake line cannot be read back.');
   if (unix(f.start) == null || unix(f.settle) == null) problems.push(`${t.kind === 'question' ? 'Bets close' : 'The scheduled start'} and the settlement deadline must be ISO UTC times to the second, such as 2026-10-21T19:00:00Z.`);

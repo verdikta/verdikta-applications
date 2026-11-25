@@ -229,9 +229,17 @@ each deadline of your claim and what comes next.
    own deadline to disclose (step 3), met once `disclosed` is true; `revealableAt` is the end of
    your fix window; `revealDeadline` is "0" until the chain sets it.
 6. Judging: the arbiters run the proof and the jury judges it, in minutes. Anyone may then call
-   `finalize(claimId)`, and the site's keeper does. `status --wait` exits 5 when a round ends with
-   no verdict (about 15 minutes after the reveal at most, once the aggregator's time for the round
-   is over), before anyone has finalized it, and `status` says so too. It means too few
+   `finalize(claimId)`, and the site's keeper does. A round has no fixed length: its jury is drawn
+   in a separate step after the reveal (`verdikta-attest claim` sends `drawJury`, as anyone may,
+   and the site's keeper does), and the round's deadline is the listing's jury timeout counted
+   from that draw (300 s for the Small to Large classes, 600 s for Jumbo, at most the aggregator's
+   maxTimeout, 3600 s by default; `status --json` gives the round's `jury` and `timeoutSeconds`).
+   A round never drawn can only be cancelled, its whole prepay to the aggregator's treasury: about
+   8,191 blocks (~27 minutes) after the request if its seed was never stored, a day after it if it
+   was. `status --wait` exits 5 as soon as the aggregator is done with a round that has no
+   verdict, before anyone has finalized it, and `status` says so too. The watch itself stops after
+   15 minutes at most (less with --max-wait-ms) and exits 4 if the round is still open: run it
+   again. A round with no verdict means too few
    arbiters committed and revealed a result in that time: most often every arbiter abstained on
    your claim (a proof that loops, or runs out of time, memory or processes, or a build the runner
    could not finish), or the arbiters were down. Nothing on-chain says which, and the round's

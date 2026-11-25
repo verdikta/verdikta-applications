@@ -1048,7 +1048,7 @@ function Analytics() {
                     </div>
                   )}
                   {c.drawRewardFees != null && (
-                    <div className="config-item" title="Rewards in per-arbiter fees (the bounty's effective fee ceiling): to whoever draws the jury, and to whoever promotes">
+                    <div className="config-item" title="Rewards in per-arbiter fees (the bounty's effective fee ceiling): for the draw (to the requester, here the submission's wallet, if it draws within 30 s; after that to whoever draws), and to whoever promotes">
                       <span className="config-label">Draw · Promote Reward</span>
                       <span className="config-value">{c.drawRewardFees} · {c.promoteRewardFees ?? '-'} fees</span>
                     </div>

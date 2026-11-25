@@ -342,7 +342,7 @@ function App() {
           name: CONTRACT_NAMES[index] || `Contract ${index + 1}`,
           network: selectedNetwork
         };
-      // Only real addresses: .env.example holds placeholders until the v2 aggregators are deployed.
+      // Only real addresses: .env.example holds placeholders until the v2 aggregator is deployed.
       }).filter(c => /^0x[0-9a-fA-F]{40}$/.test((c.address || '').trim()));
 
       setContractOptions(fallbackOptions);

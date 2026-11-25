@@ -31,7 +31,9 @@ const DESCRIPTIONS = {
     'carries its own jury (K, M, N, P and the round timeout), within the owner’s limits below. ' +
     'A request escrows the fees; from two blocks later anyone can draw the jury (K arbiters, ' +
     'chosen by reputation from the keeper’s state at the request block; with fewer eligible, ' +
-    'the jury repeats arbiters). The commit phase closes at M+ commits, or after T+ with at least M; ' +
+    'the jury repeats arbiters). A request may ask for beacons: the first draw call then polls ' +
+    'beacon arbiters, and a second call draws once 2 beacon values are in. ' +
+    'The commit phase closes at M+ commits, or after T+ with at least M; ' +
     'M commits are promoted to reveal, and the N-th reveal finalizes the verdict. The P ' +
     'closest reveals earn the bonus. Late reveals are still scored, and settlement after the ' +
     'deadline reports every slot’s outcome to the keeper.',
@@ -299,7 +301,7 @@ function Contracts() {
               <ConfigItem label="Requester Draw Priority" value={formatDuration(agg.config.requesterDrawPriority)} />
               <ConfigItem label="Spread Floor" value={agg.config.spreadFloor != null ? agg.config.spreadFloor.toLocaleString() : null} title="Minimum quality spread on the arbiters' 0..1,000,000 scale: a reveal is close within 1.5 × the spread of the median, off within 3 ×, far beyond" />
               <ConfigItem label="Rounds So Far" value={agg.config.roundCount != null ? agg.config.roundCount.toLocaleString() : null} title="roundCount(): rounds requested on this aggregator; aggIds are sequential" />
-              <ConfigItem label="Beacons" value={agg.config.beacons ? 'On' : 'Off'} title="JuryBeacons contract for beacon-seeded draws (per-request flag)" />
+              <ConfigItem label="Beacons" value={agg.config.beacons ? 'Available' : 'Not set'} title="JuryBeacons contract for beacon-seeded draws. Each request chooses whether to use it (its withBeacons flag)" />
               {agg.config.paused && <ConfigItem label="Status" value="Paused" />}
             </div>
           )}

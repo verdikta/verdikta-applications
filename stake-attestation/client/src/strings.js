@@ -1092,7 +1092,7 @@ export const STRINGS = {
   dispute: {
     title: 'Dispute',
     intro:
-      'You may dispute a valid verdict once, until {deadline}. A stronger panel re-judges the claim, and its ' +
+      'You may dispute a valid verdict once, until {deadline}. A dispute panel, the listing\'s jury drawn again under its dispute fee ceiling, re-judges the claim, and its ' +
       'outcome is final. A dispute that turns the outcome INVALID forfeits the hunter\'s bond to you, unless the ' +
       'panel\'s verdict is a narrow INVALID, whose bond goes back to the hunter; one that holds is recorded as a failed dispute. ' +
       'Above the listing\'s confirmation size, your dispute is the confirmation.',

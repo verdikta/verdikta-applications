@@ -206,7 +206,7 @@ async function createBounty() {
     },
     // The bounty's own jury and decision rule (items 15, 12) — the website's size classes set these
     // (Small: K 6, M 5, N 4, P 3, a 300 s timeout; Q 3, R 1). Sent with every request to the one aggregator.
-    jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, // K drawn >= M promoted >= N counted >= P clustered >= 2; N <= 40; timeout in s from the draw
+    jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, // K drawn >= M promoted >= N counted >= P clustered >= 1 (P >= 2 unless N = 1); N <= 40; timeout in s from the draw (155 < timeout <= 3600 by default)
     quota: 3,                                      // Q: arbiter scores at/above the threshold needed to pass (<= the jury's N)
     forfeitLine: 1,                                // R (<= Q): fewer than R passing scores is a hard fail (bond to the creator)
     bond: ethers.parseEther('0.002'),              // hunter bond, attached at start with the prepay (0 = bondless)
@@ -1001,8 +1001,8 @@ submission-package.zip
                 the bond) may call <code>rerunSubmission(bountyId, submissionId)</code> with <code>msg.value = requiredPrepay(bountyId)</code>{' '}
                 before <code>rerunDeadline</code>: a new round with a fresh jury, drawn like the first. At most 6 rounds
                 (<code>MAX_ROUNDS</code>). Once the window closes, anyone can call <code>expireRerun</code>: the submission fails
-                and the bond goes back. A round that ends with no result (failed, cancelled, past its deadline, or never drawn for
-                a day) is closed by anyone with <code>closeFailedRound</code> — no fault of the hunter, so it also awaits a
+                and the bond goes back. A round that ends with no result (failed, cancelled, past its deadline, or undrawn: seed not
+                stored within about 27 minutes, or not drawn within a day) is closed by anyone with <code>closeFailedRound</code> — no fault of the hunter, so it also awaits a
                 re-run (it replaces v1's <code>failTimedOutSubmission</code>).
               </p>
               <div className="step-detail">
@@ -1227,11 +1227,15 @@ submission-package.zip
             <h3>Refunds</h3>
             <p>
               You attach the ETH prepay as <code>msg.value</code> when calling{' '}
-              <code>startPreparedSubmission()</code> — there is no token approval. At settlement the
-              aggregator credits the unspent portion back as a pull-payment (<code>ethOwed</code>).
-              You never claim it manually: <code>finalizeSubmission()</code> has the per-submission
-              EvaluationWallet withdraw that credit from the aggregator (<code>withdrawEth()</code>)
-              and return it to you automatically.
+              <code>startPreparedSubmission()</code> — there is no token approval. The aggregator credits
+              the unspent portion back to the submission's EvaluationWallet as a pull-payment (<code>ethOwed</code>):
+              when the round has its result, or, for a round without one, when it is settled. The draw reward
+              the wallet earns is credited there too. You never claim it manually: <code>finalizeSubmission()</code>{' '}
+              (or <code>closeFailedRound()</code>) has the wallet withdraw that credit from the aggregator
+              (<code>withdrawEth()</code>) and return it to whoever funded the round. Some rounds without a result
+              send the unspent prepay to the aggregator's treasury instead, since a refund would be a free re-roll
+              of the jury: a missed beacon quorum, a commit phase that had enough commits but was never closed or
+              promoted, and a round cancelled because it was never drawn.
             </p>
           </div>
           <div className="info-card">
@@ -1240,8 +1244,9 @@ submission-package.zip
             </div>
             <h3>Rounds without a result</h3>
             <p>
-              A round that cannot produce a result (it failed, was cancelled, passed its deadline, or was never drawn for a
-              day) is closed by anyone with <code>closeFailedRound()</code>: it refunds what is left of the prepay and the
+              A round that cannot produce a result (it failed, was cancelled, passed its deadline, or went undrawn: seed not
+              stored within about 27 minutes, or not drawn within a day) is closed by anyone with{' '}
+              <code>closeFailedRound()</code>: it returns what the aggregator refunded of the prepay and the
               submission awaits a re-run, keeping its place and bond (no result is not the hunter's fault). It reverts{' '}
               <code>round still open</code> while the round can still finish, and{' '}
               <code>result available - use finalizeSubmission</code> if it has a result. <code>nextAction</code> says{' '}
@@ -1435,7 +1440,7 @@ async function closeViaAPI(jobId) {
           <div>
             <strong>Eligibility Requirements:</strong>
             <ul style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
-              <li><strong>Close a failed round:</strong> Submission must be in <code>PendingVerdikta</code> AND its round must have failed, been cancelled, passed its deadline, or gone undrawn for a day, with no result (<code>nextAction</code> = <code>CLOSE_FAILED</code>) — a round that produced a result can only be finalized</li>
+              <li><strong>Close a failed round:</strong> Submission must be in <code>PendingVerdikta</code> AND its round must have failed, been cancelled, passed its deadline, or gone undrawn (seed not stored within about 27 minutes, or not drawn within a day), with no result (<code>nextAction</code> = <code>CLOSE_FAILED</code>) — a round that produced a result can only be finalized</li>
               <li><strong>Expire a re-run:</strong> Submission in <code>AwaitingRerun</code> past its <code>rerunDeadline</code> (or the bounty closed / deadline passed)</li>
               <li><strong>Close:</strong> Bounty must be past its deadline AND have no submissions in evaluation or awaiting a re-run (<code>pendingSubmissionIds</code> empty)</li>
             </ul>

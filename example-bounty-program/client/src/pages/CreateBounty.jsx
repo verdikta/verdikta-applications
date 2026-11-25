@@ -1675,9 +1675,9 @@ function CreateBounty({ walletState }) {
                       <tr>
                         <th>Jury</th>
                         <td>
-                          {bountyClass.jury.K} arbiters drawn, the first {bountyClass.jury.M} commits kept, {bountyClass.jury.N} scores counted
+                          {bountyClass.jury.K} arbiters drawn, {bountyClass.jury.M} of those who commit promoted at random to reveal, the first {bountyClass.jury.N} reveals counted
                           (K/M/N = {bountyClass.jury.K}/{bountyClass.jury.M}/{bountyClass.jury.N}; cluster P = {bountyClass.jury.P});
-                          the round times out {Math.round(bountyClass.jury.timeout / 60)} minutes after the draw
+                          the round's deadline is {Math.round(bountyClass.jury.timeout / 60)} minutes after the draw (extended if the commit phase closes or is promoted late)
                         </td>
                       </tr>
                       <tr>
@@ -1871,7 +1871,7 @@ function CreateBounty({ walletState }) {
                       />
                       <small className="helper-text">
                         Arbiters priced above this are ineligible. Sizes the hunter's ETH prepay. Must be &gt; 0 and
-                        at most the jury aggregator's live ceiling (its maxOracleFee()).
+                        at most the aggregator's live ceiling (its maxOracleFee()).
                       </small>
                     </div>
                     <div className="form-group">

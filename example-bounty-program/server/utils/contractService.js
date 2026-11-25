@@ -386,7 +386,7 @@ class ContractService {
     return { ...base, eligible: false, reason: 'round_open',
       hint: waiting || (st.deadline
         ? `The round is still open; its deadline is unix ${st.deadline} (in ${base.secondsUntilDeadline}s). closeFailedRound reverts with "round still open" until then.`
-        : 'The round is still open (an undrawn round never times out; it can be cancelled a day after its request).') };
+        : 'The round is still open (an undrawn round never times out; it can be cancelled about 8,191 blocks, ~27 minutes, after its request if its seed was never stored, or a day after it if it was).') };
   }
 
   /**

@@ -1413,9 +1413,11 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
     signed or on the chain it changes nothing, for the whole run, and says so. Should that signed commit's nonce
     have gone to another transaction, the run goes on as a commit's does, never as a late claim's.
   - A prepared late claim's two hashes are looked for on the chain, as a commit's or a late claim's, before the listing
-    is asked: a claim sent some other way is adopted and disclosed, `--yes` or not. So `--yes` (the library's
+    is asked: a claim sent some other way is adopted and disclosed, `--yes` or not. A commit's prepared folder that
+    is run with `--late` is looked up the same way, before the run takes it over. So `--yes` (the library's
     `acknowledge`) is what a new commit or late claim is signed on, not a dry-run switch for a folder that holds a
-    signed one or such a claim.
+    signed one or such a claim: `commit --late` prints its terms and sends nothing only in a folder where nothing
+    is saved yet.
   - `--restart` never starts a late claim over, signed or not (`LATE_NEEDS_NEW_FOLDER`; owner, 2026-11-24): a
     changed late claim goes in a new folder, and the old folder's files stay as they are. A prepared late claim
     whose files changed says the same, with no word of `--restart` (`LATE_INPUTS_CHANGED`): its files are held to

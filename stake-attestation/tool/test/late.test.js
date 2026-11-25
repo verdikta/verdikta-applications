@@ -1406,7 +1406,7 @@ test('--help describes the late claim: the flag on commit\'s own line, when a li
   assert.match(flat, /the bond is forfeited on INVALID, unless the INVALID is narrow/);
   assert.match(flat, /the prepay is spent on the evaluation/);
   assert.match(flat, /--late changes nothing in a folder that holds a signed commit/);
-  assert.match(flat, /A prepared late claim whose two hashes already have a claim on the chain is disclosed on any run, --yes or not, as a signed one is/);
+  assert.match(flat, /With --late, or in a folder prepared for a late claim, a prepared folder whose two hashes already have a claim on the chain, a commit's or a late claim's, has that claim disclosed, --yes or not, as a signed one is/);
   assert.match(flat, /a later run goes on with that one, with --late or without it/);
   assert.match(flat, /--restart does not start a late claim over: a changed one goes in a new folder/);
   assert.match(flat, /--late is the bare flag, on commit only: with a value \(--late=false too\) or on another command it is a usage error, and nothing is read or sent/);

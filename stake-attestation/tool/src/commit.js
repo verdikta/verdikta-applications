@@ -19,8 +19,9 @@
 //
 //   - The price it signs is the price its terms named: a price that changed in between stops the run before it signs,
 //     and before the wallet's balance is asked, so the new price is said even when the wallet cannot pay it.
-//   - A prepared late claim's two hashes are looked for on the chain, as a commit's or a late claim's, before the
-//     listing is asked and before --restart is weighed: a claim sent some other way has its bond, and is disclosed.
+//   - On a late claim's run a prepared folder's two hashes, a late claim's or those of a commit's folder the run is
+//     about to take over, are looked for on the chain, as a commit's or a late claim's, before the listing is asked
+//     and before --restart is weighed: a claim sent some other way has its bond, and is disclosed, --yes or not.
 //   - --restart never starts a late claim over (owner, 2026-11-24): a changed late claim goes in a new folder.
 //
 // A commit asks, sends and says what it did before there was a late claim: test/late.test.js holds its calls, in order.
@@ -513,8 +514,9 @@ export async function runCommit(ctx, { claimDir, listingId, late: lateFlag = fal
     const unsigned = !state || state.stage === 'prepared';
     const late = unsigned ? lateFlag === true || state?.late === true : state.late === true;
     if (lateFlag === true && !late) ctx.notice(COMMIT_HERE);
-    // A prepared late claim's two hashes may have a claim on the chain already, sent some other way. That is asked
-    // first: before the listing or the wallet's balance can refuse the run, and before --restart is weighed.
+    // On a late claim's run a prepared folder's two hashes may have a claim on the chain already, sent some other
+    // way. That is asked first: before the listing or the wallet's balance can refuse the run, before --yes, and
+    // before --restart is weighed.
     if (late && state?.stage === 'prepared') {
       const existing = await findCommitted(ctx, state, EITHER_KIND);
       if (existing) state = await adoptLogged(ctx, ws, state, existing);

@@ -1409,7 +1409,8 @@ test('--help describes the late claim: the flag on commit\'s own line, when a li
   assert.match(flat, /With --late, or in a folder prepared for a late claim, a prepared folder whose two hashes already have a claim on the chain, a commit's or a late claim's, has that claim disclosed, --yes or not, as a signed one is/);
   assert.match(flat, /a later run goes on with that one, with --late or without it/);
   assert.match(flat, /--restart does not start a late claim over: a changed one goes in a new folder/);
-  assert.match(flat, /--late is the bare flag, on commit only: with a value \(--late=false too\) or on another command it is a usage error, and nothing is read or sent/);
+  // the help says it of every flag now, --late among them, in one line (node P46; test/cli.test.js holds the line)
+  assert.match(flat, /A flag with a value \(--yes=false too\), and a flag or an option on a command that does not take it, is a usage error: nothing is read or sent\./);
   // and what the help said of a commit, it says still
   assert.ok(USAGE.includes('                     on a folder with no commit signed yet, without --yes it prints the terms, the price and how\n                     many claims on the listing are open ahead of yours, and sends nothing\n'));
 });
@@ -1425,7 +1426,8 @@ test('--late is a flag the CLI\'s parser takes, on commit', async () => {
 
 // Round 1 of the review (R1-F3). Before --late existed, `commit ... --late=false --yes` and `claim ... --late` were
 // usage errors; adding the flag is what could let them reach a transaction. So --late is taken only as the bare token
-// and only by commit. How every other flag is read is not changed here (verdikta-applications#241).
+// and only by commit. Node P46 (verdikta-applications#241) made that the rule for every flag, with one table of what
+// each command takes: this test is as node P43 wrote it, and test/cli.test.js holds the rule for the others.
 test('--late is taken only as the bare flag, and only by commit: a value, --late=false too, or another command is a usage error before anything is read or sent', async () => {
   const l = await rolled();
   const dir = makeClaimDir();
@@ -1467,25 +1469,6 @@ test('--late is taken only as the bare flag, and only by commit: a value, --late
   const dry = await runCli(w, ['commit', dir, '--listing', String(l.listingId), '--late']);
   assert.equal(dry.code, 3, dry.stderr);
   assert.match(dry.stdout, /^This late claim sends /m);
-});
-
-test('every other flag is read as it was: a value after = is dropped, and a flag is taken on every command (verdikta-applications#241, not changed here)', async () => {
-  const io = () => {
-    const out = { stderr: '' };
-    return { out, streams: { stdout: { write: () => {} }, stderr: { write: (s) => { out.stderr += s; } } } };
-  };
-  // each reaches the first thing its command needs, as on the base: none stops at the flag
-  for (const [argv, needs] of [
-    [['commit', 'x', '--yes=false'], /commit needs an IPFS gateway/],
-    [['commit', 'x', '--restart=0'], /commit needs an IPFS gateway/],
-    [['status', 'x', '--restart'], /this needs the StakeAttestation address/],
-    [['claim', 'x', '--yes'], /this needs the StakeAttestation address/],
-  ]) {
-    const { out, streams } = io();
-    assert.equal(await run(argv, streams, {}), 2, argv.join(' '));
-    assert.match(out.stderr, needs, argv.join(' '));
-    assert.doesNotMatch(out.stderr, /takes no value|no other command takes it/, argv.join(' '));
-  }
 });
 
 test('the late claim\'s notice and the new refusals pass the wording check, and an ordinary commit\'s notice is the one it was', () => {

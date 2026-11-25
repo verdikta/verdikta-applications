@@ -2,7 +2,7 @@
 // Wrong is worse than missing there, so every fact in them that the code decides is read back from the code here,
 // and this fails as soon as one stops matching:
 //
-//   commands and flags    the CLI's own lists (tool/src/usage.js COMMANDS and USAGE, tool/src/cli.js FLAGS, VALUES)
+//   commands and flags    the CLI's own lists (tool/src/usage.js COMMANDS and USAGE, tool/src/cli.js TAKES)
 //   environment           the variables tool/src reads, the default RPC and the pin backends it takes
 //   exit codes            the tool's table (tool/src/errors.js, through ToolError) and the CLI's own returns
 //   API routes            server/src's routes, and the client's hash routes (src/App.jsx)
@@ -55,23 +55,36 @@ const toolSrc = (f) => read('tool', 'src', f);
 const toolSources = () => fs.readdirSync(path.join(APP, 'tool', 'src')).filter((f) => f.endsWith('.js')).map(toolSrc).join('\n');
 const quoted = (text) => [...text.matchAll(/'([^']*)'/g)].map((m) => m[1]);
 
-function setLiteral(source, name) {
-  const m = new RegExp(`const ${name} = new Set\\(\\[([^\\]]*)\\]\\)`).exec(source);
-  assert.ok(m, `tool/src/cli.js holds ${name}`);
-  return quoted(m[1]);
-}
-
-/** What the tool's argument parser takes: its FLAGS and VALUES, and the two answers run() gives before them. */
-function parsedFlags() {
-  const cli = toolSrc('cli.js');
-  const early = [...cli.matchAll(/first === '(--[a-z-]+)'/g)].map((m) => m[1]);
-  return new Set([...setLiteral(cli, 'FLAGS'), ...setLiteral(cli, 'VALUES'), ...early]);
-}
-
 function commands() {
   const m = /export const COMMANDS = \{([\s\S]*?)\n\};/.exec(toolSrc('usage.js'));
   assert.ok(m, 'tool/src/usage.js holds COMMANDS');
   return [...m[1].matchAll(/^\s+([a-z]+):/gm)].map((x) => x[1]);
+}
+
+/**
+ * The parser's one table of what each command takes (tool/src/cli.js TAKES, node P46): a command, or '*' for every
+ * command, to its flags and to its options that take a value. The tool's own tests hold the help to it.
+ */
+function takes() {
+  const m = /export const TAKES = Object\.freeze\(\{\n([\s\S]*?)\n\}\);/.exec(toolSrc('cli.js'));
+  assert.ok(m, 'tool/src/cli.js holds TAKES');
+  const rows = new Map();
+  for (const line of lines(m[1]).filter((l) => !/^\s*\/\//.test(l))) {
+    const row = /^ {2}(?:'(\*)'|([a-z]+)): \{ flags: \[([^\]]*)\], values: \[([^\]]*)\] \},$/.exec(line);
+    assert.ok(row, `tool/src/cli.js TAKES: ${line.trim()}`);
+    rows.set(row[1] ?? row[2], { flags: quoted(row[3]), values: quoted(row[4]) });
+  }
+  assert.deepEqual([...rows.keys()], ['*', ...commands()], 'TAKES has a row for every command, and one for all of them');
+  return rows;
+}
+
+/** Whether the table gives `flag` to `command`: in its own row or in the row of every command. */
+const takesIt = (command, flag) => [takes().get(command), takes().get('*')].some((row) => row.flags.includes(flag) || row.values.includes(flag));
+
+/** What the tool's argument parser takes: every flag and option of its table, and the two answers run() gives before them. */
+function parsedFlags() {
+  const early = [...toolSrc('cli.js').matchAll(/first === '(--[a-z-]+)'/g)].map((m) => m[1]);
+  return new Set([...[...takes().values()].flatMap((row) => [...row.flags, ...row.values]), ...early]);
 }
 
 /** The flags USAGE documents per command, and the options it documents for every command. */
@@ -245,6 +258,8 @@ test('every verdikta-attest command they name is one of the CLI\'s, and each fla
       for (const flag of rest.filter((a) => a.startsWith('--'))) {
         assert.ok(parsed.has(flag), `${name}:${line}: ${flag} is no flag the CLI parses`);
         assert.ok(per.get(first).has(flag) || global.has(flag), `${name}:${line}: ${flag} is not documented for ${first}`);
+        // and the parser takes it on that command: on another it is a usage error (node P46)
+        assert.ok(takesIt(first, flag), `${name}:${line}: the parser's table does not give ${flag} to ${first}`);
       }
     }
   }
@@ -1124,17 +1139,20 @@ test('node P43: a late claim is what the contract and the tool make of it: when 
 
   // the command: the flag is the parser's and commit's, a first run is a dry run as a commit's is, and the later verbs
   // are a claim's; status says which kind it is
-  assert.ok(setLiteral(cli, 'FLAGS').includes('--late'));
+  assert.deepEqual([...takes()].filter(([, row]) => row.flags.includes('--late')).map(([command]) => command), ['commit'], 'the flag is commit\'s alone in the parser\'s table');
   assert.ok(usageFlags().per.get('commit').has('--late'), 'the help documents --late for commit');
   assert.match(/case 'commit': \{[\s\S]*?\n {4}\}/.exec(cli)[0], /late: options\['--late'\] === true/);
-  // the flag is taken only as the bare token and only by commit: a value is no yes, and no other command takes it.
-  // Both are refused as the arguments are read, before the wallet and the chain (R1-F3). Every other flag is read as
-  // it was (verdikta-applications#241)
-  assert.match(/function parseArgs[\s\S]*?\n\}/.exec(cli)[0], /if \(name === '--late' && a !== name\) throw usageError\('--late takes no value'\);/);
-  const dispatch = /async function dispatch[\s\S]*?\n\}/.exec(cli)[0];
-  const lateOnly = dispatch.indexOf('if (options[\'--late\'] === true && verb !== \'commit\') throw usageError(');
-  assert.ok(lateOnly >= 0 && lateOnly < dispatch.indexOf('const chainOptions') && lateOnly < dispatch.indexOf('const walletOptions'), 'no other command takes --late, said before any setup');
-  assert.ok(block.includes('--late takes no value and is `commit`\'s alone: `--late=false`, any other value, or --late on another command is a usage error (exit 2), before anything is read or sent.'));
+  // the flag is taken only as the bare token and only by commit: a value is no yes, and no other command takes it
+  // (R1-F3). Node P46 (verdikta-applications#241) made that the rule for every flag: the arguments are read against
+  // the command's row of the table first thing, before the wallet and the chain, and the guide says the rule once,
+  // where it shows the commands
+  const parse = /function parseArgs[\s\S]*?\n\}/.exec(cli)[0];
+  assert.match(parse, /throw usageError\(`\$\{name\} takes no value`\);/);
+  assert.match(parse, /no other command takes it`\);/);
+  assert.doesNotMatch(cli, /'--late'[^\n]*usageError|usageError\([^\n]*--late/, 'and --late has no check of its own');
+  assert.match(cli, /\nasync function dispatch\(verb, args, io, env, write\) \{\n {2}const \{ options, positional \} = parseArgs\(verb, args\);\n/, 'the arguments are read before anything else');
+  assert.doesNotMatch(block, /takes no value/, 'the late claim\'s own line on it gave way to the general one');
+  assert.match(section(5), /A flag is the bare word: with a value \(`--yes=false` too, or an empty one\), or on a command that does not take it, it is a usage error \(exit 2\), and so is an option on a command that does not take it: nothing is read or sent\. An option's value follows it or an = \(`--listing <listingId>` or `--listing=<listingId>`\)\. `verdikta-attest --help` shows what each command takes\./);
   assert.match(/function readyToCommit[\s\S]*?\n\}/.exec(commit)[0], /commitPreflight\(ctx, listingId, hunter, late\)[\s\S]*NEEDS_ACKNOWLEDGEMENT/, 'the listing is asked, then the terms are said, then --yes');
   assert.ok(block.includes('The command: `verdikta-attest commit ./claim --listing <listingId> --late` prints the terms, the price and those three warnings, and sends nothing (exit 3); with --yes it sends `lateClaim`, then pins and discloses as a commit does.'));
   assert.match(toolSrc('status.js'), /\n {4}late: claim\.late,\n/, 'status reads the claim\'s kind from the chain');

@@ -1374,6 +1374,14 @@ verdikta-attest status ./late-claim                           # then reveal, sta
 
 The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), never from an argument.
 
+Each command takes the flags and options on its own usage line in `--help`, and `--json`, `--key-file`, `--rpc-url`,
+`--contract` and `--gateway` (node P46): one table says what each command takes (`TAKES`, `tool/src/cli.js`), the parser
+reads a command's arguments against its row, and a test holds the help's usage lines to it. A flag is the bare word:
+written with a value (`--yes=false` too, or an empty one) it is a usage error (exit 2), and so is a flag or an option on
+a command that does not take it, as the arguments are read: before the wallet key, the chain or the claim folder. An
+option's value follows it or an `=` (`--listing 12` or `--listing=12`). A usage error names the flag or the option, and
+never its value.
+
 - **`check`** runs the arbiters' code-runner minus the jury, on the request an arbiter would send, and prints the gate forecast
   and the context pack. The pack, build output and recorded messages quote the proof in the clear, on this terminal only
   (`--no-pack` prints status and codes alone). The runner must
@@ -1445,7 +1453,7 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
     the archive it was prepared from before any other check of them, so one that is spoiled, missing, over the size
     the tool reads or no file at all is said as changed, never as a file to fix in place.
   - `--late` is taken only as the bare flag and only by `commit`: with a value (`--late=false` too) or on another
-    command it is a usage error (exit 2) before anything is read or sent. Every other flag is read as it was.
+    command it is a usage error (exit 2) before anything is read or sent. That is the rule for every flag (above).
   - `status`, `reveal`, `claim` and `appeal` then work as on any claim: `commit`, `status` and `claim` print "Late
     claim" and that no award rides on it (`late` with `--json`), and `appeal`'s notice says an overturned INVALID
     returns the bond and pays nothing more.

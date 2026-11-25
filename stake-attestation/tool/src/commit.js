@@ -124,6 +124,30 @@ async function findCommitted(ctx, state) {
   return null;
 }
 
+/** Most claims looked at by findCommittedByState: the ones made since the commit was signed. */
+const STATE_SCAN_MAX = 2000;
+
+/**
+ * A claim of this hunter, listing and these two hashes among those made since the commit was signed
+ * (`claimsBefore`), read from the contract's state `confirmations` blocks deep, or null. A folder from
+ * before `claimsBefore` was recorded has nothing to bound the scan by, and finds nothing here.
+ */
+async function findCommittedByState(ctx, state) {
+  if (state.commitTx?.claimsBefore === undefined) return null;
+  const head = await ctx.rpc(() => ctx.provider.getBlockNumber());
+  const blockTag = Math.max(0, head - Math.max(1, ctx.confirmations ?? 1) + 1);
+  const count = BigInt(await ctx.read('claimCount', [], { blockTag }));
+  const from = BigInt(state.commitTx.claimsBefore) + 1n;
+  if (count < from) return null;
+  if (count - from >= BigInt(STATE_SCAN_MAX)) throw fail('RPC_UNAVAILABLE', 'The commit cannot be told apart from the claims made since it was signed; run again later.');
+  for (let id = from; id <= count; id += 1n) {
+    const c = await ctx.read('getClaim', [id], { blockTag });
+    if (c.hunter.toLowerCase() === state.hunter.toLowerCase() && String(c.listingId) === state.listingId
+      && c.archiveHash === state.archiveSha256 && c.ciphertextSha256 === state.ciphertextSha256) return id;
+  }
+  return null;
+}
+
 async function prepare(ctx, ws, listing, inputs, hunter, listingId) {
   const startBlock = await ctx.rpc(() => ctx.provider.getBlockNumber());
   ws.keepAside();
@@ -200,6 +224,12 @@ async function finishCommitWait(ctx, ws, state, { receipt, gone }) {
   if (gone) {
     const found = await findCommitted(ctx, state);
     if (found) return adoptLogged(ctx, ws, state, found);
+    // The nonce went, but neither a receipt nor a log says to what. Both come from the node's
+    // indexes, which can lag its state (a load-balanced RPC, a provider's log index): "gone" there
+    // set the folder back to prepared, and the next run paid a second bond and prepay for the same
+    // claim. The claims themselves are state: look among those made since this commit was signed.
+    const byState = await findCommittedByState(ctx, state);
+    if (byState) return adoptClaim(ctx, ws, state, byState);
     const next = { ...state, stage: 'prepared', commitTx: null };
     ws.saveState(next);
     return next;
@@ -254,9 +284,10 @@ async function sendCommit(ctx, ws, state, listingId) {
     if (err.code === 'CONTRACT_REFUSED') throw fail('LISTING_NOT_ACCEPTING', err.detail);
     throw err;
   }
+  const claimsBefore = String(await ctx.read('claimCount'));   // bounds findCommittedByState's scan
   const rec = await ctx.sign({ data, value: price, gasLimit: (estimate * 5n) / 4n + 10000n });
   // The files are private and on disk, and these bytes are saved, before any of it can leave.
-  const next = { ...state, stage: 'commit-signed', commitTx: rec };
+  const next = { ...state, stage: 'commit-signed', commitTx: { ...rec, claimsBefore } };
   ws.saveState(next);
   await ctx.step('commit:signed');
   for (const name of ['archive.zip', 'keys.json', 'ciphertext.age', 'state.json']) ws.measure(name);

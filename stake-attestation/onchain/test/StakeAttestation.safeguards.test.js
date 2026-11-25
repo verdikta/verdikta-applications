@@ -1045,7 +1045,8 @@ describe("StakeAttestation: settlement safeguards, errata E8 and E9 (P17)", func
         ...LISTING_P16,
       ]);
       // juryAnswered: the v2 port's (erratum E6's bond rule), appended after node P16's.
-      expect(names("getClaim")).to.deep.equal([...CLAIM_BEFORE, "disputeKind", "appealRetriggered", "juryAnswered"]);
+      // confirmRetried: the security review's cap on confirmation rounds, appended after it.
+      expect(names("getClaim")).to.deep.equal([...CLAIM_BEFORE, "disputeKind", "appealRetriggered", "juryAnswered", "confirmRetried"]);
     });
 
     it("declares an event for every state change this node adds", async function () {

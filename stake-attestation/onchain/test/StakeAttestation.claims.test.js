@@ -798,14 +798,17 @@ describe("StakeAttestation: claim lifecycle (P2b)", function () {
       expect(await aggregator.ethOwed(wallet)).to.equal(FEE - live + left + ORACLE.maxOracleFee * 2n);
     });
 
-    it("refuses a reveal when the aggregator quotes no budget (its ceiling at 0)", async function () {
+    it("a reveal while the aggregator quotes no budget (its ceiling at 0) is a refused submission: RoundFailed, the prepay held for a re-trigger", async function () {
       const { sa, aggregator, maker, hunter } = await loadFixture(deploy);
       const id = await openListing(sa, maker, params({ fixWindow: 0n, disclosureGrace: 0n }));
       const { claimId } = await claimAs(sa, hunter, id);
       await aggregator.setMaxOracleFee(0n); // the clamp takes the fee, and the base cost, to 0
-      await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.be.revertedWith("bad budget");
+      // The security review: an unquotable request is the aggregator's refusal, never an
+      // unrevealable claim whose bond would go to the maker as Unrevealed.
+      await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.emit(sa, "SubmissionFailed");
+      expect((await sa.getClaim(claimId)).state).to.equal(ClaimState.RoundFailed);
       await aggregator.setMaxOracleFee(parseEther("0.0004"));
-      await expect(revealTx(sa, hunter, claimId, { value: 0n })).to.emit(sa, "EvaluationRequested");
+      await expect(sa.connect(hunter).retrigger(claimId, { value: 0n })).to.emit(sa, "EvaluationRequested");
     });
 
     it("a reveal with a stale, larger prepay still sends it all: excess is the aggregator's to refund", async function () {

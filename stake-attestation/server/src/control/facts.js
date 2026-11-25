@@ -53,6 +53,7 @@ export const CONTROL_REASONS = Object.freeze(Object.fromEntries(Object.entries({
   ARCHIVE_TOO_LARGE: 'The listing\'s archive is larger than the site reads.',
   ARCHIVE_NOT_CID: 'The bytes the site was given for the listing\'s CID do not hash to it.',
   ARCHIVE_MISMATCH: 'What the chain holds for this listing is not what its signed archive says: another artifact, disclosure key or terms.',
+  ORACLE_NOT_SITE: 'The listing\'s jury settings on-chain (class, fees, price boost or jury) are not the ones this site\'s listing flow sets, so its maker may have chosen who judges its claims.',
 }).map(([code, text]) => [code, assertWording(text)])));
 
 /** The fact in words, as the record and the badge state it. */

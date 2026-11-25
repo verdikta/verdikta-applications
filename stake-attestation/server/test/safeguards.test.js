@@ -108,7 +108,7 @@ describe('the keeper calls confirm (erratum E9)', () => {
     }
   });
 
-  test('a confirmation round with no verdict: confirm again until the deadline; from the deadline, with no round open, settle pays the first verdict', async () => {
+  test('a confirmation round with no verdict: confirm once more (the contract allows one retry); from the deadline, with no round open, settle pays the first verdict', async () => {
     const ctx = await confirmedListingContext();
     const { listingId } = await confirmedListing(ctx, { escrowWei: 10n ** 19n });
     const claimId = await revealedClaim(ctx, ctx.hunters[0], listingId);
@@ -129,13 +129,10 @@ describe('the keeper calls confirm (erratum E9)', () => {
       await deadRound(ctx, claimId, { dispute: true });
       assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
 
-      // a round may still start shortly before the deadline, and runs to its finalize after it
+      // the retry is used up (ClaimLogic.confirm: at most two confirmation rounds, so a jury that keeps
+      // answering with no verdict cannot drain the escrow): no third round, even with the window open
       await untilAt(ctx, deadline - site.keeper.confirmMargins.send - 60n);
-      const r = await cycle(site);
-      assert.deepEqual(actions(r), [['confirm', String(claimId)]], 'a round may still start before the deadline');
-      await deadRound(ctx, claimId, { dispute: true });
-      assert.deepEqual(actions(await cycle(site)), [['finalize', String(claimId)]]);
-      assert.deepEqual((await cycle(site)).sent, [], 'too close to the deadline for another round, and not yet settleable');
+      assert.deepEqual((await cycle(site)).sent, [], 'no third confirmation round, and not yet settleable');
       await untilAt(ctx, deadline);
       const hunter = ctx.hunters[0].address;
       const before = await ctx.hre.ethers.provider.getBalance(hunter);

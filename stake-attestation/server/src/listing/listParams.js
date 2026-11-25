@@ -10,7 +10,7 @@
 // compare them with the deployed constants.
 import { AbiCoder, getAddress, keccak256 } from 'ethers';
 
-import { listingOracleOf } from '@verdikta/stake-attestation-shared/class-presets';
+import { LISTING_CLASSES, listingOracleOf } from '@verdikta/stake-attestation-shared/class-presets';
 
 import { codeReview } from '../common.js';
 
@@ -187,4 +187,33 @@ export function termsDiffer(terms, onchain) {
     || Number(onchain.revealWindow) !== terms.revealWindow
     || String(onchain.valueAtRiskUsd) !== String(terms.valueAtRiskUsd)
     || !sameList([...list(onchain.knownIssueIds)].sort(), [...terms.knownIssueIds].sort());
+}
+
+const ORACLE_FIELDS = ['requestedClass', 'maxOracleFee', 'disputeMaxOracleFee', 'alpha'];
+const JURY_FIELDS = ['K', 'M', 'N', 'P', 'timeout'];
+
+/**
+ * Whether a getListing answer's oracle settings are other than the ones this site's listing flow writes
+ * (listingOracle, for one of the listing classes). The archive does not hold them, so termsDiffer cannot
+ * compare them, and they decide who judges every claim: a maker who lists the signed archive with its own
+ * class, a fee ceiling only its own arbiters post under, or a price boost they alone get, picks the jury of
+ * its own claims and takes its hunters' bonds. Only what can favour nobody is accepted besides: a higher fee
+ * floor (it pays every juror more and scores every fee below it the same) and a smaller price boost (with
+ * none, scaling 1, the base cost does nothing).
+ * @param {{ oracle: object, oracleJuryFixed?: boolean }} config - loadConfig()
+ * @param {object} onchain - getListing (chain/codec.js's JSON)
+ */
+export function oracleDiffers(config, onchain) {
+  const o = onchain?.oracle;
+  const site = config.oracle;
+  if (!o || !o.jury) return true;
+  if (ORACLE_FIELDS.some((f) => String(o[f]) !== String(site[f]))) return true;
+  if (BigInt(o.minOracleFee) < BigInt(site.minOracleFee)) return true;
+  const scaling = BigInt(o.maxFeeBasedScaling);
+  if (scaling > BigInt(site.maxFeeBasedScaling)) return true;
+  if (scaling !== 1n && String(o.estimatedBaseCost) !== String(site.estimatedBaseCost)) return true;
+  return !LISTING_CLASSES.some((cls) => {
+    const want = listingOracle(config, cls);
+    return Boolean(o.withBeacons) === want.withBeacons && JURY_FIELDS.every((f) => String(o.jury[f]) === String(want.jury[f]));
+  });
 }

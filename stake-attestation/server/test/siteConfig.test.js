@@ -126,6 +126,13 @@ test('the production provider caches nothing: a block read twice is asked for tw
 
 // Owner decision, 2026-11-24: a listing's jury is its class preset's (Small by default); SA_ORACLE_JURY gives every
 // listing one jury, checked as list() checks it (ClaimLogic.setOracle, "bad jury").
+test('no price boost by default: the site sets no fee floor, and the class presets assume an even draw', () => {
+  const o = loadConfig(base).oracle;
+  assert.equal(o.minOracleFee, '0');
+  assert.equal(o.maxFeeBasedScaling, '1');
+  assert.equal(loadConfig({ ...base, SA_ORACLE_MAX_FEE_SCALING: '3' }).oracle.maxFeeBasedScaling, '3', 'still the operator\'s to set');
+});
+
 test('the oracle jury: Small by default, SA_ORACLE_JURY for every listing, refused as list() refuses it', () => {
   const base = { SA_ATTESTATION_TRUST: 'dev', SA_CHAIN_ID: '31337', SA_PINNING: 'mock' };
   const plain = loadConfig(base);

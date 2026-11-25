@@ -236,8 +236,8 @@ each deadline of your claim and what comes next.
    round's `jury` and `timeoutSeconds`). A round never drawn can only be cancelled, its whole
    prepay to the aggregator's arbiter pool, which pays registered arbiters a share at each
    draw: once the seed's block is too old for the aggregator to
-   read if its seed was never stored (under half an hour on Base), a day after the request if it
-   was. `status --wait` exits 5 as soon as the aggregator is done with a round that has no
+   read if its seed was never stored (under half an hour on Base), a day
+   after the request if it was. `status --wait` exits 5 as soon as the aggregator is done with a round that has no
    verdict, before anyone has finalized it, and `status` says so too. `status --wait` stops after
    15 minutes at most (less with --max-wait-ms) and exits 4 if the round is still open: run it
    again. A round with no verdict means too few
@@ -251,8 +251,11 @@ each deadline of your claim and what comes next.
    it, for the live top-up, until `retriggerDeadline(claimId)` (`windows.revealWindow` after it
    first failed). A re-trigger sends the same committed claim to the same arbiters, so unless the
    cause was on their side it is likely to fail the same way: run `check` on the claim first. Past
-   the deadline, anyone may expire it: the bond goes to the maker if a round ran, and if the
-   aggregator refused every request, the bond and the prepay come back to you.
+   the deadline, anyone may expire it: the bond goes to the maker if a round's jury answered with
+   a result that is no verdict (a vector of the wrong length or sum, or a one-number answer); it
+   comes back to you if every round ended with no result (never drawn, too few commits or reveals:
+   an arbiter that abstains does not commit), and if the aggregator refused every request, the
+   bond and the prepay come back to you.
 7. After the verdict the claim is Judged, and each claim gets at most one dispute-panel verdict.
    `settleableAt(claimId)` says when anyone may settle it. While a dispute-panel round is open
    the claim is Disputed, and it waits for that round to be finalized.
@@ -575,8 +578,9 @@ with NO_CLAIM_FILES: that is no forecast either, only a wrong path.
 A runner elsewhere needs --remote-runner, and reads your unfixed proof. The pack quotes your
 proof in the clear, on your terminal only; --no-pack prints status and codes alone. A proof that
 loops or runs out of memory makes every arbiter abstain: each failed round costs its base fees,
-part of the prepay, the bond goes to the maker if no round settles, and nothing on-chain says
-why. `check` is the one place you can see it.
+part of the prepay; if no round settles a verdict the bond comes back at expiry (an abstaining
+arbiter does not commit), unless a round's jury answered with a result that is no verdict; and
+nothing on-chain says why. `check` is the one place you can see it.
 
 ## 9. Keep the claim's local state
 

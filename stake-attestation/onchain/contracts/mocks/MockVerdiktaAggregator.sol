@@ -18,7 +18,8 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 ///           and timeout <= MAX_TIMEOUT (1 day, AggregatorLib's cap, whatever maxTimeout says).
 ///         - Sequential ids from 1, the same input limits (BadInput), pause gate, errors and events.
 ///         - The phases: draw from block B+2 within a day, the beacon stage, commits closing at M+
-///           (or closeCommits after T+ with >= M), promote from C+2, finalization at the N-th reveal,
+///           (or closeCommits after T+ with >= M), promote from C+2 while blockhash(C+1) is in the
+///           8,191-block history (SeedExpired after it), finalization at the N-th reveal,
 ///           settle after the deadline (which runs from the draw), cancelUnsealed for an undrawable
 ///           round. Base fees are credited at the draw, bonuses at finalization, rewards to whoever
 ///           draws (the requester only within 30 s) and promotes. Refunds go to the requester, or to
@@ -26,7 +27,7 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 ///           missed, cancelled), announced as RequesterRefunded(aggId, address(0), amount) or
 ///           RoundCancelled. A round with M commits that was never promoted shares its unspent prepay
 ///           among its commits (CommitPayment, counted in rewards; the indivisible rest to the pool).
-///           Each successful draw pays an eighth of the pool to ARBITERS (PoolPayment): the mock has
+///           Each successful draw pays an eighth of the pool, at most its base fees, to ARBITERS (PoolPayment): the mock has
 ///           no registry, so the payee is the stand-in and never misses. There is no treasury.
 /// @dev Test hooks stand in for the arbiters and the owner:
 ///         arbiters: scriptCommits, scriptReveals, scriptResult (a shortcut from any drawn phase),
@@ -361,7 +362,8 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
             ethOwed[msg.sender] += reward;
             r.rewards += reward;
         }
-        uint256 share = ethOwed[POOL] / POOL_SHARE;   // the arbiter pool's payout (AggregatorLib.payPool)
+        uint256 share = ethOwed[POOL] / POOL_SHARE;   // the arbiter pool's payout (AggregatorLib.payPool),
+        if (share > r.baseFees) share = r.baseFees;   // at most this draw's base fees
         if (share != 0) {
             ethOwed[POOL] -= share;
             ethOwed[ARBITERS] += share;
@@ -391,6 +393,8 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         Round storage r = _round(aggId);
         if (r.phase != PH_CLOSING || block.timestamp > r.deadline) revert WrongPhase();
         if (block.number < uint256(r.closeBlock) + 2) revert TooEarly();
+        // the real promote reads blockhash(C+1): gone after the 8,191-block history (SeedExpired)
+        if (block.number - (uint256(r.closeBlock) + 1) > HISTORY_WINDOW) revert SeedExpired();
         r.phase = PH_REVEAL;
         uint40 rd = uint40(block.timestamp) + revealWindow;
         if (rd > r.deadline) r.deadline = rd;

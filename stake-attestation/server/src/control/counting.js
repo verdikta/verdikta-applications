@@ -28,6 +28,6 @@ export function notCountedReason({ known, dispute, artifact, fact, terms }) {
   if (!artifact || !sameArtifact(known, artifact)) return 'ARCHIVE_MISMATCH';
   if (fact.proof !== 'yes') return fact.reason ?? 'NOT_CHECKED_YET';
   if (!terms) return 'NOT_CHECKED_YET';
-  if (!terms.ok) return 'ARCHIVE_MISMATCH';
+  if (!terms.ok) return terms.oracle ? 'ORACLE_NOT_SITE' : 'ARCHIVE_MISMATCH';
   return null;
 }

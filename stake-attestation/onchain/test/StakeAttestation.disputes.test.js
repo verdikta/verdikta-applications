@@ -297,7 +297,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       expect(codeReview.parseAddendum(addendum).dispute).to.deep.equal({ statementCid });
     });
 
-    it("refuses a dispute or a re-trigger when the aggregator quotes no budget", async function () {
+    it("refuses a dispute when the aggregator quotes no budget; a re-trigger then is a refused submission (security review)", async function () {
       const { sa, aggregator, maker, hunters } = await loadFixture(deploy);
       const id = await openListing(sa, maker);
       const { claimId } = await judgedClaim(sa, aggregator, hunters[0], id, V.HIGH);
@@ -305,7 +305,11 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       const f = await failedClaim(sa, aggregator, hunters[1], l2, "timeout");
       await aggregator.setMaxOracleFee(0n); // the ceiling clamps every fee to 0: maxTotalFee is 0
       await expect(sa.connect(maker).dispute(claimId, STATEMENT_CID, { value: DISPUTE_FEE })).to.be.revertedWith("bad budget");
-      await expect(sa.connect(hunters[1]).retrigger(f.claimId, { value: FEE })).to.be.revertedWith("bad budget");
+      // A claim round's unquotable request is the aggregator's refusal, caught: still RoundFailed,
+      // the re-trigger's value held as its prepay (never an unrevealable claim).
+      await expect(sa.connect(hunters[1]).retrigger(f.claimId, { value: FEE })).to.emit(sa, "SubmissionFailed");
+      const c = await sa.getClaim(f.claimId);
+      expect([c.state, c.requestId, c.prepayWei]).to.deep.equal([ClaimState.RoundFailed, ethers.ZeroHash, FEE]);
     });
 
     it("a refused dispute submission reverts the dispute: nothing is recorded, and the maker may try again inside the window", async function () {

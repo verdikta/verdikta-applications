@@ -1128,7 +1128,7 @@ export const STRINGS = {
     timedOut:
       'No verdict was recorded in {minutes} minutes of checking. The round may still wait for its jury to be drawn, ' +
       'the arbiters may still be working, or the round may end without a verdict; either is recorded on-chain when it ' +
-      'happens. A round whose jury is not drawn within a day of the request is cancelled, and ends without a verdict. ' +
+      'happens. A round whose jury is not drawn in time (about 8,191 blocks after the request if its seed was never stored, a day if it was) can be cancelled, and ends without a verdict. ' +
       'This page has stopped checking.',
     recheck: 'Check again',
   },

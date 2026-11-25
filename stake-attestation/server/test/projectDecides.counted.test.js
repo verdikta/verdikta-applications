@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
 
 import { mergedAbi } from './helpers/chain.js';
-import { fakeBuilder } from './helpers/fixtures.js';
+import { fakeBuilder, testConfig } from './helpers/fixtures.js';
 import { startApi } from './helpers/http.js';
 import { bareListing, chainContext, freshCommit, listing, replay, revealedClaim, judgeAndSettle, settled, siteFor } from './helpers/scenario.js';
 
@@ -192,6 +192,29 @@ describe('what counts', () => {
       assert.deepEqual(v.record.listings, [], JSON.stringify(change));
       assert.equal(v.notCounted.listings[0].reason, 'ARCHIVE_MISMATCH');
     }
+  });
+
+  test('a signed archive listed with oracle settings the site does not set does not count: its maker could pick its own jury', async () => {
+    const site0 = testConfig().oracle;
+    const changes = [
+      { requestedClass: '999' },                                     // a class only the maker's arbiters are in
+      { maxOracleFee: String(BigInt(site0.estimatedBaseCost) + 1n) }, // a ceiling only the maker's arbiters post under
+      { maxFeeBasedScaling: '1000' },                                // a price boost the maker's cheap arbiters alone get
+      { jury: { K: 3, M: 2, N: 2, P: 2, timeout: 300 } },             // a jury no class has
+    ];
+    for (const change of changes) {
+      const l = await listing(ctx, { oracle: { ...site0, ...change } });
+      await settled(site);
+      const v = await view(l.artifactHash);
+      assert.deepEqual(v.record.listings, [], JSON.stringify(change));
+      assert.equal(v.notCounted.listings[0].reason, 'ORACLE_NOT_SITE', JSON.stringify(change));
+      assert.match(v.notCounted.listings[0].detail, /jury settings/);
+      assert.equal(ids((await feed()).listings).includes(String(l.listingId)), false, 'the site offers no commit on it');
+    }
+    // a higher fee floor pays every juror more and boosts nobody: it still counts
+    const floor = await listing(ctx, { oracle: { ...site0, minOracleFee: '1' } });
+    await settled(site);
+    assert.deepEqual(ids((await view(floor.artifactHash)).record.listings), [String(floor.listingId)]);
   });
 
   test('a valid finding under a listing that does not count stays off the project\'s badge and shows apart', async () => {

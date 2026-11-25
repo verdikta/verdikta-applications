@@ -1000,7 +1000,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
         "lateAppealsFiled", "lateAppealsHeld", "lateAppealsOverturned", "lateAppealsNoVerdict",
       ]);
       // juryAnswered: the v2 port's (erratum E6's bond rule), appended after this node's.
-      expect(claim.slice(claim.indexOf("disputeKind"))).to.deep.equal(["disputeKind", "appealRetriggered", "juryAnswered"]);
+      expect(claim.slice(claim.indexOf("disputeKind"))).to.deep.equal(["disputeKind", "appealRetriggered", "juryAnswered", "confirmRetried"]);
       const record = sa.interface.getFunction("recordByHash").outputs[0].components;
       const history = record.find((c) => c.name === "history").components.map((c) => c.name);
       expect(history.slice(history.indexOf("lateNarrowInvalid"))).to.deep.equal([

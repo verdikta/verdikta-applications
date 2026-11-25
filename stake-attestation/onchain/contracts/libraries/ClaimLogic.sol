@@ -405,6 +405,14 @@ library ClaimLogic {
         // pay; a top-up pays owed awards first), so a confirmation's prepay never comes ahead of
         // an award already owed. Checked, not just implied.
         require(l.owedWei == 0, "awards owed");
+        // At most one retry after a confirmation with no verdict: the escrow pays every round,
+        // and a jury that answers with no verdict is paid for it, so unbounded retries would let
+        // it (or anyone, while rounds go undrawn) drain the escrow to the arbiters until the
+        // deadline. Past the cap the deadline decides, as for any confirmation with no verdict.
+        if (c.disputeKind == StakeAttestation.DisputeKind.Confirmation) {
+            require(!c.confirmRetried, "confirmation retried");
+            c.confirmRetried = true;
+        }
         uint256 fee = _panelFee(l, verdikta);
         uint256 escrow = l.escrowWei;
         require(escrow >= fee, "escrow below fee");
@@ -890,7 +898,16 @@ library ClaimLogic {
         address walletImplementation
     ) private {
         StakeAttestation.Claim storage c = claims[claimId];
-        require(prepay >= _roundFee(l, l.oracle.maxOracleFee, verdikta), "prepay below fee");
+        // A quote the aggregator cannot give (it reverts, e.g. a beacon listing once the aggregator
+        // has no beacon contract, or is 0) is its refusal: the request below is refused too and
+        // caught, so the claim is RoundFailed with its prepay held (SubmissionsRefused at expiry,
+        // bond back), never an unrevealable claim whose bond goes to the maker as Unrevealed.
+        StakeAttestation.OracleParams storage o = l.oracle;
+        try verdikta.maxTotalFee(
+            ClaimRules.effectiveFee(o.maxOracleFee, verdikta.maxOracleFee()), o.minOracleFee, o.withBeacons, o.jury.K, o.jury.P
+        ) returns (uint256 fee) {
+            require(prepay >= fee, "prepay below fee");
+        } catch {}
         c.prepayWei = uint128(prepay); // at most what this claim's transactions carried
         address wallet = _newWallet(wallets, walletImplementation, c.hunter, claimId);
         c.evalWallet = wallet;

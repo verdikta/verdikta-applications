@@ -325,6 +325,9 @@ contract StakeAttestation is Ownable2Step {
         bool    appealRetriggered;   // the appeal's one re-trigger has been used
         // the v2 aggregator (erratum E6's bond rule, ClaimLogic.expire)
         bool    juryAnswered;        // a claim round's jury returned a result that is no verdict
+        // the confirmation's one retry (erratum E9 as capped by the security review): an escrow-
+        // funded round a jury can end with no verdict and still be paid for, so at most two
+        bool    confirmRetried;      // a second confirmation round has been started
     }
 
     // ------------------------------------------------------------------

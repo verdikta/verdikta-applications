@@ -177,7 +177,8 @@ the one-line disclosure addendum of erratum E1.
   `maxJury` and the keeper's shortlist, T+ < timeout <= `maxTimeout`, and a timeout of at
   most one day whatever `maxTimeout` says) are checked by each request. A request only escrows the prepay: the jury is drawn later by
   `drawJury(claimId)`, which anyone may call (the site's keeper does) from block B+2
-  and within a day; the round's deadline is its jury's timeout from the draw
+  while the request's seed block is still readable (about 8,191 blocks, some 27 minutes on
+  Base, unless someone stored it with the aggregator's `sealSeed`) and never more than a day after it; the round's deadline is its jury's timeout from the draw
   (`getJury(aggId)` reads a round's jury back). It goes through the round's wallet, so the wallet is the
   requester and its draw reward (2 x the clamped fee; the requester's alone for 30 s)
   comes back to the round's funder with the leftover. With beacons it takes two
@@ -186,7 +187,8 @@ the one-line disclosure addendum of erratum E1.
   result from phase 6; with none it tries the aggregator's `settle` and
   `cancelUnsealed` and reads a round that is failed (phase 8) or cancelled (phase 9)
   as a failed round; anything else is "evaluation not ready". An undrawn round never
-  times out: undrawn for a day, it can only be cancelled, its whole prepay to the
+  times out: undrawn once its seed block left the aggregator's history (about 8,191 blocks after the
+  request), or a day after the request if its seed was stored, it can only be cancelled, its whole prepay to the
   aggregator's arbiter pool (`ethOwed(address(0))`, which nobody withdraws: each draw
   pays an eighth of it to one registered arbiter, `PoolPayment`). A missed beacon
   quorum also sends the unspent prepay to the pool, not back, and a round with M
@@ -1357,8 +1359,9 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   be on this machine unless `--remote-runner` is passed, since it reads the plaintext. A failed gate says what it would settle as
   (`external-adapter/src/codeReview/settlement.js`). An **abstain** (a proof that loops or runs out of memory) is shown as one, with
   what it costs: every arbiter abstains the same way, each failed round costs its base fees (status shows a failed round's own
-  numbers, in ETH), the bond goes to the maker if no
-  round settles, and nothing on-chain or on IPFS says why, so `check` is the only place to see it. On `linux/arm64` there is no
+  numbers, in ETH), the bond comes back at expiry if no round settles a verdict (an arbiter that abstains
+  does not commit, so the round ends with no result: `Expiry.RoundsUnanswered`) unless a round's jury answered with
+  a result that is no verdict, and nothing on-chain or on IPFS says why, so `check` is the only place to see it. On `linux/arm64` there is no
   report, only gates and the pack. The forecast does not catch a trap keyed on the date: the runner fakes no clock. On a
   listing that names `stake.documents`, the request carries the spec as signed, so the runner reads the documents from the
   listed commit, and the forecast's `documents` gives the listing's globs and the **documents tier** the runner built for
@@ -1401,7 +1404,7 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   aggregator's arbiter pool or was shared by the jurors that committed: `refundTo` 'pool' or
   'committers'), where the bond goes at expiry under E6's rule, and the pointer to `check`; `status --wait` exits 5
   for it. A round not drawn yet says so: it never times out, anyone may draw it (the site's keeper does, and `claim` sends
-  `drawJury` through the contract when it is due), and undrawn for a day it can only be cancelled to the arbiter pool. Until
+  `drawJury` through the contract when it is due), and left undrawn it can only be cancelled to the arbiter pool (about 8,191 blocks after the request if its seed was never stored, a day after it if it was). Until
   `finalize` records a failure there is nothing to re-trigger: `reveal --retrigger` refuses with `ROUND_NOT_RECORDED`, and
   `claim` records it. An open round never reads as failed: `finalize`'s dry run is refused until the round is dead. A Committed claim says whether it is disclosed and in its fix window. The reveal deadline is the
   lens's, and against what `commit` printed and recorded (`told` in `state.json`) `status` says when a release or a

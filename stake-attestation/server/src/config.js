@@ -161,7 +161,10 @@ const DEFAULT_ORACLE = Object.freeze({
   disputeMaxOracleFee: '200000000000000', // 0.0002 ETH per oracle: the dispute panel
   estimatedBaseCost: '10000000000000', // 0.00001 ETH, as the bounty program's default
   alpha: '500',
-  maxFeeBasedScaling: '3',
+  // 1 = no price boost. The site sets no fee floor, so a boost would give arbiters posting at or below
+  // base + (ceiling - base) / scaling up to that many times the seats of one posting the ceiling, and the
+  // class presets were sized for an even draw (round-2 economic review)
+  maxFeeBasedScaling: '1',
   minOracleFee: '0', // the v2 aggregator's fee floor: none
 });
 

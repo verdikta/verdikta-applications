@@ -41,7 +41,7 @@ export const ABSTAIN_COSTS = 'Each failed round costs you its base fees (K × th
  */
 export function noVerdictMeans(timeoutSeconds = null) {
   const time = timeoutSeconds ? `the listing's jury timeout, ${timeoutSeconds} s` : 'the listing\'s jury timeout';
-  return `A round ends with no verdict when too few arbiters commit and reveal a result within the round's time (${time}, counted from the jury's draw): most often every arbiter abstained on this claim, from a proof that loops or runs out of time, memory or processes, or a build the runner could not finish; or the arbiters were down. It also ends with none when its jury was never drawn within a day of the request, or its beacon quorum was missed.`;
+  return `A round ends with no verdict when too few arbiters commit and reveal a result within the round's time (${time}, counted from the jury's draw): most often every arbiter abstained on this claim, from a proof that loops or runs out of time, memory or processes, or a build the runner could not finish; or the arbiters were down. It also ends with none when its jury was never drawn in time (about 8,191 blocks after the request if its seed was never stored, a day after it if it was), or its beacon quorum was missed.`;
 }
 
 /** Why a re-trigger of the same claim is likely to fail as the last round did (node P32). */

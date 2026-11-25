@@ -15,7 +15,7 @@
 import { FetchRequest, JsonRpcProvider, Network } from 'ethers';
 import { proofFieldProblem } from '@verdikta/stake-attestation-shared/control-proof';
 
-import { termsDiffer } from '../listing/listParams.js';
+import { oracleDiffers, termsDiffer } from '../listing/listParams.js';
 import { CONTROL_REASONS, KEEP_ANSWER_MS, canonicalAddress, controlFact, controlMessage, deploymentKey, readAnswerFile, repoKey, repoUrlCheck } from './facts.js';
 import { ChainReadError, checkDeploymentProof } from './deployment.js';
 import { forkView } from './forkCheck.js';
@@ -179,7 +179,10 @@ export function createControl({ config, store, provider, env, now, logger, check
   async function checkTerms(listing, known) {
     let answer;
     try {
-      answer = { ok: !termsDiffer(known.terms, await readListing(listing.listingId)) };
+      const onchain = await readListing(listing.listingId);
+      // the oracle settings are not in the archive: they must be the ones the site's listing flow writes
+      const oracle = oracleDiffers(config, onchain);
+      answer = { ok: !termsDiffer(known.terms, onchain) && !oracle, oracle };
     } catch (err) {
       logger.warn(`control: listing ${listing.listingId} could not be read (${err?.code ?? err?.name ?? 'error'})`);
       return; // the next run asks again

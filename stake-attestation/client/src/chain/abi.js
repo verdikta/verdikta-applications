@@ -23,7 +23,7 @@ const CLAIM = '(address hunter, uint64 committedAt, uint8 state, uint8 expiry, b
   + 'bool disclosedAfterRoll, uint128 bondWei, uint128 prepayWei, bytes32 archiveHash, bytes32 ciphertextSha256, bytes32 ephemeralKey, '
   + 'bytes32 requestId, string ciphertextCid, string bcid, uint32[6] vector, uint64 judgedAt, uint64 settledAt, uint8 outcome, uint128 paidWei, '
   + 'uint128 owedWei, uint64 failedAt, bool roundStarted, uint8 dispute, uint8 disputedOutcome, uint64 disputedAt, uint64 disputeEndedAt, '
-  + 'bool late, address disputeWallet, bytes32 disputeRequestId, uint8 disputeKind, bool appealRetriggered, bool juryAnswered)';
+  + 'bool late, address disputeWallet, bytes32 disputeRequestId, uint8 disputeKind, bool appealRetriggered, bool juryAnswered, bool confirmRetried)';
 
 export const STAKE_ATTESTATION_ABI = Object.freeze([
   `function list(${LIST_PARAMS} p, string listingCid, string disputeCid, bytes32[] knownIssueIds) returns (uint256 listingId)`,

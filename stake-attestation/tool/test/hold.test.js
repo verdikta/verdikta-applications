@@ -30,9 +30,14 @@ import { JUSTIFICATION_CID, makeClaimDir, makeWorld, vectorOf } from './helpers/
 const CHILD = fileURLToPath(new URL('./helpers/lateChild.js', import.meta.url));
 const iface = new ethers.Interface(STAKE_ATTESTATION_ABI);
 
-// The refusals an ordinary commit had before this node, word for word: a listing that rolled forward or closed keeps
-// the first, and one that takes no claim of either kind the second.
-const LATE_CLAIMS_ONLY = 'This listing takes no commits now, only late claims. A late claim is judged and recorded, and pays no award: commit --late prints its terms and its price, and with --yes files one. Nothing was pinned or sent.';
+// What both refusals that send a hunter to a late claim say of it, word for word (review round 2, R2-F1): what one is,
+// and in which folder `commit --late` is a dry run. Node P43 said "commit --late prints its terms and its price, and
+// with --yes files one" of every folder; its review put that right in the help, the README and the guide, and this
+// is the refusals' turn.
+const LATE_CLAIM_INSTEAD = 'A late claim is judged and recorded, and pays no award: in a folder where nothing is saved yet, commit --late prints its terms and its price, and with --yes files one. In a prepared folder, commit --late first looks for a claim of these files on the chain, and discloses one it finds, --yes or not. Nothing was pinned or sent.';
+// The refusals an ordinary commit had before this node: a listing that rolled forward or closed keeps the first,
+// whose words are node P43's but for that sentence, and one that takes no claim of either kind the second.
+const LATE_CLAIMS_ONLY = `This listing takes no commits now, only late claims. ${LATE_CLAIM_INSTEAD}`;
 const LISTING_NOT_ACCEPTING = 'This listing takes no commits now.';
 
 let w;
@@ -156,7 +161,7 @@ test('an ordinary commit on a listing on hold is refused before anything is draw
   // the words: the hold and its time, what a late claim is, the command for one, and that nothing left this machine
   const text = refusalOf(l);
   assert.match(text, /^This listing is on hold: its maker /);
-  assert.match(text, /A late claim is judged and recorded, and pays no award: commit --late prints its terms and its price, and with --yes files one\./);
+  assert.ok(text.includes(LATE_CLAIM_INSTEAD), 'what a late claim is, the command for one, and in which folder it is a dry run');
   assert.match(text, /Nothing was pinned or sent\./);
   // the time is the chain's, in unix seconds, with the same instant in UTC as the CLI prints a time (cli.js `when`)
   const stated = /on hold since (\d+) \((\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.000Z)\)\.$/.exec(text);
@@ -261,8 +266,8 @@ test('a commit signed before the hold and first mined after it reverts: no claim
 
 // ------------------------------------------------------------------------- which refusal, and what is read for it
 
-test('a listing that rolled forward or closed keeps LATE_CLAIMS_ONLY, word for word, also when its maker held it first, and is not asked for a hold', async () => {
-  assert.equal(ERROR_TEXTS.LATE_CLAIMS_ONLY, LATE_CLAIMS_ONLY, 'the text node P43 gave it');
+test('a listing that rolled forward or closed keeps LATE_CLAIMS_ONLY, also when its maker held it first, and is not asked for a hold', async () => {
+  assert.equal(ERROR_TEXTS.LATE_CLAIMS_ONLY, LATE_CLAIMS_ONLY, 'its text, word for word');
   const cases = [
     ['rolled forward', async () => rolled(await w.listing())],
     ['closed after it opened', async () => closed(await w.listing())],
@@ -577,6 +582,16 @@ test('the refusal\'s text passes the wording check, ends as the other refusals o
   // the command it names is one the CLI has (node P43): --late, on commit's own line of the help
   assert.match(text, /commit --late prints its terms and its price, and with --yes files one\./);
   assert.match(USAGE, /^ {2}commit <claim-dir> --listing <id> \[--late\] \[--yes\]/m);
+  // and both refusals that name it say the same of it, in one sentence: in which folder it is a dry run (R2-F1)
+  for (const code of ['LISTING_ON_HOLD', 'LATE_CLAIMS_ONLY']) {
+    assert.ok(ERROR_TEXTS[code].endsWith(` ${LATE_CLAIM_INSTEAD}`), code);
+    assert.match(ERROR_TEXTS[code], /in a folder where nothing is saved yet, commit --late prints its terms and its price, and with --yes files one\. In a prepared folder, commit --late first looks for a claim of these files on the chain, and discloses one it finds, --yes or not\./, code);
+    assert.equal(ERROR_TEXTS[code].split('commit --late').length - 1, 2, `${code}: each mention of the command is in that sentence`);
+    assert.deepEqual(wordingProblems(ERROR_TEXTS[code]), [], code);
+  }
+  assert.equal(ERROR_TEXTS.LISTING_ON_HOLD, `This listing is on hold: its maker stopped new commits on it, and a hold is not lifted, so it takes late claims only from now on. ${LATE_CLAIM_INSTEAD}`);
+  // the help says the same of a prepared folder, in its own words
+  assert.match(USAGE.replace(/\s+/g, ' '), /With --late, or in a folder prepared for a late claim, a prepared folder whose two hashes already have a claim on the chain, a commit's or a late claim's, has that claim disclosed, --yes or not/);
   // "Held" is a dispute result in this contract (a verdict that stood), so the tool's own words for a hold never use it
   assert.ok(DISPUTE_RESULTS.includes('Held'));
   assert.doesNotMatch(text, /\bheld\b/i);
@@ -594,6 +609,12 @@ test('the README\'s hunter section says the refusal and where the hold is read, 
   assert.match(flat, /The hold is read only for that refusal, once `acceptsCommits` said no and `acceptsLateClaims` said yes, and only of a listing whose state is Open or Depleted/);
   assert.match(flat, /a contract with no hold is never asked for the view/);
   assert.match(flat, /An RPC that does not answer is said as that \(`RPC_UNAVAILABLE`\)/);
+  // both refusals say in which folder `commit --late` is a dry run, in one sentence (review round 2, R2-F1)
+  assert.match(flat, /Both refusals, `LATE_CLAIMS_ONLY` and `LISTING_ON_HOLD`, say of `commit --late` what is said below of its dry run, in one sentence \(`LATE_CLAIM_INSTEAD`, `src\/errors\.js`\): in a folder where nothing is saved yet it prints its terms and its price; in a prepared folder it first looks for a claim of these files on the chain, and discloses one it finds, `--yes` or not\./);
+  // which commit goes on: one this folder signed. One sent some other way, in a folder still prepared, does not
+  assert.match(flat, /A commit this folder signed that is on the chain when the hold comes is a pending claim, which a hold leaves alone: `commit` goes on with it, to disclose and everything after\. One first mined after the hold reverts \(`COMMIT_REVERTED`\), and the next run is refused for the hold\./);
+  assert.match(flat, /A prepared folder whose commit went out some other way is refused as any commit there is, on a listing on hold as on every listing that takes no commit: an ordinary commit asks the listing before it looks for its hashes on the chain, and where it looks is other work \(verdikta-applications#238\)\. `commit --late` in that folder finds the claim, adopts it as the commit it is and discloses it, with no second bond\./);
+  assert.match(fs.readFileSync(new URL('../src/errors.js', import.meta.url), 'utf8'), /\nconst LATE_CLAIM_INSTEAD = '/);
   assert.doesNotMatch(flat, /so the tool reads no hold\b/, 'true of a late claim only, now');
   // which folder a dry run of `commit --late` is for (the last review round of node P43): a fresh folder for a
   // price-only check; a prepared one is looked up on the chain first, and gets its terms when no claim is found

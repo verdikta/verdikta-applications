@@ -1412,15 +1412,25 @@ never its value.
     for a `commit` without `--late` on a listing on hold: its text names the hold and its time, as `heldAt` gives it,
     in unix seconds and in UTC, says what a late claim is and names `commit --late`. It comes where
     `LATE_CLAIMS_ONLY` comes, so with `--yes` or without it nothing is drawn, pinned or signed, and no terms and no
-    price are printed for a commit there. A listing that rolled forward or closed keeps `LATE_CLAIMS_ONLY`, word for
-    word. The hold is read only for that refusal, once `acceptsCommits` said no and `acceptsLateClaims` said yes, and
+    price are printed for a commit there. A listing that rolled forward or closed keeps `LATE_CLAIMS_ONLY`.
+  - The hold is read only for that refusal, once `acceptsCommits` said no and `acceptsLateClaims` said yes, and
     only of a listing whose state is Open or Depleted, the two a hold is made in and lasts in (`onHoldSince`,
     `src/commit.js`): a commit that is accepted reads nothing new, and `commit --late` on a listing on hold prints
     its terms and its price as before. The lens of a contract from before the hold says late claims of a Rolled or a
     Closed listing only, so a contract with no hold is never asked for the view, and every answer there is what it
     was; one that refuses the view all the same reads as not on hold. An RPC that does not answer is said as that
-    (`RPC_UNAVAILABLE`), never as a listing that is not on hold. A claim whose commit is on the chain when the hold
-    comes is a pending claim, which a hold leaves alone: its folder goes on, to disclose and everything after.
+    (`RPC_UNAVAILABLE`), never as a listing that is not on hold.
+  - Both refusals, `LATE_CLAIMS_ONLY` and `LISTING_ON_HOLD`, say of `commit --late` what is said below of its dry
+    run, in one sentence (`LATE_CLAIM_INSTEAD`, `src/errors.js`): in a folder where nothing is saved yet it prints
+    its terms and its price; in a prepared folder it first looks for a claim of these files on the chain, and
+    discloses one it finds, `--yes` or not.
+  - A commit this folder signed that is on the chain when the hold comes is a pending claim, which a hold leaves
+    alone: `commit` goes on with it, to disclose and everything after. One first mined after the hold reverts
+    (`COMMIT_REVERTED`), and the next run is refused for the hold. A prepared folder whose commit went out some
+    other way is refused as any commit there is, on a listing on hold as on every listing that takes no commit:
+    an ordinary commit asks the listing before it looks for its hashes on the chain, and where it looks is other
+    work (verdikta-applications#238). `commit --late` in that folder finds the claim, adopts it as the commit it
+    is and discloses it, with no second bond.
   - The price it signs is the price its terms named. The price is read again as it signs, before the wallet's
     balance is asked, and one that changed in between ends the run with `LATE_PRICE_CHANGED` and the new amount,
     nothing signed; the next run prints the terms again. A rise between that read and the gas estimate makes the

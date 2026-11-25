@@ -51,9 +51,6 @@ export function FundPage({ listingId }) {
   const headingId = useId();
   const [lookup, setLookup] = useState('');
   const [attempt, setAttempt] = useState(0);
-  // the opening fund() sent from this page was mined: its own line stays while the listing is on the page
-  // (FundListing). The state is the read's.
-  const [openedHere, setOpenedHere] = useState(false);
   // how many times an action on this page changed the chain: what reads it (the withdrawable amount) reads again
   const [version, setVersion] = useState(0);
   // What the page has read and was told (lib/pageSays.js): the read on display, the newest block it was told of, and
@@ -188,8 +185,8 @@ export function FundPage({ listingId }) {
         </ul>
       </section>
       {notice}
-      {/* the funding form of a Listed listing; once this page opened it, the opening's own line, which stays */}
-      {(state === 'Listed' || openedHere) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} listed={state === 'Listed'} onMined={onChanged} onOpened={() => setOpenedHere(true)} />}
+      {/* on the page as long as its listing is: the funding form while the read says Listed, and the line of an opening sent from here */}
+      <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} listed={state === 'Listed'} onMined={onChanged} />
       {!quiet && state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {!quiet && hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
       {!quiet && state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}

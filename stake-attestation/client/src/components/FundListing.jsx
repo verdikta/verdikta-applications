@@ -36,10 +36,11 @@ export function FundListing({ listingId, top, maker, artifactHash, listed = true
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (!listed) return undefined;
     let live = true;
     chainReader().then((p) => stakeAttestation(p).feeDue(listingId)).then((f) => { if (live) setFee(f); }).catch(() => {});
     return () => { live = false; };
-  }, [listingId]);
+  }, [listingId, listed]);
 
   let escrowWei = null;
   let escrowError = null;

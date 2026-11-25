@@ -1261,12 +1261,32 @@ test.describe('the maker\'s hold', () => {
     expect(await page.locator('main').innerText()).not.toMatch(/\bhold\b/i);
   });
 
-  // "This contract has no hold" is said only from the contract's own revert data. Any other failure of that call is a
-  // failed read: the node's own (a rate limit), and an error that says "revert" in its words and hands over no revert
-  // data, as a wallet does when it passes on a library's wording over a block its node did not have (R1-F9).
+  test('a contract with no hold, through a provider that leaves the revert\'s data out: the contract\'s own reason under code 3 is "no hold" all the same (R2-F1)', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient, spec: { repo: ownRepo('older-no-data') } });
+    const listing = await chain.sa.getListing(listingId);
+    // the measured answer of the deployed contract, with only its data left out
+    const refused = await answerHeldAt(page, stack, { code: 3, message: 'execution reverted: unknown function' });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    // the page reads: the listing as it is, with no hold section and the roll-forward panel as it was before the hold
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
+    expect(refused.calls, 'the page asked the contract, and was refused').toBeGreaterThan(0);
+    const roll = page.getByTestId('roll-forward');
+    await expect(roll.getByTestId('roll-fix-keep')).toHaveText(RF.fix.keep);
+    await expect(roll.getByTestId('roll-hold-first')).toHaveCount(0);
+    await expect(page.getByTestId('hold')).toHaveCount(0);
+    await expect(page.getByText(fill(F.alreadyOpen, { id: listingId, until: at(listing.fundedUntil) }))).toBeVisible();
+    expect(await page.locator('main').innerText()).not.toMatch(/\bhold\b/i);
+  });
+
+  // "This contract has no hold" is said only from the contract's own refusal: the revert's data, or its one reason
+  // under code 3. Any other failure of that call is a failed read: the node's own (a rate limit), and an error that
+  // says "revert" in its words and hands over no revert data, as a wallet does when it passes on a library's wording
+  // over a block its node did not have (R1-F9).
   for (const [what, error] of [
     ['the node\'s own failure', { code: -32005, message: 'rate limit exceeded' }],
     ['"missing revert data" over a block the node does not have', { code: -32603, message: 'missing revert data', data: { code: -32000, message: 'header not found' } }],
+    ['the contract\'s reason under another code', { code: -32000, message: 'execution reverted: unknown function' }],
   ]) test(`a read of the hold that fails another way is a failed read of the page, never "not on hold": ${what}`, async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     const heldAt = await holdOnChain(chain, stack, listingId);

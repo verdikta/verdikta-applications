@@ -409,10 +409,16 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(reads, /stand on the assumption alone, that the nodes behind the wallet's address agree on the chain/);
   const config = between('**Config** is Vite\'s build environment', '**Wording.**');
   assert.match(config, /The nodes behind the address are taken to agree on the chain/);
-  // what a contract with no hold asks of the read address: the revert's data, which is all the reader goes by
-  assert.match(config, /It also has to hand over a revert's data on `eth_call`, as nodes do: against a contract from before the hold, the page knows there is no hold from that data alone/);
-  assert.match(config, /an address that drops the data gives a failed read of every listing's page there, and never a listing on hold shown as one that is not/);
-  assert.match(read('../../deploy/client.env'), /# It also has to hand over a revert's data on eth_call, as nodes do/);
+  // R2-F1: how the page knows a contract has no hold, said as it is: the revert's data, or the contract's one reason
+  // under code 3 where a provider leaves the data out. No deployment is asked for revert data.
+  assert.match(config, /Against a contract from before the hold, the page knows there is no hold from the contract's own refusal of `heldAt`: the revert's data where the node hands it over, and where it does not, the node's error of code 3 whose message is exactly `execution reverted: unknown function`/);
+  assert.match(config, /Any other failure of that call is a failed read of the page, never a listing on hold shown as one that is not/);
+  assert.doesNotMatch(readme, /has to hand over a revert's data|drops the data/);
+  const deployNote = read('../../deploy/client.env');
+  assert.match(deployNote, /# Against a contract from before the hold, the page knows there is no hold from the contract's own refusal of heldAt/);
+  assert.doesNotMatch(deployNote, /has to hand over a revert's data|drops it gives/);
+  const knows = between('**How the page knows.**', 'The same page carries the rest of a listing\'s life');
+  assert.match(knows, /the reader goes by the contract's own refusal and not by that code: the revert's data, or, with no data, the node's error of code 3 whose message is exactly `execution reverted: unknown function`/);
   assert.match(config, /Without a read address the page's reads go through the visitor's wallet, by block number, and what they show of a hold is not tied to a block's hash/);
   const env = read('../../deploy/client.env');
   assert.match(env, /# The nodes behind the address are taken to agree on the chain\./);

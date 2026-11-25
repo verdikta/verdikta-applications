@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { Contract, Interface, JsonRpcApiProvider, Network } from 'ethers';
+import { BrowserProvider, Contract, Interface, JsonRpcApiProvider, Network } from 'ethers';
 
 import { wordingProblems } from '../e2e/support/wording.js';
 import { LISTING_STATES, STAKE_ATTESTATION_ABI } from '../src/chain/abi.js';
@@ -62,6 +62,28 @@ async function withNode(answer, run) {
     node.destroy();
   }
 }
+/**
+ * The same node behind a wallet: an injected EIP-1193 provider, which hands a JSON-RPC error over by rejecting with
+ * it, and ethers' own BrowserProvider in front, as the page has it (chain/wallet.js). What a page with no read
+ * address reads through.
+ */
+async function withWallet(answer, run) {
+  const injected = {
+    async request({ method, params }) {
+      if (method === 'eth_chainId') return '0x7a69';
+      const said = await answer({ method, params });
+      if (said.error) throw Object.assign(new Error(said.error.message), said.error);
+      return said.result;
+    },
+  };
+  const provider = new BrowserProvider(injected, 31337, { staticNetwork: Network.from(31337), batchMaxCount: 1, cacheTimeout: -1 });
+  try {
+    return await run(new Contract(ADDRESS, STAKE_ATTESTATION_ABI, provider), provider);
+  } finally {
+    provider.destroy();
+  }
+}
+const PROVIDERS = Object.freeze({ 'the reader on a read address': withNode, 'a wallet\'s provider': withWallet });
 
 // What nodes say of a call to a function the contract does not have. StakeAttestation hands a selector it does not
 // implement to its lens, whose own fallback reverts with Error("unknown function"): that is what a contract deployed
@@ -81,11 +103,26 @@ const REFUSALS = Object.freeze({
   'a wallet that wraps its node\'s answer, the revert\'s data inside': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: 3, message: 'execution reverted: unknown function', data: UNKNOWN_FUNCTION } },
   'a revert with a reason': { code: 3, message: 'execution reverted: no such view', data: '0x08c379a0' + '0'.repeat(62) + '20' + '0'.repeat(62) + '0c' + Buffer.from('no such view').toString('hex').padEnd(64, '0') },
 });
-// An error that says "revert" somewhere and hands over no revert data. The contract deployed before the hold never
-// answers so (its lens's fallback reverts with data), and a word in an error is not the contract's: each of these is a
-// failed read. The last is a wallet passing on a library's own wording over a block its node did not have: taken as
-// "no hold", it would show a listing that is on hold as one that takes claims.
+// The one answer with no revert data that is the contract's refusal all the same (R2-F1): the measured code-3 answer
+// of the deployed contract, as a provider hands it over when it leaves the data out. Code 3 is the node's "execution
+// reverted", and the reason after it is the lens's own, from its fallback: revert("unknown function"). No failure of
+// a node or of a network says that, and a contract that has heldAt never reaches that fallback for it.
+const LEGACY_REFUSAL_NO_DATA = Object.freeze({ code: 3, message: 'execution reverted: unknown function' });
+// An error that says "revert" somewhere, hands over no revert data, and is not that one answer: each of these is a
+// failed read. One code and one whole message are taken, and nothing near them: not the message under another code,
+// not the code with another reason or with none, not either of them nested in a wallet's own error, not another
+// spelling. The last two are a wallet passing on a library's own wording over a block its node did not have: taken
+// as "no hold", they would show a listing that is on hold as one that takes claims.
 const NO_REVERT_DATA = Object.freeze({
+  'the contract\'s reason under another code': { code: -32000, message: 'execution reverted: unknown function' },
+  'the same under the code of an internal error': { code: -32603, message: 'execution reverted: unknown function' },
+  'code 3 with no reason': { code: 3, message: 'execution reverted' },
+  'code 3 with another reason': { code: 3, message: 'execution reverted: no such view' },
+  'code 3 with the reason and more': { code: 3, message: 'execution reverted: unknown function selector' },
+  'code 3, the reason in other letters': { code: 3, message: 'Execution reverted: unknown function' },
+  'code 3, the reason with a space after it': { code: 3, message: 'execution reverted: unknown function ' },
+  'code 3 as text': { code: '3', message: 'execution reverted: unknown function' },
+  'the contract\'s answer nested in a wallet\'s own error, with no data': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: 3, message: 'execution reverted: unknown function' } },
   'a node that returns no data for an empty revert': { code: -32000, message: 'execution reverted' },
   'a wallet that wraps its node\'s answer, with no data': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: -32000, message: 'execution reverted' } },
   'a node that says it in its data, in words': { code: -32015, message: 'VM execution error.', data: 'Reverted 0x' },
@@ -151,21 +188,61 @@ test('readHold: a call the contract refuses means a contract with no hold, by th
   assert.ok(Object.isFrozen(NO_HOLD));
 });
 
-test('readHold: an error with no revert data is a failed read, never "no hold", whatever its words say (R1-F9)', async () => {
-  for (const [name, error] of Object.entries(NO_REVERT_DATA)) {
-    await withNode(() => ({ error }), async (sa) => {
-      await assert.rejects(readHold(sa, 7n), (err) => {
-        assert.equal(err.code, 'CALL_EXCEPTION', name);
-        assert.equal(err.data, null, `${name}: ethers kept no revert data`);
-        assert.equal(refusedByContract(err), false, name);
-        return true;
-      }, name);
+test('readHold: the deployed contract\'s own refusal with its data left out is "no hold", through the reader and through a wallet (R2-F1)', async () => {
+  // the measured fixture, with only its data removed
+  const { data, ...measured } = REFUSALS['the deployed contract with no hold, over a public node'];
+  assert.equal(data, UNKNOWN_FUNCTION);
+  assert.deepEqual(measured, LEGACY_REFUSAL_NO_DATA);
+  for (const [through, withProvider] of Object.entries(PROVIDERS)) {
+    let asked = 0;
+    await withProvider((p) => { if (p.method === 'eth_call') asked += 1; return { error: LEGACY_REFUSAL_NO_DATA }; }, async (sa) => {
+      assert.deepEqual(await readHold(sa, 7n), { supported: false, heldAt: 0n, held: false }, through);
+    });
+    assert.equal(asked, 1, through);
+    // and where ethers puts the node's own error for that provider is where the reader looks: the top level
+    await withProvider(() => ({ error: LEGACY_REFUSAL_NO_DATA }), async (sa) => {
+      const err = await sa.heldAt(7n).then(() => null, (e) => e);
+      assert.equal(err.code, 'CALL_EXCEPTION', through);
+      assert.equal(err.data, null, `${through}: ethers kept no revert data`);
+      assert.equal(err.info.error.code, 3, through);
+      assert.equal(err.info.error.message, 'execution reverted: unknown function', through);
+      assert.equal(refusedByContract(err), true, through);
+    });
+    // with the data, as measured, it is the same answer through both
+    await withProvider(() => ({ error: REFUSALS['the deployed contract with no hold, over a public node'] }), async (sa) => {
+      assert.deepEqual(await readHold(sa, 7n), NO_HOLD, through);
     });
   }
-  // the reader reads no word of an error: not the node's, not a wallet's
+  // the reason is the contract's own: its lens's fallback, which a contract that has heldAt never reaches for it
+  assert.match(LENS, /fallback\(\) external \{[^}]*revert\("unknown function"\);/);
+  assert.match(fn(SOURCE, 'heldAt'), /function heldAt\(uint256 listingId\) external view returns \(uint64\)/);
+});
+
+test('readHold: any other error with no revert data is a failed read, never "no hold", whatever its words say (R1-F9, R2-F1)', async () => {
+  for (const [through, withProvider] of Object.entries(PROVIDERS)) {
+    for (const [name, error] of Object.entries(NO_REVERT_DATA)) {
+      await withProvider(() => ({ error }), async (sa) => {
+        await assert.rejects(readHold(sa, 7n), (err) => {
+          assert.equal(err.code, 'CALL_EXCEPTION', `${through}: ${name}`);
+          assert.equal(err.data, null, `${through}: ${name}: ethers kept no revert data`);
+          assert.equal(refusedByContract(err), false, `${through}: ${name}`);
+          return true;
+        }, `${through}: ${name}`);
+      });
+    }
+    // the node's own failures stay failed reads through both
+    for (const [name, error] of Object.entries(FAILURES)) {
+      await withProvider(() => ({ error }), async (sa) => {
+        await assert.rejects(readHold(sa, 7n), (err) => refusedByContract(err) === false, `${through}: ${name}`);
+      });
+    }
+  }
+  // One code and one whole message, compared as they are: no pattern, no search through an error's texts, no
+  // trimming, no folding of case, and nothing nested.
   const lib = read('../src/lib/hold.js');
-  assert.match(lib, /export function refusedByContract\(err\) \{\s*return err\?\.code === 'CALL_EXCEPTION' && typeof err\.data === 'string';\s*\}/);
-  assert.doesNotMatch(lib.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, ''), /textsOf|\.info\b|\.message\b|\.test\(|\/i\b/);
+  assert.match(lib, /const LEGACY_REFUSAL = Object\.freeze\(\{ code: 3, message: 'execution reverted: unknown function' \}\);/);
+  assert.match(lib, /export function refusedByContract\(err\) \{\s*if \(err\?\.code !== 'CALL_EXCEPTION'\) return false;\s*if \(typeof err\.data === 'string'\) return true;\s*const said = err\.info\?\.error;\s*return said\?\.code === LEGACY_REFUSAL\.code && said\.message === LEGACY_REFUSAL\.message;\s*\}/);
+  assert.doesNotMatch(lib.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, ''), /textsOf|\.test\(|\.match\(|\.includes\(|\.startsWith\(|\.trim\(|toLowerCase\(\)\.|RegExp|\/i\b/);
 });
 
 test('readHold: a read that fails another way is a failed read, never "not on hold"', async () => {
@@ -191,7 +268,13 @@ test('readHold: a read that fails another way is a failed read, never "not on ho
   });
 });
 
-test('refusedByContract: only a revert the node reports, by the revert\'s own data', () => {
+test('refusedByContract: only a revert the node reports, by the revert\'s own data or by the contract\'s one reason under code 3', () => {
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: 3, message: 'execution reverted: unknown function' } } }), true, 'the contract\'s own reason, with no data');
+  assert.equal(refusedByContract({ code: 'NETWORK_ERROR', data: null, info: { error: { code: 3, message: 'execution reverted: unknown function' } } }), false, 'only as ethers\' CALL_EXCEPTION');
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: 3, message: 'execution reverted' } } }), false);
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: -32000, message: 'execution reverted: unknown function' } } }), false);
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: -32603, message: 'x', data: { code: 3, message: 'execution reverted: unknown function' } } } }), false, 'not nested');
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, shortMessage: 'execution reverted: unknown function', message: 'execution reverted: unknown function', reason: 'unknown function' }), false, 'not ethers\' own wording of it: the node\'s error, or nothing');
   assert.equal(refusedByContract(null), false);
   assert.equal(refusedByContract(new Error('execution reverted')), false, 'not ethers\' CALL_EXCEPTION');
   assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: '0x' }), true, 'the revert\'s data, empty');

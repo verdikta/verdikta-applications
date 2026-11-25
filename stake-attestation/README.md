@@ -1668,7 +1668,11 @@ goes in a URL.
   any new read answers, the page shows nothing that says the listing is on hold or what its maker
   may do because of it, and nothing that shows it as taking claims: its state, "open until", the
   commit offer, the hold's section, the roll-forward panel and the forms of top-up, renew and
-  close are off. Each action's line for its own transaction, and its own error, stay. The page
+  close are off. Each action's line for its own transaction stays. Its own error is shown where
+  its section is drawn: the hold and the roll forward draw theirs whatever the read says; top up,
+  renewal and close draw no section, as before this node, for a listing the page's read rules the
+  action out on, unless that action's own transaction line is there, so an error of theirs that
+  arrives then is not shown (verdikta-applications issue 240). The page
   then reads the listing again until a read is of that block or a later one (`readFrom` in
   `client/src/lib/poll.js`), and everything comes back from that read alone. While it reads it
   says so; when its reads are over and none was taken, it names the block its next read has to
@@ -1696,7 +1700,10 @@ goes in a URL.
   and what its receipt said (a close's refund, a top-up's amounts, a renewal's date, a
   withdrawal's amount, the opening). Such a line is kept while its listing is on the page,
   through every re-read of it, and is not checked against a later read. A read that says the
-  listing is gone, or not opened, takes the page with its actions. Whether a line should outlive
+  listing is gone, or not opened, takes the page with its actions. The opening's form (the escrow
+  field and its button) is the read's all along: it is drawn only while the listing on display is
+  Listed, so a listing read again as open has none, whenever the opening's receipt arrived.
+  Whether a line should outlive
   that, and how those lines hold up when the site's reader trails the wallet, a second tab acts
   or a block is replaced, is separate work (verdikta-applications issue 240), with a design
   first.

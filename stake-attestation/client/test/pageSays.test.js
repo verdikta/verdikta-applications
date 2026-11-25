@@ -412,6 +412,7 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   // R1-F6: what is so of an action's own line, and no more: kept while its listing is on the page
   assert.match(own, /Such a line is kept while its listing is on the page, through every re-read of it, and is not checked against a later read\./);
   assert.match(own, /A read that says the listing is gone, or not opened, takes the page with its actions\./);
+  assert.match(own, /The opening's form \(the escrow field and its button\) is the read's all along: it is drawn only while the listing on display is Listed/);
   assert.doesNotMatch(readme, /for the visit/);
   assert.match(rule, /it names the block its next read has to reach, with "Read again"/);
   assert.match(rule, /so a listing the wallet's node does not have at that block is an answer, and a disagreement like any other/);

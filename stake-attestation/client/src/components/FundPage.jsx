@@ -63,8 +63,6 @@ export function FundPage({ listingId }) {
   const [, redraw] = useState(0);
   const happened = useCallback((event) => {
     record.current = pageAfter(record.current, event);
-    // a read that says no listing is here takes the opening's own line with it: a listing read later is drawn from its read
-    if (record.current.read?.missing) setOpenedHere(false);
     redraw((n) => n + 1);
   }, []);
   const loaded = record.current.read; // { listing, hold, block } | { missing, block } | { failed } | null
@@ -191,7 +189,7 @@ export function FundPage({ listingId }) {
       </section>
       {notice}
       {/* the funding form of a Listed listing; once this page opened it, the opening's own line, which stays */}
-      {(state === 'Listed' || openedHere) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} onMined={onChanged} onOpened={() => setOpenedHere(true)} />}
+      {(state === 'Listed' || openedHere) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} listed={state === 'Listed'} onMined={onChanged} onOpened={() => setOpenedHere(true)} />}
       {!quiet && state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {!quiet && hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
       {!quiet && state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}

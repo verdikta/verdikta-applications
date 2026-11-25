@@ -23,10 +23,10 @@ const C = STRINGS.chain;
  * was sent was mined in, also when the wallet sent it again at a higher fee (chain/wallet.js
  * minedReceipt): a listing's own page reads the listing again from there (node P42).
  *
- * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string }} props - `top`
+ * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string, listed?: boolean }} props - `top`
  *        is the awards[CRITICAL] this page shows
  */
-export function FundListing({ listingId, top, maker, artifactHash, onMined = () => {}, onOpened = () => {} }) {
+export function FundListing({ listingId, top, maker, artifactHash, listed = true, onMined = () => {}, onOpened = () => {} }) {
   const w = useWalletContext();
   const [escrow, setEscrow] = useState(formatEth(top));
   const [fee, setFee] = useState(null);
@@ -97,6 +97,8 @@ export function FundListing({ listingId, top, maker, artifactHash, onMined = () 
       </p>
     );
   }
+  // the form is the read's: on a listing's own page it is drawn only while the listing on display is Listed (`listed`)
+  if (!listed) return null;
   return (
     <>
       {fee !== null && <p>{fill(C.fee, { fee: formatEth(fee) })}</p>}

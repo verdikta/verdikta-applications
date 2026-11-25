@@ -23,6 +23,7 @@ import { wordingProblems } from '@verdikta/stake-attestation-shared';
 import { DISPUTE_RESULTS, LISTING_STATES, STAKE_ATTESTATION_ABI } from '../src/abi.js';
 import { revertReasonOf } from '../src/errors.js';
 import { ERROR_TEXTS, ToolError, USAGE } from '../src/index.js';
+import { COMMIT_HERE } from '../src/notices.js';
 import { closeRpc, readJson, rpcOf, runCli, statePath } from './helpers/cli.js';
 import { JUSTIFICATION_CID, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
 
@@ -381,6 +382,68 @@ test('a claim committed before the hold keeps every path after it: status, revea
   assert.equal(err.code, 'LISTING_ON_HOLD');
   assert.equal(err.message, refusalOf({ ...l, heldAt }));
   await assertNothingSent(m, fresh, 'a Depleted listing on hold');
+});
+
+// --------------------------------------------------- a commit sent some other way, in a folder that is still prepared
+
+// What is true today, and what this node does not change (review round 1, R1-F1; owner, 2026-11-24). An ordinary
+// commit looks for its folder's two hashes on the chain only in sendCommit, once the listing has taken the commit and
+// --yes was given. A late claim's run looks first, before the listing is asked (node P43). So a prepared folder whose
+// commit went out some other way is refused by `commit` on every listing that takes no commit, with that listing's own
+// refusal, and the claim stays undisclosed; `commit --late` in that folder finds the claim, adopts it as the commit it
+// is, and discloses it. Where an ordinary commit looks is other work (verdikta-applications#238): this test holds the
+// order as it is, and the way through there is today.
+test('a prepared folder whose commit went out some other way, on a listing that takes no commit: commit refuses it as it refuses that listing, and commit --late in that folder finds the claim and discloses it, with no second bond', async () => {
+  const paidPeriodOver = async (l) => {
+    await w.rpc('evm_setNextBlockTimestamp', [Number((await w.sa.getListing(l.listingId)).fundedUntil)]);
+    await w.mine();
+  };
+  const cases = [
+    ['on hold', 'LISTING_ON_HOLD', hold],
+    ['rolled forward', 'LATE_CLAIMS_ONLY', rolled],
+    ['its paid period over', 'LISTING_NOT_ACCEPTING', paidPeriodOver],
+  ];
+  for (const [name, code, end] of cases) {
+    const l = await w.listing();
+    const dir = makeClaimDir();
+    assert.equal((await killedAt(dir, l.listingId, 'prepare:saved')).signal, 'SIGKILL', name);
+    const saved = readJson(statePath(dir));
+    assert.equal(saved.stage, 'prepared', name);
+    // the same two hashes, committed from the same wallet without this tool (for the last case, a minute before the
+    // paid period ends, so that the claim's disclose window is still open after it)
+    if (end === paidPeriodOver) await w.rpc('evm_setNextBlockTimestamp', [Number((await w.sa.getListing(l.listingId)).fundedUntil) - 60]);
+    await (await w.sa.connect(w.hunterWallet).commit(l.listingId, saved.archiveSha256, saved.ciphertextSha256, { value: await w.sa.commitPrice(l.listingId) })).wait();
+    const claimId = await w.claimCount();
+    await end(l);
+    assert.equal(await w.sa.acceptsCommits(l.listingId), false, name);
+    const m = await mark();
+    const paid = await w.provider.getBalance(w.address);
+
+    // commit, without --yes and with it: the listing's refusal, nothing sent, and the claim is as it was
+    for (const acknowledge of [false, true]) {
+      const err = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, acknowledge }).catch((e) => e);
+      assert.equal(err.code, code, `${name}, acknowledge ${acknowledge}: ${err.message}`);
+    }
+    await assertNothingSent(m, null, name);
+    assert.equal((await w.sa.getClaim(claimId)).disclosedAt, 0n, `${name}: commit did not disclose the claim on the chain`);
+    assert.equal(readJson(statePath(dir)).stage, 'prepared', name);
+
+    // commit --late in that folder, with no --yes: the claim is found before the listing is asked, and disclosed
+    const said = [];
+    const r = await w.hunter({ onNotice: (t) => said.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: true });
+    assert.equal(r.stage, 'disclosed', name);
+    assert.equal(r.claimId, claimId, `${name}: the claim that was on the chain`);
+    assert.equal(Object.hasOwn(r, 'late'), false, `${name}: adopted as the ordinary commit it is`);
+    assert.deepEqual(said, [COMMIT_HERE], `${name}: no terms, and the run says what the folder holds`);
+    const claim = await w.sa.getClaim(claimId);
+    assert.equal(claim.late, false, name);
+    assert.ok(claim.disclosedAt > 0n, `${name}: disclosed`);
+    assert.equal(claim.ciphertextCid, r.ciphertextCid, name);
+    assert.equal(await w.claimCount(), m.claims, `${name}: no second claim`);
+    assert.equal(await w.provider.getBalance(w.address), paid, `${name}: no second bond or prepay`);
+    assert.equal((await w.sa.getListing(l.listingId)).lateClaims, 0n, `${name}: no late claim was filed beside it`);
+    assert.equal(Object.hasOwn(readJson(statePath(dir)), 'late'), false, name);
+  }
 });
 
 // --------------------------------------------------------------------------------------- a contract with no hold

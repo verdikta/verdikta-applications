@@ -1360,6 +1360,18 @@ test('node P41: a listing on hold is what the contract, the site and the tool ma
   // what stops a commit there: a refusal of its own, decided before the terms are said, so no price is printed
   assert.ok(para.includes('`verdikta-attest commit` refuses a listing on hold with LISTING_ON_HOLD, before anything is pinned or sent, and says since when (section 3, step 1).'));
   assert.ok(Object.hasOwn(ERROR_TEXTS, 'LISTING_ON_HOLD'), 'LISTING_ON_HOLD is an error of the tool');
+  // a prepared folder whose commit went out some other way (review round 1, R1-F1; owner, 2026-11-24): `commit` asks
+  // the listing before it looks for the folder's hashes on the chain, so it is refused there too; a late claim's run
+  // looks first, and adopts what it finds as the kind the chain says it is (node P43). tool/test/hold.test.js runs it
+  assert.ok(para.includes('A prepared claim folder whose two hashes already have a commit on the chain, sent some other way, gets that refusal from `commit` too: `commit --late` in that folder finds the claim first and discloses it, as the commit it is, for no second bond (section 3, "Late claims").'));
+  const whole = /export async function runCommit[\s\S]*$/.exec(commit)[0];
+  const lookup = whole.indexOf('if (late && state?.stage === \'prepared\') {');
+  assert.ok(lookup >= 0 && lookup < whole.indexOf('await readyToCommit('), 'the lookup that comes before the listing is asked is a late claim\'s run\'s');
+  assert.match(whole.slice(lookup), /^if \(late && state\?\.stage === 'prepared'\) \{\s*const existing = await findCommitted\(ctx, state, EITHER_KIND\);\s*if \(existing\) state = await adoptLogged\(ctx, ws, state, existing\);/);
+  const send = /async function sendCommit[\s\S]*?\n\}/.exec(commit)[0];
+  assert.match(send, /^async function sendCommit\([^)]*\) \{\s*const existing = await findCommitted\(ctx, state, eventsFor\(late\)\);\s*if \(existing\) return adoptLogged\(ctx, ws, state, existing\);/, 'an ordinary commit looks once the listing has taken it');
+  assert.match(commit, /const next = \{ \.\.\.withKind\(state, claim\.late === true\), stage: 'committed', /, 'and the claim adopted is the kind the chain says');
+  assert.match(section(3), /A prepared late claim whose two hashes already have a claim on the chain, sent some other way, is found first and disclosed, --yes or not; so is such a claim of a commit's prepared folder that is run with --late\./);
   assert.equal(new ToolError('LISTING_ON_HOLD').exitCode, 1);
   assert.match(ERROR_TEXTS.LISTING_ON_HOLD, /\bon hold\b/);
   assert.match(ERROR_TEXTS.LISTING_ON_HOLD, /commit --late/);

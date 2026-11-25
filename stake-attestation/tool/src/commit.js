@@ -289,8 +289,11 @@ async function takesLateClaimsOnly(ctx, listingId) {
  * Since when a listing that takes late claims only is on hold, by the contract's heldAt; null when it is not (node
  * P41). Asked for a commit's refusal alone, and only of a listing whose state is Open or Depleted, the two a hold is
  * made in and lasts in: heldAt answers 0 for every other. So a contract from before the hold, whose lens says late
- * claims of a Rolled or a Closed listing only, is never asked for a view it does not have; one that refuses the view
- * all the same is not on hold. An RPC that did not answer is said as that, never as not on hold.
+ * claims of a Rolled or a Closed listing only, is never asked for a view it does not have: only a contract that has
+ * the hold reaches this read, and there heldAt never reverts. A read that fails with no word of the contract's is
+ * therefore never "a contract with no hold", whatever its data: it is said as the RPC's (ethers gives a node's own
+ * error on a call and a revert with no data one shape), never as not on hold. Should a contract refuse the view in
+ * its own words all the same (the fallback's "unknown function"), the listing is not said to be on hold.
  */
 async function onHoldSince(ctx, listingId) {
   const { state } = await ctx.read('getListing', [listingId]);

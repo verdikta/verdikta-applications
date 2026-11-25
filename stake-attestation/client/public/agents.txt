@@ -192,7 +192,10 @@ or Depleted. Where it shows:
   A contract deployed before the hold has no such view and no `hold`: there this call reverts
   with "unknown function", and no listing is on hold.
 `verdikta-attest commit` refuses a listing on hold with LISTING_ON_HOLD, before anything is pinned
-or sent, and says since when (section 3, step 1).
+or sent, and says since when (section 3, step 1). A prepared claim folder whose two hashes
+already have a commit on the chain, sent some other way, gets that refusal from `commit` too:
+`commit --late` in that folder finds the claim first and discloses it, as the commit it is, for
+no second bond (section 3, "Late claims").
 
 The disclosure key. The archive's `stake.disclosureKey` names the maker's key as an age recipient
 or as the base64 of the same 32 bytes; the feed gives it as `disclosureKey` and

@@ -1342,6 +1342,15 @@ verdikta-attest claim  ./claim                     # finalize, settle, withdraw:
 verdikta-attest appeal ./claim --yes               # an INVALID to the dispute panel, for the live dispute fee
 ```
 
+On a listing that takes no commit any more, a late claim takes the place of the `commit` line. It has a folder and a
+listing of its own, so `check` before it and every command after it name that folder:
+
+```bash
+verdikta-attest check  ./late-claim --listing 7               # as for a commit
+verdikta-attest commit ./late-claim --listing 7 --late --yes  # a late claim: bond + prepay, no award; asks for --yes after its terms
+verdikta-attest status ./late-claim                           # then reveal, status --wait and claim as above, each on ./late-claim
+```
+
 The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), never from an argument.
 
 - **`check`** runs the arbiters' code-runner minus the jury, on the request an arbiter would send, and prints the gate forecast
@@ -1376,6 +1385,49 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   Claims on a listing reveal in commit order, so the terms it prints before it pays say how many claims on the listing
   are open and which is the earliest (`queueNotice`, from the listing's `pendingClaims` and `headClaim`), and its result
   names the claim it is behind (`waitsFor`), with the reveal deadline said as the earliest it can be.
+- **`commit --late`** (node P43; design §13.2, decision D6) files a late claim: a finding on a listing that takes no
+  commit any more, judged and recorded under the record's `later`, with no award. It is `commit` with what `--late`
+  adds, and in everything else it does what a commit does:
+  - It sends `lateClaim` where a commit sends `commit`, with the same two hashes and `commitPrice`, then pins and
+    discloses as a commit does. The lens says which listing takes one (`acceptsLateClaims`: Rolled, Closed after it
+    opened, or held by its maker), so the tool reads no hold and works against a contract that has none. A late claim
+    has no allowlist.
+  - Before it pays it prints the listing's warning, the terms, the price and three warnings (`LATE_CLAIM_WARNINGS`,
+    `src/notices.js`): no award at any class; the bond forfeited on INVALID, to the maker unless the INVALID is narrow;
+    the prepay spent on the evaluation, its unspent part back at `finalize` or, when that refund fails, by
+    `recoverLeftoverEth`. Without `--yes` it sends nothing. Its count of the claims open ahead adds the listing's open
+    late claims to `pendingClaims`, which never counts them.
+  - The wrong kind for the listing is refused before anything is drawn, pinned or signed: `LATE_CLAIMS_ONLY` for a
+    `commit` without `--late` on a listing that takes late claims only (its text names the flag; a listing that takes
+    neither is refused as before), `LISTING_TAKES_COMMITS` and `NO_LATE_CLAIMS` for `--late`.
+  - The price it signs is the price its terms named. The price is read again as it signs, before the wallet's
+    balance is asked, and one that changed in between ends the run with `LATE_PRICE_CHANGED` and the new amount,
+    nothing signed; the next run prints the terms again. A rise between that read and the gas estimate makes the
+    estimate refuse the quoted value, and is said the same way. One that comes after the estimate is not seen before
+    the transaction is sent: it reverts on the chain, as a commit's does (`COMMIT_REVERTED`), and the next run prices
+    it afresh. A commit signs the live price, as it always did.
+  - A folder a late run prepared, or took over from a commit that was never signed, says so in `state.json`
+    (`late: true`) before anything is signed, and a later run goes on with what the folder holds, with `--late` or
+    without it: a signed one is sent again as it was saved, and a prepared one still asks for `--yes`. `--late`
+    takes over only a folder that has nothing signed when the run starts: on a folder whose ordinary commit is
+    signed or on the chain it changes nothing, for the whole run, and says so. Should that signed commit's nonce
+    have gone to another transaction, the run goes on as a commit's does, never as a late claim's.
+  - A prepared late claim's two hashes are looked for on the chain, as a commit's or a late claim's, before the listing
+    is asked: a claim sent some other way is adopted and disclosed, `--yes` or not. A commit's prepared folder that
+    is run with `--late` is looked up the same way, before the run takes it over. So `--yes` (the library's
+    `acknowledge`) is what a new commit or late claim is signed on, not a dry-run switch for a folder that holds a
+    signed one or such a claim: `commit --late` prints its terms and sends nothing only in a folder where nothing
+    is saved yet.
+  - `--restart` never starts a late claim over, signed or not (`LATE_NEEDS_NEW_FOLDER`; owner, 2026-11-24): a
+    changed late claim goes in a new folder, and the old folder's files stay as they are. A prepared late claim
+    whose files changed says the same, with no word of `--restart` (`LATE_INPUTS_CHANGED`): its files are held to
+    the archive it was prepared from before any other check of them, so one that is spoiled, missing, over the size
+    the tool reads or no file at all is said as changed, never as a file to fix in place.
+  - `--late` is taken only as the bare flag and only by `commit`: with a value (`--late=false` too) or on another
+    command it is a usage error (exit 2) before anything is read or sent. Every other flag is read as it was.
+  - `status`, `reveal`, `claim` and `appeal` then work as on any claim: `commit`, `status` and `claim` print "Late
+    claim" and that no award rides on it (`late` with `--json`), and `appeal`'s notice says an overturned INVALID
+    returns the bond and pays nothing more.
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. Then, as `commit`,

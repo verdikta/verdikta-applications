@@ -443,7 +443,10 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(reads, /stand on the assumption alone, that the nodes behind the wallet's address agree on the chain/);
   // R5-F2: a wallet's node is held to the site's chain in every read, and R5-F1: a listing's id has one form
   const oneBlock = between('**One read is one block, and a block is its hash, never its number**', '**The page reads; it does not watch.**');
-  assert.match(oneBlock, /A wallet can change network at any moment, so a read through one is also held to the site's chain \(`VITE_SA_CHAIN_ID`\): the wallet is asked its chain after the calls of every try, and any other chain fails the read there, with no further try of it\./);
+  assert.match(oneBlock, /A wallet can change network at any moment, so a read through one is also held to the site's chain \(`VITE_SA_CHAIN_ID`\): in every try, once the closing header has answered, the wallet is asked its chain, and any other chain fails the read there, with no further try of it\./);
+  // R9-F1, recorded as issue 248: said as the code is, and no more
+  assert.match(oneBlock, /When the closing header request itself is rejected, as the node of another network may reject it, the read fails with that node's error: the chain is not asked, the reported change is not looked at, and no further try is made \(verdikta-applications issue 248\)\./);
+  assert.doesNotMatch(readme, /the wallet is asked its chain after the calls of every try/);
   assert.match(oneBlock, /The page's first read and an action's read say that failure with the wallet's wrong-network message; a re-read of the page does not name the network/);
   assert.doesNotMatch(readme, /never made again on that network/);
   assert.match(oneBlock, /A try during which the wallet reported a change of network \(its `chainChanged` event\) is not taken either/);

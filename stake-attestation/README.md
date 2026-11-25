@@ -1736,12 +1736,16 @@ goes in a URL.
   taken only when the block at that number still has the hash it had before the calls; otherwise
   the read is made again, three times in all at most, and then it is a failed read.
   A wallet can change network at any moment, so a read through one is also held to the site's
-  chain (`VITE_SA_CHAIN_ID`): the wallet is asked its chain after the calls of every try, and any
-  other chain fails the read there, with no further try of it. The page's first read and an
-  action's read say that failure with the wallet's wrong-network message; a re-read of the page
-  does not name the network (above; verdikta-applications issue 247). A try during which the wallet reported a change of network (its `chainChanged`
-  event) is not taken either, since the wallet may have gone to another network and come back: the
-  read is made again, as for a replaced block. The site's read address is one chain's by how it is
+  chain (`VITE_SA_CHAIN_ID`): in every try, once the closing header has answered, the wallet is
+  asked its chain, and any other chain fails the read there, with no further try of it. The
+  page's first read and an action's read say that failure with the wallet's wrong-network
+  message; a re-read of the page does not name the network (above; verdikta-applications issue
+  247). A try during which the wallet reported a change of network (its `chainChanged` event) is
+  not taken either, since the wallet may have gone to another network and come back: the read is
+  made again, as for a replaced block. When the closing header request itself is rejected,
+  as the node of another network may reject it, the read fails with that node's error: the chain
+  is not asked, the reported change is not looked at, and no further try is made
+  (verdikta-applications issue 248). The site's read address is one chain's by how it is
   made, and is asked neither.
   `test/snapshot.test.js` runs it against nodes whose blocks are replaced under it, and fails
   when a hold is read outside a snapshot.
@@ -1758,8 +1762,9 @@ goes in a URL.
   it: the read just before something is sent, and every read of the page where no read address
   is configured, are tied to their block only by its hash read before and after the calls, and
   for the rest stand on the assumption alone, that the nodes behind the wallet's address agree on
-  the chain. Such a read is held to the site's chain all the same: a wallet that is on another
-  network when it is asked, after the calls, fails the read. A site that wants what it shows of a
+  the chain. Such a read is held to the site's chain all the same, where its closing header
+  answers: a wallet that is on another network when it is asked, after that header, fails the
+  read (a closing header request that is rejected: issue 248, above). A site that wants what it shows of a
   hold tied to a block's hash configures the read address. The case that is left: a hold whose block is replaced after the page read it, and
   after the maker acted on it. The design's order for the maker is "once the hold is mined, push
   the fix", and a page cannot undo a push; it says what the chain has at its next read.

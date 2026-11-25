@@ -33,6 +33,7 @@ export const ERROR_TEXTS = Object.freeze({
   LISTING_ARCHIVE_INVALID: 'That is no listing archive this tool can read.',
   LISTING_NOT_ACCEPTING: 'This listing takes no commits now.',
   LISTING_NOT_FOUND: 'No such listing on this contract.',
+  LISTING_ON_HOLD: 'This listing is on hold: its maker stopped new commits on it, and a hold is not lifted, so it takes late claims only from now on. A late claim is judged and recorded, and pays no award: commit --late prints its terms and its price, and with --yes files one. Nothing was pinned or sent.',
   LISTING_TAKES_COMMITS: 'This listing takes commits, so it takes no late claim: --late is for a listing that takes none any more. Run commit without --late. Nothing was pinned or sent.',
   NEEDS_ACKNOWLEDGEMENT: 'Read the above, then run again with --yes. Nothing was sent.',
   NETWORK_NOT_ALLOWED: 'This tool is for Base Sepolia and local nodes for now. Refused.',

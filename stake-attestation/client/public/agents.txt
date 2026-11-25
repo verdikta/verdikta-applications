@@ -132,6 +132,8 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
     record.listings       each listing's narrowInvalidFloor (a mass out of SCORE_SCALE: an INVALID
                           whose LOW to CRITICAL hold at least it is narrow) and confirmAboveWei
                           (section 3, step 7)
+    labels.listings       each listing's labels, by listingId, `heldAt` among them (below, "A
+                          listing on hold")
     sameRepository        the listings of the same repository on its other versions that opened
 - GET https://verifiers.verdikta.org/api/listings/<id> is a maker's listing request, by the id
   POST /api/listings gave it, while it is built. It is not the on-chain listing id, and a hunter
@@ -147,7 +149,8 @@ before you choose a listing. `pendingClaims` is how many claims are open there n
 them ahead of a claim you commit, and `headClaim` is the first of them: 0 and null on a listing
 where yours would be first. `claimsSoFar` counts every claim ever committed there, open or not.
 No entry's queue holds a late claim: a listing that takes one (section 3, "Late claims") is not
-in the feed.
+in the feed. That holds for a listing on hold too, whose state stays Open or Depleted: it is
+not a feed entry ("A listing on hold", below).
 In /api/feed/events, a claim of the listing with a Committed event and neither a Settled nor an
 Expired one is open. The first run of `verdikta-attest commit`, which sends nothing (section 4),
 says how many are open and which is the earliest, before you pay.
@@ -158,11 +161,35 @@ findings. The record is the version's: listings with the same artifactHash share
 the same kind, repository and commit and, for a deployed contract, the same chain and address.
 `sameRepository` names the others, each with its listingId, artifactHash, artifact
 (with its baseCommit), state (Open, Depleted, Rolled or Closed), lapsed (its paid period has
-ended), counted (false: this site does not offer it) and page (on this site,
+ended), heldAt (unix seconds while its maker holds it, else null: "A listing on hold", below),
+counted (false: this site does not offer it) and page (on this site,
 /#/fund/<listingId>). It matches `artifact.repo` exactly as listed, so another spelling of a URL
 is another repository, and it leaves out a listing that never opened, which takes no claims. A
 claim goes on one listing, and its proof must fail at that listing's baseCommit: read the feed
 entry of the listing you claim on, not another's.
+
+A listing on hold. A maker may put a listing on hold with `hold(listingId)`, the first step of
+replacing it with a fixed version. From that block on the listing takes no new commit, only late
+claims (section 3, "Late claims"). A hold has no resume: it ends when the maker rolls the stake
+forward to another listing or closes this one, and the listing takes no commit again. Claims
+committed before the hold are left alone: each is disclosed, revealed, judged, settled and paid
+from the escrow as on any listing. A hold is not a state, so a listing on hold still reads Open
+or Depleted. Where it shows:
+- The feed: a listing on hold is not an entry of `listings`, so `pendingClaims` and `headClaim`
+  are only ever a queue of the stake's own claims, as said above. Every entry's own
+  `labels.heldAt` is null.
+- `heldAt` in an entry of `sameRepository`, a feed entry's or a record's, and in the record's
+  `labels.listings[<listingId>]` (GET /api/records/<artifactHash>): the time of the hold, in unix
+  seconds, while the listing is on hold, and null otherwise. A record's `notCounted.listings`
+  entries carry it too.
+- The badge of a version whose listing is on hold, with no other listing of it taking commits,
+  reads "stake on hold since YYYY-MM-DD", the hold's day in UTC.
+- A `Held` event in /api/feed/events, with its listingId and, in `args.heldAt`, the time. It
+  stays there after the hold has ended.
+- On the chain, `heldAt(listingId)`: the time while the listing is on hold, 0 otherwise:
+      cast call "$VERDIKTA_CONTRACT" "heldAt(uint256)(uint64)" <listingId> --rpc-url https://sepolia.base.org
+`verdikta-attest commit` refuses a listing on hold with LISTING_ON_HOLD, before anything is pinned
+or sent, and says since when (section 3, step 1).
 
 The disclosure key. The archive's `stake.disclosureKey` names the maker's key as an age recipient
 or as the base64 of the same 32 bytes; the feed gives it as `disclosureKey` and
@@ -200,6 +227,11 @@ each deadline of your claim and what comes next.
    the live prepay (section 4). Only two hashes go on-chain. The listing must take commits
    (`acceptsCommits(listingId)`) and allow your wallet (`isAllowed(listingId, hunter)`).
    A listing that takes none may take a late claim instead ("Late claims", after step 8).
+   One its maker holds (section 2, "A listing on hold") is such a listing: `verdikta-attest commit`
+   refuses it with LISTING_ON_HOLD, before anything is pinned or sent, and says since when. It
+   takes no commit again. What is left there is a late claim, judged and recorded for no award
+   (`commit --late`); or claim on another listing: if the maker rolls the stake forward, the
+   fixed version is a listing of its own, and your proof must fail at that listing's baseCommit.
 2. Pin the encrypted proof only after the commit is mined. The tool waits for the commit's
    confirmations before it pins: pinned earlier, the maker could read it before your commit
    lands.
@@ -300,7 +332,8 @@ of `commit`. `verdikta-attest commit` files one with --late.
   (`hold(listingId)`: the state stays Open or Depleted, and no commit is taken from then on). A
   listing that never opened takes neither a commit nor a late claim. A listing that takes late
   claims is not in the feed (section 2). A feed entry's and a record's `sameRepository` give
-  each related listing's state; read the answer itself from the contract:
+  each related listing's state, and `heldAt` while its maker holds it; read the answer itself
+  from the contract:
       cast call "$VERDIKTA_CONTRACT" "acceptsLateClaims(uint256)(bool)" <listingId> --rpc-url https://sepolia.base.org
 - What it costs: what a commit costs, `commitPrice(listingId)`: the listing's `bondWei` plus the
   live prepay (section 4).
@@ -323,7 +356,8 @@ of `commit`. `verdikta-attest commit` files one with --late.
   signs nothing and says the new amount (LATE_PRICE_CHANGED), and the next run prints the terms
   again.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
-  listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
+  listing on hold (LISTING_ON_HOLD, which says since when) or on one that rolled forward or
+  closed after it opened (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
 - --late takes no value and is `commit`'s alone: `--late=false`, any other value, or --late on
   another command is a usage error (exit 2), before anything is read or sent.
@@ -377,7 +411,8 @@ nothing yet (no state.json: section 9). In a folder that holds a prepared or a s
 either kind, it may not be: a signed late claim is resumed on every run, with --late or without
 it, and with --late a prepared folder whose two hashes already have a claim on the chain, a
 commit's or a late claim's, has that claim disclosed, --yes or not (section 3, "Late claims").
-Read the price for such a folder with cast too.
+Read the price for such a folder with cast too. For a listing on hold, `commit` prints no terms
+and no price: it is refused (LISTING_ON_HOLD), and `commit --late` prints a late claim's.
 
 A dry run needs the wallet key (for your address, the balance and the allowlist: it signs
 nothing), the gateway and VERDIKTA_PIN_BACKEND, not VERDIKTA_PIN_TOKEN, which is read only when
@@ -449,6 +484,8 @@ A late claim (section 3, "Late claims") takes the same commands, with --late on 
 Exit codes:
   0  done
   1  refused or failed: stderr says why, as "verdikta-attest: <CODE>: <text>" (check: its forecast)
+     LISTING_ON_HOLD: `commit` on a listing its maker holds; nothing was sent, and section 3,
+     step 1, says what is left to do
   2  usage error (USAGE)
   3  it needs --yes (NEEDS_ACKNOWLEDGEMENT) or --waive-appeal (NEEDS_WAIVER): read what it
      printed, then run it again with that flag

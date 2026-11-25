@@ -1255,7 +1255,7 @@ test('--late on a folder whose signed commit lost its nonce: the run goes on as 
     const m = await mark();
     const said = [];
     const err = await w.hunter({ onNotice: (t) => said.push(t) }).commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true }).catch((e) => e);
-    assert.equal(err.code, 'LATE_CLAIMS_ONLY', err.message);
+    assert.equal(err.code, 'LISTING_ON_HOLD', err.message); // a commit's refusal on a listing on hold, since node P41
     assert.deepEqual(said, [notices.COMMIT_HERE]);
     await assertNothingSent(m, null, 'a commit that lost its nonce, on a held listing');
     const saved = readJson(statePath(dir));

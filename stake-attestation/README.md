@@ -1390,8 +1390,8 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   adds, and in everything else it does what a commit does:
   - It sends `lateClaim` where a commit sends `commit`, with the same two hashes and `commitPrice`, then pins and
     discloses as a commit does. The lens says which listing takes one (`acceptsLateClaims`: Rolled, Closed after it
-    opened, or held by its maker), so the tool reads no hold and works against a contract that has none. A late claim
-    has no allowlist.
+    opened, or held by its maker), so a late claim's run reads no hold and works against a contract that has none. A
+    late claim has no allowlist.
   - Before it pays it prints the listing's warning, the terms, the price and three warnings (`LATE_CLAIM_WARNINGS`,
     `src/notices.js`): no award at any class; the bond forfeited on INVALID, to the maker unless the INVALID is narrow;
     the prepay spent on the evaluation, its unspent part back at `finalize` or, when that refund fails, by
@@ -1400,6 +1400,19 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   - The wrong kind for the listing is refused before anything is drawn, pinned or signed: `LATE_CLAIMS_ONLY` for a
     `commit` without `--late` on a listing that takes late claims only (its text names the flag; a listing that takes
     neither is refused as before), `LISTING_TAKES_COMMITS` and `NO_LATE_CLAIMS` for `--late`.
+  - Of the listings that take late claims only, one on hold has a refusal of its own: `LISTING_ON_HOLD` (node P41)
+    for a `commit` without `--late` on a listing on hold: its text names the hold and its time, as `heldAt` gives it,
+    in unix seconds and in UTC, says what a late claim is and names `commit --late`. It comes where
+    `LATE_CLAIMS_ONLY` comes, so with `--yes` or without it nothing is drawn, pinned or signed, and no terms and no
+    price are printed for a commit there. A listing that rolled forward or closed keeps `LATE_CLAIMS_ONLY`, word for
+    word. The hold is read only for that refusal, once `acceptsCommits` said no and `acceptsLateClaims` said yes, and
+    only of a listing whose state is Open or Depleted, the two a hold is made in and lasts in (`onHoldSince`,
+    `src/commit.js`): a commit that is accepted reads nothing new, and `commit --late` on a listing on hold prints
+    its terms and its price as before. The lens of a contract from before the hold says late claims of a Rolled or a
+    Closed listing only, so a contract with no hold is never asked for the view, and every answer there is what it
+    was; one that refuses the view all the same reads as not on hold. An RPC that does not answer is said as that
+    (`RPC_UNAVAILABLE`), never as a listing that is not on hold. A claim whose commit is on the chain when the hold
+    comes is a pending claim, which a hold leaves alone: its folder goes on, to disclose and everything after.
   - The price it signs is the price its terms named. The price is read again as it signs, before the wallet's
     balance is asked, and one that changed in between ends the run with `LATE_PRICE_CHANGED` and the new amount,
     nothing signed; the next run prints the terms again. A rise between that read and the gas estimate makes the
@@ -1416,8 +1429,9 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
     is asked: a claim sent some other way is adopted and disclosed, `--yes` or not. A commit's prepared folder that
     is run with `--late` is looked up the same way, before the run takes it over. So `--yes` (the library's
     `acknowledge`) is what a new commit or late claim is signed on, not a dry-run switch for a folder that holds a
-    signed one or such a claim: `commit --late` prints its terms and sends nothing only in a folder where nothing
-    is saved yet.
+    signed one or such a claim. For a price-only check, run `commit --late` without `--yes` in a folder where
+    nothing is saved yet: it prints its terms and sends nothing. In a prepared folder it first looks for a matching
+    claim on the chain, and prints the terms and sends nothing if it finds none.
   - `--restart` never starts a late claim over, signed or not (`LATE_NEEDS_NEW_FOLDER`; owner, 2026-11-24): a
     changed late claim goes in a new folder, and the old folder's files stay as they are. A prepared late claim
     whose files changed says the same, with no word of `--restart` (`LATE_INPUTS_CHANGED`): its files are held to

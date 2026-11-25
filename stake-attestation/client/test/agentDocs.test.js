@@ -857,7 +857,7 @@ test('bounty 400: claims reveal in commit order, and the document says how to se
   assert.match(feed, /pendingClaims: Number\(onchain\.pendingClaims\),\s*headClaim: onchain\.headClaim === '0' \? null : onchain\.headClaim,/);
   assert.match(feed, /if \(onchain\.state !== 'Open' \|\| lapsed \|\|/, 'only an Open listing is an entry');
   assert.match(feed, /const candidates = \[\.\.\.projection\.listings\.values\(\)\]\.filter\(\(l\) => l\.opened && !l\.rolled && !l\.closed && l\.heldAt === null\);/, 'and no listing on hold is one');
-  assert.match(flat, /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\. That holds for a listing on hold too, though it still reads Open: it is not a feed entry \("A listing on hold", below\)\./);
+  assert.match(flat, /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\. That holds for a listing on hold too, whose state stays Open or Depleted: it is not a feed entry \("A listing on hold", below\)\./);
   const commitBody = /function commit\([\s\S]*?\n {4}\}/.exec(logic)[0];
   assert.match(commitBody, /s == StakeAttestation\.ListingState\.Rolled\s*\|\| \(s == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\)\s*\|\| listingHeld,\s*"not accepting late claims"/, 'a late claim needs a listing that is Rolled, Closed after it opened, or held');
   // held is the contract's own record of a hold (_heldAt, read through heldAt): lateClaim hands it to commit, only
@@ -1305,7 +1305,7 @@ test('node P41: a listing on hold is what the contract, the site and the tool ma
   const feed = read('server', 'src', 'site', 'feed.js');
   assert.match(feed, /const candidates = \[\.\.\.projection\.listings\.values\(\)\]\.filter\(\(l\) => l\.opened && !l\.rolled && !l\.closed && l\.heldAt === null\);/);
   assert.match(feed, /const asRecord = \{ listingId: l\.listingId, state: onchain\.state, lapsed, heldAt: l\.heldAt,/, 'an entry\'s labels are made with the candidate\'s heldAt, which is null');
-  assert.match(section(2), /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\. That holds for a listing on hold too, though it still reads Open: it is not a feed entry \("A listing on hold", below\)\./);
+  assert.match(section(2), /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\. That holds for a listing on hold too, whose state stays Open or Depleted: it is not a feed entry \("A listing on hold", below\)\./);
   // `heldAt`, where the site writes it: the time of the Held event, a number, until a roll forward or a close
   assert.ok(para.includes('`heldAt` in an entry of `sameRepository`, a feed entry\'s or a record\'s, and in the record\'s `labels.listings[<listingId>]` (GET /api/records/<artifactHash>): the time of the hold, in unix seconds, while the listing is on hold, and null otherwise. A record\'s `notCounted.listings` entries carry it too.'));
   assert.match(read('server', 'src', 'site', 'sameRepository.js'), /state, lapsed, heldAt: l\.heldAt, page: /);
@@ -1318,7 +1318,7 @@ test('node P41: a listing on hold is what the contract, the site and the tool ma
   assert.match(projection, /\} else if \(e\.name === 'Held'\) \{\s*const l = listings\.get\(a\.listingId\);\s*if \(l\) l\.heldAt = Number\(a\.heldAt\);/);
   assert.match(projection, /l\.rolled = true;\s*l\.heldAt = null;/);
   assert.match(projection, /l\.closed = true;\s*l\.heldAt = null;/);
-  assert.match(section(2), /\n? {4}labels\.listings +each listing's labels, by listingId, `heldAt` among them/);
+  assert.match(section(2), / labels\.listings each listing's labels, by listingId, `heldAt` among them \(below, "A listing on hold"\)/);
   assert.ok(listedFields('- GET https://verifiers.verdikta.org/api/records/<artifactHash>').includes('labels.listings'), 'the record\'s field is listed');
   // the badge: when no listing of the version takes commits and one is on hold, with the hold's UTC day
   assert.ok(para.includes('The badge of a version whose listing is on hold, with no other listing of it taking commits, reads "stake on hold since YYYY-MM-DD", the hold\'s day in UTC.'));

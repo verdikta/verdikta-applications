@@ -22,7 +22,7 @@ import { wordingProblems } from '@verdikta/stake-attestation-shared';
 
 import { DISPUTE_RESULTS, LISTING_STATES, STAKE_ATTESTATION_ABI } from '../src/abi.js';
 import { revertReasonOf } from '../src/errors.js';
-import { ERROR_TEXTS, ToolError } from '../src/index.js';
+import { ERROR_TEXTS, ToolError, USAGE } from '../src/index.js';
 import { closeRpc, readJson, rpcOf, runCli, statePath } from './helpers/cli.js';
 import { JUSTIFICATION_CID, makeClaimDir, makeWorld, vectorOf } from './helpers/world.js';
 
@@ -205,6 +205,32 @@ test('a commit prepared before the hold and never signed is refused the same way
   }
   await assertNothingSent(m, null, 'a prepared commit');
   for (const [f, bytes] of Object.entries(kept)) assert.equal(fs.readFileSync(statePath(dir, f)).toString('base64'), bytes, `${f} is as it was`);
+});
+
+test('a hold that comes after the terms were said and before the commit is signed stops the run there: nothing is signed, and the folder is one commit --late takes over', async () => {
+  const l = await w.listing();
+  const dir = makeClaimDir();
+  const m = await mark();
+  let heldAt = null;
+  const said = [];
+  // the listing took commits when its terms were said; its maker holds it once the folder is prepared
+  const onStep = async (step) => {
+    if (step === 'prepare:saved') heldAt = await hold(l);
+  };
+  const err = await w.hunter({ onStep, onNotice: (t) => said.push(t) }).commit({ claimDir: dir, listingId: l.listingId, acknowledge: true }).catch((e) => e);
+  assert.match(said[0], /^This commit sends /m, 'the terms were said: the listing took commits then');
+  assert.equal(err.code, 'LISTING_ON_HOLD', err.message);
+  assert.equal(err.message, refusalOf({ ...l, heldAt }));
+  await assertNothingSent(m, null, 'a hold before the signature');
+  const saved = readJson(statePath(dir));
+  assert.equal(saved.stage, 'prepared');
+  assert.equal(saved.commitTx ?? null, null, 'nothing was signed');
+  // the command the refusal names goes on from this folder, with the keys it holds
+  const keys = fs.readFileSync(statePath(dir, 'keys.json'), 'utf8');
+  const r = await w.hunter().commit({ claimDir: dir, listingId: l.listingId, late: true, acknowledge: true });
+  assert.equal(r.late, true);
+  assert.equal(fs.readFileSync(statePath(dir, 'keys.json'), 'utf8'), keys);
+  assert.equal(await w.claimCount(), m.claims + 1n);
 });
 
 // ------------------------------------------------------------------------- which refusal, and what is read for it
@@ -446,8 +472,10 @@ test('the refusal\'s text passes the wording check, ends as the other refusals o
   assert.deepEqual(wordingProblems(text), []);
   assert.match(text, /Nothing was pinned or sent\.$/);
   assert.match(text, /\bon hold\b/);
-  assert.match(text, /commit --late/);
   assert.match(text, /pays no award/);
+  // the command it names is one the CLI has (node P43): --late, on commit's own line of the help
+  assert.match(text, /commit --late prints its terms and its price, and with --yes files one\./);
+  assert.match(USAGE, /^ {2}commit <claim-dir> --listing <id> \[--late\] \[--yes\]/m);
   // "Held" is a dispute result in this contract (a verdict that stood), so the tool's own words for a hold never use it
   assert.ok(DISPUTE_RESULTS.includes('Held'));
   assert.doesNotMatch(text, /\bheld\b/i);

@@ -46,7 +46,8 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
     const jury = terms.params.jury;
     if (terms.params.oracle.maxOracleFee > ceiling) throw new Error(`Oracle fee exceeds the aggregator's live ceiling (${ceiling} wei)`);
     if (jury.K > BigInt(maxJury)) throw new Error(`jury.K ${jury.K} exceeds the aggregator's maxJury (${maxJury}): every request would revert BadJury`);
-    if (!(jury.timeout > BigInt(tPlus) && jury.timeout <= BigInt(maxTimeout))) throw new Error(`jury.timeout ${jury.timeout} s must be above T+ (${tPlus} s) and at most the aggregator's maxTimeout (${maxTimeout} s): every request would revert BadJury`);
+    // AggregatorLib also caps every timeout at one day (MAX_TIMEOUT), whatever maxTimeout says
+    if (!(jury.timeout > BigInt(tPlus) && jury.timeout <= BigInt(maxTimeout) && jury.timeout <= 86400n)) throw new Error(`jury.timeout ${jury.timeout} s must be above T+ (${tPlus} s) and at most the aggregator's maxTimeout (${maxTimeout} s) and one day (86400 s): every request would revert BadJury`);
     const wallet = (await loadWallet()).connect(provider);
     const apiKey = await loadApiKey();
     if (!apiKey) throw new Error('Configured API identity required');

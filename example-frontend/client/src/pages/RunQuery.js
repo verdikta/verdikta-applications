@@ -846,7 +846,7 @@ The estimated base cost must be below the fee ceiling (after clamping to the agg
       } else if (msg.includes('BadJury')) {
         const errorMessage = `The aggregator refused the jury ${formatJury(jury)} (BadJury).
 
-A jury needs K >= M >= N >= P >= 1, N at most 40, P at least 2 (unless N = 1), K within the aggregator's maxJury() and the keeper's shortlist, and a timeout above tPlus() and at most maxTimeout(). Pick another jury size on the Jury Selection page.`;
+A jury needs K >= M >= N >= P >= 1, N at most 40, P at least 2 (unless N = 1), K within the aggregator's maxJury() and the keeper's shortlist, and a timeout above tPlus() and at most maxTimeout() and one day (86,400 s). Pick another jury size on the Jury Selection page.`;
         setTransactionStatus(`Error: ${decoded || 'BadJury'}`);
         alert(errorMessage);
       } else if (msg.includes('KeeperNotSet') || msg.toLowerCase().includes('paused')) {

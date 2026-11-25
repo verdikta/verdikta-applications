@@ -95,7 +95,7 @@ Here is a step-by-step outline of what happens when you request an AI evaluation
 
 11. **Payouts:** Every arbiter in the jury was credited its base fee at the draw. The clustered arbiters receive a bonus on top (a multiple, 3X by default, `bonusMultiplier()`, of their fee) when the result is aggregated. Payments are credits in the contract's ledger (`ethOwed`), which each arbiter's owner collects with `withdrawEth()`. Whatever is left of your prepayment is credited to you in the same ledger at that moment: you can withdraw it or let it pay for your next request.
 
-12. **Settlement and Reputation:** Each round has a deadline: the request's timeout after the draw, extended if the commit phase closed late or `promote` came late, so that promoted arbiters still get their reveal time. After the deadline, `settle(aggId)` reports every juror's outcome to the Reputation Keeper, which updates the scores (see [Reputation Tracking](#reputation-tracking)). Anyone may call `settle`, and every new request first settles due rounds, in queue order, up to a budget of `settlePerRequest()` (2) × its own *K* jury slots, so settlement does not depend on an outside service. A due round bigger than that budget waits for a bigger request or for anyone's `settle`; only its scores (and, for a failed round, its refund) wait, since a result is readable from aggregation. A round that never produced a result is closed as failed by the same call; see [Failure and Refund Paths](#failure-and-refund-paths).
+12. **Settlement and Reputation:** Each round has a deadline: the request's timeout after the draw, extended if the commit phase closed late or `promote` came late, so that promoted arbiters still get their reveal time. After the deadline, `settle(aggId)` reports every juror's outcome to the Reputation Keeper, which updates the scores (see [Reputation Tracking](#reputation-tracking)). Anyone may call `settle`, and every new request first settles due rounds, in queue order, until `settlePerRequest()` (2) × its own *K* jury slots are spent, so settlement does not depend on an outside service. The last round settled may overshoot that budget by at most its own *K*, so the first due round is always settled, whatever its size. A round not yet past its deadline stops the walk: rounds behind a long-timeout round wait for it, or for anyone's `settle`. Until a round is settled only its scores and penalties (and, for a failed round, its refund) wait, since a result is readable from aggregation; an arbiter that completes its exit first escapes them. `settlePerRequest = 0` turns settlement by requests off. A round that never produced a result is closed as failed by the same call; see [Failure and Refund Paths](#failure-and-refund-paths).
 
 13. **Result Available to User:** The user (or any interested party) can retrieve the outcome as soon as the `FulfillAIEvaluation` event is emitted, before settlement. The user's original contract (if they used one to call Verdikta) can read it with `getEvaluation(aggId)`, and each juror's own score with `getOutcomeScores(aggId, outcome)` (see [Reading Results On-Chain](#reading-results-on-chain)).
 
@@ -115,7 +115,7 @@ You can follow a round with `getRoundInfo(aggId)`, which returns its phase and i
 | 8 | Failed (and settled) | — |
 | 9 | Cancelled: never drawn, prepayment sent to the treasury | — |
 
-`getRoundInfo` also returns the request block and time, the stored seed hash, the block at which the commit phase closed, the ETH received and what was credited from it (base fees, bonuses, rewards), the `deadline` (0 until the draw), the end of the *T*+ window (`windowEnd`) and the number of commits.
+`getRoundInfo` also returns the request block and time, the stored seed hash, the block at which the commit phase closed, the ETH received and what was credited from it (base fees, bonuses, rewards), the `deadline` (0 until the draw), the end of the *T*+ window (`windowEnd`: 0 until the draw, then the draw time plus the *T*+ in force at the request) and the number of commits. A round keeps the *T*+ of its request, so a later `setLimits` cannot move its commit window.
 
 ### Jury Size
 
@@ -136,9 +136,10 @@ You may ask for any other jury that keeps to the rules. A request reverts with `
 - *N* ≤ 40 (the *N*-th reveal pays for clustering all *N*);
 - *P* ≥ 2, unless *N* = 1;
 - *K* ≤ `maxJury()` (50 by default) and *K* ≤ the keeper's `shortlistSize()` (60);
-- `tPlus()` < timeout ≤ `maxTimeout()` (155 s and 3600 s by default).
+- `tPlus()` < timeout ≤ `maxTimeout()` (155 s and 3600 s by default);
+- timeout ≤ one day (86,400 s), whatever `maxTimeout()` says (`AggregatorLib.MAX_TIMEOUT`).
 
-The contracts' owner sets `maxJury`, `maxTimeout` and `tPlus` with `setLimits`. A bigger jury costs more (see [Funding a Request](#funding-a-request)) and its draw uses more gas.
+The contracts' owner sets `maxJury`, `maxTimeout` and `tPlus` with `setLimits`; a `maxTimeout` above a day is accepted, but no request can use more than a day. A bigger jury costs more (see [Funding a Request](#funding-a-request)) and its draw uses more gas.
 
 The commit window *T*+ (155 seconds after the draw, `tPlus()`) is the same for every request.
 
@@ -358,7 +359,7 @@ const ABI = [
 
 This script initiates the Verdikta process analyzing your query, then sends the steps that are due: the draw, as soon as block *B*+2 exists (so the draw reward is yours), and `closeCommits` and `promote` if nobody else has sent them. If the round passes its deadline with no result, it sends `settle`, which closes the round as failed. With beacons the second `drawJury` reverts (`TooEarly`) until the beacon values are in; the script simply retries.
 
-Note the gas limits. A request now only escrows, but it may also settle older rounds that are due (up to twice its own jury size in slots), so its gas use depends on the state of the contract; the draw selects and dispatches the whole jury, so its gas grows with *K*. Measured on a local test network against the v2 contracts: about 2.0 million gas for a draw with *K* = 6, 3.7 million with *K* = 12, and 13.5 million with *K* = 50 and beacons, close to the 16.7 million per-transaction cap. The script therefore sets every limit to one and a half times the estimate; for the largest juries, clamp that to the cap in your own code.
+Note the gas limits. A request now only escrows, but it may also settle older rounds that are due (until twice its own jury size in slots is spent; the last round may overshoot), so its gas use depends on the state of the contract; the draw selects and dispatches the whole jury, so its gas grows with *K*. Measured on a local test network against the v2 contracts: about 2.0 million gas for a draw with *K* = 6, 3.7 million with *K* = 12, and 13.5 million with *K* = 50 and beacons, close to the 16.7 million per-transaction cap. The script therefore sets every limit to one and a half times the estimate; for the largest juries, clamp that to the cap in your own code.
 
 The result consists of the scores for the two options presented (True or False) and the CIDs that can be used to look up the justifications for them. With the ceiling of 0.00015 ETH used here the script sends 0.0027 ETH for a Small jury; the last line of the output shows what is left of it as your credit. Using a Web browser, you can see the content of a justification CID using a publicly available IPFS node like `https://ipfs.io/ipfs/CID`, `https://dweb.link/ipfs/CID`, or `https://gateway.pinata.cloud/ipfs/CID`. If you want to get the content without a Web browser, you can use curl: `curl "https://ipfs.io/ipfs/CID"`, or ipfs, if installed: `ipfs get CID`. In all these cases, swap in your actual CID to replace the "CID" placeholder.
 

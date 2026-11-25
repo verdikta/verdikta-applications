@@ -112,7 +112,7 @@ The aggregator is Verdikta's v2 `ReputationAggregator`. In v2 the query transact
 
 #### 3. Query Request (wallet transaction 1)
 - `requestAIEvaluationWithApproval(cids, addendum, alpha, maxFee, minFee, estimatedBaseCost, scaling, class, withBeacons, jury)` submits your query and carries the prepayment. The application sends a fee floor (`minFee`) of 0 (`MIN_FEE` in `client/src/App.js`). The jury `(K, M, N, P, timeout)` and the beacon flag are the **Arbiter jury size** chosen on the Jury Selection page: Small 6/5/4/3, 300 s by default, Medium 8/5/4/3, 300 s, Large 21/16/13/10, 300 s, or Jumbo 50/38/27/17, 600 s with beacons. The banner on this page shows the jury and its worst-case fee
-- A jury the aggregator does not accept (outside its rules, or above its `maxJury()` or `maxTimeout()`) makes the request revert with `BadJury`, and the page says so
+- A jury the aggregator does not accept (outside its rules, or above its `maxJury()`, its `maxTimeout()` or the one-day timeout cap) makes the request revert with `BadJury`, and the page says so
 - The page sets a gas limit of 4,500,000 for this transaction. The request itself uses about 0.2 million gas; it may also settle up to two earlier rounds that are due
 - The page reads the round's ID (`aggRequestId`) from the `RequestAIEvaluation` event. Round IDs count up from 1
 

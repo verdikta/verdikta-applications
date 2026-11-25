@@ -7,7 +7,7 @@
  * listing, claim round and dispute panel alike, to the one v2 aggregator: K drawn, M promoted, N
  * counted, P clustered, and the round timeout in seconds (counted from the draw). ClaimLogic.setOracle
  * checks it at list (checkJury below, the same rules); the aggregator checks its live limits per
- * request (K <= maxJury and the keeper's shortlist, T+ < timeout <= maxTimeout).
+ * request (K <= maxJury and the keeper's shortlist, T+ < timeout <= maxTimeout and one day).
  *
  * What a listing takes from a class: the jury and withBeacons (listingOracleOf). The other fields
  * are the bounty program's and stay here only so the copies are equal: quota and forfeitLine are
@@ -81,7 +81,7 @@ export function listingOracleOf(key) {
  * What ClaimLogic.setOracle refuses as "bad jury" (K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, a
  * timeout above 0), and what the ABI cannot hold (each count a uint8, the timeout a uint40): a sentence, or
  * null for a jury the contract takes. The aggregator's live limits (maxJury, the keeper's shortlist,
- * T+ < timeout <= maxTimeout) are checked by each request, not here.
+ * T+ < timeout <= maxTimeout and one day) are checked by each request, not here.
  * @param {{ K: number, M: number, N: number, P: number, timeout: number }} j
  * @returns {string|null}
  */

@@ -11,7 +11,7 @@
 //
 // The aggregator refuses a request with BadJury unless K >= M >= N >= P >= 1, N <= 40,
 // P >= 2 (unless N = 1), K <= maxJury() and the keeper's shortlist, and
-// tPlus() < timeout <= maxTimeout(). With fewer than K eligible arbiters the draw repeats
+// tPlus() < timeout <= maxTimeout() and <= 1 day (AggregatorLib.MAX_TIMEOUT). With fewer than K eligible arbiters the draw repeats
 // arbiters; it fails (refunded) only when none is eligible.
 
 export const JURY_PRESETS = Object.freeze([

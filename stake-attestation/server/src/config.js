@@ -207,7 +207,7 @@ function serviceUrl(env, name, fallback) {
 /**
  * SA_ORACLE_JURY, "K,M,N,P,timeout", as list() stores it ({ K, M, N, P, timeout }), or null when unset. The
  * contract's check (ClaimLogic.setOracle: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, a timeout above
- * 0); the aggregator's live limits (maxJury, the keeper's shortlist, T+ < timeout <= maxTimeout) are each
+ * 0); the aggregator's live limits (maxJury, the keeper's shortlist, T+ < timeout <= maxTimeout and one day) are each
  * request's.
  */
 function oracleJury(env) {

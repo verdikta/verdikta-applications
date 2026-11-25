@@ -14,7 +14,8 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 ///           msg.value first, then credit for any shortfall, any excess value to credit.
 ///         - The jury (K, M, N, P, timeout) is the request's, stored per round (getJury), and checked
 ///           by the real rules (BadJury): K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1,
-///           K <= maxJury (no keeper here, so no separate shortlist bound), tPlus < timeout <= maxTimeout.
+///           K <= maxJury (no keeper here, so no separate shortlist bound), tPlus < timeout <= maxTimeout,
+///           and timeout <= MAX_TIMEOUT (1 day, AggregatorLib's cap, whatever maxTimeout says).
 ///         - Sequential ids from 1, the same input limits (BadInput), pause gate, errors and events.
 ///         - The phases: draw from block B+2 within a day, the beacon stage, commits closing at M+
 ///           (or closeCommits after T+ with >= M), promote from C+2, finalization at the N-th reveal,
@@ -40,6 +41,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     uint256 public constant MAX_LIKELIHOOD_LENGTH = 20;
     uint256 public constant HISTORY_WINDOW = 8191;
     uint40 public constant DRAW_GRACE = 1 days;
+    uint40 public constant MAX_TIMEOUT = 1 days;   // AggregatorLib.MAX_TIMEOUT: no request timeout above a day
     uint40 public constant PROMOTE_GRACE = 30;
     address public constant ARBITERS = address(0xA4B17E45);
 
@@ -247,7 +249,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
             revert BadInput();
         for (uint256 i = 0; i < cids.length; i++) if (bytes(cids[i]).length > MAX_CID_LENGTH) revert BadInput();
         if (!(j.K >= j.M && j.M >= j.N && j.N >= j.P && j.N >= 1 && j.N <= 40 && (j.P >= 2 || j.N == 1) && j.P >= 1)
-            || j.K > maxJury || j.timeout <= tPlus || j.timeout > maxTimeout) revert BadJury();
+            || j.K > maxJury || j.timeout <= tPlus || j.timeout > maxTimeout || j.timeout > MAX_TIMEOUT) revert BadJury();
 
         uint256 eff = maxFee < maxOracleFee ? maxFee : maxOracleFee;
         if (estimatedBaseCost >= eff || alpha > 1000 || maxFeeBasedScalingFactor < 1 || maxFeeBasedScalingFactor > type(uint16).max)

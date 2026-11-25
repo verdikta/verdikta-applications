@@ -232,12 +232,12 @@ each deadline of your claim and what comes next.
    `finalize(claimId)`, and the site's keeper does. A round has no fixed length: its jury is drawn
    in a separate step after the reveal (`verdikta-attest claim` sends `drawJury`, as anyone may,
    and the site's keeper does), and the round's deadline is the listing's jury timeout counted
-   from that draw (300 s for the Small to Large classes, 600 s for Jumbo, at most the aggregator's
-   maxTimeout, 3600 s by default; `status --json` gives the round's `jury` and `timeoutSeconds`).
-   A round never drawn can only be cancelled, its whole prepay to the aggregator's treasury: about
-   8,191 blocks (~27 minutes) after the request if its seed was never stored, a day after it if it
+   from that draw (set by the listing's jury class, never above one day; `status --json` gives the
+   round's `jury` and `timeoutSeconds`). A round never drawn can only be cancelled, its whole
+   prepay to the aggregator's treasury: once the seed's block is too old for the aggregator to
+   read if its seed was never stored (under half an hour on Base), a day after the request if it
    was. `status --wait` exits 5 as soon as the aggregator is done with a round that has no
-   verdict, before anyone has finalized it, and `status` says so too. The watch itself stops after
+   verdict, before anyone has finalized it, and `status` says so too. `status --wait` stops after
    15 minutes at most (less with --max-wait-ms) and exits 4 if the round is still open: run it
    again. A round with no verdict means too few
    arbiters committed and revealed a result in that time: most often every arbiter abstained on

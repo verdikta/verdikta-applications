@@ -50,7 +50,7 @@ const aggId = receipt.logs
 
 The application calls it with `alpha` = 500, `maxFee` = 0.0001 ETH, `minFee` = 0, `estimatedBaseCost` = 1% of `maxFee`, `maxFeeBasedScalingFactor` = 10 (`client/src/App.js`), and the arbiter class chosen on the Jury Selection page (128 by default). The jury and `withBeacons` come from the **Arbiter jury size** setting on the Jury Selection page (`client/src/utils/juryPresets.js`): Small `{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }` without beacons by default; Medium 8/5/4/3, 300 s; Large 21/16/13/10, 300 s; Jumbo 50/38/27/17, 600 s with beacons.
 
-One aggregator serves every jury size. It refuses a request with `BadJury` unless K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, P ≥ 2 (unless N = 1), K ≤ `maxJury()` and the keeper's shortlist (60), and `tPlus()` < timeout ≤ `maxTimeout()`. With fewer than K eligible arbiters the draw repeats arbiters; only a class with none eligible fails the draw (refunded).
+One aggregator serves every jury size. It refuses a request with `BadJury` unless K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, P ≥ 2 (unless N = 1), K ≤ `maxJury()` and the keeper's shortlist (60), and `tPlus()` < timeout ≤ `maxTimeout()`, with the timeout never above one day (86,400 s) whatever `maxTimeout()` says. With fewer than K eligible arbiters the draw repeats arbiters; only a class with none eligible fails the draw (refunded).
 
 #### Moving the Round On
 A v2 request only prepays the round. The requester then moves it from phase to phase; the Run Query page does this with the user's wallet (`client/src/utils/timeoutUtils.js`, `driveRound()`), dry-running each call with `estimateGas` from the user's address and sending only a call that will succeed:
@@ -76,7 +76,7 @@ await contract.settle(aggId);
 - `getRoundInfo()`: The round's phase (1 draw, 2 beacons, 3 commit, 4 closing, 5 reveal, 6 final, 7 settled, 8 failed, 9 cancelled), blocks, escrow, deadline, commit window end, commits and request time
 - `getEvaluation()`: Retrieve evaluation results, valid from phase 6
 - `getJury(aggId)`: The jury a round was requested with, `(K, M, N, P, timeout)`; the deadline is its timeout after the draw. The aggregator has no `K()`…`P()` or round timeout of its own
-- `maxJury()`, `maxTimeout()`, `tPlus()`, `maxOracleFee()`: The owner's bounds on a request's jury (largest K, longest timeout, the commit window every timeout must exceed) and the fee ceiling (v2 has no `getContractConfig()`)
+- `maxJury()`, `maxTimeout()`, `tPlus()`, `maxOracleFee()`: The owner's bounds on a request's jury (largest K, longest timeout (no request may exceed one day, whatever it says), the commit window every timeout must exceed) and the fee ceiling (v2 has no `getContractConfig()`)
 - `ethOwed()`: ETH credit an address holds in the aggregator (refunds and rewards)
 - `withdrawEth()`: Send the caller's credit back to the caller
 

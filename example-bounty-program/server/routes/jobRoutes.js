@@ -305,7 +305,7 @@ function parseJuryOverride(v) {
 /**
  * BountyEscrow.createBounty's jury rule (the aggregator's structural one): K >= M >= N >= P >= 1,
  * N <= 40, P >= 2 unless N = 1, and a timeout. Returns an error string or null. The aggregator's
- * live limits (K <= maxJury and the keeper's shortlist, T+ < timeout <= maxTimeout) are checked
+ * live limits (K <= maxJury and the keeper's shortlist, T+ < timeout <= maxTimeout and <= 1 day) are checked
  * separately when it can be read; each request checks them again.
  */
 function juryRuleError(j) {
@@ -712,8 +712,9 @@ router.post('/create', async (req, res) => {
           if (aggConfig?.maxJury && j.K > aggConfig.maxJury) {
             throw new Error(`jury.K ${j.K} exceeds the aggregator's maxJury (${aggConfig.maxJury}) (aggregator: "BadJury")`);
           }
-          if (aggConfig?.tPlus && aggConfig?.maxTimeout && !(j.timeout > aggConfig.tPlus && j.timeout <= aggConfig.maxTimeout)) {
-            throw new Error(`jury.timeout ${j.timeout} s must be above T+ (${aggConfig.tPlus} s) and at most the aggregator's maxTimeout (${aggConfig.maxTimeout} s) (aggregator: "BadJury")`);
+          // AggregatorLib also caps every timeout at one day (MAX_TIMEOUT), whatever maxTimeout says
+          if (aggConfig?.tPlus && aggConfig?.maxTimeout && !(j.timeout > aggConfig.tPlus && j.timeout <= aggConfig.maxTimeout && j.timeout <= 86400)) {
+            throw new Error(`jury.timeout ${j.timeout} s must be above T+ (${aggConfig.tPlus} s) and at most the aggregator's maxTimeout (${aggConfig.maxTimeout} s) and one day (86400 s) (aggregator: "BadJury")`);
           }
         } catch (e) {
           if (/BadJury/.test(e.message)) throw e;

@@ -31,7 +31,7 @@ const AGGREGATOR_ABI = [
   'function withdrawEth()',
   // configuration
   'function maxOracleFee() view returns (uint256)',
-  // the jury is each request's (getJury per round); the owner bounds it: K <= maxJury, T+ < timeout <= maxTimeout
+  // the jury is each request's (getJury per round); the owner bounds it: K <= maxJury, T+ < timeout <= maxTimeout and <= 1 day
   'function maxJury() view returns (uint8)',
   'function maxTimeout() view returns (uint40)',
   'function tPlus() view returns (uint40)',

@@ -199,7 +199,7 @@ class VerdiktaService {
   /**
    * The aggregator's configuration. The jury (K, M, N, P, timeout) is not here: it is each
    * request's (the bounty's), read per round with getRoundJury. The owner bounds it: K <= maxJury
-   * (and the keeper's shortlist), T+ < timeout <= maxTimeout. A round's commit window closes at M+
+   * (and the keeper's shortlist), T+ < timeout <= maxTimeout and <= 1 day. A round's commit window closes at M+
    * commits, or after T+ (from the draw) with at least M; the round deadline (its timeout) runs
    * from the draw.
    */

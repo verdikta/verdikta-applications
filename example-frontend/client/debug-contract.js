@@ -9,7 +9,7 @@
 //
 // The jury is the request's own (its last argument, Jury {K, M, N, P, timeout}): one
 // aggregator serves every size, bounded by the owner's maxJury() and maxTimeout() (and
-// tPlus(), which every timeout must exceed). A jury outside the rules reverts BadJury.
+// tPlus(), which every timeout must exceed; no timeout may exceed one day). A jury outside the rules reverts BadJury.
 //
 // A v2 request does not draw the jury: the requester then sends drawJury(aggId) from block
 // B+2 and promote(aggId) after the commit phase (the Run Query page does this), so an empty
@@ -94,13 +94,13 @@ async function debugContract() {
       const [maxJury, maxTimeout, tPlus, ceiling] = (await Promise.all([
         contract.maxJury(), contract.maxTimeout(), contract.tPlus(), contract.maxOracleFee(),
       ]));
-      console.log(`✅ Jury limits: K up to ${maxJury} (and the keeper's shortlist); timeout above ${tPlus} s (T+, the commit window) and at most ${maxTimeout} s`);
+      console.log(`✅ Jury limits: K up to ${maxJury} (and the keeper's shortlist); timeout above ${tPlus} s (T+, the commit window) and at most ${Math.min(Number(maxTimeout), 86400)} s (maxTimeout ${maxTimeout} s, capped at one day)`);
       console.log(`✅ Max Oracle Fee ceiling: ${ethers.formatEther(ceiling)} ETH`);
       const shape = !(K >= M && M >= N && N >= P && P >= 1) ? 'need K >= M >= N >= P >= 1'
         : N > 40 ? 'N may be at most 40'
         : P < 2 && N !== 1 ? 'P must be at least 2 unless N = 1'
         : K > Number(maxJury) ? `K is above maxJury (${maxJury})`
-        : timeout <= Number(tPlus) || timeout > Number(maxTimeout) ? `timeout must be above ${tPlus} s and at most ${maxTimeout} s`
+        : timeout <= Number(tPlus) || timeout > Number(maxTimeout) || timeout > 86400 ? `timeout must be above ${tPlus} s and at most ${Math.min(Number(maxTimeout), 86400)} s (maxTimeout, capped at one day)`
         : null;
       console.log(shape ? `❌ This jury would be refused (BadJury): ${shape}` : '✅ The jury fits the rules and limits');
     } catch (err) {

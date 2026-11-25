@@ -174,8 +174,8 @@ the one-line disclosure addendum of erratum E1.
   jury out of order (K >= M >= N >= P >= 1), N above 40, P = 1 unless N = 1, a timeout
   of 0 ("bad jury"), a floor above `uint96`, or a quote that reverts (beacons with no
   beacon contract) or exceeds `uint88`. The aggregator's live limits (K at most its
-  `maxJury` and the keeper's shortlist, T+ < timeout <= `maxTimeout`) are checked by
-  each request. A request only escrows the prepay: the jury is drawn later by
+  `maxJury` and the keeper's shortlist, T+ < timeout <= `maxTimeout`, and a timeout of at
+  most one day whatever `maxTimeout` says) are checked by each request. A request only escrows the prepay: the jury is drawn later by
   `drawJury(claimId)`, which anyone may call (the site's keeper does) from block B+2
   and within a day; the round's deadline is its jury's timeout from the draw
   (`getJury(aggId)` reads a round's jury back). It goes through the round's wallet, so the wallet is the
@@ -663,7 +663,7 @@ round; the end-to-end run sets 6,5,4,3,900); it is checked as `list()` checks it
 timeouts are the bounty program's (300 s, Jumbo 600 s, from the draw), while an arbiter's job may take
 up to 840 s on a code-review evaluation (the arbiter's `chainlink-node/basicJobSpec`): commits are
 taken until the deadline, so a claim whose jurors run longer than the timeout ends with no result.
-`SA_ORACLE_JURY` sets a longer timeout, up to the aggregator's `maxTimeout` (3,600 s by default). `SA_ORACLE_BEACONS=on`
+`SA_ORACLE_JURY` sets a longer timeout, up to the aggregator's `maxTimeout` (3,600 s by default) and never above one day (86,400 s). `SA_ORACLE_BEACONS=on`
 asks for beacons on every listing; off, only a class that asks for them (Jumbo) has them. A credential is named by its variable and read when it is used, so the
 parsed config holds none.
 
@@ -1825,7 +1825,7 @@ the draw), and then `settle` fails it, which `StakeAttestation.finalize` tries.
 |---|---|---|
 | `drawJury`: the keeper's selection as of block B with the seed from blockhash(B+1). It can fail (a pool shortage, refunded) | No selection. The bridge refuses a class other than `code-standard`, and a request with beacons | Dispatcher tests; **G2**, a real selection on class 5555 |
 | A refused request leaves `RoundFailed`, the bond back if every attempt was refused | Reachable with `setPaused`, not in this round | `StakeAttestation.claims` tests |
-| The request only escrows; it settles up to `settlePerRequest` due rounds inside exactly `SUBMISSION_GAS` | `setRequestGasCost(3M)`, a stand-in | **G2** measures it |
+| The request only escrows; it settles due rounds (until `settlePerRequest` × its K slots are spent; the last may overshoot) inside exactly `SUBMISSION_GAS` | `setRequestGasCost(3M)`, a stand-in | **G2** measures it |
 | Base fee to K payees at the draw, bonus to the P clustered at finalize, the draw and promote rewards; refund = received − base − bonus − rewards | The same formula in the mock. Each juror's fee is taken as the ceiling (or the floor) | `aggregatorRound.test.js`, `MockVerdiktaAggregator.test.js`; **G2** reads the real fee |
 | A slot whose dispatch reverts is an uncredited no-show | All K dispatch | A larger refund, which the contract takes |
 | The promotion draw, and the reveal requests to the M slots it names | The same draw (the port's `pickPromoted` on the real seed); the mock's `promote` only moves the phase | `aggregatorRound.test.js` on the real library's answers |

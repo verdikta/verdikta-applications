@@ -91,7 +91,7 @@ const REVERT_MESSAGES = [
   ['rerun window open', 'The re-run window is still open — only the hunter or bond funder can act until it closes.'],
   ['bad quota', 'Quota and forfeit line must satisfy 1 ≤ Q, R ≤ Q and Q ≤ the jury\'s N.'],
   ['bad jury', 'The jury must satisfy K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, and P ≥ 2 unless N = 1.'],
-  ['badjury', 'The aggregator refused this bounty\'s jury: K above its maxJury (or the keeper\'s shortlist), or a timeout outside T+ < timeout ≤ maxTimeout.'],
+  ['badjury', 'The aggregator refused this bounty\'s jury: K above its maxJury (or the keeper\'s shortlist), or a timeout outside T+ < timeout ≤ maxTimeout (and at most one day).'],
   ['bad bond', 'The bond is too large.'],
   ['bad fee floor', 'The fee floor is too large.'],
   ['wrongphase', 'The round is not in the phase this step needs — re-read the next action and retry.'],
@@ -486,7 +486,7 @@ class ContractService {
     const decisionParams = ContractService.resolveDecisionParams(decision || {});
 
     // The aggregator's live fee ceiling and jury limits (the escrow checks the ceiling at create;
-    // every request checks K <= maxJury and T+ < timeout <= maxTimeout).
+    // every request checks K <= maxJury and T+ < timeout <= maxTimeout, and caps the timeout at one day).
     try {
       const agg = await this.getAggregator();
       if (agg) {
@@ -496,8 +496,9 @@ class ContractService {
         }
         const j = decisionParams.jury;
         if (j.K > Number(maxJury)) throw new Error(`This jury draws K = ${j.K}, above the aggregator's limit of ${Number(maxJury)}`);
-        if (!(j.timeout > Number(tPlus) && j.timeout <= Number(maxTimeout))) {
-          throw new Error(`This jury's timeout (${j.timeout} s) must be above ${Number(tPlus)} s and at most the aggregator's limit of ${Number(maxTimeout)} s`);
+        const timeoutLimit = Math.min(Number(maxTimeout), 86400);  // AggregatorLib.MAX_TIMEOUT: one day, whatever maxTimeout says
+        if (!(j.timeout > Number(tPlus) && j.timeout <= timeoutLimit)) {
+          throw new Error(`This jury's timeout (${j.timeout} s) must be above ${Number(tPlus)} s and at most the aggregator's limit of ${timeoutLimit} s`);
         }
       }
     } catch (e) {

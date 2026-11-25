@@ -831,7 +831,7 @@ Easiest: POST /api/jobs/create and sign its onChain.transaction (the exact struc
   request to the escrow's one aggregator: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1
   ("bad jury"); R <= Q <= N ("bad quota"); bond in wei ("bad bond"). Each request also checks
   the aggregator's live limits (K <= maxJury() and the keeper's shortlist, T+ < timeout <=
-  maxTimeout(), from tPlus(); BadJury).
+  maxTimeout(), from tPlus(), and timeout <= 86400 s, one day, whatever maxTimeout() says; BadJury).
   These checks use the aggregator ceiling AT CREATION. If the aggregator owner later lowers
   the ceiling, startPreparedSubmission clamps: fee -> min(fee, ceiling), base cost -> fee-1
   if it no longer fits (alpha/scaling unchanged), so starts keep working. Read

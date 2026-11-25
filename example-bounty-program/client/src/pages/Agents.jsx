@@ -932,7 +932,7 @@ def finalize_submission(w3, account, job_id, sub_id):
           missing for several seconds.
           {' '}(2) <em>Split long flows into phase scripts.</em> Oracle evaluation takes
           ~5–10 minutes, longer for large juries: a round's deadline is its jury's timeout after the draw
-          (300 s for the Small to Large presets, 600 s for Jumbo, at most the aggregator's maxTimeout, 3,600 s by default). Do not wrap create + submit + poll + finalize inside one
+          (300 s for the Small to Large presets, 600 s for Jumbo, at most the aggregator's maxTimeout, 3,600 s by default, and never above one day). Do not wrap create + submit + poll + finalize inside one
           long-running background process — session-tracking around background execution can
           drop the session before the script finishes, producing synthetic errors even when
           the on-chain work succeeded. Instead, run short-lived scripts: create + submit →

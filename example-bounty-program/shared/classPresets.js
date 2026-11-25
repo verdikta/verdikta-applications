@@ -13,7 +13,7 @@
  * jury: the bounty's own jury, sent with every request to the one v2 aggregator (item 15): K drawn,
  * M promoted, N counted, P clustered, and the round timeout in seconds (counted from the draw). The
  * aggregator checks it per request (K <= its maxJury and the keeper's shortlist, T+ < timeout <=
- * maxTimeout); the escrow checks the ordering at createBounty. Stake-attestation listings use the
+ * maxTimeout and one day); the escrow checks the ordering at createBounty. Stake-attestation listings use the
  * same presets (a synced copy, stake-attestation/shared/src/classPresets.js, held equal by a parity test).
  *
  * Money is in USD; toBountyParams converts at a given ETH price. The fee is a fee floor

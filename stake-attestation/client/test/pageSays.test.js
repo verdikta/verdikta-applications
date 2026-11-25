@@ -362,7 +362,7 @@ test('the lines of the page\'s other actions for their own transactions are the 
   assert.doesNotMatch(page, /&& <FundListing /);
   assert.doesNotMatch(page, /openedHere|setOpenedHere|onOpened/);
   // The opening's form is the read's (R5-F4): FundListing draws the escrow field and the button only while the listing
-  // on display is Listed, and a form that is not drawn reads no fee. So a listing read again as Open after "no such
+  // on display is Listed, and reads no fee for a listing that is not. So a listing read again as Open after "no such
   // listing" has no opening form, whenever the opening's receipt arrived.
   const opening = component('FundListing.jsx');
   assert.match(opening, /useEffect\(\(\) => \{\s*if \(!listed\) return undefined;\s*let live = true;\s*chainReader\(\)\.then\(\(p\) => stakeAttestation\(p\)\.feeDue\(listingId\)\)[^\n]*\n\s*return \(\) => \{ live = false; \};\s*\}, \[listingId, listed\]\);/);
@@ -371,11 +371,9 @@ test('the lines of the page\'s other actions for their own transactions are the 
   // opening's own line first, then its own error if it has one, and nothing else. `quiet` is not folded into `listed`:
   // the error of an opening that failed stays while the reader trails.
   assert.match(opening, /export function FundListing\(\{ listingId, top, maker, artifactHash, listed = true, quiet = false, onMined = \(\) => \{\}, onOpened = \(\) => \{\} \}\) \{/);
-  assert.match(opening.slice(opening.indexOf('  if (opened) {')), /^ {2}if \(opened\) \{[\s\S]*?\n {2}\}\s*(?:\/\/[^\n]*\n\s*)*if \(!listed\) return null;\s*(?:\/\/[^\n]*\n\s*)*if \(quiet\) return error \? <p className="error" role="alert">\{error\}<\/p> : null;\s*return \(\s*<>\s*\{fee !== null/);
   assert.doesNotMatch(opening, /listed && !quiet|!listed \|\| quiet/);
-  assert.match(opening, /export function FundListing\(\{ listingId, top, maker, artifactHash, listed = true, onMined = \(\) => \{\}, onOpened = \(\) => \{\} \}\) \{/);
   const drawn = opening.slice(opening.indexOf('  if (opened) {'));
-  assert.match(drawn, /^ {2}if \(opened\) \{\s*return \(\s*<p data-testid="opened" className="ok">[\s\S]*?\);\s*\}\s*(?:\/\/[^\n]*\n\s*)*if \(!listed\) return null;\s*return \(\s*<>\s*\{fee !== null/);
+  assert.match(drawn, /^ {2}if \(opened\) \{\s*return \(\s*<p data-testid="opened" className="ok">[\s\S]*?\);\s*\}\s*(?:\/\/[^\n]*\n\s*)*if \(!listed\) return null;\s*(?:\/\/[^\n]*\n\s*)*if \(quiet\) return error \? <p className="error" role="alert">\{error\}<\/p> : null;\s*return \(\s*<>\s*\{fee !== null/);
   // the listing flow has just listed the listing it funds, and says nothing of `listed`
   assert.match(component('ListAndFund.jsx'), /<FundListing listingId=\{listed\.listingId\} top=\{BigInt\(params\.awards\[3\]\)\} maker=\{listed\.maker\} artifactHash=\{view\.artifactHash\} onOpened=\{\(\) => setOpened\(true\)\} \/>/);
 });

@@ -186,7 +186,7 @@ export function FundPage({ listingId }) {
       </section>
       {notice}
       {/* on the page as long as its listing is: the funding form while the read says Listed, and the line of an opening sent from here */}
-      <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} listed={state === 'Listed'} onMined={onChanged} />
+      <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} listed={state === 'Listed'} quiet={quiet} onMined={onChanged} />
       {!quiet && state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {!quiet && hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
       {!quiet && state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}

@@ -1278,7 +1278,7 @@ contract StakeAttestation is Ownable2Step {
     ///         or after the beacon quorum, anyone's after) is credited to the wallet and comes back
     ///         to the round's funder with its leftover. The aggregator decides when: from block
     ///         B+2, within a day of the request (after that the round can only be cancelled, its
-    ///         whole prepay to the treasury, and finalize reads it as failed); with beacons the
+    ///         whole prepay to the arbiter pool, and finalize reads it as failed); with beacons the
     ///         first call starts the beacon stage and a second draws. Its revert is passed on.
     function drawJury(uint256 claimId) external nonReentrant {
         ClaimLogic.drawJury(_mustClaim(claimId));

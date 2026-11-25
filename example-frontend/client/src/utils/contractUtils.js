@@ -105,8 +105,11 @@ export const CONTRACT_ABI = [
   'event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, string justifications)',
   'event EvaluationFailed(bytes32 indexed aggRequestId, uint8 phase)',
   'event RoundSettled(bytes32 indexed aggRequestId, bool failed)',
-  'event RoundCancelled(bytes32 indexed aggRequestId, uint256 toTreasury)',
+  // RequesterRefunded to address(0) is a credit to the arbiter pool, not a refund
+  'event RoundCancelled(bytes32 indexed aggRequestId, uint256 toPool)',
   'event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount)',
+  'event CommitPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount)',
+  'event PoolPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount)',
   'event EthWithdrawn(address indexed payee, uint256 amount)',
   // errors
   'error BadInput()',

@@ -2451,7 +2451,7 @@ describe("BountyEscrow", function () {
       expect(sub.acceptance).to.equal(40);
     });
 
-    it("An undrawn round more than a day old is cancelled (its prepay to the aggregator's treasury) and closed", async function () {
+    it("An undrawn round more than a day old is cancelled (its prepay to the aggregator's arbiter pool) and closed", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
         await loadFixture(deployWithRewardsFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -2462,11 +2462,10 @@ describe("BountyEscrow", function () {
       await expect(bountyEscrow.connect(hunter).drawJury(bountyId, submissionId))
         .to.be.revertedWithCustomError(verdiktaAggregator, "DrawExpired");
       expect(await bountyEscrow.nextAction(bountyId, submissionId)).to.equal("CLOSE_FAILED");
-      const treasury = await verdiktaAggregator.treasury();
       await expect(bountyEscrow.connect(other).closeFailedRound(bountyId, submissionId))
         .to.emit(verdiktaAggregator, "RoundCancelled").withArgs(aggId, ethMaxBudget)
         .and.to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, 0);   // nothing comes back
-      expect(await verdiktaAggregator.ethOwed(treasury)).to.equal(ethMaxBudget);
+      expect(await verdiktaAggregator.ethOwed(ethers.ZeroAddress)).to.equal(ethMaxBudget);   // the arbiter pool
       expect(await verdiktaAggregator.phaseOf(aggId)).to.equal(9n);
     });
 

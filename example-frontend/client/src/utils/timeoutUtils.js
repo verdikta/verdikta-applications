@@ -14,11 +14,11 @@ import { id as keccakId } from 'ethers';
  *                     (2 x the per-arbiter fee, credited to ethOwed); after that whoever
  *                     draws earns it. An undrawn round never times out: drawJury reverts
  *                     DrawExpired a day after the request, and the round can then only be
- *                     cancelled, its prepay going to the treasury.
+ *                     cancelled, its prepay going to the arbiter pool.
  *   phase 2 beacons   (withBeacons) the first drawJury started the beacon stage, with no
  *                     reward; a second drawJury draws once the beacon quorum is in (the
  *                     30 s priority then runs from the quorum), or ends the round if the
- *                     quorum was missed (prepay to the treasury).
+ *                     quorum was missed (prepay to the arbiter pool).
  * The jury (K drawn, M promoted, N counted, P clustered, and the timeout) is the request's
  * own: getJury(aggId) returns it (readJury below). The round's deadline is its timeout
  * after the draw.
@@ -31,9 +31,12 @@ import { id as keccakId } from 'ethers';
  *   7 settled, 8 failed, 9 cancelled.
  *
  * After the round's deadline settle(aggId) fails an unfinished round. The unspent prepay
- * is credited to the requester, except when the round had M commits but was never
- * promoted (closed and not promoted, or never closed), when the beacon quorum was missed,
- * and for a cancelled round: then it goes to the treasury.
+ * is credited to the requester, except: when the round had M commits but was never
+ * promoted (closed and not promoted, or never closed), it is shared equally by the
+ * arbiters that committed (CommitPayment), the indivisible rest to the arbiter pool; when
+ * the beacon quorum was missed, and for a cancelled round, it goes to the arbiter pool
+ * (ethOwed(address(0)), RequesterRefunded to address(0); each later draw pays an eighth of
+ * the pool to a random registered arbiter). Nobody can withdraw the pool.
  *
  * Every transaction is simulated first with estimateGas (free, from the user's address),
  * and only one that will succeed is sent.
@@ -42,10 +45,11 @@ import { id as keccakId } from 'ethers';
  *   { status: 'fulfilled', round }
  *       A result exists and checkForResult() has pushed it into the page.
  *   { status: 'failed', round, failedPhase, settledBy: 'user' | 'other', txHash?, refund }
- *       No result. refund is { amount, toRequester } read from RequesterRefunded, or null
- *       when it could not be read.
+ *       No result. refund is { amount, toRequester, toCommitters } read from RequesterRefunded
+ *       (amount: to the requester, or to the arbiter pool) and CommitPayment (toCommitters:
+ *       the committers' shares, 0n if none), or null when neither could be read.
  *   { status: 'cancelled', round }
- *       Never drawn; the prepay went to the treasury.
+ *       Never drawn; the prepay went to the arbiter pool.
  *   { status: 'expired', round, reason: 'close-missed' | 'promote-missed' | 'draw-expired' | 'seed-expired' }
  *       The round can no longer finish and nothing the user can send gets the prepay back.
  *   { status: 'stalled', round, step, reason, errorMessage?, txHash? }
@@ -250,25 +254,39 @@ export function drawRewardFromReceipt(receipt, contractInterface, aggId) {
 }
 
 /**
- * Where the round's unspent prepay went: { amount, toRequester }, from RequesterRefunded
- * in the given receipt or, failing that, from the chain's logs. null when unknown.
+ * Where the round's unspent prepay went: { amount, toRequester, toCommitters }, from
+ * RequesterRefunded (amount: to the requester, or to the arbiter pool when its requester is
+ * address(0)) and CommitPayment (toCommitters: the sum of the committers' shares, when M
+ * commits were never promoted), in the given receipt or, failing that, from the chain's
+ * logs. A never-promoted round whose prepay divided evenly has no RequesterRefunded: then
+ * amount is 0n. null when neither could be read.
  */
 export async function findRefund({ readContract, aggId, account, receipt, fromBlock }) {
-  const toResult = (parsedArgs) => ({
-    amount: parsedArgs.amount,
-    toRequester: !!account && sameId(parsedArgs.requester, account),
-  });
+  const toResult = (refunded, shares) => {
+    if (!refunded && !shares.length) return null;
+    return {
+      amount: refunded ? refunded.amount : 0n,
+      toRequester: !!refunded && !!account && sameId(refunded.requester, account),
+      toCommitters: shares.reduce((sum, a) => sum + BigInt(a.amount), 0n),
+    };
+  };
   if (receipt?.logs && readContract?.interface) {
-    const refunded = parseLogs(receipt.logs, readContract.interface).find(
-      (p) => p.name === 'RequesterRefunded' && sameId(p.args.aggRequestId, aggId)
-    );
-    if (refunded) return toResult(refunded.args);
+    const parsed = parseLogs(receipt.logs, readContract.interface).filter((p) => sameId(p.args?.aggRequestId, aggId));
+    const refunded = parsed.find((p) => p.name === 'RequesterRefunded');
+    const shares = parsed.filter((p) => p.name === 'CommitPayment').map((p) => p.args);
+    const found = toResult(refunded?.args, shares);
+    if (found) return found;
   }
   try {
     if (typeof readContract?.queryFilter !== 'function' || !readContract.filters?.RequesterRefunded) return null;
     const events = await readContract.queryFilter(readContract.filters.RequesterRefunded(aggId), fromBlock || 0);
     const last = events?.[events.length - 1];
-    return last?.args ? toResult(last.args) : null;
+    let shares = [];
+    if (readContract.filters.CommitPayment) {
+      const paid = await readContract.queryFilter(readContract.filters.CommitPayment(aggId), fromBlock || 0);
+      shares = (paid || []).filter((e) => e?.args).map((e) => e.args);
+    }
+    return toResult(last?.args, shares);
   } catch (error) {
     console.warn('Could not read the refund event:', describeError(error));
     return null;
@@ -542,7 +560,7 @@ export async function driveRound({
       case PHASE.COMMIT: {
         if (round.deadline > 0 && head.timestamp > round.deadline) {
           // With M commits the window should have been closed: settling now sends the
-          // unspent prepay to the treasury, so the page does not spend the user's gas on it.
+          // unspent prepay to the committers, so the page does not spend the user's gas on it.
           if (jury && round.commits >= jury.M) return { status: 'expired', round, reason: 'close-missed' };
           const out = await runStep('settle');
           if (out) return out;
@@ -569,7 +587,7 @@ export async function driveRound({
 
       case PHASE.CLOSING: {
         if (round.deadline > 0 && head.timestamp > round.deadline) {
-          // promote() now reverts, and settling sends the unspent prepay to the treasury.
+          // promote() now reverts, and settling shares the unspent prepay among the committers.
           return { status: 'expired', round, reason: 'promote-missed' };
         }
         if (head.number < round.closeBlock + 2) {

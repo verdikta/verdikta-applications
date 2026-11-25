@@ -63,16 +63,21 @@ const CODE_NAMES = Object.freeze({
  * @param {number} r.M  commits required (the round's aggregator config)
  * @param {number} r.N  reveals required
  * @param {boolean} [r.fulfilled]  a FulfillAIEvaluation was seen
- * @param {'requester'|'treasury'|null} [r.refundTo]  payee of the round's
- *   RequesterRefunded, when seen (a draw failure after a beacon stage pays the
- *   treasury when the keeper's selection walk does not cover the class list)
- * @returns {{ kind, label, failStage, notDrawnReason, treasury, analysis,
+ * @param {'requester'|'pool'|null} [r.refundTo]  payee of the round's
+ *   RequesterRefunded, when seen: 'pool' when it is address(0), the arbiter pool
+ *   (a draw failure after a beacon stage pays the pool when the keeper's
+ *   selection walk does not cover the class list)
+ * @returns {{ kind, label, failStage, notDrawnReason, forfeit, analysis,
  *   blame: Array<{slot:number, stage:'commit'|'reveal', skipped?:string}> }}
  *   kind: 'completed' | 'running' | 'malformed' | 'failed' | 'notProgressed' |
  *         'notDrawn' | 'cancelled' | 'unknown'
- *   notDrawnReason (notDrawn / cancelled): 'poolShortage' | 'drawTreasury' |
+ *   notDrawnReason (notDrawn / cancelled): 'poolShortage' | 'drawPool' |
  *         'beaconQuorum' | 'cancelled'
- *   treasury: the unspent prepay went to the treasury, not back to the requester
+ *   forfeit: where the unspent prepay went instead of back to the requester:
+ *         'pool' (the arbiter pool, ethOwed(address(0)), paid out an eighth per
+ *         draw to a random registered arbiter), 'committers' (a never-promoted
+ *         round: equal CommitPayment shares to the slots that committed, the
+ *         indivisible rest to the pool), or null (refunded, or not ended)
  *   blame is only non-empty for a failed round whose failure an arbiter caused.
  */
 function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled = false, refundTo = null }) {
@@ -105,7 +110,7 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
   };
 
   const out = (kind, label, extra = {}) => ({
-    kind, label, failStage: null, notDrawnReason: null, treasury: false, analysis, blame: [], ...extra,
+    kind, label, failStage: null, notDrawnReason: null, forfeit: null, analysis, blame: [], ...extra,
   });
   const ph = Number(phase) || 0;
   const fp = failedPhase != null ? Number(failedPhase) : null;
@@ -115,7 +120,7 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
     return out('completed', ph === PHASE.FINAL ? 'COMPLETED (awaiting settlement)' : 'COMPLETED');
   }
   if (ph === PHASE.CANCELLED) {
-    return out('cancelled', 'CANCELLED (never drawn: prepay sent to the treasury)', { notDrawnReason: 'cancelled', treasury: true });
+    return out('cancelled', 'CANCELLED (never drawn: prepay sent to the arbiter pool)', { notDrawnReason: 'cancelled', forfeit: 'pool' });
   }
   if (ph === PHASE.DRAW) return out('running', 'IN PROCESS (awaiting jury draw)');
   if (ph === PHASE.BEACON) return out('running', 'IN PROCESS (beacon stage)');
@@ -125,9 +130,9 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
 
   // ph === FAILED from here
   if (fp === PHASE.DRAW) {
-    if (refundTo === 'treasury') {
-      return out('notDrawn', 'FAILED (no jury could be drawn after the beacon stage: prepay sent to the treasury)', {
-        failStage: 'draw', notDrawnReason: 'drawTreasury', treasury: true,
+    if (refundTo === 'pool') {
+      return out('notDrawn', 'FAILED (no jury could be drawn after the beacon stage: prepay sent to the arbiter pool)', {
+        failStage: 'draw', notDrawnReason: 'drawPool', forfeit: 'pool',
       });
     }
     return out('notDrawn', 'FAILED (no jury could be drawn: too few eligible arbiters; requester refunded)', {
@@ -135,16 +140,16 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
     });
   }
   if (fp === PHASE.BEACON) {
-    return out('notDrawn', 'FAILED (beacon quorum missed: prepay sent to the treasury)', {
-      failStage: 'beacons', notDrawnReason: 'beaconQuorum', treasury: true,
+    return out('notDrawn', 'FAILED (beacon quorum missed: the rest of the prepay sent to the arbiter pool)', {
+      failStage: 'beacons', notDrawnReason: 'beaconQuorum', forfeit: 'pool',
     });
   }
   if (fp === PHASE.COMMIT || (fp == null && promoted.length === 0)) {
     if (committed.length >= M) {
       // enough commits, but nobody closed the window after T+: nobody is charged
-      // and the unspent prepay goes to the treasury
-      return out('notProgressed', 'NOT PROGRESSED (commit window never closed with ≥ M commits: prepay sent to the treasury)', {
-        failStage: 'commit', treasury: true,
+      // and the unspent prepay is shared by the slots that committed (CommitPayment)
+      return out('notProgressed', 'NOT PROGRESSED (commit window never closed with ≥ M commits: prepay shared by the committers)', {
+        failStage: 'commit', forfeit: 'committers',
       });
     }
     if (dispatched.length > 0 && committed.length === 0) {
@@ -164,8 +169,8 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
     });
   }
   if (fp === PHASE.CLOSING) {
-    return out('notProgressed', 'NOT PROGRESSED (commit window closed, never promoted: prepay sent to the treasury)', {
-      failStage: 'closing', treasury: true,
+    return out('notProgressed', 'NOT PROGRESSED (commit window closed, never promoted: prepay shared by the committers)', {
+      failStage: 'closing', forfeit: 'committers',
     });
   }
   return out('failed', `FAILED (reveal phase: ${counted.length}/${N} reveals)`, {

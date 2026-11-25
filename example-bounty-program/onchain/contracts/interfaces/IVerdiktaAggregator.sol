@@ -16,9 +16,15 @@ pragma solidity ^0.8.20;
  *        6 final     getEvaluation / getOutcomeScores valid; refund credited; settle after `deadline`
  *        7 settled   (from 6)
  *        8 failed    no result. The unspent prepay was credited to the requester (pool shortage, too few
- *                    commits or reveals), or to the treasury (beacon quorum missed; M commits but never
- *                    promoted; a beacon round whose jury can't be drawn when the walk is partial)
- *        9 cancelled never drawn: cancelUnsealed sends the whole prepay to the treasury
+ *                    commits or reveals); shared by the committed slots (CommitPayment, counted in the
+ *                    round's rewards) when M commits were in but it was never promoted; or credited to
+ *                    the arbiter pool (beacon quorum missed; a beacon round whose jury can't be drawn
+ *                    when the walk is partial; the committers' indivisible remainder)
+ *        9 cancelled never drawn: cancelUnsealed credits the whole prepay to the arbiter pool
+ *      The arbiter pool is the ledger entry ethOwed(address(0)), which nobody can withdraw: a credit
+ *      to it is announced as RequesterRefunded(aggId, address(0), amount), or as RoundCancelled. Each
+ *      draw pays an eighth of it to one random registered arbiter's payee (PoolPayment). There is no
+ *      treasury in v2.
  *      An undrawn round never times out. Ids are sequential from 1: aggId = bytes32(roundId).
  *      Refunds and rewards are credited to ethOwed and pulled with withdrawEth.
  */
@@ -87,8 +93,8 @@ interface IVerdiktaAggregator {
     /// @notice After the deadline: fail the round if it never finished, and report to the keeper (anyone).
     function settle(bytes32 aggId) external;
 
-    /// @notice A round that can never be drawn goes to the treasury (anyone, once unsealed past the
-    ///         block-hash history, or sealed and undrawn for DRAW_GRACE).
+    /// @notice A round that can never be drawn: its prepay goes to the arbiter pool (anyone, once unsealed
+    ///         past the block-hash history, or sealed and undrawn for DRAW_GRACE).
     function cancelUnsealed(bytes32 aggId) external;
 
     /// @notice The aggregated scores and the comma-joined justification CIDs. `valid` from phase 6.
@@ -157,7 +163,13 @@ interface IVerdiktaAggregator {
     event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, string justifications);
     event EvaluationFailed(bytes32 indexed aggRequestId, uint8 phase);
     event RoundSettled(bytes32 indexed aggRequestId, bool failed);
-    event RoundCancelled(bytes32 indexed aggRequestId, uint256 toTreasury);
+    /// @notice A never-drawn round cancelled: its whole prepay (`toPool`) went to the arbiter pool
+    event RoundCancelled(bytes32 indexed aggRequestId, uint256 toPool);
+    /// @dev requester = address(0): a credit to the arbiter pool, not a refund
     event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount);
+    /// @notice A never-promoted round's unspent prepay, an equal share per committed slot
+    event CommitPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount);
+    /// @notice An eighth of the arbiter pool, paid at a draw to a random registered arbiter's payee
+    event PoolPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount);
     event EthWithdrawn(address indexed payee, uint256 amount);
 }

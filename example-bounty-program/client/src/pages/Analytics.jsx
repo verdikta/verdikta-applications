@@ -906,9 +906,17 @@ function Analytics() {
                         <td>Ended rounds (last {data.rounds.lookbackDays} days)</td>
                         <td>{data.rounds.rounds}: {data.rounds.finalized} finalized · {data.rounds.failed} failed · {data.rounds.cancelled} cancelled</td>
                       </tr>
-                      <tr title="Unspent prepay sent to the treasury, not refunded: a missed beacon quorum, M commits never closed or promoted, a failed draw after beacons on a class larger than one selection walk, or a round never drawn (cancelled)">
-                        <td>Prepay lost to the treasury</td>
-                        <td>{data.rounds.treasuryRounds} rounds · {Number(data.rounds.toTreasuryEth).toFixed(6)} ETH</td>
+                      <tr title="Unspent prepay sent to the arbiter pool, not refunded: a missed beacon quorum, a failed draw after beacons on a class larger than one selection walk, a round never drawn (cancelled), or the indivisible rest of a never-promoted round. Each draw pays an eighth of the pool to a random registered arbiter">
+                        <td>Prepay to the arbiter pool</td>
+                        <td>{data.rounds.poolRounds ?? 0} rounds · {Number(data.rounds.toPoolEth ?? 0).toFixed(6)} ETH</td>
+                      </tr>
+                      <tr title="A round with M commits that was never closed or promoted: its unspent prepay is shared equally by the slots that committed (CommitPayment)">
+                        <td>Prepay shared by committers</td>
+                        <td>{data.rounds.committerRounds ?? 0} rounds · {Number(data.rounds.toCommittersEth ?? 0).toFixed(6)} ETH</td>
+                      </tr>
+                      <tr title="The arbiter pool's payouts: an eighth of the pool at a draw, to one random registered arbiter (PoolPayment)">
+                        <td>Arbiter pool payouts</td>
+                        <td>{data.rounds.poolPayouts ?? 0} draws · {Number(data.rounds.poolPaidEth ?? 0).toFixed(6)} ETH</td>
                       </tr>
                       <tr title="Rounds that ran a beacon stage (BeaconStageStarted)">
                         <td>Beacon rounds</td>

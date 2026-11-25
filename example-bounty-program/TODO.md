@@ -20,8 +20,8 @@ Findings:
   them but loses no funds. On v2 some steps ARE time-boxed, though anyone can
   send them directly too: the draw (the seed must be stored within 8,191 blocks,
   about 27 minutes, and the jury drawn within a day, or the round is cancelled
-  and its prepay goes to the aggregator's treasury), `closeCommits` / `promote`
-  before the round's deadline (else the unspent prepay goes to the treasury), a
+  and its prepay goes to the aggregator's arbiter pool), `closeCommits` / `promote`
+  before the round's deadline (else the unspent prepay goes to the committers, not back), a
   re-run within its 2-hour window, and the creator approval window (creators can
   approve on-chain directly). An outage of the server's round keeper therefore
   can cost hunters prepay if nobody else sends those steps.

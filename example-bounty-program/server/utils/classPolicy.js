@@ -230,7 +230,7 @@ async function checkClassCoverage(classId, oracleSettings, { creator, jury = nul
     }
     if (r.scansAll === false && r.beaconQuorum != null) {
       warnings.push(`Class ${cls} is longer than one selection walk covers: how many eligible arbiters a draw finds ` +
-        'depends on the seed, and after a beacon stage a draw that finds none sends the unspent prepay to the treasury.');
+        'depends on the seed, and after a beacon stage a draw that finds none sends the unspent prepay to the arbiter pool.');
     }
   }
 

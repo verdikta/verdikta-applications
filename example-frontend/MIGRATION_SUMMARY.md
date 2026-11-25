@@ -33,7 +33,7 @@ server's environment (`server/.env.example`).
 | the request polls the arbiters | the request only escrows; the requester moves the round: `drawJury` from block B+2 (twice with beacons), `closeCommits` after T+ if needed, `promote` from the close block + 2 |
 | `finalizeEvaluationTimeout(aggId)` after `responseTimeoutSeconds` from the request | `settle(aggId)` after the round's deadline (the jury's `timeout` from the draw); an undrawn round never times out, and `drawJury` reverts `DrawExpired` after a day |
 | `getAggregationStatus`, `getContractConfig`, `EvaluationTimedOut`, `NotTimedOut`, `AggregationComplete`, `InactiveOracle` | `getRoundInfo` (phase 1 draw … 9 cancelled), `getJury(aggId)`, `maxJury()`/`maxTimeout()`/`tPlus()`, `EvaluationFailed(aggId, uint8 phase)`, `BadJury`, `WrongPhase`, `TooEarly`, `NotDue`, `SeedExpired`, `DrawExpired` |
-| a failed round refunds the requester | refunded to the requester at settlement, except a missed beacon quorum, M commits never promoted, cancelled rounds, and a beacon round whose jury cannot be drawn after the stage while the keeper's walk does not cover the whole class list (`scansAll` false): those go to the treasury |
+| a failed round refunds the requester | refunded to the requester at settlement, except: M commits never promoted, where it is shared equally by the committed slots (`CommitPayment`, the indivisible rest to the arbiter pool); and a missed beacon quorum, cancelled rounds, and a beacon round whose jury cannot be drawn after the stage while the keeper's walk does not cover the whole class list (`scansAll` false), which go to the arbiter pool (`ethOwed(address(0))`, `RequesterRefunded` to `address(0)` or `RoundCancelled`; each draw pays an eighth of it to a random registered arbiter, `PoolPayment`). There is no treasury in v2 |
 | | rewards: the draw (2 × fee, only the requester within 30 s) and promote (1 × fee) callers, credited to `ethOwed` |
 
 ## Files changed
@@ -63,7 +63,7 @@ server's environment (`server/.env.example`).
 - **`client/src/components/RoundTimeline.js`** (new) — phase timeline: the round's jury (from
   `getJury`), phases, commits against M, deadline countdown, and the transactions the wallet sent with their rewards.
 - **`client/src/components/TimeoutNotice.js`** — reports a failed round (and whether the
-  refund came to the user or went to the treasury), a cancelled or expired round, or the
+  refund came to the user, was shared by the committers, or went to the arbiter pool), a cancelled or expired round, or the
   call a round is waiting for, with a button that resumes it.
 - **`client/src/App.js`** — the jury setting (`juryPreset` in `localStorage`, default Small),
   chosen with the "Arbiter jury size" selector on the Jury Selection page, gives Run Query
@@ -83,7 +83,7 @@ server's environment (`server/.env.example`).
   jury from `getJury`, the beacon double draw, `closeCommits` (against the round's own M),
   `promote` at C+2, `settle` after a missed deadline,
   declined prompts and resuming, rounds moved by another account, and the rounds whose
-  prepay goes to the treasury. `utils/juryPresets.test.js` checks the presets against
+  prepay goes to the committers or the arbiter pool. `utils/juryPresets.test.js` checks the presets against
   `classPresets.js` and the jury rules.
 
 ## Earlier: LINK → ETH

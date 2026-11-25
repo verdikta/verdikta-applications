@@ -51,31 +51,31 @@ test('no commit at all is likely malformed, kept out of the blame list', () => {
   assert.equal(sk.blame.length, 6);
 });
 
-test('M commits but never closed, or closed and never promoted, is notProgressed: treasury, no blame', () => {
+test('M commits but never closed, or closed and never promoted, is notProgressed: committers paid, no blame', () => {
   const unclosed = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.COMMIT, slots: asSlots([D | C, D | C, D | C, D | C, D | C, D]), M, N });
   assert.equal(unclosed.kind, 'notProgressed');
-  assert.equal(unclosed.treasury, true);
+  assert.equal(unclosed.forfeit, 'committers');
   assert.deepEqual(unclosed.blame, []);
   const unpromoted = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.CLOSING, slots: asSlots([D | C, D | C, D | C, D | C, D | C, D]), M, N });
   assert.equal(unpromoted.kind, 'notProgressed');
-  assert.equal(unpromoted.treasury, true);
+  assert.equal(unpromoted.forfeit, 'committers');
 });
 
-test('draws that never happen are split by refund vs treasury', () => {
+test('draws that never happen are split by refund vs arbiter pool', () => {
   const pool = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.DRAW, slots: [], M, N, refundTo: 'requester' });
   assert.equal(pool.kind, 'notDrawn');
   assert.equal(pool.notDrawnReason, 'poolShortage');
-  assert.equal(pool.treasury, false);
-  const tre = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.DRAW, slots: [], M, N, refundTo: 'treasury' });
-  assert.equal(tre.notDrawnReason, 'drawTreasury');
-  assert.equal(tre.treasury, true);
+  assert.equal(pool.forfeit, null);
+  const tre = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.DRAW, slots: [], M, N, refundTo: 'pool' });
+  assert.equal(tre.notDrawnReason, 'drawPool');
+  assert.equal(tre.forfeit, 'pool');
   const bq = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.BEACON, slots: [], M, N });
   assert.equal(bq.notDrawnReason, 'beaconQuorum');
-  assert.equal(bq.treasury, true);
+  assert.equal(bq.forfeit, 'pool');
   const c = describeRound({ phase: PHASE.CANCELLED, slots: [], M, N });
   assert.equal(c.kind, 'cancelled');
   assert.equal(c.notDrawnReason, 'cancelled');
-  assert.equal(c.treasury, true);
+  assert.equal(c.forfeit, 'pool');
 });
 
 test('reveal-phase failure blames only promoted slots that never revealed', () => {

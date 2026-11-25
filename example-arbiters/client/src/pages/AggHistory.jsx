@@ -316,7 +316,7 @@ function AggHistory() {
                 </div>
                 <div className="detail-row">
                   <span className="detail-label">Promote reward:</span>
-                  <span className="detail-value" title="No event carries it: derived as rewards − draw reward − beacon payments. Paid to the sender of the promote() transaction (CommitPhaseComplete).">
+                  <span className="detail-value" title="No event carries it: derived as rewards − draw reward − beacon payments − committer shares. Paid to the sender of the promote() transaction (CommitPhaseComplete).">
                     {money.promote ? `${money.promote.eth} ETH to ${money.promote.to || 'the promote() caller'} (derived: ${money.promote.derived})` : '—'}
                   </span>
                 </div>
@@ -328,12 +328,28 @@ function AggHistory() {
                       : '—'}
                   </span>
                 </div>
-                {(money.refunded || money.toTreasury) && (
+                {money.committers && (
+                  <div className="detail-row">
+                    <span className="detail-label">Committer shares:</span>
+                    <span className="detail-value" title="Never promoted: the unspent prepay is shared equally by the slots that committed (CommitPayment, one per slot, to its payee). Counted in the round's rewards.">
+                      {`${money.committers.eth} ETH: ${money.committers.payments.map((b) => `${b.eth} to ${b.payee.slice(0, 8)}…${b.payee.slice(-4)}`).join(', ')}`}
+                    </span>
+                  </div>
+                )}
+                {(money.refunded || money.toPool) && (
                   <div className="detail-row">
                     <span className="detail-label">Unspent prepay:</span>
-                    <span className="detail-value">
+                    <span className="detail-value" title="A forfeit that cannot be refunded (a refund would be a free re-roll) goes to the arbiter pool, ethOwed(address(0)): nobody can withdraw it, and each draw pays an eighth of it to a random registered arbiter.">
                       {[money.refunded && `${money.refunded} ETH refunded to the requester`,
-                        money.toTreasury && `${money.toTreasury} ETH to the treasury (no refund)`].filter(Boolean).join(' · ')}
+                        money.toPool && `${money.toPool} ETH to the arbiter pool (no refund)`].filter(Boolean).join(' · ')}
+                    </span>
+                  </div>
+                )}
+                {money.poolPayout && (
+                  <div className="detail-row">
+                    <span className="detail-label">Arbiter pool payout:</span>
+                    <span className="detail-value" title="Paid at this round's draw out of the arbiter pool (an eighth of it), not out of this round's prepay: to one registered arbiter's owner, picked at random from the draw's seed (PoolPayment).">
+                      {money.poolPayout.payments.map((b) => `${b.eth} ETH to ${b.payee}`).join(', ')}
                     </span>
                   </div>
                 )}

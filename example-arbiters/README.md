@@ -117,8 +117,17 @@ may register) before the aggregator.
   (`setFee`), **Top up stake** (`topUpStake`, shown when under-staked), and
   **Send health call** (`requestHealthCall`, shown when frozen).
 - **Claimable ETH** is the wallet's `ethOwed` on the aggregator: arbiter base
-  fees and bonuses, draw / promote rewards earned by calling `drawJury` or
-  `promote`, and requester refunds. All are withdrawn with `withdrawEth()`.
+  fees and bonuses, a never-promoted round's committer shares (`CommitPayment`),
+  arbiter pool payouts (`PoolPayment`), draw / promote rewards earned by calling
+  `drawJury` or `promote`, and requester refunds. All are withdrawn with
+  `withdrawEth()`.
+- **The arbiter pool** is `ethOwed(address(0))`: the prepay of rounds that
+  cannot be refunded (cancelled undrawn, beacon quorum missed, a seed-dependent
+  draw failure after the beacon stage, and the indivisible rest of a
+  never-promoted round). Nobody can withdraw it; each jury draw pays an eighth
+  of it to one registered arbiter's owner, picked at random from the draw's
+  seed. The Contracts page shows its balance, Analytics the rounds that fed it
+  and the payouts per payee, and Agg History each round's share.
 - The "Backup JSON" descriptor is version 2 (same fields as v1; v1 files still
   import, without their v1 keeper address).
 

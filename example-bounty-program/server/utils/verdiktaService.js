@@ -70,10 +70,10 @@ const SKIP_REASONS = Object.freeze({
 const DRAW_GRACE_SECONDS = 86400;
 // What happens to the unspent prepay of a round that failed in each phase (EvaluationFailed.phase).
 const FAIL_MONEY = Object.freeze({
-  1: 'draw failed: refunded (a pool shortage or too few eligible), but to the treasury after a beacon stage when the selection walk does not cover the whole class',
-  2: 'beacon quorum missed: the beacons that answered are paid, the rest goes to the treasury',
-  3: 'commit phase: to the treasury if M commits arrived (never closed), otherwise refunded',
-  4: 'closed but never promoted: to the treasury',
+  1: 'draw failed: refunded (a pool shortage or too few eligible), but to the arbiter pool after a beacon stage when the selection walk does not cover the whole class',
+  2: 'beacon quorum missed: the beacons that answered are paid, the rest goes to the arbiter pool',
+  3: 'commit phase: shared equally by the committers if M commits arrived (never closed; the indivisible rest to the arbiter pool), otherwise refunded',
+  4: 'closed but never promoted: shared equally by the committers (the indivisible rest to the arbiter pool)',
   5: 'reveal phase: refunded'
 });
 
@@ -113,7 +113,6 @@ class VerdiktaService {
    * @param {number} deployBlock  lower bound for event scans (the aggregator's deploy block)
    */
   constructor(providerUrl, aggregator, deployBlock = 0) {
-    this._treasuries = {};               // aggregator -> treasury() (owner-settable; cached 10 min)
     this.provider = new ethers.JsonRpcProvider(providerUrl);
     this.aggregatorAddress = aggregator;
     this.aggregatorDeployBlock = Number(deployBlock) || 0;
@@ -211,9 +210,10 @@ class VerdiktaService {
       ]), 'aggregator-config');
     // Newer reads: optional, so an older deployment still answers the core config.
     const opt = async (fn) => { try { return await this._withRetry(fn, 'aggregator-config-opt', 2); } catch { return null; } };
-    const [drawRewardFees, promoteRewardFees, spreadFloor, beaconsAddr, treasury] = await Promise.all([
+    // the arbiter pool is the ledger entry ethOwed(address(0)): forfeits in, an eighth out per draw
+    const [drawRewardFees, promoteRewardFees, spreadFloor, beaconsAddr, poolWei] = await Promise.all([
       opt(() => agg.drawRewardFees()), opt(() => agg.promoteRewardFees()), opt(() => agg.spreadFloor()),
-      opt(() => agg.beacons()), opt(() => agg.treasury())
+      opt(() => agg.beacons()), opt(() => agg.ethOwed(ethers.ZeroAddress))
     ]);
     let beaconQuorum = null;
     let beaconPolled = null;
@@ -236,7 +236,7 @@ class VerdiktaService {
       beacons: beaconsAddr && beaconsAddr !== ethers.ZeroAddress ? beaconsAddr : null,
       beaconQuorum: beaconQuorum == null ? null : Number(beaconQuorum),
       beaconPolled: beaconPolled == null ? null : Number(beaconPolled),
-      treasury: treasury || null
+      arbiterPool: poolWei == null ? null : ethers.formatEther(poolWei)
     };
   }
 
@@ -446,7 +446,7 @@ class VerdiktaService {
         warnings.push(`This bounty uses beacons: the beacon stage needs ${beaconQuorum} selectable arbiter(s) in class ${cls} (beacons have no fee cap), but only ${selectable.length} are. The draw would fail at the beacon stage (pool shortage; the prepay is refunded).`);
       }
       if (scansAll === false) {
-        warnings.push(`Class ${cls} is longer than one selection walk covers, so how many eligible arbiters a draw finds depends on the seed. After a beacon stage a draw that finds none sends the unspent prepay to the treasury, not back to the requester.`);
+        warnings.push(`Class ${cls} is longer than one selection walk covers, so how many eligible arbiters a draw finds depends on the seed. After a beacon stage a draw that finds none sends the unspent prepay to the arbiter pool, not back to the requester.`);
       }
     }
     if (pricedOut > 0) {
@@ -625,7 +625,7 @@ class VerdiktaService {
       deadline: Number(info.deadline) || null,
       windowEnd: Number(info.windowEnd) || null,
       requestTime: Number(info.requestTime),
-      // an undrawn round can be drawn until then; after it only cancelUnsealed (to the treasury)
+      // an undrawn round can be drawn until then; after it only cancelUnsealed (to the arbiter pool)
       drawExpiresAt: Number(info.requestTime) ? Number(info.requestTime) + DRAW_GRACE_SECONDS : null,
       receivedWei: info.received.toString(),
       baseFeesWei: info.baseFees.toString(),
@@ -663,7 +663,8 @@ class VerdiktaService {
     const toBlock = Math.min(currentBlock, fromBlock + EVENT_WINDOW);
     const names = ['RequestAIEvaluation', 'JuryDrawn', 'CommitReceived', 'CommitWindowClosed', 'CommitPhaseComplete',
       'RevealReceived', 'FulfillAIEvaluation', 'EvaluationFailed', 'RoundSettled', 'RoundCancelled',
-      'BeaconStageStarted', 'BeaconPayment', 'BasePayment', 'BonusPayment', 'RequesterRefunded', 'SlotSkipped'];
+      'BeaconStageStarted', 'BeaconPayment', 'BasePayment', 'BonusPayment', 'RequesterRefunded', 'SlotSkipped',
+      'CommitPayment', 'PoolPayment'];
     const byName = {};
     await Promise.all(names.map(async (name) => {
       let ev;
@@ -748,36 +749,37 @@ class VerdiktaService {
       s.inCluster = byName.BonusPayment.length ? Boolean(bonusPaid[s.slot]) : null;
     }
 
-    // Money: refunded vs to the treasury, the reward split, beacons.
-    let treasury = null;
-    try {
-      const c = this._treasuries[aggAddress];
-      if (c && Date.now() - c.ts < 600000) treasury = c.address;
-      else {
-        treasury = await this._withRetry(() => agg.treasury(), 'treasury', 2);
-        this._treasuries[aggAddress] = { address: treasury, ts: Date.now() };
-      }
-    } catch { treasury = null; }
-    const isTreasury = (a) => treasury != null && String(a).toLowerCase() === String(treasury).toLowerCase();
+    // Money: refunded vs to the arbiter pool (RequesterRefunded to address(0), RoundCancelled), the
+    // committers' shares of a never-promoted round (CommitPayment), the reward split, beacons, and the
+    // arbiter pool's payout at this round's draw (PoolPayment: to a random registered arbiter, not
+    // out of this round's prepay).
+    const isPool = (a) => String(a).toLowerCase() === ethers.ZeroAddress;
     const refunds = byName.RequesterRefunded.map((e) => ({
       to: e.args.requester,
       amountWei: e.args.amount.toString(),
-      toTreasury: treasury == null ? null : isTreasury(e.args.requester),
+      toPool: isPool(e.args.requester),
       block: e.log.blockNumber,
       txHash: e.log.transactionHash
     }));
     const cancelled = first('RoundCancelled')
-      ? { toTreasuryWei: first('RoundCancelled').args.toTreasury.toString(), block: first('RoundCancelled').log.blockNumber,
+      ? { toPoolWei: first('RoundCancelled').args[1].toString(), block: first('RoundCancelled').log.blockNumber,
           txHash: first('RoundCancelled').log.transactionHash }
       : null;
     const beaconPayments = byName.BeaconPayment.map((e) => ({ payee: e.args.payee, amountWei: e.args.amount.toString() }));
+    const commitPayments = byName.CommitPayment.map((e) => ({ payee: e.args.payee, amountWei: e.args.amount.toString() }));
+    const poolPayment = first('PoolPayment')
+      ? { payee: first('PoolPayment').args.payee, amountWei: first('PoolPayment').args.amount.toString(),
+          block: first('PoolPayment').log.blockNumber, txHash: first('PoolPayment').log.transactionHash }
+      : null;
     const sumWei = (xs) => xs.reduce((a, x) => a + BigInt(x), 0n);
     const drawRewardWei = drawEvent ? BigInt(drawEvent.rewardWei) : 0n;
     const beaconWei = sumWei(beaconPayments.map((b) => b.amountWei));
+    const committersWei = sumWei(commitPayments.map((c) => c.amountWei));
     const rewardsWei = BigInt(aggregationStatus.rewardsWei);
     // promote() emits no reward event: its reward (effMaxFee x promoteRewardFees) is what
-    // getRoundInfo.rewards holds beyond the draw reward and the beacon payments.
-    const promoteRewardWei = promoteEvent && rewardsWei > drawRewardWei + beaconWei ? rewardsWei - drawRewardWei - beaconWei : 0n;
+    // getRoundInfo.rewards holds beyond the draw reward, the beacon payments and the committers' shares.
+    const otherRewardsWei = drawRewardWei + beaconWei + committersWei;
+    const promoteRewardWei = promoteEvent && rewardsWei > otherRewardsWei ? rewardsWei - otherRewardsWei : 0n;
     let promoter = null;
     if (promoteEvent) {
       try {
@@ -785,11 +787,10 @@ class VerdiktaService {
         promoter = tx?.from || null;
       } catch { promoter = null; }
     }
-    const refundedWei = sumWei(refunds.filter((r) => r.toTreasury !== true).map((r) => r.amountWei));
-    const toTreasuryWei = sumWei(refunds.filter((r) => r.toTreasury === true).map((r) => r.amountWei)) +
-      (cancelled ? BigInt(cancelled.toTreasuryWei) : 0n);
+    const refundedWei = sumWei(refunds.filter((r) => !r.toPool).map((r) => r.amountWei));
+    const toPoolWei = sumWei(refunds.filter((r) => r.toPool).map((r) => r.amountWei)) +
+      (cancelled ? BigInt(cancelled.toPoolWei) : 0n);
     const money = {
-      treasury,
       receivedWei: aggregationStatus.receivedWei,
       baseFeesWei: aggregationStatus.baseFeesWei,
       bonusesWei: aggregationStatus.bonusesWei,
@@ -799,8 +800,9 @@ class VerdiktaService {
         drawer: drawEvent?.drawer || null,
         promoteWei: promoteRewardWei.toString(),
         promoter,
-        promoteMethod: 'getRoundInfo.rewards - JuryDrawn.reward - BeaconPayment total (promote emits no reward event); the promoter is the CommitPhaseComplete transaction sender',
-        beaconsWei: beaconWei.toString()
+        promoteMethod: 'getRoundInfo.rewards - JuryDrawn.reward - BeaconPayment total - CommitPayment total (promote emits no reward event); the promoter is the CommitPhaseComplete transaction sender',
+        beaconsWei: beaconWei.toString(),
+        committersWei: committersWei.toString()
       },
       beacons: first('BeaconStageStarted')
         ? { stageStarted: true, picked: Number(first('BeaconStageStarted').args.beacons), payments: beaconPayments,
@@ -808,8 +810,11 @@ class VerdiktaService {
         : (beaconPayments.length ? { stageStarted: true, picked: null, payments: beaconPayments } : null),
       refunds,
       cancelled,
+      commitPayments,
+      poolPayment,
       refundedWei: refundedWei.toString(),
-      toTreasuryWei: toTreasuryWei.toString(),
+      toPoolWei: toPoolWei.toString(),
+      toCommittersWei: committersWei.toString(),
       keeperCallReverted
     };
     const promotion = promoteEvent
@@ -831,12 +836,12 @@ class VerdiktaService {
       nowSec > aggregationStatus.requestTime + DRAW_GRACE_SECONDS;
     let outcome;
     if (phase === 6 || phase === 7) outcome = 'COMPLETED';
-    else if (phase === 9) outcome = 'CANCELLED (never drawn; prepay to the treasury)';
+    else if (phase === 9) outcome = 'CANCELLED (never drawn; prepay to the arbiter pool)';
     else if (phase === 8) {
       if (malformed) outcome = LIKELY_MALFORMED_OUTCOME;
       else outcome = `FAILED (${failure ? failure.phaseName : 'unknown'} phase)`;
     } else if (drawExpired) {
-      outcome = 'DRAW EXPIRED: can only be cancelled (prepay to the treasury)';
+      outcome = 'DRAW EXPIRED: can only be cancelled (prepay to the arbiter pool)';
     } else if (phase >= 3 && aggregationStatus.deadline && nowSec > aggregationStatus.deadline) {
       // past its deadline, not yet settled
       outcome = malformed ? LIKELY_MALFORMED_OUTCOME : `FAILED (${PHASES[phase]} phase, not yet settled)`;

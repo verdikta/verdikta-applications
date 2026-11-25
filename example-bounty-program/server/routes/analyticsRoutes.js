@@ -720,7 +720,7 @@ async function getSubmissionAnalytics() {
 
 /**
  * Round-level v2 facts from the score-spread collector's cache (no RPC): beacon stages, prepay lost
- * to the treasury, late reveals, how rounds ended.
+ * to the arbiter pool, committers' shares of never-promoted rounds, pool payouts, late reveals, how rounds ended.
  */
 async function getRoundAnalytics() {
   try {

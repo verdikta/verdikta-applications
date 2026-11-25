@@ -302,12 +302,12 @@ function Contracts() {
               <ConfigItem label="Spread Floor" value={agg.config.spreadFloor != null ? agg.config.spreadFloor.toLocaleString() : null} title="Minimum quality spread on the arbiters' 0..1,000,000 scale: a reveal is close within 1.5 × the spread of the median, off within 3 ×, far beyond" />
               <ConfigItem label="Rounds So Far" value={agg.config.roundCount != null ? agg.config.roundCount.toLocaleString() : null} title="roundCount(): rounds requested on this aggregator; aggIds are sequential" />
               <ConfigItem label="Beacons" value={agg.config.beacons ? 'Available' : 'Not set'} title="JuryBeacons contract for beacon-seeded draws. Each request chooses whether to use it (its withBeacons flag)" />
+              <ConfigItem label="Arbiter Pool" value={agg.config.poolEth != null ? `${Number(agg.config.poolEth).toFixed(6)} ETH` : null} title="ethOwed(address(0)): prepay forfeited by rounds that cannot be refunded (cancelled undrawn, beacon quorum missed, a seed-dependent draw failure, the dust of a never-promoted round). Nobody can withdraw it: each jury draw pays an eighth of it to one registered arbiter's owner, picked at random from the draw's seed (PoolPayment)" />
               {agg.config.paused && <ConfigItem label="Status" value="Paused" />}
             </div>
           )}
 
           <div className="contract-addresses">
-            <AddressRow label="Treasury" address={agg?.config?.treasury} explorer={explorer} />
             <AddressRow label="Jury Beacons" address={agg?.config?.beacons} explorer={explorer} />
             <AddressRow label="Transport Token (0-juel rail)" address={agg?.transportTokenAddress} explorer={explorer} />
           </div>

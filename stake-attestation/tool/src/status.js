@@ -12,7 +12,7 @@
 // The v2 aggregator draws a round's jury in a second step (the lens's openRound gives the round's phase). Until it is
 // drawn the round waits, however long, and nothing times out: the site's keeper draws it, anyone may, and `claim`
 // does when drawJury's dry run passes (status itself sends nothing). Its timeout (the listing's jury, sent with the
-// request; getJury reads a round's own) runs from the draw; a round left undrawn can only be cancelled (about 8,191 blocks after the request if its seed was never stored, a day after it if it was), its whole prepay to the aggregator's treasury. Nothing here
+// request; getJury reads a round's own) runs from the draw; a round left undrawn can only be cancelled (about 8,191 blocks after the request if its seed was never stored, a day after it if it was), its whole prepay to the aggregator's arbiter pool (which pays registered arbiters, a share at each draw). Nothing here
 // reads a clock.
 //
 // The reveal deadline is the lens's. A release (or a roll-forward) ends the fix window early, and the deadline moves
@@ -25,7 +25,7 @@
 // the block only says why.
 import { MAX_JUSTIFICATION_UPLOAD_BYTES, justificationCidOf, readExecutionEvidence as readEvidenceBlock } from '@verdikta/stake-attestation-shared/execution-evidence';
 
-import { formatEther } from 'ethers';
+import { formatEther, ZeroAddress } from 'ethers';
 
 import { CLAIM_STATES, DISPUTE_KINDS, DISPUTE_RESULTS, EXPIRIES, OUTCOMES } from './abi.js';
 import { codeReview } from './common.js';
@@ -70,15 +70,18 @@ async function readEvidence(ctx, claim, live = () => true) {
 /**
  * What a failed round cost, from its own numbers (node P32; the v2 aggregator's getRoundInfo): the prepay it received,
  * what it paid out (the jurors' base fees, any bonuses and rewards; a draw reward this claim's wallet earned comes
- * back with the rest), and where the rest went: to you (`refundTo` 'hunter'), or to the aggregator's treasury
- * ('treasury': a round never drawn and cancelled, a missed beacon quorum, M commits nobody promoted), or unsaid (null).
+ * back with the rest), and where the rest went: to you (`refundTo` 'hunter'), to the aggregator's arbiter pool
+ * ('pool': a round never drawn and cancelled, a missed beacon quorum, a draw failed after its beacon stage), shared by
+ * the jurors that committed ('committers': M commits nobody promoted; only the indivisible wei goes to the pool), or
+ * unsaid (null). The pool is no one's to withdraw: each draw pays a share of it to one registered arbiter.
  */
 export function roundCostText({ prepayWei = null, spentWei = null, refundWei = null, refundTo = null } = {}, { recorded = true } = {}) {
   if (prepayWei === null || prepayWei === undefined) return '';
   const back = recorded ? 'came back to you at finalize' : 'comes back to you at finalize';
-  if (spentWei === null || spentWei === undefined) return `This round's prepay was ${eth(prepayWei)}: its base fees came out of it, and the rest ${back} unless the aggregator sent it to its treasury; the aggregator does not say how much of it the base fees took.`;
-  if (refundTo === 'treasury') return `This round's prepay was ${eth(prepayWei)}: ${eth(spentWei)} was paid out (base fees and rewards), and the aggregator sent the other ${eth(refundWei)} to its treasury, not back to you: it does that for a round never drawn, a missed beacon quorum, or a round whose commits nobody promoted.`;
-  const rest = refundTo === 'hunter' ? back : `${back} unless the aggregator sent it to its treasury`;
+  if (spentWei === null || spentWei === undefined) return `This round's prepay was ${eth(prepayWei)}: its base fees came out of it, and the rest ${back} unless the aggregator kept it (for its arbiter pool, or for the jurors that committed); the aggregator does not say how much of it the base fees took.`;
+  if (refundTo === 'pool') return `This round's prepay was ${eth(prepayWei)}: ${eth(spentWei)} was paid out (base fees and rewards), and the aggregator put the other ${eth(refundWei)} in its arbiter pool, not back to you: it does that for a round never drawn, a missed beacon quorum, or a draw that failed after its beacon stage. The pool pays registered arbiters, a share at each draw.`;
+  if (refundTo === 'committers') return `This round's prepay was ${eth(prepayWei)}: ${eth(spentWei)} was paid out (base fees and rewards), and the aggregator shares the other ${eth(refundWei)} equally among the jurors that committed, not back to you (any indivisible wei goes to its arbiter pool): it does that for a round whose commits nobody promoted.`;
+  const rest = refundTo === 'hunter' ? back : `${back} unless the aggregator kept it (for its arbiter pool, or for the jurors that committed)`;
   return `This round's prepay was ${eth(prepayWei)}: ${eth(spentWei)} was paid out (base fees and rewards; a draw reward your round's wallet earned comes back too), and the other ${eth(refundWei)} ${rest}.`;
 }
 
@@ -359,7 +362,7 @@ function nextFor(s) {
       if (s.round && (s.round.phase === PHASE.DRAW || s.round.phase === PHASE.BEACONS)) {
         const stage = s.round.phase === PHASE.BEACONS ? ' (its beacon stage has started: a second draw follows once the beacon values are in)' : '';
         const how = s.ready === 'draw' ? 'its draw is due now: run claim to draw it (anyone may, and the site\'s keeper does; the draw reward goes to the round\'s wallet and comes back with its leftover)' : 'it can be drawn from two blocks after the request; the site\'s keeper draws it, and claim does once it may be';
-        return `${round} is still open, and its jury is not drawn yet${stage}: ${how}. An undrawn round never times out, but left undrawn it can only be cancelled (about 8,191 blocks after the request if its seed was never stored, a day after it if it was), its whole prepay to the aggregator's treasury, and the round fails.${s.timedOut ? ' The time given is over: run status --wait again.' : ''}`;
+        return `${round} is still open, and its jury is not drawn yet${stage}: ${how}. An undrawn round never times out, but left undrawn it can only be cancelled (about 8,191 blocks after the request if its seed was never stored, a day after it if it was), its whole prepay to the aggregator's arbiter pool, and the round fails.${s.timedOut ? ' The time given is over: run status --wait again.' : ''}`;
       }
       const until = s.round && s.round.deadline !== 0n ? ` Its deadline is ${s.round.deadline} on the chain's clock, the listing's jury timeout counted from the draw; after it the round is failed if it has not finished.` : '';
       if (s.timedOut) return `${round} is still open after the time given. It may be running slowly; run status --wait again, and claim once it is over.${until}`;
@@ -415,8 +418,10 @@ function baseFailedRound(s) {
  * recorded it, and before that the live fee in full (a round that ran took its prepay: commitPrice less the bond) and
  * ClaimRules.retriggerDeadline from an earlier failure, if there was one; and what the round cost, from the
  * aggregator's own numbers (getRoundInfo: received, and what it paid out), with where the rest went: a cancelled round's
- * all to the treasury, else as its RequesterRefunded event says (to the wallet, the hunter's, or the treasury), or,
- * for a round finalize has yet to fail, where the aggregator's settle will send it. The prepay alone if unreadable.
+ * all to the arbiter pool, else as its events say (CommitPayment: shared by the jurors that committed, which the
+ * aggregator counts in its rewards and this counts in the rest; else RequesterRefunded: to the wallet, the hunter's,
+ * or the pool, address 0), or, for a round finalize has yet to fail, where the aggregator's settle will send it. The
+ * prepay alone if unreadable.
  */
 async function failedRoundOf(ctx, s, live) {
   const step = (fn) => {
@@ -447,7 +452,9 @@ async function failedRoundOf(ctx, s, live) {
     if (r.received > 0n) {
       const spent = r.baseFees + r.bonuses + r.rewards;
       Object.assign(out, { prepayWei: r.received, spentWei: spent, refundWei: r.received - spent });
-      out.refundTo = await step(() => refundDestination(ctx, aggregator, s, r, out.jury));
+      const { to, shared } = await step(() => refundDestination(ctx, aggregator, s, r, out.jury));
+      // a settled never-promoted round counts the committers' shares in its rewards: they are the rest, not paid out
+      Object.assign(out, { refundTo: to, spentWei: spent - shared, refundWei: r.received - spent + shared });
     }
   } catch {
     // an aggregator that does not answer: the prepay the claim sent, and no figure made up for the split
@@ -456,32 +463,39 @@ async function failedRoundOf(ctx, s, live) {
 }
 
 /**
- * Where a failed round's unspent prepay went, or goes (the v2 aggregator's routing): 'treasury', 'hunter' or null when
- * unknown. Cancelled: all to the treasury. Failed: its RequesterRefunded event names the payee (the claim's wallet
- * is the hunter's). Not failed yet (finalize settles it): the treasury for a round closed and not promoted (phase 4),
- * or still in commit with at least the round's own M commits (its jury, getJury), which the aggregator's settle sends
- * there too; the hunter otherwise.
+ * Where a failed round's unspent prepay went, or goes (the v2 aggregator's routing): { to: 'pool', 'committers',
+ * 'hunter' or null when unknown, shared: what the committers' CommitPayment events paid, 0 before settle }. Cancelled:
+ * all to the arbiter pool. Failed: CommitPayment events mean the committers shared it (only the indivisible wei went
+ * to the pool), else its RequesterRefunded event names the payee (the claim's wallet is the hunter's; address 0 is the
+ * pool). Not failed yet (finalize settles it): the committers for a round closed and not promoted (phase 4), or still
+ * in commit with at least the round's own M commits (its jury, getJury), which the aggregator's settle pays them too;
+ * the pool for one never drawn (finalize cancels it); the hunter otherwise.
  */
 async function refundDestination(ctx, aggregator, s, r, jury) {
   const phase = BigInt(r.phase);
-  if (phase === PHASE.CANCELLED) return 'treasury';
+  const said = (to) => ({ to, shared: 0n });
+  if (phase === PHASE.CANCELLED) return said('pool');
   if (phase === PHASE.FAILED) {
     try {
-      const logs = await ctx.rpc(() => aggregator.queryFilter(aggregator.filters.RequesterRefunded(s.requestId), Number(r.requestBlock)));
-      if (!logs.length) return null;
+      const from = Number(r.requestBlock);
+      const paid = await ctx.rpc(() => aggregator.queryFilter(aggregator.filters.CommitPayment(s.requestId), from));
+      if (paid.length) return { to: 'committers', shared: paid.reduce((sum, l) => sum + BigInt(l.args.amount), 0n) };
+      const logs = await ctx.rpc(() => aggregator.queryFilter(aggregator.filters.RequesterRefunded(s.requestId), from));
+      if (!logs.length) return said(null);
       const to = String(logs.at(-1).args.requester).toLowerCase();
-      return to === String(s.raw.evalWallet).toLowerCase() ? 'hunter' : 'treasury';
+      if (to === String(s.raw.evalWallet).toLowerCase()) return said('hunter');
+      return said(to === ZeroAddress ? 'pool' : null);
     } catch {
-      return null; // a node that limits log ranges: unsaid
+      return said(null); // a node that limits log ranges: unsaid
     }
   }
-  if (phase === PHASE.CLOSING) return 'treasury';
-  if (phase === PHASE.DRAW || phase === PHASE.BEACONS) return 'treasury'; // finalize cancels it
+  if (phase === PHASE.CLOSING) return said('committers');
+  if (phase === PHASE.DRAW || phase === PHASE.BEACONS) return said('pool'); // finalize cancels it
   if (phase === PHASE.COMMIT) {
-    if (!jury) return null; // the round's M unread: unsaid
-    return r.commits >= BigInt(jury.M) ? 'treasury' : 'hunter';
+    if (!jury) return said(null); // the round's M unread: unsaid
+    return said(r.commits >= BigInt(jury.M) ? 'committers' : 'hunter');
   }
-  return 'hunter';
+  return said('hunter');
 }
 
 /** At most `ms` for `work(live)`; past it, or on any failure, `fallback`, and the work starts nothing more. */

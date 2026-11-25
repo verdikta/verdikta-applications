@@ -4,8 +4,8 @@
  * Lets an arbiter owner manage the arbiters their connected wallet controls on
  * the header-selected network:
  *  - Claim ETH (per wallet → ReputationAggregator.withdrawEth, from the ethOwed
- *    pull-payment ledger): arbiter earnings, draw / promote rewards and requester
- *    fee refunds. Shown even when the wallet owns no arbiters. A secondary
+ *    pull-payment ledger): arbiter earnings (base fees, bonuses, committer shares,
+ *    arbiter pool payouts), draw / promote rewards and requester fee refunds. Shown even when the wallet owns no arbiters. A secondary
  *    per-operator "legacy LINK" claim (ArbiterOperator.withdraw) appears only when
  *    LINK lingers from the old aggregator.
  *  - Manage each arbiter (v2 ReputationKeeper, keyed by keyOf(oracle, jobId)):
@@ -426,7 +426,8 @@ function MyArbiters() {
   ) : null;
 
   // Primary, per-wallet ETH claim from the aggregator's ethOwed ledger. Three things credit
-  // it: arbiter earnings (base fees + bonuses, aggregated across ALL the owner's operators),
+  // it: arbiter earnings (base fees + bonuses, a never-promoted round's committer shares and
+  // arbiter pool payouts at draws, aggregated across ALL the owner's operators),
   // draw / promote rewards (paid to whoever calls drawJury or promote on a round), and
   // requester refunds (the unspent part of a request's up-front worst-case fee). All drain
   // through the same withdrawEth(), so this is a single claim — not per operator — and
@@ -455,8 +456,8 @@ function MyArbiters() {
       </div>
       {hasArbiters ? (
         <p className="claim-note muted">
-          Includes your arbiter earnings (base fees and bonuses, which accrue per owner across all
-          your operators), any draw or promote rewards this wallet earned by calling drawJury or
+          Includes your arbiter earnings (base fees, bonuses, committer shares from never-promoted
+          rounds and arbiter pool payouts, which accrue per owner across all your operators), any draw or promote rewards this wallet earned by calling drawJury or
           promote on a round, and refunds of unused fees from evaluations it requested. Unwithdrawn
           ETH stays credited on the aggregator and can be claimed any time.
         </p>

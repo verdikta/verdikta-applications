@@ -1096,7 +1096,7 @@ export const STRINGS = {
       'outcome is final. A dispute that turns the outcome INVALID forfeits the hunter\'s bond to you, unless the ' +
       'panel\'s verdict is a narrow INVALID, whose bond goes back to the hunter; one that holds is recorded as a failed dispute. ' +
       'Above the listing\'s confirmation size, your dispute is the confirmation.',
-    prepay: 'Escalation prepay: {fee} ETH, the dispute panel\'s maxTotalFee read from the chain. What the oracles do not spend comes back to you.',
+    prepay: 'Escalation prepay: {fee} ETH, the dispute panel\'s maxTotalFee read from the chain. What the oracles do not spend comes back to you, unless the round fails unpromoted (the jurors that committed share it) or undrawn (it goes to the aggregator\'s arbiter pool).',
     prepayLoading: 'Reading the escalation prepay…',
     statement: 'Your statement (at most {max} bytes of UTF-8 text)',
     statementHint:

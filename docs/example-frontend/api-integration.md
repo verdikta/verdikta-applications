@@ -98,7 +98,7 @@ await contract.withdrawEth();
 
 #### Fee Management
 - **Gas Fees**: Paid by user in ETH for the request and for each call that moves the round on
-- **Evaluation Fees**: Paid by the user in ETH, out of the prepayment. Each of the K drawn arbiters is credited its fee (at least the floor), and each arbiter in the winning cluster B times its fee on top; the rest of the prepayment is credited back to the user in the aggregator, except for a round that had enough commits but was not closed or promoted in time, a missed beacon quorum, or a cancelled round, where it goes to the treasury
+- **Evaluation Fees**: Paid by the user in ETH, out of the prepayment. Each of the K drawn arbiters is credited its fee (at least the floor), and each arbiter in the winning cluster B times its fee on top; the rest of the prepayment is credited back to the user in the aggregator, except for a round that had enough commits but was not closed or promoted in time, where it is shared by the arbiters that committed, and a missed beacon quorum or a cancelled round, where it goes to the arbiter pool (paid out to randomly chosen arbiters at later draws)
 - **Rewards**: The draw reward (2 × the fee ceiling) and the promote reward (1 × the fee ceiling) are credited to whoever makes those calls; with the Run Query page that is the user
 - **Fee Calculation**: Set by the fees of the drawn arbiters and the jury size (K arbiters paid, P bonuses), not by query complexity
 

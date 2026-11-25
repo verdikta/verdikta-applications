@@ -33,7 +33,7 @@ const STEPS = {
         <code>drawJury</code> draws the jury from block B+2 of the request. Within 30 seconds of the request only
         you earn the draw reward (2 × the per-arbiter fee, added to your prepay credit); after that anyone may draw
         and earns it. An undrawn round never times out: a day after the request it can only be cancelled, and its
-        prepay goes to the treasury.
+        prepay goes to the arbiter pool.
       </>
     ),
   },
@@ -45,7 +45,7 @@ const STEPS = {
         This round asked for beacons. The first <code>drawJury</code> started the beacon stage; a second{' '}
         <code>drawJury</code> draws the jury once the beacon values are in. Within 30 seconds of the last needed
         beacon only you earn the draw reward (2 × the per-arbiter fee); after that anyone may draw and earns it. If
-        the beacon values do not arrive, the round fails and its prepay goes to the treasury.
+        the beacon values do not arrive, the round fails and its prepay goes to the arbiter pool.
       </>
     ),
   },
@@ -56,7 +56,7 @@ const STEPS = {
       <>
         Enough arbiters committed, but not so many that the commit window closed by itself. <code>closeCommits</code>{' '}
         closes it; there is no reward. If nobody closes it before the deadline, the round fails and its unspent
-        prepay goes to the treasury, not back to you.
+        prepay is shared by the arbiters that committed, not returned to you.
       </>
     ),
   },
@@ -66,8 +66,8 @@ const STEPS = {
     explain: (
       <>
         <code>promote</code> picks the commits the arbiters reveal. Whoever calls it earns the promote reward (1 × the
-        per-arbiter fee). If nobody promotes before the deadline, the round fails and its unspent prepay goes to the
-        treasury, not back to you.
+        per-arbiter fee). If nobody promotes before the deadline, the round fails and its unspent prepay is shared by
+        the arbiters that committed, not returned to you.
       </>
     ),
   },
@@ -86,13 +86,13 @@ const STEPS = {
 
 const EXPIRED = {
   'close-missed':
-    'Enough arbiters committed, but the commit phase was not closed before the deadline. The round will fail, and its unspent prepay goes to the treasury, so settling it would not return anything to you.',
+    'Enough arbiters committed, but the commit phase was not closed before the deadline. The round will fail, and its unspent prepay is shared by the arbiters that committed, so settling it would not return anything to you.',
   'promote-missed':
-    'The commit phase closed, but nobody promoted the commits before the deadline. The round will fail, and its unspent prepay goes to the treasury, so settling it would not return anything to you.',
+    'The commit phase closed, but nobody promoted the commits before the deadline. The round will fail, and its unspent prepay is shared by the arbiters that committed, so settling it would not return anything to you.',
   'draw-expired':
-    'More than a day has passed since the request, so the jury can no longer be drawn. The round can only be cancelled (cancelUnsealed), which sends its prepay to the treasury.',
+    'More than a day has passed since the request, so the jury can no longer be drawn. The round can only be cancelled (cancelUnsealed), which sends its prepay to the arbiter pool.',
   'seed-expired':
-    'The block the draw depends on is too old to read, so the round can no longer move on. It can only be cancelled (cancelUnsealed), which sends its prepay to the treasury.',
+    'The block the draw depends on is too old to read, so the round can no longer move on. It can only be cancelled (cancelUnsealed), which sends its prepay to the arbiter pool.',
 };
 
 const boxStyle = (open) => ({
@@ -161,6 +161,14 @@ function TimeoutNotice({ info, ethCredit = 0n, onResume, busy = false, busyStatu
         <p style={{ margin: 0 }}>
           {!refund ? (
             <>The page could not read where the unspent part of the prepayment went.</>
+          ) : refund.toCommitters > 0n ? (
+            <>
+              The unspent <strong>{formatEther(refund.toCommitters + refund.amount)} ETH</strong> was shared by the
+              arbiters that committed
+              {refund.amount > 0n ? <> (the indivisible {formatEther(refund.amount)} ETH left to the arbiter pool)</> : null}
+              , not returned to you: enough commits were in but the round was never promoted, and a refund here could
+              be used as a free re-roll of the jury.
+            </>
           ) : refund.amount === 0n ? (
             <>Nothing was left of the prepayment to return.</>
           ) : refund.toRequester ? (
@@ -169,9 +177,9 @@ function TimeoutNotice({ info, ethCredit = 0n, onResume, busy = false, busyStatu
             </>
           ) : (
             <>
-              The unspent <strong>{formatEther(refund.amount)} ETH</strong> went to the treasury, not back to you: a
-              round that fails this way gives no refund, so that a refund cannot be used as a free re-roll of the
-              jury.
+              The unspent <strong>{formatEther(refund.amount)} ETH</strong> went to the arbiter pool, not back to you:
+              a round that fails this way gives no refund, so that a refund cannot be used as a free re-roll of the
+              jury. The pool pays out to randomly chosen arbiters at later draws.
             </>
           )}
           {creditSentence}
@@ -182,7 +190,7 @@ function TimeoutNotice({ info, ethCredit = 0n, onResume, busy = false, busyStatu
     heading = 'No result: the round was cancelled.';
     body = (
       <p style={{ margin: 0 }}>
-        The jury was never drawn, and the round was cancelled. Its prepay went to the treasury.{creditSentence}
+        The jury was never drawn, and the round was cancelled. Its prepay went to the arbiter pool.{creditSentence}
       </p>
     );
   } else if (outcome.status === 'expired') {

@@ -31,7 +31,7 @@ export const INTEGRITY_COSTS = 'A tamper flag costs the bond, even beside anothe
  * Design §12: nothing of this reaches the chain or IPFS, so the words are all a hunter gets. No amount is fixed here
  * (node P32): the fee follows the aggregator's, so status reads a failed round's own numbers from the chain.
  */
-export const ABSTAIN_COSTS = 'Each failed round costs you its base fees (K × the per-juror fee, K the listing\'s jury size, paid when the jury is drawn), a part of its prepay; the rest of the prepay comes back at finalize, except where the aggregator sends it to its treasury (a round never drawn, a missed beacon quorum, commits nobody promoted), and status shows the round\'s own numbers, in ETH. If no round settles a verdict, the bond comes back at expiry, unless a round\'s jury answered with a result that is no verdict: then it goes to the maker. Nothing on-chain or on IPFS says why.';
+export const ABSTAIN_COSTS = 'Each failed round costs you its base fees (K × the per-juror fee, K the listing\'s jury size, paid when the jury is drawn), a part of its prepay; the rest of the prepay comes back at finalize, except where the aggregator keeps it: for its arbiter pool (a round never drawn, a missed beacon quorum), or shared by the jurors that committed (commits nobody promoted), and status shows the round\'s own numbers, in ETH. If no round settles a verdict, the bond comes back at expiry, unless a round\'s jury answered with a result that is no verdict: then it goes to the maker. Nothing on-chain or on IPFS says why.';
 
 /**
  * What a round that ends with no verdict means (node P32): too few arbiters' answers in the round's time, which is its

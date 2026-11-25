@@ -76,7 +76,7 @@ describe('getAggHistory outcome (v2)', () => {
     expect(h.analysis.totalSlots).toBe(0);
     expect(h.outcome).toBe('IN PROCESS (draw phase)');
     h = await makeService({ phase: 9 }).getAggHistory(AGG_ID);
-    expect(h.outcome).toBe('CANCELLED (never drawn; prepay to the treasury)');
+    expect(h.outcome).toBe('CANCELLED (never drawn; prepay to the arbiter pool)');
     expect(h.analysis.likelyMalformed).toBe(false);
   });
 
@@ -99,7 +99,7 @@ describe('getAggHistory outcome (v2)', () => {
 });
 
 // A service whose getLogs returns the given events (name -> [args]) and whose slots are given flags.
-const TREASURY = ethers.getAddress('0x' + '7'.repeat(40));
+const POOL = ethers.ZeroAddress;   // the arbiter pool: RequesterRefunded to address(0)
 const REQUESTER = ethers.getAddress('0x' + '8'.repeat(40));
 function eventService({ phase, slotFlags = [], events = {}, info = {}, promoter = null }) {
   const svc = makeService({ phase, jurors: slotFlags.length });
@@ -114,7 +114,6 @@ function eventService({ phase, slotFlags = [], events = {}, info = {}, promoter 
   svc.provider.getTransaction = async () => ({ from: promoter });
   const base = svc.aggregator.getRoundInfo;
   Object.assign(svc.aggregator, {
-    treasury: async () => TREASURY,
     getRoundInfo: async () => ({ ...(await base()), ...info }),
     getSlot: async (aggId, i) => ({
       oracle: i < slotFlags.length ? ethers.getAddress('0x' + String(i + 2).repeat(40)) : ethers.ZeroAddress,
@@ -145,21 +144,34 @@ describe('getAggHistory v2 slots, timing and money', () => {
     expect(h.outcome).toBe('FAILED (commit phase)');
   });
 
-  it('labels a refund to the treasury vs to the requester, and the failure phase\'s money rule', async () => {
-    const h = await eventService({ phase: 8, slotFlags: [3, 3, 3, 3, 3, 3],
-      events: { EvaluationFailed: [[4]], RequesterRefunded: [[TREASURY, 1000n]] } }).getAggHistory(AGG_ID);
-    expect(h.money.refunds[0]).toMatchObject({ to: TREASURY, toTreasury: true, amountWei: '1000' });
-    expect(h.money).toMatchObject({ toTreasuryWei: '1000', refundedWei: '0', treasury: TREASURY });
-    expect(h.failure.moneyRule).toMatch(/never promoted: to the treasury/);
+  it('labels a refund to the arbiter pool vs to the requester, the committers\' shares, and the failure phase\'s money rule', async () => {
+    const C = ethers.getAddress('0x' + '9'.repeat(40));
+    const h = await eventService({ phase: 8, slotFlags: [3, 3, 3, 3, 3, 3], info: { rewards: 1200n },
+      events: { EvaluationFailed: [[4]], RequesterRefunded: [[POOL, 3n]], JuryDrawn: [[REQUESTER, 0n]],
+        CommitPayment: [[C, 200n], [C, 200n], [C, 200n], [C, 200n], [C, 200n], [C, 200n]] } }).getAggHistory(AGG_ID);
+    expect(h.money.refunds[0]).toMatchObject({ to: POOL, toPool: true, amountWei: '3' });
+    expect(h.money).toMatchObject({ toPoolWei: '3', refundedWei: '0', toCommittersWei: '1200' });
+    expect(h.money.commitPayments).toHaveLength(6);
+    expect(h.money.rewards).toMatchObject({ committersWei: '1200', promoteWei: '0' });
+    expect(h.failure.moneyRule).toMatch(/never promoted: shared equally by the committers/);
     const r = await eventService({ phase: 8, slotFlags: [3, 3, 3, 3, 3, 3],
       events: { EvaluationFailed: [[5]], RequesterRefunded: [[REQUESTER, 700n]] } }).getAggHistory(AGG_ID);
-    expect(r.money).toMatchObject({ toTreasuryWei: '0', refundedWei: '700' });
-    expect(r.money.refunds[0].toTreasury).toBe(false);
+    expect(r.money).toMatchObject({ toPoolWei: '0', refundedWei: '700', toCommittersWei: '0' });
+    expect(r.money.refunds[0].toPool).toBe(false);
   });
 
-  it('a cancelled round sends RoundCancelled.toTreasury to the treasury', async () => {
+  it('a cancelled round sends RoundCancelled\'s amount to the arbiter pool', async () => {
     const h = await eventService({ phase: 9, events: { RoundCancelled: [[900n]] } }).getAggHistory(AGG_ID);
-    expect(h.money).toMatchObject({ toTreasuryWei: '900', cancelled: { toTreasuryWei: '900' } });
+    expect(h.money).toMatchObject({ toPoolWei: '900', cancelled: { toPoolWei: '900' } });
+  });
+
+  it('reports the arbiter pool\'s payout at the round\'s draw (PoolPayment)', async () => {
+    const W = ethers.getAddress('0x' + 'a'.repeat(40));
+    const h = await eventService({ phase: 7, slotFlags: [31, 31, 31, 31, 3, 3],
+      events: { JuryDrawn: [[REQUESTER, 20n]], PoolPayment: [[W, 125n]] } }).getAggHistory(AGG_ID);
+    expect(h.money.poolPayment).toMatchObject({ payee: W, amountWei: '125' });
+    const none = await eventService({ phase: 7, slotFlags: [31, 31, 31, 31, 3, 3] }).getAggHistory(AGG_ID);
+    expect(none.money.poolPayment).toBeNull();
   });
 
   it('splits rewards into draw, promote (rewards - draw - beacons) and beacons, and finds the promoter', async () => {
@@ -179,9 +191,9 @@ describe('getAggHistory v2 slots, timing and money', () => {
     expect(h.slots[0].inCluster).toBeNull();
   });
 
-  it('an undrawn round past a day after its request is draw-expired (cancel only, to the treasury)', async () => {
+  it('an undrawn round past a day after its request is draw-expired (cancel only, to the arbiter pool)', async () => {
     const h = await eventService({ phase: 1, info: { requestTime: BigInt(now() - 86400 - 60) } }).getAggHistory(AGG_ID);
-    expect(h.outcome).toBe('DRAW EXPIRED: can only be cancelled (prepay to the treasury)');
+    expect(h.outcome).toBe('DRAW EXPIRED: can only be cancelled (prepay to the arbiter pool)');
     expect(h.analysis.drawExpired).toBe(true);
   });
 });

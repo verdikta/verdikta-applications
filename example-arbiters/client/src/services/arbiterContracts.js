@@ -3,8 +3,9 @@
  *
  * Owner-gated actions:
  *  - withdrawEth: claim ETH from the ReputationAggregator's pull-payment ledger
- *    (ethOwed) to the connected wallet. It holds arbiter earnings (base fees and
- *    bonuses, aggregated across all of the owner's operators), draw / promote
+ *    (ethOwed) to the connected wallet. It holds arbiter earnings (base fees,
+ *    bonuses, committer shares and arbiter pool payouts, aggregated across all of
+ *    the owner's operators), draw / promote
  *    rewards earned by calling drawJury or promote, and requester refunds — so
  *    this is a single per-wallet claim, not per operator.
  *  - claimLink: LEGACY — withdraw any LINK still sitting in an ArbiterOperator

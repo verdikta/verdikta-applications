@@ -187,8 +187,12 @@ the one-line disclosure addendum of erratum E1.
   `cancelUnsealed` and reads a round that is failed (phase 8) or cancelled (phase 9)
   as a failed round; anything else is "evaluation not ready". An undrawn round never
   times out: undrawn for a day, it can only be cancelled, its whole prepay to the
-  aggregator's treasury. A round with M commits that nobody promoted, and a missed
-  beacon quorum, also send the unspent prepay to the treasury, not back. The lens's
+  aggregator's arbiter pool (`ethOwed(address(0))`, which nobody withdraws: each draw
+  pays an eighth of it to one registered arbiter, `PoolPayment`). A missed beacon
+  quorum also sends the unspent prepay to the pool, not back, and a round with M
+  commits that nobody promoted shares it equally among the jurors that committed
+  (`CommitPayment`, counted in the round's rewards; only the indivisible wei goes to
+  the pool). The lens's
   `openRound(claimId)` names the round open now, its wallet, phase and deadline, and
   `jurorFees(listingId)` what each juror is paid.
 - **Failed rounds and the bond** (erratum E6, as the v2 aggregator lets it be
@@ -206,7 +210,8 @@ the one-line disclosure addendum of erratum E1.
   that abstains, so before v2 (where every round that ran forfeited the bond) a
   listing too large for the runner, or an image outside an arbiter's registry list,
   could take hunters' bonds for the maker. A hunter still pays for such rounds: the
-  base fees are spent at the draw, and a treasury failure keeps the rest. Each is sent with exactly `SUBMISSION_GAS` (10M): a reveal that
+  base fees are spent at the draw, and a failure that pays the arbiter pool or the
+  committers keeps the rest. Each is sent with exactly `SUBMISSION_GAS` (10M): a reveal that
   cannot forward all of it reverts, so a reveal's gas limit is about 10.3M
   (only the gas used is paid). A request the aggregator refuses leaves the
   claim `RoundFailed` with its prepay held; with a fixed budget that is the
@@ -1298,8 +1303,10 @@ when either copy drifts). It never calls the requester: results are read by poll
 (`maxTotalFee(fee, floor, withBeacons, K, P)`), the jury and timeout per request (`getJury`, and the
 owner's `maxJury` and `maxTimeout` bounds), sequential ids from 1, the draw from block B+2 (the
 requester's reward for 30 s, a day's limit), the beacon stage, the M+ / T+ commit close, promote,
-settle after the deadline (which runs from the draw), `cancelUnsealed`, and the treasury routing of
-the real contract. Its hooks (`scriptCommits`, `scriptReveals`, `scriptResult`, `scriptBeacons`,
+settle after the deadline (which runs from the draw), `cancelUnsealed`, and the real contract's
+routing of the rest: to the arbiter pool (`ethOwed(address(0))`, `RequesterRefunded` to address 0), or
+for a round nobody promoted to its commits (`CommitPayment`), and an eighth of the pool paid at each
+draw (`PoolPayment`, to the stand-in payee: the mock has no arbiter registry). There is no treasury. Its hooks (`scriptCommits`, `scriptReveals`, `scriptResult`, `scriptBeacons`,
 `setPoolShortage`, the owner settings) stand in for the arbiters and the owner; the contract's
 header lists them. A fault the real contract cannot produce is not added to the mock.
 
@@ -1391,9 +1398,10 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   phase from `getRoundInfo`. So a round with no verdict reads as failed from the moment it is dead at the aggregator (past
   its deadline, or cancelled), before anyone finalizes it, with the re-trigger's quote and deadline from the chain, what the
   round cost (`getRoundInfo`: received, paid out, the leftover, and whether the leftover came back or went to the
-  aggregator's treasury), where the bond goes at expiry under E6's rule, and the pointer to `check`; `status --wait` exits 5
+  aggregator's arbiter pool or was shared by the jurors that committed: `refundTo` 'pool' or
+  'committers'), where the bond goes at expiry under E6's rule, and the pointer to `check`; `status --wait` exits 5
   for it. A round not drawn yet says so: it never times out, anyone may draw it (the site's keeper does, and `claim` sends
-  `drawJury` through the contract when it is due), and undrawn for a day it can only be cancelled to the treasury. Until
+  `drawJury` through the contract when it is due), and undrawn for a day it can only be cancelled to the arbiter pool. Until
   `finalize` records a failure there is nothing to re-trigger: `reveal --retrigger` refuses with `ROUND_NOT_RECORDED`, and
   `claim` records it. An open round never reads as failed: `finalize`'s dry run is refused until the round is dead. A Committed claim says whether it is disclosed and in its fix window. The reveal deadline is the
   lens's, and against what `commit` printed and recorded (`told` in `state.json`) `status` says when a release or a
@@ -1832,7 +1840,7 @@ the draw), and then `settle` fails it, which `StakeAttestation.finalize` tries.
 | OracleRequest, Chainlink job, EA, `fulfillOracleRequestV`, `fulfill`: `gasLimit 9,000,000` (the arbiter's `beacon` branch; v1's job had 6,000,000), 2 confirmations | The bridge calls the EA with the job's body, up to the job's 840 s | **G2**: the real job and `ArbiterOperator` |
 | **The N-th reveal's gas.** `fulfill` runs `_finalize` (1.3M to 6.9M by answer length); a reveal out of gas is lost | `scriptResult` always fits | **G2**: the N-th `fulfill` under the job's gas limit |
 | **Timing.** The deadline is the request's jury timeout from the draw (the listing's, 900 s in this run), T+ 155 s, 120 s to reveal after `promote`; 3 to 6 minutes a round | The same rules on Hardhat's clock (the bridge sets T+ and the reveal window with `setTimeouts`, and the owner's bounds with `setLimits`); a round takes seconds | **G2**: a cold cache, real jurors, §11's budget |
-| **The failed round (E6).** `settle` after the deadline: failed in commit (refund), never promoted (treasury), reveal (refund); a missed beacon quorum and a cancelled round (treasury) | The same phases and routing; this round fails in commit, no commit at all | This round, commit phase; contract tests the rest |
+| **The failed round (E6).** `settle` after the deadline: failed in commit (refund), never promoted (the committers' shares), reveal (refund); a missed beacon quorum and a cancelled round (the arbiter pool) | The same phases and routing; this round fails in commit, no commit at all | This round, commit phase; contract tests the rest |
 | While a round is open, `getEvaluation` reports `valid` false | The same | `_poll` reads the vector only when `valid` is true |
 | **`settle`** reports K outcomes to the keeper inside `StakeAttestation.finalize`'s try/catch. Out of gas there is caught, and `finalize` then reverts "evaluation not ready" | Costs almost nothing | **G2**: the keeper's and the tool's gas estimate for a real failed round |
 | Late reveals are classified against the stored median and spread; reputation, penalties, the beacon stage | Classified in the port only; no reputation; no beacons | Dispatcher tests; not visible to a requester. §12's penalties: **G2** |

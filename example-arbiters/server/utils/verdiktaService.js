@@ -102,8 +102,10 @@ function summarizeGas(records) {
 // v2 ReputationAggregator: config views, the round/slot views and the ETH ledger.
 const AGGREGATOR_ABI = [
   "function keeper() view returns (address)",
-  // ETH pull-payment ledger: arbiter owners' base fees and bonuses, anyone's draw /
-  // promote rewards and beacon payments, and requesters' refunds. Claimed via withdrawEth().
+  // ETH pull-payment ledger: arbiter owners' base fees, bonuses, committer shares and
+  // arbiter pool payouts, anyone's draw / promote rewards and beacon payments, and
+  // requesters' refunds. Claimed via withdrawEth(). ethOwed(address(0)) is the arbiter
+  // pool, which nobody can withdraw.
   "function ethOwed(address) view returns (uint256)",
   // No K/M/N/P or timeout getters: the jury goes with each request (item 15),
   // bounded by the owner's limits, and getJury(aggId) returns a round's own.
@@ -121,7 +123,6 @@ const AGGREGATOR_ABI = [
   "function dispatchGas() view returns (uint32)",
   "function spreadFloor() view returns (uint256)",
   "function roundCount() view returns (uint256)",
-  "function treasury() view returns (address)",
   "function beacons() view returns (address)",
   "function paused() view returns (bool)",
   "function getRoundInfo(bytes32 aggId) view returns (uint8 phase, uint256 requestBlock, bytes32 sealedHash, uint256 closeBlock, uint256 received, uint256 baseFees, uint256 bonuses, uint256 rewards, uint256 deadline, uint256 windowEnd, uint256 commits, uint256 requestTime)",
@@ -213,17 +214,27 @@ const AGG_EVENT_ABI = [
   "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, string justifications)",
   "event EvaluationFailed(bytes32 indexed aggRequestId, uint8 phase)",
   "event RoundSettled(bytes32 indexed aggRequestId, bool failed)",
-  "event RoundCancelled(bytes32 indexed aggRequestId, uint256 toTreasury)",
+  "event RoundCancelled(bytes32 indexed aggRequestId, uint256 toPool)",
   "event BasePayment(bytes32 indexed aggRequestId, uint256 pollIndex, address indexed payee, uint256 amount)",
   "event BonusPayment(bytes32 indexed aggRequestId, uint256 pollIndex, address indexed payee, uint256 amount)",
   "event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount)",
+  // a never-promoted round's unspent prepay, one equal share per slot that committed
+  "event CommitPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount)",
+  // an eighth of the arbiter pool, paid at a draw to a random registered arbiter's payee
+  "event PoolPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount)",
   "event SlotSkipped(bytes32 indexed aggRequestId, uint256 pollIndex, uint8 reason)",
 ];
+// The arbiter pool is the aggregator's ledger entry ethOwed(address(0)): the
+// forfeits are RequesterRefunded with requester = address(0), and RoundCancelled.
+// Nobody can withdraw it; each draw pays an eighth of it out (PoolPayment).
 // The subset the oracle-health scan needs (RequesterRefunded and RoundCancelled
-// for the prepay that went to the treasury, SlotSkipped for skipped slots).
+// for the prepay that went to the arbiter pool, CommitPayment for a
+// never-promoted round's committer shares, PoolPayment for the pool's payouts,
+// SlotSkipped for skipped slots).
 const HEALTH_EVENTS = [
   'RequestAIEvaluation', 'JuryDrawn', 'CommitReceived', 'CommitPhaseComplete', 'RevealReceived',
   'FulfillAIEvaluation', 'EvaluationFailed', 'RoundSettled', 'RoundCancelled', 'RequesterRefunded', 'SlotSkipped',
+  'CommitPayment', 'PoolPayment',
 ];
 
 // One log query may stall this long before it's treated as failed. ethers'
@@ -416,7 +427,7 @@ class VerdiktaService {
       const str = (fn) => withRetry(fn).then((v) => String(v)).catch(() => null);
       const [
         tPlus, revealWindow, drawRewardFees, promoteRewardFees, requesterDrawPriority,
-        settlePerRequest, dispatchGas, spreadFloor, roundCount, treasury, beacons, paused,
+        settlePerRequest, dispatchGas, spreadFloor, roundCount, poolWei, beacons, paused,
       ] = await Promise.all([
         num(() => agg.tPlus()),
         num(() => agg.revealWindow()),
@@ -427,7 +438,8 @@ class VerdiktaService {
         num(() => agg.dispatchGas()),
         num(() => agg.spreadFloor()),
         num(() => agg.roundCount()),
-        str(() => agg.treasury()),
+        // the arbiter pool's balance: ethOwed(address(0))
+        withRetry(() => agg.ethOwed(ZERO_ADDRESS)).catch(() => null),
         str(() => agg.beacons()),
         withRetry(() => agg.paused()).then(Boolean).catch(() => null),
       ]);
@@ -446,7 +458,7 @@ class VerdiktaService {
         dispatchGas,
         spreadFloor,
         roundCount,
-        treasury,
+        poolEth: poolWei != null ? ethers.formatEther(poolWei) : null,
         beacons: beacons && beacons !== ZERO_ADDRESS ? beacons : null,
         paused,
       };
@@ -681,7 +693,7 @@ class VerdiktaService {
    * draw (`short`). `maxJury` is returned for reference.
    * `scansAll` is the keeper's scansAll(cls): false means a draw walks only part
    * of the class list, so a beacon round whose draw then fails pays the
-   * treasury, not the requester.
+   * arbiter pool, not the requester.
    */
   async getArbiterAvailabilityByClass() {
     try {
@@ -873,8 +885,9 @@ class VerdiktaService {
       }));
     }
 
-    // Live claimable ETH is per-OWNER (ethOwed on the aggregator): base fees and
-    // bonuses across all the owner's operators, plus any draw / promote rewards and
+    // Live claimable ETH is per-OWNER (ethOwed on the aggregator): base fees,
+    // bonuses, committer shares and arbiter pool payouts across all the owner's
+    // operators, plus any draw / promote rewards and
     // requester refunds this wallet earned.
     const ethOwedWei = await this.getEthOwed(ownerAddress);
 
@@ -1250,8 +1263,9 @@ class VerdiktaService {
   // at the N-th reveal (FulfillAIEvaluation). A failed round is settled with
   // EvaluationFailed(phase) and charged to the arbiters that fell short (see
   // utils/roundModel.describeRound). Rounds that never got going (≥ M commits
-  // but never closed or promoted, or never drawn) are counted apart, and those
-  // whose prepay went to the treasury are totalled.
+  // but never closed or promoted, or never drawn) are counted apart; the prepay
+  // sent to the arbiter pool, the never-promoted rounds' committer shares
+  // (CommitPayment) and the pool's payouts (PoolPayment) are totalled.
 
   /**
    * @param {{ days?: number }} [opts] look-back window in days (default 14).
@@ -1265,11 +1279,9 @@ class VerdiktaService {
     const iface = new ethers.Interface(AGG_EVENT_ABI);
     const topic0Or = [HEALTH_EVENTS.map((n) => iface.getEvent(n).topicHash)];
 
-    const [latest, blockSec, treasury] = await Promise.all([
+    const [latest, blockSec] = await Promise.all([
       withRetry(() => provider.getBlockNumber()),
       this.getBlockSeconds(),
-      // RequesterRefunded to this address is prepay kept by the treasury, not a refund
-      withRetry(() => agg.treasury()).then((a) => String(a).toLowerCase()).catch(() => null),
     ]);
     const BLOCKS_PER_DAY = Math.round(86400 / blockSec);
     const windowBlocks = Math.max(1, Math.round(days * BLOCKS_PER_DAY));
@@ -1325,11 +1337,13 @@ class VerdiktaService {
       if (!rounds[k]) {
         rounds[k] = { aggId: String(aggId), round: roundNumber(aggId), requestBlock: null, drawBlock: null, promoteBlock: null,
           fulfilled: false, fulfillBlock: null, failedPhase: null, cancelled: false, cancelledWei: 0n, settled: false,
-          commits: {}, reveals: {}, refunds: [], skips: {} };
+          commits: {}, reveals: {}, refunds: [], committerWei: 0n, skips: {} };
       }
       return rounds[k];
     };
     const fulfillTxHashes = new Set();
+    // The arbiter pool's payouts in the window, per payee (an arbiter's operator owner)
+    const poolPaid = { count: 0, wei: 0n, byPayee: {} };
     for (const log of allLogs) {
       let p;
       try { p = iface.parseLog({ topics: log.topics, data: log.data }); } catch { continue; }
@@ -1350,8 +1364,18 @@ class VerdiktaService {
           break;
         case 'EvaluationFailed': r.failedPhase = Number(p.args.phase); break;
         case 'RoundSettled': r.settled = true; break;
-        case 'RoundCancelled': r.cancelled = true; r.cancelledWei = p.args.toTreasury; break;
+        // RoundCancelled's amount (toPool) goes to the arbiter pool
+        case 'RoundCancelled': r.cancelled = true; r.cancelledWei = p.args[1]; break;
+        // requester = address(0) is the arbiter pool: prepay forfeited, not a refund
         case 'RequesterRefunded': r.refunds.push({ to: String(p.args.requester).toLowerCase(), wei: p.args.amount }); break;
+        case 'CommitPayment': r.committerWei += p.args.amount; break;
+        case 'PoolPayment': {
+          const payee = String(p.args.payee);
+          const b = poolPaid.byPayee[payee.toLowerCase()] || (poolPaid.byPayee[payee.toLowerCase()] = { payee, count: 0, wei: 0n });
+          b.count++; b.wei += p.args.amount;
+          poolPaid.count++; poolPaid.wei += p.args.amount;
+          break;
+        }
         case 'SlotSkipped':
           if (p.args.pollIndex !== ethers.MaxUint256) {
             r.skips[Number(p.args.pollIndex)] = SKIP_REASONS[Number(p.args.reason)] || `reason ${p.args.reason}`;
@@ -1405,8 +1429,8 @@ class VerdiktaService {
 
     const emptyBucketTally = () => ({
       requests: 0, fulfilled: 0, failed: 0, malformed: 0, notProgressed: 0, notDrawn: 0, running: 0,
-      notDrawnBy: { poolShortage: 0, drawTreasury: 0, beaconQuorum: 0, cancelled: 0 },
-      treasuryLost: 0, treasuryLostWei: 0n,
+      notDrawnBy: { poolShortage: 0, drawPool: 0, beaconQuorum: 0, cancelled: 0 },
+      toPool: 0, toPoolWei: 0n, toCommitters: 0, toCommittersWei: 0n,
     });
     const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0, failed: 0, malformed: 0, notProgressed: 0, notDrawn: 0 }));
     const tally = emptyBucketTally();
@@ -1450,8 +1474,8 @@ class VerdiktaService {
       tally.requests++;
       if (inDays(o)) daily[o].requests++;
       const slots = r.slots || [];
-      const toTreasury = r.refunds.filter((x) => treasury && x.to === treasury);
-      const refundTo = toTreasury.length ? 'treasury' : r.refunds.length ? 'requester' : null;
+      const toPool = r.refunds.filter((x) => x.to === ZERO_ADDRESS);
+      const refundTo = toPool.length ? 'pool' : r.refunds.length ? 'requester' : null;
       const d = describeRound({
         phase: phaseOf(r), failedPhase: r.failedPhase, M: r.jury?.M, N: r.jury?.N, fulfilled: r.fulfilled, refundTo,
         slots: slots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: r.reveals[s.index]?.late, skipReason: r.skips[s.index] })),
@@ -1463,10 +1487,14 @@ class VerdiktaService {
       tally[bucket]++;
       if (bucket !== 'running' && inDays(o)) daily[o][bucket]++;
       if (d.notDrawnReason) tally.notDrawnBy[d.notDrawnReason]++;
-      if (d.treasury) {
-        const wei = toTreasury.reduce((acc, x) => acc + x.wei, 0n) + (r.cancelledWei || 0n);
-        tally.treasuryLost++;
-        tally.treasuryLostWei += wei;
+      if (d.forfeit === 'pool') {
+        tally.toPool++;
+        tally.toPoolWei += toPool.reduce((acc, x) => acc + x.wei, 0n) + (r.cancelledWei || 0n);
+      } else if (d.forfeit === 'committers') {
+        // the committers' shares; the indivisible rest (< 1 wei per committer) went to the pool
+        tally.toCommitters++;
+        tally.toCommittersWei += r.committerWei;
+        tally.toPoolWei += toPool.reduce((acc, x) => acc + x.wei, 0n);
       }
       if (d.kind === 'malformed') likelyMalformed.push({ aggId: r.aggId, round: r.round });
 
@@ -1764,15 +1792,27 @@ class VerdiktaService {
         likelyMalformed: tally.malformed,
         likelyMalformedAggIds: likelyMalformed,
         // ≥ M commits, but the window was never closed or the commits never
-        // promoted: nobody is charged, and the prepay goes to the treasury.
+        // promoted: nobody is charged, and the unspent prepay is shared by the
+        // slots that committed (CommitPayment).
         notProgressed: tally.notProgressed,
         // Never drawn: pool shortage (refunded), a draw failure after the beacon
-        // stage when the walk does not cover the class (treasury), a missed beacon
-        // quorum (treasury) or cancelled undrawn (treasury).
+        // stage when the walk does not cover the class (arbiter pool), a missed
+        // beacon quorum (arbiter pool) or cancelled undrawn (arbiter pool).
         notDrawn: tally.notDrawn,
         notDrawnBy: tally.notDrawnBy,
-        // Rounds whose unspent prepay went to the treasury, and the ETH it took.
-        treasuryLost: { count: tally.treasuryLost, eth: ethers.formatEther(tally.treasuryLostWei) },
+        // Rounds whose unspent prepay went to the arbiter pool, and the ETH (this
+        // includes the dust of the never-promoted rounds below).
+        toPool: { count: tally.toPool, eth: ethers.formatEther(tally.toPoolWei) },
+        // Never-promoted rounds whose unspent prepay was shared by the committers.
+        toCommitters: { count: tally.toCommitters, eth: ethers.formatEther(tally.toCommittersWei) },
+        // The arbiter pool's payouts at draws in the window (PoolPayment), per payee.
+        poolPaid: {
+          count: poolPaid.count,
+          eth: ethers.formatEther(poolPaid.wei),
+          byPayee: Object.values(poolPaid.byPayee)
+            .sort((a, b) => (b.wei > a.wei ? 1 : b.wei < a.wei ? -1 : 0))
+            .map((b) => ({ payee: b.payee, count: b.count, eth: ethers.formatEther(b.wei) })),
+        },
         inProgress: tally.running,
         // Rate over the drawn rounds the arbiters decided: fulfilled vs failed for
         // too few commits or reveals.
@@ -1830,11 +1870,9 @@ class VerdiktaService {
     const jury = await this._getJury(aggId);
     const { K = 0, M = 0, N = 0 } = jury || {};
     const contractParams = jury;
-    const [treasury, beaconsAddr] = await Promise.all([
-      withRetry(() => agg.treasury()).then(String).catch(() => null),
-      withRetry(() => agg.beacons()).then(String).catch(() => null),
-    ]);
-    const isTreasury = (a) => treasury != null && String(a).toLowerCase() === treasury.toLowerCase();
+    const beaconsAddr = await withRetry(() => agg.beacons()).then(String).catch(() => null);
+    // RequesterRefunded to address(0) is the arbiter pool (ethOwed(address(0))), not a refund
+    const isPool = (a) => String(a).toLowerCase() === ZERO_ADDRESS;
 
     // 2. Round state. Phase 0 = the aggregator has no such round.
     const ri = await withRetry(() => agg.getRoundInfo(aggId));
@@ -1894,7 +1932,7 @@ class VerdiktaService {
     const timeline = [];
     let requestEvent = null, fulfillment = null, failedPhase = null;
     let draw = null, promoteTx = null, settleTx = null, beaconStage = false, scoringReverted = false;
-    const beaconPayments = [], refunds = [];
+    const beaconPayments = [], refunds = [], commitPayments = [], poolPayments = [];
     let cancelledWei = null;
     const lateBySlot = {}, skipBySlot = {}, bonusBySlot = {};
     for (const log of logs) {
@@ -1948,8 +1986,16 @@ class VerdiktaService {
           entry.detail = a.failed ? 'settled as failed' : 'settled';
           break;
         case 'RoundCancelled':
-          cancelledWei = a.toTreasury;
-          entry.detail = `${fmt(a.toTreasury)} ETH to the treasury`;
+          cancelledWei = a[1];   // toPool: the arbiter pool's
+          entry.detail = `${fmt(a[1])} ETH to the arbiter pool`;
+          break;
+        case 'CommitPayment':
+          commitPayments.push({ payee: String(a.payee), wei: a.amount });
+          entry.detail = `committer share: ${fmt(a.amount)} ETH to ${a.payee}`;
+          break;
+        case 'PoolPayment':
+          poolPayments.push({ payee: String(a.payee), wei: a.amount });
+          entry.detail = `arbiter pool payout at this draw: ${fmt(a.amount)} ETH to ${a.payee}`;
           break;
         case 'BasePayment': entry.detail = `slot ${a.pollIndex}: ${fmt(a.amount)} ETH to ${a.payee}`; break;
         case 'BonusPayment':
@@ -1957,12 +2003,13 @@ class VerdiktaService {
           entry.detail = `slot ${a.pollIndex}: ${fmt(a.amount)} ETH to ${a.payee}`;
           break;
         case 'RequesterRefunded': {
-          // _refund pays the treasury instead of the requester when a refund would
-          // be a free re-roll (missed beacon quorum, never promoted, ...)
-          const toTreasury = isTreasury(a.requester);
-          refunds.push({ to: String(a.requester), wei: a.amount, toTreasury });
-          entry.detail = toTreasury
-            ? `${fmt(a.amount)} ETH to the treasury (no refund)`
+          // _refund pays the arbiter pool (address(0)) instead of the requester when a
+          // refund would be a free re-roll (missed beacon quorum, a seed-dependent draw
+          // failure, the dust of a never-promoted round)
+          const toPool = isPool(a.requester);
+          refunds.push({ to: String(a.requester), wei: a.amount, toPool });
+          entry.detail = toPool
+            ? `${fmt(a.amount)} ETH to the arbiter pool (no refund)`
             : `${fmt(a.amount)} ETH refunded to ${a.requester}`;
           break;
         }
@@ -1980,32 +2027,42 @@ class VerdiktaService {
     }
 
     // 5. Money. getRoundInfo's `rewards` lumps the draw reward (JuryDrawn), the
-    //    promote reward (no event) and the beacon payments (BeaconPayment), so the
-    //    promote reward is derived as rewards − draw − beacons. It went to whoever
-    //    called promote(): the sender of the CommitPhaseComplete transaction.
+    //    promote reward (no event), the beacon payments (BeaconPayment) and a
+    //    never-promoted round's committer shares (CommitPayment), so the promote
+    //    reward is derived as rewards − draw − beacons − committers. It went to
+    //    whoever called promote(): the sender of the CommitPhaseComplete
+    //    transaction. A PoolPayment at this round's draw comes out of the arbiter
+    //    pool, not this round's prepay, so it is not in `rewards`.
     const drawWei = draw ? draw.wei : 0n;
     const beaconWei = beaconPayments.reduce((acc, b) => acc + b.wei, 0n);
-    const promoteWei = BigInt(ri.rewards) - drawWei - beaconWei;
+    const committerWei = commitPayments.reduce((acc, b) => acc + b.wei, 0n);
+    const promoteWei = BigInt(ri.rewards) - drawWei - beaconWei - committerWei;
     let promoter = null;
     if (promoteTx) {
       promoter = await withRetry(() => this.provider.getTransaction(promoteTx))
         .then((tx) => (tx && tx.from ? ethers.getAddress(tx.from) : null)).catch(() => null);
     }
-    const refundWei = refunds.filter((r) => !r.toTreasury).reduce((acc, r) => acc + r.wei, 0n);
-    const treasuryWei = refunds.filter((r) => r.toTreasury).reduce((acc, r) => acc + r.wei, 0n) + (cancelledWei || 0n);
+    const refundWei = refunds.filter((r) => !r.toPool).reduce((acc, r) => acc + r.wei, 0n);
+    const poolWei = refunds.filter((r) => r.toPool).reduce((acc, r) => acc + r.wei, 0n) + (cancelledWei || 0n);
     const money = {
       received: fmt(ri.received),
       baseFees: fmt(ri.baseFees),
       bonuses: fmt(ri.bonuses),
       rewards: fmt(ri.rewards),
       draw: draw ? { eth: fmt(drawWei), to: draw.drawer } : null,
-      promote: promoteTx ? { eth: fmt(promoteWei), to: promoter, derived: 'rewards − draw − beacons' } : null,
+      promote: promoteTx ? { eth: fmt(promoteWei), to: promoter, derived: 'rewards − draw − beacons − committers' } : null,
       beacons: beaconPayments.length
         ? { eth: fmt(beaconWei), payments: beaconPayments.map((b) => ({ payee: b.payee, eth: fmt(b.wei) })) }
         : null,
-      refunded: refunds.some((r) => !r.toTreasury) ? fmt(refundWei) : null,
-      toTreasury: treasuryWei > 0n ? fmt(treasuryWei) : null,
-      treasury,
+      committers: commitPayments.length
+        ? { eth: fmt(committerWei), payments: commitPayments.map((b) => ({ payee: b.payee, eth: fmt(b.wei) })) }
+        : null,
+      refunded: refunds.some((r) => !r.toPool) ? fmt(refundWei) : null,
+      toPool: poolWei > 0n ? fmt(poolWei) : null,
+      // paid out of the arbiter pool at this round's draw (not from this round's prepay)
+      poolPayout: poolPayments.length
+        ? { eth: fmt(poolPayments.reduce((acc, b) => acc + b.wei, 0n)), payments: poolPayments.map((b) => ({ payee: b.payee, eth: fmt(b.wei) })) }
+        : null,
     };
 
     // 6. Beacon arbiters (JuryBeacons.getBeacons), when the round had a beacon stage.
@@ -2072,7 +2129,7 @@ class VerdiktaService {
         actual: actualByKey ? (actualByKey[s.key.toLowerCase()] || { scored: false }) : null,
       };
     });
-    const refundTo = refunds.length ? (refunds.some((r) => r.toTreasury) ? 'treasury' : 'requester') : null;
+    const refundTo = refunds.length ? (refunds.some((r) => r.toPool) ? 'pool' : 'requester') : null;
     const d = describeRound({
       phase, failedPhase, M, N, fulfilled: !!fulfillment, refundTo,
       slots: rawSlots.map((s) => ({ flags: s.flags, qcode: s.qcode, late: lateBySlot[s.index], skipReason: skipBySlot[s.index] })),
@@ -2096,7 +2153,7 @@ class VerdiktaService {
       outcomeKind: d.kind,
       failStage: d.failStage,
       notDrawnReason: d.notDrawnReason,
-      treasury: d.treasury,
+      forfeit: d.forfeit,
       blame: d.blame,
       analysis: d.analysis,
       timeline,

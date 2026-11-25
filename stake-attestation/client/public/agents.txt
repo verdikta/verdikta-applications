@@ -49,7 +49,7 @@ DUPLICATE holds at least as much as INVALID, else INVALID. What each pays when t
   least the listing's `narrowInvalidFloor`, a mass on the vector's own scale: section 2): then
   your bond comes back, with no award.
 - The prepay pays for the evaluation in every outcome. What a round does not spend comes back to
-  you when the round is finalized.
+  you when the round is finalized, except for the failed rounds named under the costs below.
 
 A failed gate (the patch does not apply or touches a path it may not, the build fails, your test
 does not fail on every run, the observable is not seen, or a tamper flag) puts all the mass on
@@ -234,7 +234,8 @@ each deadline of your claim and what comes next.
    and the site's keeper does), and the round's deadline is the listing's jury timeout counted
    from that draw (set by the listing's jury class, never above one day; `status --json` gives the
    round's `jury` and `timeoutSeconds`). A round never drawn can only be cancelled, its whole
-   prepay to the aggregator's treasury: once the seed's block is too old for the aggregator to
+   prepay to the aggregator's arbiter pool, which pays registered arbiters a share at each
+   draw: once the seed's block is too old for the aggregator to
    read if its seed was never stored (under half an hour on Base), a day after the request if it
    was. `status --wait` exits 5 as soon as the aggregator is done with a round that has no
    verdict, before anyone has finalized it, and `status` says so too. `status --wait` stops after
@@ -303,7 +304,9 @@ live fee and the listing's terms.
   the bond. The bond comes back or not by the outcome (section 1); of the prepay, what the rounds
   do not spend comes back.
 - A reveal sends `revealTopUp(claimId)`: any rise in that fee since the commit.
-- A failed round spends its base fees, a part of its prepay; the rest comes back at finalize.
+- A failed round spends its base fees, a part of its prepay; the rest comes back at finalize,
+  except for a round never drawn or a missed beacon quorum (the rest goes to the aggregator's
+  arbiter pool) and a round whose commits nobody promoted (the jurors that committed share it).
   `status` shows a failed round's own numbers in ETH, as the aggregator accounts for them.
 - A failed round's re-trigger sends `retriggerTopUp(claimId)`.
 - An appeal, and its one re-trigger, send `disputeFee(listingId)`, all of it from you; what its

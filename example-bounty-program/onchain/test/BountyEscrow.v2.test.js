@@ -6,6 +6,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { loadFixture, time, mine } = require("@nomicfoundation/hardhat-network-helpers");
+const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
 const { mergedAbi } = require("../deploy/helpers");
 
 describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
@@ -504,7 +505,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       expect(await phase(f.agg, aggId)).to.equal(3n);
     });
 
-    it("a missed beacon quorum ends the round (prepay to the treasury); it re-runs with the bond kept", async function () {
+    it("a missed beacon quorum ends the round (prepay to the arbiter pool); it re-runs with the bond kept", async function () {
       const f = await loadFixture(fixture);
       const { bountyId } = await createBounty(f, { withBeacons: true });
       const { submissionId, aggId } = await submit(f, bountyId);
@@ -512,9 +513,10 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       await f.escrow.drawJury(bountyId, submissionId);
       await f.agg.scriptBeacons(aggId, 1, true);                           // 1 of 2, deadline passed
       expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("DRAW");
-      const treasury = await f.agg.treasury();
-      await expect(f.escrow.drawJury(bountyId, submissionId)).to.emit(f.agg, "EvaluationFailed").withArgs(aggId, 2);
-      expect(await f.agg.ethOwed(treasury)).to.be.gt(0);
+      await expect(f.escrow.drawJury(bountyId, submissionId))
+        .to.emit(f.agg, "EvaluationFailed").withArgs(aggId, 2)
+        .and.to.emit(f.agg, "RequesterRefunded").withArgs(aggId, ethers.ZeroAddress, anyValue);
+      expect(await f.agg.ethOwed(ethers.ZeroAddress)).to.be.gt(0);   // the arbiter pool
       expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("CLOSE_FAILED");
       await expect(f.escrow.closeFailedRound(bountyId, submissionId)).to.emit(f.escrow, "RerunAwaited");
       expect((await f.escrow.getSubmission(bountyId, submissionId)).bondHeld).to.equal(BOND);

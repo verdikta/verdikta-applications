@@ -143,7 +143,7 @@ function OwnerDetails() {
         </a>
       </p>
       <p className="network-note">Network: {chain.name}</p>
-      <p className="network-note" title="ETH this owner can withdraw from the aggregator's ethOwed ledger: arbiter base fees and bonuses across its operators, plus any draw / promote rewards and refunds it earned">
+      <p className="network-note" title="ETH this owner can withdraw from the aggregator's ethOwed ledger: arbiter base fees, bonuses, committer shares and arbiter pool payouts across its operators, plus any draw / promote rewards and refunds it earned">
         Claimable: <strong>{claimableEth ?? '—'}</strong> ETH
       </p>
 

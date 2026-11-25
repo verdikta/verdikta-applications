@@ -22,16 +22,20 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 ///           settle after the deadline (which runs from the draw), cancelUnsealed for an undrawable
 ///           round. Base fees are credited at the draw, bonuses at finalization, rewards to whoever
 ///           draws (the requester only within 30 s) and promotes. Refunds go to the requester, or to
-///           the treasury where the real contract sends them (beacon quorum missed, M commits but
-///           never promoted, cancelled).
+///           the arbiter pool, ethOwed(address(0)), where the real contract sends them (beacon quorum
+///           missed, cancelled), announced as RequesterRefunded(aggId, address(0), amount) or
+///           RoundCancelled. A round with M commits that was never promoted shares its unspent prepay
+///           among its commits (CommitPayment, counted in rewards; the indivisible rest to the pool).
+///           Each successful draw pays an eighth of the pool to ARBITERS (PoolPayment): the mock has
+///           no registry, so the payee is the stand-in and never misses. There is no treasury.
 /// @dev Test hooks stand in for the arbiters and the owner:
 ///         arbiters: scriptCommits, scriptReveals, scriptResult (a shortcut from any drawn phase),
 ///                   scriptBeacons, setPoolShortage;
 ///         owner:    setLimits, setTimeouts, setRewards, setBonusMultiplier, setMaxOracleFee,
-///                   setArbiterFee (the jurors' posted fee; 0 = the ceiling), setTreasury,
+///                   setArbiterFee (the jurors' posted fee; 0 = the ceiling),
 ///                   setBeacons, setPaused;
 ///         faults:   setRequestGasCost, setWithdrawBroken, setWithdrawBurnsGas.
-///      Base fees, bonuses and beacon payments are credited to ARBITERS, a stand-in payee.
+///      Base fees, bonuses, beacon, commit and pool payments are credited to ARBITERS, a stand-in payee.
 ///      This file is kept byte-identical in example-bounty-program and stake-attestation.
 contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausable {
     // ---- the real contract's limits ----
@@ -44,6 +48,8 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     uint40 public constant MAX_TIMEOUT = 1 days;   // AggregatorLib.MAX_TIMEOUT: no request timeout above a day
     uint40 public constant PROMOTE_GRACE = 30;
     address public constant ARBITERS = address(0xA4B17E45);
+    address public constant POOL = address(0);    // the arbiter pool's ledger entry
+    uint256 public constant POOL_SHARE = 8;       // each draw pays 1/8 of the pool
 
     uint8 private constant PH_DRAW = 1;
     uint8 private constant PH_BEACON = 2;
@@ -65,6 +71,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     error DrawExpired();
     error NothingOwed();
     error EthTransferFailed();
+    error NotAuthorized();
     error BadJury();   // AggregatorLib's
     /// @dev Mock-only: a scripted outcome no real round could produce.
     error Unreachable();
@@ -86,7 +93,6 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     uint40 public tPlus = 155;
     uint40 public revealWindow = 120;
     uint256 public override maxOracleFee = 4e14;
-    address public treasury = address(0x7EA5);
     uint8 public beaconQuorum = 2;
     bool public beaconsEnabled = true;
 
@@ -167,7 +173,6 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     function setBonusMultiplier(uint8 b) external { bonusMultiplier = b; }
     function setMaxOracleFee(uint256 fee) external { maxOracleFee = fee; }
     function setArbiterFee(uint256 fee) external { arbiterFee = fee; }
-    function setTreasury(address t) external { treasury = t; }
     function setBeacons(bool enabled, uint8 quorum) external { (beaconsEnabled, beaconQuorum) = (enabled, quorum); }
     function setPoolShortage(bool v) external { poolShortage = v; }
     function setRequestGasCost(uint256 gasAmount) external { requestGasCost = gasAmount; }
@@ -329,9 +334,9 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
             for (uint256 i = 0; i < paid; i++) emit BeaconPayment(aggId, ARBITERS, pay);
             ethOwed[ARBITERS] += pay * paid;
             r.rewards += pay * paid;
-            if (!ready) {                                 // quorum missed: no result, prepay to the treasury
+            if (!ready) {                                 // quorum missed: no result, prepay to the pool
                 r.phase = PH_FAILED;
-                _refund(r, aggId, treasury);
+                _refund(r, aggId, POOL);
                 emit EvaluationFailed(aggId, PH_BEACON);
                 return;
             }
@@ -356,6 +361,12 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
             ethOwed[msg.sender] += reward;
             r.rewards += reward;
         }
+        uint256 share = ethOwed[POOL] / POOL_SHARE;   // the arbiter pool's payout (AggregatorLib.payPool)
+        if (share != 0) {
+            ethOwed[POOL] -= share;
+            ethOwed[ARBITERS] += share;
+            emit PoolPayment(aggId, ARBITERS, share);
+        }
         emit JuryDrawn(aggId, msg.sender, reward);
     }
 
@@ -365,7 +376,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         if (r.sealedHash == bytes32(0) ? block.number <= uint256(r.requestBlock) + 1 + HISTORY_WINDOW
                                        : block.timestamp <= uint256(r.requestTime) + DRAW_GRACE) revert TooEarly();
         r.phase = PH_CANCELLED;
-        ethOwed[treasury] += r.received;
+        ethOwed[POOL] += r.received;
         emit RoundCancelled(aggId, r.received);
     }
 
@@ -396,7 +407,18 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         if (block.timestamp <= r.deadline) revert NotDue();
         bool failed = ph != PH_FINAL;
         if (failed) {
-            _refund(r, aggId, ph == PH_CLOSING || (ph == PH_COMMIT && r.commits >= r.m) ? treasury : r.requester);
+            if (ph == PH_CLOSING || (ph == PH_COMMIT && r.commits >= r.m)) {
+                // M commits, never promoted: an equal share per commit, the indivisible rest to the pool
+                uint256 share = (r.received - r.baseFees - r.bonuses - r.rewards) / r.commits;
+                if (share != 0) {
+                    for (uint256 i = 0; i < r.commits; i++) emit CommitPayment(aggId, ARBITERS, share);
+                    ethOwed[ARBITERS] += share * r.commits;
+                    r.rewards += share * r.commits;
+                }
+                _refund(r, aggId, POOL);
+            } else {
+                _refund(r, aggId, r.requester);
+            }
             emit EvaluationFailed(aggId, ph);
         }
         r.phase = failed ? PH_FAILED : PH_SETTLED;
@@ -476,6 +498,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
     }
 
     function withdrawEthFor(address payee) external nonReentrant {
+        if (payee == POOL) revert NotAuthorized();   // nobody withdraws the arbiter pool
         _withdrawTo(payee);
     }
 

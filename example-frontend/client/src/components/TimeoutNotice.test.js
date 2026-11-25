@@ -53,7 +53,7 @@ describe('a failed round', () => {
     expect(screen.queryByRole('button')).toBeNull();
   });
 
-  test('refund to the treasury: says it did not come back, and why', () => {
+  test('to the arbiter pool: says it did not come back, and why', () => {
     render(
       <TimeoutNotice
         info={info({ status: 'failed', failedPhase: 2, settledBy: 'other', refund: { amount: 1500000000000000n, toRequester: false } })}
@@ -62,8 +62,26 @@ describe('a failed round', () => {
     const notice = screen.getByTestId('timeout-notice');
     expect(notice).toHaveTextContent('in the beacons phase');
     expect(notice).toHaveTextContent('Your wallet did not need to send a transaction');
-    expect(notice).toHaveTextContent('The unspent 0.0015 ETH went to the treasury, not back to you');
+    expect(notice).toHaveTextContent('The unspent 0.0015 ETH went to the arbiter pool, not back to you');
     expect(notice).toHaveTextContent('free re-roll');
+  });
+
+  test('shared by the committers (never promoted): says so, with the pool remainder', () => {
+    const { rerender } = render(
+      <TimeoutNotice
+        info={info({ status: 'failed', failedPhase: 4, settledBy: 'other', refund: { amount: 0n, toRequester: false, toCommitters: 1500000000000000n } })}
+      />
+    );
+    expect(screen.getByTestId('timeout-notice')).toHaveTextContent(
+      'The unspent 0.0015 ETH was shared by the arbiters that committed, not returned to you'
+    );
+    rerender(
+      <TimeoutNotice
+        info={info({ status: 'failed', failedPhase: 4, settledBy: 'other', refund: { amount: 5n, toRequester: false, toCommitters: 1499999999999995n } })}
+      />
+    );
+    expect(screen.getByTestId('timeout-notice')).toHaveTextContent('left to the arbiter pool');
+    expect(screen.getByTestId('timeout-notice')).not.toHaveTextContent('Nothing was left');
   });
 
   test('nothing left, or the refund could not be read: no amount is claimed', () => {
@@ -84,7 +102,7 @@ test('cancelled and expired rounds offer no button', () => {
 
   rerender(<TimeoutNotice info={info({ status: 'expired', reason: 'promote-missed' })} />);
   expect(screen.getByTestId('timeout-notice')).toHaveTextContent('nobody promoted the commits before the deadline');
-  expect(screen.getByTestId('timeout-notice')).toHaveTextContent('goes to the treasury');
+  expect(screen.getByTestId('timeout-notice')).toHaveTextContent('shared by the arbiters that committed');
   expect(screen.queryByRole('button')).toBeNull();
 
   rerender(<TimeoutNotice info={info({ status: 'expired', reason: 'draw-expired' })} />);
@@ -95,7 +113,7 @@ describe('a round waiting for a call', () => {
   test.each([
     ['draw', 'The round is waiting for the jury draw.', 'Draw the jury (wallet transaction)', 'drawJury', '2 × the per-arbiter fee'],
     ['beacon-draw', 'the second jury draw', 'Draw the jury (wallet transaction)', 'drawJury', 'beacon'],
-    ['close', 'the commit phase to be closed', 'Close the commit phase (wallet transaction)', 'closeCommits', 'goes to the treasury'],
+    ['close', 'the commit phase to be closed', 'Close the commit phase (wallet transaction)', 'closeCommits', 'shared by the arbiters that committed'],
     ['promote', 'the commits to be promoted', 'Promote the commits (wallet transaction)', 'promote', '1 × the per-arbiter fee'],
     ['settle', 'The round is waiting for settlement.', 'Settle the round (wallet transaction)', 'settle', 'credits the unspent part'],
   ])('%s: says what is missing, who earns what, and offers the call', (step, heading, button, fn, earn) => {

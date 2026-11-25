@@ -42,7 +42,6 @@ const AGGREGATOR_ABI = [
   'function spreadFloor() view returns (uint256)',
   'function keeper() view returns (address)',
   'function beacons() view returns (address)',
-  'function treasury() view returns (address)',
   // events
   'event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)',
   'event RequestFunded(bytes32 indexed aggRequestId, address indexed requester, uint256 fromCredit, uint256 fromValue)',
@@ -57,7 +56,9 @@ const AGGREGATOR_ABI = [
   'event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, string justifications)',
   'event EvaluationFailed(bytes32 indexed aggRequestId, uint8 phase)',
   'event RoundSettled(bytes32 indexed aggRequestId, bool failed)',
-  'event RoundCancelled(bytes32 indexed aggRequestId, uint256 toTreasury)',
+  'event RoundCancelled(bytes32 indexed aggRequestId, uint256 toPool)',   // the whole prepay, to the arbiter pool
+  'event CommitPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount)',
+  'event PoolPayment(bytes32 indexed aggRequestId, address indexed payee, uint256 amount)',
   'event BasePayment(bytes32 indexed aggRequestId, uint256 pollIndex, address indexed payee, uint256 amount)',
   'event BonusPayment(bytes32 indexed aggRequestId, uint256 pollIndex, address indexed payee, uint256 amount)',
   'event RequesterRefunded(bytes32 indexed aggRequestId, address indexed requester, uint256 amount)',

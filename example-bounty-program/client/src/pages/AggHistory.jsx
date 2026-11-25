@@ -198,7 +198,7 @@ function AggHistory() {
               <span className="detail-label">Draw possible until:</span>
               <span className="detail-value">
                 {formatTime(status.drawExpiresAt)} (1 day after the request; after that the round can only be
-                cancelled, and its prepay goes to the treasury)
+                cancelled, and its prepay goes to the arbiter pool)
               </span>
             </div>
           )}
@@ -260,17 +260,18 @@ function AggHistory() {
               </span>
             </div>
           )}
-          {money && (money.refunds?.length > 0 || money.cancelled) && (
+          {money && (money.refunds?.length > 0 || money.cancelled || money.commitPayments?.length > 0) && (
             <div className="detail-row">
               <span className="detail-label">Unspent prepay:</span>
               <span className="detail-value">
                 {money.refunds.map((r, i) => (
                   <span key={`rf-${i}`}>
                     {i > 0 && ' · '}
-                    {formatEthWei(r.amountWei)} ETH {r.toTreasury === true ? 'to the treasury' : r.toTreasury === false ? 'refunded to the requester' : `to ${r.to.slice(0, 6)}...${r.to.slice(-4)}`}
+                    {formatEthWei(r.amountWei)} ETH {r.toPool ? 'to the arbiter pool' : 'refunded to the requester'}
                   </span>
                 ))}
-                {money.cancelled && <>{money.refunds.length > 0 && ' · '}{formatEthWei(money.cancelled.toTreasuryWei)} ETH to the treasury (round cancelled)</>}
+                {money.commitPayments?.length > 0 && <>{money.refunds.length > 0 && ' · '}{formatEthWei(money.toCommittersWei)} ETH shared by {money.commitPayments.length} committers (never promoted)</>}
+                {money.cancelled && <>{(money.refunds.length > 0 || money.commitPayments?.length > 0) && ' · '}{formatEthWei(money.cancelled.toPoolWei)} ETH to the arbiter pool (round cancelled)</>}
               </span>
             </div>
           )}
@@ -288,6 +289,16 @@ function AggHistory() {
                 {drawEvent.timestamp ? ` (${formatTime(drawEvent.timestamp)})` : ''} by{' '}
                 {drawEvent.drawer ? `${drawEvent.drawer.slice(0, 6)}...${drawEvent.drawer.slice(-4)}` : '?'}
                 {drawEvent.rewardWei ? `, reward ${formatEthWei(drawEvent.rewardWei)} ETH` : ''}
+              </span>
+            </div>
+          )}
+          {money?.poolPayment && (
+            <div className="detail-row">
+              <span className="detail-label">Arbiter pool payout:</span>
+              <span className="detail-value">
+                {formatEthWei(money.poolPayment.amountWei)} ETH to{' '}
+                {money.poolPayment.payee.slice(0, 6)}...{money.poolPayment.payee.slice(-4)} (an eighth of the pool, at
+                this draw, to a random registered arbiter; not from this round&apos;s prepay)
               </span>
             </div>
           )}
@@ -409,8 +420,12 @@ function AggHistory() {
                 <span className="detail-label">Prepay:</span>
                 <span className="detail-value">
                   {failure.moneyRule}
-                  {money && (money.refunds?.length > 0)
-                    ? ` (here: ${BigInt(money.toTreasuryWei || 0) > 0n ? `${formatEthWei(money.toTreasuryWei)} ETH to the treasury` : `${formatEthWei(money.refundedWei)} ETH refunded`})`
+                  {money && (money.refunds?.length > 0 || money.commitPayments?.length > 0)
+                    ? ` (here: ${[
+                        BigInt(money.toCommittersWei || 0) > 0n ? `${formatEthWei(money.toCommittersWei)} ETH to the committers` : null,
+                        BigInt(money.toPoolWei || 0) > 0n ? `${formatEthWei(money.toPoolWei)} ETH to the arbiter pool` : null,
+                        BigInt(money.refundedWei || 0) > 0n ? `${formatEthWei(money.refundedWei)} ETH refunded` : null
+                      ].filter(Boolean).join(', ') || 'nothing left'})`
                     : ''}
                 </span>
               </div>

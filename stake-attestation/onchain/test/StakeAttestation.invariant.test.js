@@ -55,10 +55,10 @@
 // network and its keepers would, or would not: draws (through the contract, or directly at the
 // aggregator by someone else, who then takes the reward), commits that close the window or do
 // not, promotion, deadlines that pass (finalize then settles the round at the aggregator: failed,
-// the unspent prepay back to the wallet, or to the aggregator's TREASURY when M commits were in
-// but nobody promoted), and rounds never drawn (sealed, then a day later finalize cancels them,
-// the whole prepay to the treasury). The treasury's ETH is outside the contract, so the equation
-// is unchanged. The aggregator's other stand-in, the jurors' posted fee, varies at random so the
+// the unspent prepay back to the wallet, or shared by the committers when M commits were in but
+// nobody promoted, its indivisible rest to the aggregator's arbiter pool), and rounds never drawn
+// (sealed, then a day later finalize cancels them, the whole prepay to the arbiter pool). The
+// committers' and the pool's ETH is outside the contract, so the equation is unchanged. The aggregator's other stand-in, the jurors' posted fee, varies at random so the
 // rounds leave different leftovers. Refund attribution counts, per (funder, claim), everything
 // credited to the claim's wallets: the refunds (RequesterRefunded to a wallet), the draw rewards
 // (JuryDrawn with the wallet as drawer) and any value sent above the escrow (RequestFunded). At
@@ -82,8 +82,9 @@ const REACHED = [
 const REACHED_P17 = ["ConfirmationRequested", "NarrowInvalid", "ConfirmationRefunded", "ConfirmationNoVerdict"];
 const REACHED_P16 = ["Appealed"];
 // The v2 aggregator's events, over every seed: draws, a promotion, failed rounds settled there, and
-// rounds never drawn, cancelled (their prepay to the treasury).
-const REACHED_V2 = ["JuryDrawn", "CommitPhaseComplete", "RoundSettled", "RoundCancelled", "EvaluationFailed"];
+// rounds never drawn, cancelled (their prepay to the arbiter pool), and never-promoted rounds' shares
+// to their committers.
+const REACHED_V2 = ["JuryDrawn", "CommitPhaseComplete", "RoundSettled", "RoundCancelled", "EvaluationFailed", "CommitPayment"];
 const UNRESOLVED = new Set([ClaimState.Committed, ClaimState.Revealed, ClaimState.Judged, ClaimState.Disputed, ClaimState.RoundFailed]);
 
 async function setup() {
@@ -682,7 +683,7 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
           await attempt("finalize", () => send(r6.pick([...makers, ...hunters]), "finalize", [c.id]));
         },
         // A round nobody draws: its seed sealed, and a day later finalize cancels it at the
-        // aggregator, the whole prepay to the treasury.
+        // aggregator, the whole prepay to the arbiter pool.
         async cancel() {
           const undrawn = await roundsIn([1n]);
           if (!undrawn.length) return;
@@ -846,12 +847,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
       const refunded = new Map();
       const add = (m, k, v) => { if (v !== 0n) m.set(k, (m.get(k) || 0n) + v); };
       const isWallet = new Set(wallets);
-      const toTreasury = [];
       for (const ev of await aggregator.queryFilter(aggregator.filters.RequesterRefunded())) {
         if (!isWallet.has(ev.args.requester)) {
-          // a refund the aggregator routes to its treasury (M commits never promoted)
-          expect(ev.args.requester, `refund to ${ev.args.requester}`).to.equal(await aggregator.treasury());
-          toTreasury.push(ev.args.amount);
+          // a credit to the aggregator's arbiter pool, ethOwed(address(0)): the rest of a
+          // never-promoted round's committer shares, or a missed beacon quorum
+          expect(ev.args.requester, `refund to ${ev.args.requester}`).to.equal(ethers.ZeroAddress);
           continue;
         }
         const [funder, claimId] = await sa.walletInfo(ev.args.requester);
@@ -977,7 +977,6 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
         const k = await sa.getClaim(c.id);
         if (k.state === ClaimState.Expired) reachedV2[`expiry${k.expiry}`] = (reachedV2[`expiry${k.expiry}`] || 0) + 1;
       }
-      reachedV2.treasury = (reachedV2.treasury || 0) + toTreasury.length;
       if (appeals) {
         for (const ev of REACHED_P16) reachedP16[ev] = (reachedP16[ev] || 0) + (await sa.queryFilter(sa.filters[ev]())).length;
         for (const name of ["appeal", "appealRetrigger"]) reachedP16[name] = (reachedP16[name] || 0) + (stats.ok[name] || 0);
@@ -1003,11 +1002,11 @@ describe("StakeAttestation: funds conservation under random call sequences (P2c,
 
   it("the sequences reached every path that moves money", function () {
     for (const ev of REACHED) expect(reached[ev] || 0, `${ev} ${JSON.stringify(reached)}`).to.be.greaterThan(0);
-    // The v2 rounds: drawn, promoted, failed and settled at the aggregator, cancelled, a refund to
-    // its treasury; and a failed claim expired with its bond back because no jury answered
+    // The v2 rounds: drawn, promoted, failed and settled at the aggregator, cancelled, a never-promoted
+    // round's shares to its committers; and a failed claim expired with its bond back because no jury answered
     // (RoundsUnanswered). RoundsFailed (a jury answered with no verdict) is rare here: the v2
     // tests (StakeAttestation.v2.test.js) and settlement's cover it.
-    for (const k of [...REACHED_V2, "treasury", "expiry5"]) {
+    for (const k of [...REACHED_V2, "expiry5"]) {
       expect(reachedV2[k] || 0, `${k} ${JSON.stringify(reachedV2)}`).to.be.greaterThan(0);
     }
     if (hre.__SOLIDITY_COVERAGE_RUNNING) return; // the safeguards' seeds did not run

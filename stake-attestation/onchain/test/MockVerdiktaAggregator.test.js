@@ -4,7 +4,8 @@
 // requester-visible behaviour, as StakeAttestation relies on it: the escrow formula and
 // fund-from-credit, sequential ids, the draw (B+2, the requester's 30 s, a day's limit), the beacon
 // stage, the commit window's M+ / T+ close, promote, finalization, settle after the deadline,
-// cancelUnsealed, and where every refund goes (the requester, or the treasury).
+// cancelUnsealed, and where every refund goes (the requester, the committers, or the arbiter pool,
+// ethOwed(address(0)), which an eighth of pays out at each draw).
 const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers } = hre;
@@ -17,8 +18,8 @@ const CID = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
 const CEILING = ethers.parseEther("0.0004");
 // A six-outcome vector, as the stake-attestation classes return.
 const RESULT = [0, 0, 0, 0, 1_000_000, 0];
-const TREASURY = "0x0000000000000000000000000000000000007EA5";
-const ARBITERS = "0x00000000000000000000000000000000A4B17E45";
+const POOL = ethers.ZeroAddress;   // the arbiter pool's ledger entry
+const ARBITERS = ethers.getAddress("0x00000000000000000000000000000000a4b17e45");
 // Juries (the request's last argument): the Small and Jumbo class presets.
 const SMALL = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
 const JUMBO = { K: 50, M: 38, N: 27, P: 17, timeout: 600 };
@@ -344,7 +345,7 @@ describe("MockVerdiktaAggregator (v2)", function () {
       await expect(draw(aggregator, late, other)).to.emit(aggregator, "JuryDrawn").withArgs(late, other.address, 2n * CEILING);
     });
 
-    it("DrawExpired a day after the request; then only cancelUnsealed, the whole prepay to the treasury", async function () {
+    it("DrawExpired a day after the request; then only cancelUnsealed, the whole prepay to the arbiter pool", async function () {
       const { aggregator, hunter } = await deploy();
       const id = await request(aggregator, hunter);
       await mine(2);
@@ -356,7 +357,7 @@ describe("MockVerdiktaAggregator (v2)", function () {
       const { received } = await info(aggregator, id);
       await expect(aggregator.cancelUnsealed(id)).to.emit(aggregator, "RoundCancelled").withArgs(id, received);
       expect((await info(aggregator, id)).phase).to.equal(PH.CANCELLED);
-      expect(await aggregator.ethOwed(TREASURY)).to.equal(received);
+      expect(await aggregator.ethOwed(POOL)).to.equal(received);
       expect(await aggregator.ethOwed(hunter.address)).to.equal(0n);
       expect(await aggregator.isFailed(id)).to.equal(false);
     });
@@ -370,7 +371,7 @@ describe("MockVerdiktaAggregator (v2)", function () {
       expect(await aggregator.ethOwed(hunter.address)).to.equal((await info(aggregator, id)).received);
     });
 
-    it("with beacons: the first call starts the stage, the second draws once the quorum is in, or fails to the treasury", async function () {
+    it("with beacons: the first call starts the stage, the second draws once the quorum is in, or fails to the arbiter pool", async function () {
       const { aggregator, hunter } = await deploy();
       const ok = await request(aggregator, hunter, args({ withBeacons: true }));
       await expect(draw(aggregator, ok, hunter)).to.emit(aggregator, "BeaconStageStarted");
@@ -384,11 +385,37 @@ describe("MockVerdiktaAggregator (v2)", function () {
       await draw(aggregator, missed, hunter);
       await aggregator.scriptBeacons(missed, 1, true);
       const owed = await aggregator.ethOwed(hunter.address);
-      await expect(aggregator.connect(hunter).drawJury(missed)).to.emit(aggregator, "EvaluationFailed").withArgs(missed, PH.BEACON);
+      await expect(aggregator.connect(hunter).drawJury(missed)).to.emit(aggregator, "EvaluationFailed").withArgs(missed, PH.BEACON)
+        .and.to.emit(aggregator, "RequesterRefunded").withArgs(missed, POOL, anyValue);
       const r = await info(aggregator, missed);
       expect(r.phase).to.equal(PH.FAILED);
       expect(await aggregator.ethOwed(hunter.address)).to.equal(owed); // no refund
-      expect(await aggregator.ethOwed(TREASURY)).to.equal(r.leftover);
+      expect(await aggregator.ethOwed(POOL)).to.equal(r.leftover);
+    });
+
+    it("each draw that draws a jury pays an eighth of the arbiter pool to ARBITERS (PoolPayment); nobody withdraws the pool", async function () {
+      const { aggregator, hunter, other } = await deploy();
+      const plain = await request(aggregator, hunter);
+      await expect(draw(aggregator, plain, hunter)).to.not.emit(aggregator, "PoolPayment");   // an empty pool pays nothing
+      const cancelled = await request(aggregator, hunter);
+      await mine(2);
+      await aggregator.sealSeed(cancelled);
+      await time.increase(24 * 3600 + 1);
+      await aggregator.cancelUnsealed(cancelled);
+      const pool = await aggregator.ethOwed(POOL);
+      expect(pool).to.be.gt(0n);
+      await expect(aggregator.connect(other).withdrawEthFor(POOL)).to.be.revertedWithCustomError(aggregator, "NotAuthorized");
+      const next = await request(aggregator, hunter);
+      await mine(2);
+      // the beacon stage's first call draws no jury, so it pays nothing
+      const beacon = await request(aggregator, hunter, args({ withBeacons: true }));
+      await expect(draw(aggregator, beacon, hunter)).to.not.emit(aggregator, "PoolPayment");
+      const arbiters = await aggregator.ethOwed(ARBITERS);
+      const tx = draw(aggregator, next, hunter);
+      await expect(tx).to.emit(aggregator, "PoolPayment").withArgs(next, ARBITERS, pool / 8n);
+      expect(await aggregator.ethOwed(POOL)).to.equal(pool - pool / 8n);
+      const { baseFees } = await info(aggregator, next);
+      expect(await aggregator.ethOwed(ARBITERS)).to.equal(arbiters + baseFees + pool / 8n);
     });
   });
 
@@ -467,12 +494,25 @@ describe("MockVerdiktaAggregator (v2)", function () {
       expect((await aggregator.getEvaluation(id)).valid).to.equal(false);
     });
 
-    it("M commits never closed, or closed and never promoted: the unspent prepay to the treasury", async function () {
-      for (const setup of [(a, i) => a.scriptCommits(i, 5), (a, i) => a.scriptCommits(i, 6)]) {
-        const { aggregator, id } = await failIn(setup);
-        const { leftover, phase } = await info(aggregator, id);
-        await expect(aggregator.settle(id)).to.emit(aggregator, "EvaluationFailed").withArgs(id, phase);
-        expect(await aggregator.ethOwed(TREASURY)).to.equal(leftover);
+    it("M commits never closed, or closed and never promoted: an equal share per commit (CommitPayment), the rest to the arbiter pool", async function () {
+      for (const [setup, commits] of [[(a, i) => a.scriptCommits(i, 5), 5n], [(a, i) => a.scriptCommits(i, 6), 6n]]) {
+        const { aggregator, hunter, id } = await failIn(setup);
+        const before = await info(aggregator, id);
+        const arbiters = await aggregator.ethOwed(ARBITERS);
+        const owed = await aggregator.ethOwed(hunter.address);
+        const share = before.leftover / commits;
+        expect(share).to.be.gt(0n);
+        const receipt = await (await aggregator.settle(id)).wait();
+        const logs = receipt.logs.map((l) => aggregator.interface.parseLog(l)).filter(Boolean);
+        const paid = logs.filter((l) => l.name === "CommitPayment");
+        expect(paid.length).to.equal(Number(commits));
+        for (const l of paid) expect([l.args.aggRequestId, l.args.payee, l.args.amount]).to.deep.equal([id, ARBITERS, share]);
+        expect(logs.find((l) => l.name === "EvaluationFailed").args.phase).to.equal(before.phase);
+        const after = await info(aggregator, id);
+        expect(after.rewards).to.equal(before.rewards + share * commits);   // the shares count in rewards
+        expect(await aggregator.ethOwed(ARBITERS)).to.equal(arbiters + share * commits);
+        expect(await aggregator.ethOwed(POOL)).to.equal(before.leftover - share * commits);   // the indivisible rest
+        expect(await aggregator.ethOwed(hunter.address)).to.equal(owed);   // no refund
       }
     });
 

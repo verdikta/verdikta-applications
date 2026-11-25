@@ -1251,7 +1251,7 @@ function Analytics() {
                     {STATUS_ORDER.map(({ key, label }) => (
                       <th key={key} className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS[label]}>{label}</th>
                     ))}
-                    <th className="tooltip-header" title="The keeper's scansAll(cls): whether a draw walks the whole class list (it is no longer than maxScan). When it does not, whether a draw finds enough arbiters depends on the seed, so a beacon round whose draw fails sends its prepay to the treasury instead of refunding it.">Full scan</th>
+                    <th className="tooltip-header" title="The keeper's scansAll(cls): whether a draw walks the whole class list (it is no longer than maxScan). When it does not, whether a draw finds enough arbiters depends on the seed, so a beacon round whose draw fails sends its prepay to the arbiter pool instead of refunding it.">Full scan</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1286,7 +1286,7 @@ function Analytics() {
 
       {/* Oracle Eval Success Rate Section */}
       <section className="analytics-section">
-        <h2 title="Fulfilled rounds (a FulfillAIEvaluation event) as a share of the rounds the arbiters decided: fulfilled plus those that failed for too few commits or reveals, over the look-back window. Not in the rate: likely malformed rounds (no arbiter committed), rounds that had M commits but were never closed or promoted (no arbiter at fault; the prepay goes to the treasury), rounds never drawn, and rounds still running."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
+        <h2 title="Fulfilled rounds (a FulfillAIEvaluation event) as a share of the rounds the arbiters decided: fulfilled plus those that failed for too few commits or reveals, over the look-back window. Not in the rate: likely malformed rounds (no arbiter committed), rounds that had M commits but were never closed or promoted (no arbiter at fault; the committers share the prepay), rounds never drawn, and rounds still running."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
         <div className="section-content">
           {healthLoading && !healthData ? (
             <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
@@ -1324,10 +1324,10 @@ function Analytics() {
                 </div>
                 <div
                   className="health-stat"
-                  title="Rounds that had at least M commits but whose commit window was never closed, or that were closed and never promoted. No arbiter is at fault and none is charged; the unspent prepay goes to the treasury. Not counted in the success rate."
+                  title="Rounds that had at least M commits but whose commit window was never closed, or that were closed and never promoted. No arbiter is at fault and none is charged; the unspent prepay is shared equally by the slots that committed (CommitPayment), with only the indivisible rest to the arbiter pool. Not counted in the success rate."
                 >
                   <span className="health-stat-value" style={{ color: COLORS.atRisk }}>{healthData.success.notProgressed ?? 0}</span>
-                  <span className="health-stat-label">Not progressed</span>
+                  <span className="health-stat-label">Not progressed{healthData.success.toCommitters?.count ? ` (${Number(healthData.success.toCommitters.eth).toFixed(5)} ETH to committers)` : ''}</span>
                 </div>
                 <div
                   className="health-stat"
@@ -1335,9 +1335,9 @@ function Analytics() {
                     const b = healthData.success.notDrawnBy || {};
                     return `Rounds that never reached the arbiters. Not counted in the success rate.\n` +
                       `Pool shortage (fewer eligible arbiters than the jury size; refunded): ${b.poolShortage ?? 0}\n` +
-                      `Draw failed after the beacon stage, class list longer than the keeper's scan (treasury): ${b.drawTreasury ?? 0}\n` +
-                      `Beacon quorum missed (treasury): ${b.beaconQuorum ?? 0}\n` +
-                      `Cancelled undrawn (treasury): ${b.cancelled ?? 0}`;
+                      `Draw failed after the beacon stage, class list longer than the keeper's scan (arbiter pool): ${b.drawPool ?? 0}\n` +
+                      `Beacon quorum missed (arbiter pool): ${b.beaconQuorum ?? 0}\n` +
+                      `Cancelled undrawn (arbiter pool): ${b.cancelled ?? 0}`;
                   })()}
                 >
                   <span className="health-stat-value" style={{ color: COLORS.frozen }}>{healthData.success.notDrawn ?? 0}</span>
@@ -1345,10 +1345,22 @@ function Analytics() {
                 </div>
                 <div
                   className="health-stat"
-                  title="Rounds whose unspent prepay went to the treasury instead of back to the requester (a refund would be a free re-roll): missed beacon quorum, never closed or promoted with M commits, a beacon draw failure when the keeper's walk does not cover the class list, or cancelled. The ETH is the RequesterRefunded amounts paid to the treasury plus RoundCancelled amounts."
+                  title="Rounds whose unspent prepay went to the arbiter pool instead of back to the requester (a refund would be a free re-roll): missed beacon quorum, a beacon draw failure when the keeper's walk does not cover the class list, or cancelled undrawn. The ETH is the RequesterRefunded amounts paid to address(0) plus RoundCancelled amounts, and the dust of never-promoted rounds. Nobody can withdraw the pool: each draw pays an eighth of it to a random registered arbiter."
                 >
-                  <span className="health-stat-value" style={{ color: COLORS.blocked }}>{healthData.success.treasuryLost?.count ?? 0}</span>
-                  <span className="health-stat-label">To treasury{healthData.success.treasuryLost?.count ? ` (${Number(healthData.success.treasuryLost.eth).toFixed(5)} ETH)` : ''}</span>
+                  <span className="health-stat-value" style={{ color: COLORS.blocked }}>{healthData.success.toPool?.count ?? 0}</span>
+                  <span className="health-stat-label">To arbiter pool{Number(healthData.success.toPool?.eth) > 0 ? ` (${Number(healthData.success.toPool.eth).toFixed(5)} ETH)` : ''}</span>
+                </div>
+                <div
+                  className="health-stat"
+                  title={(() => {
+                    const pp = healthData.success.poolPaid;
+                    const lines = (pp?.byPayee || []).map((b) => `${b.payee}: ${Number(b.eth).toFixed(6)} ETH (${b.count})`);
+                    return 'Arbiter pool payouts in the window: each draw pays an eighth of the pool to one registered arbiter\'s owner, picked at random from the draw\'s seed (PoolPayment). This is arbiter income, claimable from ethOwed.' +
+                      (lines.length ? `\n${lines.join('\n')}` : '');
+                  })()}
+                >
+                  <span className="health-stat-value" style={{ color: COLORS.active }}>{healthData.success.poolPaid?.count ?? 0}</span>
+                  <span className="health-stat-label">Pool payouts{Number(healthData.success.poolPaid?.eth) > 0 ? ` (${Number(healthData.success.poolPaid.eth).toFixed(5)} ETH)` : ''}</span>
                 </div>
                 {dailyChartData && (
                   <div className="health-chart" title={`Fulfilled (green) vs failed (red) vs likely malformed (grey) vs not progressed (amber) vs not drawn (blue) evaluations per day — last ${healthData.windowDays} days`}>

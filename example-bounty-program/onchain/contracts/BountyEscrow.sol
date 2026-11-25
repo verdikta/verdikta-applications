@@ -807,8 +807,8 @@ contract BountyEscrow {
     ///      No result is not the hunter's fault (too few commits or reveals, a missed beacon quorum,
     ///      a round nobody drew), so the submission keeps its place and bond: AwaitingRerun, or
     ///      Failed with the bond returned once no re-run is possible. Some of these rounds send the
-    ///      unspent prepay to the aggregator's treasury rather than back (a refund would be a free
-    ///      re-roll); whatever came back is returned to the funder.
+    ///      unspent prepay to the committers or the aggregator's arbiter pool rather than back (a
+    ///      refund would be a free re-roll); whatever came back is returned to the funder.
     function closeFailedRound(uint256 bountyId, uint256 submissionId) external nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);

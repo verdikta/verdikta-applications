@@ -223,7 +223,7 @@ async function roundInfo(aggregator, requestId) {
   };
 }
 
-// What the round has not spent (the refund at its end, to the requester or the treasury).
+// What the round has not spent (the refund at its end, to the requester, or to the committers and the arbiter pool).
 async function leftover(aggregator, requestId) {
   const r = await roundInfo(aggregator, requestId);
   return r.received - r.baseFees - r.bonuses - r.rewards;

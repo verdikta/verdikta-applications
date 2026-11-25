@@ -136,16 +136,16 @@ Rewards and refunds are credited to your prepay credit, not sent to your wallet.
 The deadline is the round's timeout after the draw (`getJury(aggId)`; 300 seconds for Small, Medium and Large, 600 for Jumbo), extended when needed so that promoted arbiters always get time to reveal. The page shows it as a countdown. If the round has not finished by then:
 
 - **Too few commits, or too few reveals**: the page asks your wallet to send `settle(aggId)`. It fails the round and credits the unspent part of the prepayment to your prepay credit. The page then shows **"No result: the round failed."**, with a link to the transaction and the amount that came back
-- **Enough commits, but the commit phase was not closed, or it closed and was not promoted**: the round fails and the unspent prepayment goes to the **treasury**, not back to you (a refund here would let a requester re-roll a jury it did not like). Settling it would return nothing to you, so the page does not ask your wallet to; it shows **"No result: the round can no longer finish."**
+- **Enough commits, but the commit phase was not closed, or it closed and was not promoted**: the round fails and the unspent prepayment is **shared by the arbiters that committed**, not returned to you (a refund here would let a requester re-roll a jury it did not like; the indivisible remainder goes to the arbiter pool). Settling it would return nothing to you, so the page does not ask your wallet to; it shows **"No result: the round can no longer finish."**
 - A round whose jury cannot be drawn (no eligible arbiter at all) fails at the draw, and the prepayment is credited back to you. With some, but fewer than K, eligible arbiters the jury repeats arbiters instead
-- **Jumbo (beacons) only**: if fewer than 2 of the 4 beacons answer within 120 seconds of the beacon stage's start, your second `drawJury` ends the round with no result. The beacon that answered is paid, and the rest of the prepayment goes to the treasury. If fewer than 2 beacon candidates qualify, the round fails at once and is refunded. If the jury cannot be drawn after the beacon stage, the prepayment is refunded only when the keeper's selection walk covers the whole class list; otherwise it goes to the treasury
+- **Jumbo (beacons) only**: if fewer than 2 of the 4 beacons answer within 120 seconds of the beacon stage's start, your second `drawJury` ends the round with no result. The beacon that answered is paid, and the rest of the prepayment goes to the **arbiter pool**, which pays an eighth of itself to a randomly chosen arbiter at each later draw and which nobody can withdraw. If fewer than 2 beacon candidates qualify, the round fails at once and is refunded. If the jury cannot be drawn after the beacon stage, the prepayment is refunded only when the keeper's selection walk covers the whole class list; otherwise it goes to the arbiter pool
 
 #### 6. If You Decline a Transaction or Leave the Page
 - **If you decline** one of these transactions, or it cannot be sent, the page stops and shows **"The round is waiting for ..."** (the jury draw, the commits to be promoted, ...). It says why nothing was sent, what the call does and who earns what, the round ID and the aggregator's address, and offers a button such as **"Draw the jury (wallet transaction)"** that picks the round up where it is. You can also make the call from any other wallet or tool: anyone may
 - **If you switch to another tab of the application**, the page keeps driving the round in the background
 - **If you close or reload the page**, nothing moves the round on from this browser. The page remembers the round in the browser's storage, and when you come back it shows **"The round is still open."** with a **"Resume the round"** button. Meanwhile:
-    - an **undrawn round never times out**. After 30 seconds anyone may draw it (and earns the draw reward). If nobody does, the jury can no longer be drawn a day after the request, and the round can only be cancelled (`cancelUnsealed`), which sends the whole prepayment to the treasury
-    - a round waiting for `closeCommits` or `promote` can be moved on by anyone (`promote` pays its caller). If nobody does before the deadline, the unspent prepayment goes to the treasury
+    - an **undrawn round never times out**. After 30 seconds anyone may draw it (and earns the draw reward). If nobody does, the jury can no longer be drawn a day after the request, and the round can only be cancelled (`cancelUnsealed`), which sends the whole prepayment to the arbiter pool
+    - a round waiting for `closeCommits` or `promote` can be moved on by anyone (`promote` pays its caller). If nobody does before the deadline, the unspent prepayment is shared by the arbiters that committed
     - a round that misses its deadline in the reveal phase is settled by anyone who calls `settle`, or by a later request to the same aggregator, and the unspent prepayment is credited to you either way
 
 ### Status Messages
@@ -189,11 +189,11 @@ Common errors and solutions:
 - **Solution**: Use the button in the notice, or make the named call with the round ID on the aggregator from any wallet. See [If You Decline a Transaction or Leave the Page](#6-if-you-decline-a-transaction-or-leave-the-page)
 
 #### "No result: the round failed."
-- **Cause**: The round ended without a result. The notice says in which phase, and where the unspent prepayment went: back to your prepay credit, or to the treasury
+- **Cause**: The round ended without a result. The notice says in which phase, and where the unspent prepayment went: back to your prepay credit, to the arbiters that committed, or to the arbiter pool
 - **Solution**: You can try again. Prepay credit is applied to your next query
 
 #### "No result: the round can no longer finish." / "the round was cancelled."
-- **Cause**: The commit phase was not closed or not promoted in time, or the jury was not drawn within a day. The prepayment goes to the treasury
+- **Cause**: The commit phase was not closed or not promoted in time, or the jury was not drawn within a day. The prepayment goes to the arbiters that committed (not closed or promoted) or to the arbiter pool (not drawn)
 - **Solution**: Run the query again, and keep the page open until the result arrives
 
 #### Network or connectivity issues
@@ -210,7 +210,7 @@ Common errors and solutions:
 - The application sets a fee ceiling of 0.0001 ETH per arbiter (`MAX_FEE` in `client/src/App.js`), clamped by the aggregator to its `maxOracleFee()`, and no fee floor (`MIN_FEE = 0`)
 - The aggregator's worst case is `maxTotalFee(maxFee, minFee, withBeacons, K, P)` = max(fee, floor) × (K + B × P [+ beacon quorum]) + fee × (2 + 1), where K arbiters are drawn and P are paid a bonus of B times their fee (the request's jury), and 2 and 1 are the draw and promote rewards. With the Small jury (K = 6, P = 3) and B = 3 that is 0.0001 × 15 + 0.0001 × 3 = 0.0018 ETH; with Jumbo (K = 50, P = 17, beacons) 0.0001 × 103 + 0.0001 × 3 = 0.0106 ETH. The banner at the top of the page shows the amount the contract returns
 - The round then costs what the drawn arbiters charge: each of the K arbiters drawn is credited its own fee (at least the floor), and each arbiter whose revealed answer is in the winning cluster gets B times its fee on top
-- The rest of the prepayment is returned as **prepay credit** held in the aggregator, when the round finalizes or is settled, except in the cases listed in [If the Round Misses Its Deadline](#5-if-the-round-misses-its-deadline) and [If You Decline a Transaction or Leave the Page](#6-if-you-decline-a-transaction-or-leave-the-page), where it goes to the treasury. Credit is applied automatically to your next query, and the **"Withdraw credit"** button on this page sends it back to your wallet
+- The rest of the prepayment is returned as **prepay credit** held in the aggregator, when the round finalizes or is settled, except in the cases listed in [If the Round Misses Its Deadline](#5-if-the-round-misses-its-deadline) and [If You Decline a Transaction or Leave the Page](#6-if-you-decline-a-transaction-or-leave-the-page), where it goes to the arbiters that committed or to the arbiter pool. Credit is applied automatically to your next query, and the **"Withdraw credit"** button on this page sends it back to your wallet
 
 ### Cost Factors
 - **Arbiter fees**: Set by the arbiters that are drawn, up to the application's fee ceiling

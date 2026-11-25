@@ -906,7 +906,7 @@ just wait. Anyone may do it instead: POST .../draw, or POST .../round-step for w
 of draw / closeCommits / promote / closeFailedRound / expireRerun is due.
 There is no fixed timeout: a drawn round runs through phases (commit, reveal) with a
 deadline counted from the draw. An undrawn round can be cancelled (its whole prepay then goes to the
-aggregator's treasury): about 8,191 blocks after its start (~27 minutes at Base's 0.2 s blocks) if its
+aggregator's arbiter pool, paid out to random arbiters at later draws): about 8,191 blocks after its start (~27 minutes at Base's 0.2 s blocks) if its
 seed block was never stored, or a day after its start if it was (sealed but never drawn).
 
 Outcome (Q-of-N, judged by the contract). Each juror's score is compared with the threshold:
@@ -1417,7 +1417,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submissions/:subId/close-failed',
-        description: 'Get encoded closeFailedRound calldata for a round that ended, or must end, with no result: failed, cancelled, past its phase deadline (counted from the draw), or undrawn and cancellable (about 8,191 blocks, ~27 minutes, after the start if its seed was never stored; a day after the start if it was). Gated on nextAction === "CLOSE_FAILED". It settles or cancels the round, returns what is left of the prepay to the round\'s funder (a cancelled round\'s whole prepay goes to the aggregator\'s treasury instead), and the submission then awaits a re-run (keeping its place and bond). Anyone may send it. POST .../timeout is the v1 name, kept as an alias.',
+        description: 'Get encoded closeFailedRound calldata for a round that ended, or must end, with no result: failed, cancelled, past its phase deadline (counted from the draw), or undrawn and cancellable (about 8,191 blocks, ~27 minutes, after the start if its seed was never stored; a day after the start if it was). Gated on nextAction === "CLOSE_FAILED". It settles or cancels the round, returns what is left of the prepay to the round\'s funder (a cancelled round\'s whole prepay goes to the aggregator\'s arbiter pool instead), and the submission then awaits a re-run (keeping its place and bond). Anyone may send it. POST .../timeout is the v1 name, kept as an alias.',
         contentType: 'application/json',
         fields: [],
         returns: '{ success, canCloseFailed, canTimeout (same value), message, round: { phase, deadline, rounds }, transaction: { to, data, value, chainId, gasLimit }, gas: { gasLimit, estimatedGas, source, note }, contractCall: { target, method, args, abi }, submission: { id, hunter, onChainStatus } }. SEND WITH transaction.gasLimit: settling a round can need well over 1M gas, and a hand-picked lower limit fails with no revert reason although eth_call passes. When not callable: 400 with { error, nextAction, phase, hint, canFinalize, deadline, remainingSeconds, closeFailed } — a "not yet" signal, not a server error.'
@@ -1691,7 +1691,7 @@ router.get('/api/docs', (req, res) => {
             'For a round that ended, or must end, with no result: failed or cancelled on the aggregator, past its phase deadline (counted from the draw), or never drawn and cancellable (cancelUnsealed: about 8,191 blocks, ~27 minutes, after the start if the seed was never stored; a day after it if it was). No fixed timer: gated on the aggregator state (nextAction CLOSE_FAILED)',
             'GAS: send with transaction.gasLimit (live estimateGas + 25% margin, fallback 2,500,000). It tries settle, then cancelUnsealed, on the aggregator inside try/catch — with a hand-picked lower limit the inner call runs out of gas, the catch swallows it, and the tx fails with NO revert reason (gasUsed == gasLimit) even though eth_call/estimateGas pass. Never hard-code a lower value',
             'Reverts "round still open" while the round can still get a result and "result available - use finalizeSubmission" if it has one. Can never discard a passing score',
-            'No result is not the hunter\'s fault: the submission keeps its place and bond and awaits a re-run (or fails with the bond returned when no re-run is possible). What is left of the prepay goes back to the round\'s funder (Submission.funder); some dead rounds send it to the aggregator\'s treasury instead',
+            'No result is not the hunter\'s fault: the submission keeps its place and bond and awaits a re-run (or fails with the bond returned when no re-run is possible). What is left of the prepay goes back to the round\'s funder (Submission.funder); some dead rounds send it to the aggregator\'s arbiter pool instead, and a round with M commits that was never promoted shares it among its committers',
             'Anyone can call this'
           ]
         },

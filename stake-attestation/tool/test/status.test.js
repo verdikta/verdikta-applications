@@ -556,11 +556,12 @@ test('P32: a failed round\'s cost is its own numbers in ETH (getRoundInfo), with
     assert.equal(s.failedRound.refundWei, 1440000000000000n);
     assert.equal(s.failedRound.refundTo, 'hunter');
     for (const amount of ['0.00072 ETH', '0.00216 ETH', '0.00144 ETH']) assert.ok(s.next.includes(amount), `${amount}: ${s.next}`);
-    assert.doesNotMatch(s.next, /treasury, not back to you/);
+    assert.doesNotMatch(s.next, /not back to you/);
     assert.match(s.next, /bond comes back to you at expiry/);
     assert.doesNotMatch(s.next, /\$/);
   }
-  // M commits that nobody promoted: the aggregator sends the rest to its treasury, before finalize and after
+  // M commits that nobody promoted: the jurors that committed share the rest (the aggregator's settle pays them,
+  // CommitPayment, counted in its rewards), before finalize and after, with the same split either way
   const t = await revealed();
   await w.draw(t.requestId);
   await (await w.aggregator.scriptCommits(t.requestId, 5)).wait();
@@ -568,8 +569,11 @@ test('P32: a failed round\'s cost is its own numbers in ETH (getRoundInfo), with
   for (const finalized of [false, true]) {
     if (finalized) await (await w.sa.finalize(t.claimId)).wait();
     const s = await w.hunter({ signer: undefined }).status({ claimId: t.claimId });
-    assert.equal(s.failedRound.refundTo, 'treasury');
-    assert.match(s.next, /to its treasury, not back to you/);
+    assert.equal(s.failedRound.refundTo, 'committers');
+    assert.equal(s.failedRound.spentWei, 720000000000000n, 'the base fees only: the committers\' shares are the rest');
+    assert.equal(s.failedRound.refundWei, 1440000000000000n);
+    assert.match(s.next, /equally among the jurors that committed, not back to you/);
+    assert.doesNotMatch(s.next, /treasury/);
   }
 });
 

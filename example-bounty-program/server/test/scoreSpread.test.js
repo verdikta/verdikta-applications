@@ -87,7 +87,7 @@ function fixture() {
     // Outside a 14-day window.
     [id(4)]: fin({ aggId: id(4), startTs: NOW - 20 * DAY, reveals: [reveal(0, 10), reveal(1, 90)] }),
     // A dead round: no result
-    [id(5)]: { aggId: id(5), startTs: NOW - 3 * DAY, settled: true, finalized: false, phase: 8, reveals: [], toTreasuryWei: '500', beacons: 4 },
+    [id(5)]: { aggId: id(5), startTs: NOW - 3 * DAY, settled: true, finalized: false, phase: 8, reveals: [], toTreasuryWei: '500', beacons: 4 },   // cached before the pool: read as toPoolWei
     // the re-run of id(3)
     [id(7)]: fin({ aggId: id(7), startTs: NOW - 2 * DAY + 3600, cluster: [0, 1, 2],
       reveals: [reveal(0, 85), reveal(1, 84), reveal(2, 86), reveal(3, 20)] })
@@ -204,16 +204,27 @@ describe('buildReport', () => {
 });
 
 describe('summarizeRounds', () => {
-  test('counts beacon rounds, prepay lost to the treasury and late reveals', () => {
+  test('counts beacon rounds, prepay to the arbiter pool and late reveals', () => {
     const { state } = fixture();
     expect(ss.summarizeRounds(state)).toMatchObject({ rounds: 6, finalized: 5, failed: 1, beaconRounds: 1,
-      treasuryRounds: 1, toTreasuryWei: '500', lateReveals: 1, roundsWithLate: 1 });
+      poolRounds: 1, toPoolWei: '500', committerRounds: 0, toCommittersWei: '0', poolPayouts: 0, poolPaidWei: '0',
+      lateReveals: 1, roundsWithLate: 1 });
+  });
+
+  test('counts committers\' shares and the pool\'s payouts at draws', () => {
+    const { state } = fixture();
+    state.rounds.x = { aggId: id(9), startTs: NOW - DAY, settled: true, finalized: false, phase: 8, reveals: [],
+      toPoolWei: '2', toCommittersWei: '600', poolPaidWei: '0' };
+    state.rounds.y = { aggId: id(10), startTs: NOW - DAY, settled: true, finalized: true, phase: 7, reveals: [],
+      toPoolWei: '0', toCommittersWei: '0', poolPaidWei: '40' };
+    expect(ss.summarizeRounds(state)).toMatchObject({ poolRounds: 2, toPoolWei: '502', committerRounds: 1,
+      toCommittersWei: '600', toCommittersEth: '0.0000000000000006', poolPayouts: 1, poolPaidWei: '40' });
   });
 });
 
 const AGG = '0x' + '44'.repeat(20);
 const KEEPER = '0x' + '55'.repeat(20);
-const TREASURY = '0x' + '66'.repeat(20);
+const PAYEE = '0x' + '66'.repeat(20);
 const { AGGREGATOR_ABI } = require('../utils/aggregatorAbi');
 const IFACE = new ethers.Interface(AGGREGATOR_ABI);
 const KIFACE = new ethers.Interface(['function jobIdOf(bytes32 key) view returns (bytes32)']);
@@ -250,13 +261,15 @@ describe('fetchRound (v2)', () => {
   // A finalized two-outcome round: counted reveals from slots 4, 1, 0 (in reveal order), one late reveal.
   const fundScores = [900000, 920000, 400000];
   const slotOracle = (s) => '0x' + String(s + 1).repeat(40);
-  function provider({ phase = 6, aggregated = [150000, 850000], bonuses = [[4, 5n], [1, 5n]], refunds = [] } = {}) {
+  function provider({ phase = 6, aggregated = [150000, 850000], bonuses = [[4, 5n], [1, 5n]], refunds = [], shares = [], pool = [] } = {}) {
     const ret = (fn, vals) => IFACE.encodeFunctionResult(fn, vals);
     const logs = {
       RevealReceived: [[4, false, 0], [1, false, 0], [3, true, 2], [0, false, 0]],
-      BonusPayment: bonuses.map(([slot, amt]) => [slot, TREASURY, amt]),
+      BonusPayment: bonuses.map(([slot, amt]) => [slot, PAYEE, amt]),
       BeaconStageStarted: [],
       RequesterRefunded: refunds,
+      CommitPayment: shares,
+      PoolPayment: pool,
       EvaluationFailed: phase === 8 ? [[3]] : []
     };
     return {
@@ -275,7 +288,6 @@ describe('fetchRound (v2)', () => {
           case 'getEvaluation': return ret('getEvaluation', [aggregated, 'QmA,QmB', true]);
           case 'getJury': return ret('getJury', [6, 5, 3, 2, 300]);
           case 'keeper': return ret('keeper', [KEEPER]);
-          case 'treasury': return ret('treasury', [TREASURY]);
           case 'getSlot': {
             const s = Number(tx.args[1]);
             return ret('getSlot', [[slotOracle(s), 1, ethers.zeroPadValue(ethers.toBeHex(s + 1), 32), ethers.ZeroAddress, 0, 31, 1, ethers.ZeroHash]]);
@@ -297,7 +309,7 @@ describe('fetchRound (v2)', () => {
   test('reads the counted FUND scores in reveal order, the arbiters, their jobIds, the cluster and late reveals', async () => {
     const rec = await ss.fetchRound(ctx(provider()), AGG, id(5), NOW - 3600);
     expect(rec).toMatchObject({ finalized: true, settled: true, finalAccept: 85, outcomes: 2, badShape: false,
-      arbitersKnown: true, startTs: NOW - 3600, reqBlock: 1000, cluster: [4, 1], beacons: 0, toTreasuryWei: '0',
+      arbitersKnown: true, startTs: NOW - 3600, reqBlock: 1000, cluster: [4, 1], beacons: 0, toPoolWei: '0', poolPaidWei: '0',
       jury: { K: 6, M: 5, N: 3, P: 2, timeout: 300 } });
     expect(rec.reveals.map((r) => [r.slot, r.operator, r.fund])).toEqual([
       [4, slotOracle(4), '900000'], [1, slotOracle(1), '920000'], [0, slotOracle(0), '400000']
@@ -315,9 +327,18 @@ describe('fetchRound (v2)', () => {
 
   test('a running round is re-read later; a dead one is final, with where its prepay went', async () => {
     expect(await ss.fetchRound(ctx(provider({ phase: 5 })), AGG, id(5))).toMatchObject({ settled: false, reveals: [] });
-    const dead = await ss.fetchRound(ctx(provider({ phase: 8, refunds: [[TREASURY, 300n]] })), AGG, id(5));
-    expect(dead).toMatchObject({ settled: true, finalized: false, reveals: [], failPhase: 3, toTreasuryWei: '300', refundedWei: '0' });
-    expect(await ss.fetchRound(ctx(provider({ phase: 9 })), AGG, id(5))).toMatchObject({ settled: true, toTreasuryWei: '77' });
+    const dead = await ss.fetchRound(ctx(provider({ phase: 8, refunds: [[ethers.ZeroAddress, 3n]],
+      shares: [[PAYEE, 100n], [PAYEE, 100n]] })), AGG, id(5));
+    expect(dead).toMatchObject({ settled: true, finalized: false, reveals: [], failPhase: 3, toPoolWei: '3',
+      toCommittersWei: '200', refundedWei: '0' });
+    const refunded = await ss.fetchRound(ctx(provider({ phase: 8, refunds: [[PAYEE, 300n]] })), AGG, id(5));
+    expect(refunded).toMatchObject({ toPoolWei: '0', refundedWei: '300', toCommittersWei: '0' });
+    expect(await ss.fetchRound(ctx(provider({ phase: 9 })), AGG, id(5))).toMatchObject({ settled: true, toPoolWei: '77' });
+  });
+
+  test('a drawn round records the arbiter pool\'s payout at its draw', async () => {
+    const rec = await ss.fetchRound(ctx(provider({ pool: [[PAYEE, 40n]] })), AGG, id(5));
+    expect(rec).toMatchObject({ finalized: true, poolPaidWei: '40' });
   });
 
   test('an id the aggregator has no round for is notFound', async () => {

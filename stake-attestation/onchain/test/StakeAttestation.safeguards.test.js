@@ -117,8 +117,8 @@ async function runRound(aggregator, requestId, vector, justification = JUSTIFICA
 }
 
 // A round that ends with no result and returns nothing: drawn without a reward, M commits that
-// nobody closes, past its deadline. finalize settles it there, its unspent prepay to the
-// aggregator's treasury (M commits never promoted), so its wallet gets nothing back.
+// nobody closes, past its deadline. finalize settles it there, its unspent prepay shared by the
+// committers (M commits never promoted, the rest to the arbiter pool), so its wallet gets nothing back.
 async function deadRound(aggregator, requestId) {
   await drawDirect(aggregator, requestId);
   await aggregator.scriptCommits(requestId, Number((await aggregator.getJury(requestId))[1]));

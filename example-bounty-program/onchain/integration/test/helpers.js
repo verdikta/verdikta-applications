@@ -45,7 +45,7 @@ async function deployCore({ withAggregator = true } = {}) {
     beacons = await (await ethers.getContractFactory("JuryBeacons")).deploy(await keeper.getAddress());
     await keeper.setApproved(await beacons.getAddress(), true);
     await beacons.setApproved(await agg.getAddress(), true);
-    await agg.setContracts(await keeper.getAddress(), await beacons.getAddress(), deployer.address);
+    await agg.setContracts(await keeper.getAddress(), await beacons.getAddress());
   }
   await token.approve(await keeper.getAddress(), ethers.MaxUint256);
   return { deployer, link, token, keeper, agg, aggLib, scoring, beacons };

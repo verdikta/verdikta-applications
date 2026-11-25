@@ -22,7 +22,7 @@ const {
 } = H;
 const { parseEther, ZeroHash } = ethers;
 
-const TREASURY = "0x0000000000000000000000000000000000007EA5";
+const POOL = ethers.ZeroAddress;   // the aggregator's arbiter pool, ethOwed(address(0))
 const CEILING = parseEther("0.0004");
 const EFF = ORACLE.maxOracleFee; // below the ceiling
 
@@ -197,13 +197,13 @@ describe("StakeAttestation: the v2 aggregator", function () {
       await time.increase(24 * 3600 - 7200);
       await expect(sa.finalize(claimId)).to.be.revertedWith("evaluation not ready");
       await time.increase(3601 + 3600);
-      // finalize cancels it itself: the whole prepay to the treasury, nothing back to the hunter.
+      // finalize cancels it itself: the whole prepay to the arbiter pool, nothing back to the hunter.
       const tx = sa.finalize(claimId);
       await expect(tx).to.emit(aggregator, "RoundCancelled").withArgs(requestId, FEE);
       await expect(tx).to.emit(sa, "EvaluationFailed").withArgs(claimId, listingId, requestId, false);
       await expect(tx).to.changeEtherBalance(hunter, 0n);
       expect((await roundInfo(aggregator, requestId)).phase).to.equal(Phase.Cancelled);
-      expect(await aggregator.ethOwed(TREASURY)).to.equal(FEE);
+      expect(await aggregator.ethOwed(POOL)).to.equal(FEE);
       const c = await sa.getClaim(claimId);
       expect([c.state, c.juryAnswered, c.roundStarted]).to.deep.equal([ClaimState.RoundFailed, false, true]);
     });
@@ -242,7 +242,7 @@ describe("StakeAttestation: the v2 aggregator", function () {
       expect([c.state, c.juryAnswered]).to.deep.equal([ClaimState.RoundFailed, true]);
     });
 
-    it("a missed beacon quorum fails the round at the second draw, its prepay to the treasury", async function () {
+    it("a missed beacon quorum fails the round at the second draw, its prepay to the arbiter pool", async function () {
       const { sa, aggregator, maker, hunter } = await loadFixture(fixture);
       const id = await openListing(sa, maker, withOracle({ withBeacons: true }));
       const { claimId, requestId } = await revealedClaim(sa, hunter, id);

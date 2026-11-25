@@ -1233,9 +1233,11 @@ submission-package.zip
               the wallet earns is credited there too. You never claim it manually: <code>finalizeSubmission()</code>{' '}
               (or <code>closeFailedRound()</code>) has the wallet withdraw that credit from the aggregator
               (<code>withdrawEth()</code>) and return it to whoever funded the round. Some rounds without a result
-              send the unspent prepay to the aggregator's treasury instead, since a refund would be a free re-roll
-              of the jury: a missed beacon quorum, a commit phase that had enough commits but was never closed or
-              promoted, and a round cancelled because it was never drawn.
+              send the unspent prepay elsewhere, since a refund would be a free re-roll of the jury. A missed
+              beacon quorum and a round cancelled because it was never drawn send it to the aggregator's arbiter
+              pool, which pays an eighth of itself to a random registered arbiter at each draw. A commit phase
+              that had enough commits but was never closed or promoted shares it equally among the arbiters
+              that committed.
             </p>
           </div>
           <div className="info-card">

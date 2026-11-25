@@ -912,7 +912,7 @@ A jury needs K >= M >= N >= P >= 1, N at most 40, P at least 2 (unless N = 1), K
             per-arbiter fee. If the round misses its deadline, <strong>settle</strong> returns the
             unspent prepay. Rewards and refunds are added to your prepay credit. Keep this page
             open until the result arrives: a round whose jury nobody draws never ends, and after a
-            day its prepay can only go to the treasury.
+            day its prepay can only go to the arbiter pool.
           </div>
           {ethCredit > 0n && (
             <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>

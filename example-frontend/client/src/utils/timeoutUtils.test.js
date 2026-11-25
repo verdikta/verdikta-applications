@@ -15,7 +15,8 @@ import {
 const iface = new Interface(CONTRACT_ABI);
 const AGG_ID = '0x' + '0'.repeat(63) + '7'; // aggId = bytes32(roundId)
 const REQUESTER = '0x742F15ebE4fCcC794a39dbBc00e3C5700A7BEB8D';
-const TREASURY = '0x2222222222222222222222222222222222222222';
+const POOL = '0x0000000000000000000000000000000000000000'; // the arbiter pool, ethOwed(address(0))
+const ARBITER = '0x3333333333333333333333333333333333333333';
 const TX_HASH = '0x' + 'ab'.repeat(32);
 const FEE = 100000000000000n; // 0.0001 ETH per arbiter
 const REFUND = 1080000000000000n;
@@ -168,10 +169,12 @@ function makeChain({
       return [eventLog('CommitPhaseComplete', [AGG_ID, M])];
     },
     settle: () => {
-      const toTreasury = c.phase === PHASE.CLOSING || (c.phase === PHASE.COMMIT && c.commits >= M);
+      // M commits never promoted: shares to the committers (and the indivisible rest to the pool)
+      const toCommitters = c.phase === PHASE.CLOSING || (c.phase === PHASE.COMMIT && c.commits >= M);
       c.phase = PHASE.FAILED;
       return [
-        eventLog('RequesterRefunded', [AGG_ID, toTreasury ? TREASURY : REQUESTER, REFUND]),
+        ...(toCommitters ? [eventLog('CommitPayment', [AGG_ID, ARBITER, REFUND])] : []),
+        eventLog('RequesterRefunded', [AGG_ID, toCommitters ? POOL : REQUESTER, toCommitters ? 1n : REFUND]),
         eventLog('EvaluationFailed', [AGG_ID, 5]),
         eventLog('RoundSettled', [AGG_ID, true]),
       ];
@@ -480,9 +483,13 @@ describe('rounds that end without a refund to the user', () => {
 
   test('a round another account settled: failed, refund read from the logs', async () => {
     const c = makeChain({ startPhase: PHASE.FAILED });
-    c.refundEvents = [{ args: { aggRequestId: AGG_ID, requester: TREASURY, amount: REFUND } }];
+    c.refundEvents = [{ args: { aggRequestId: AGG_ID, requester: POOL, amount: REFUND } }];
     const result = await drive(c).promise;
-    expect(result).toMatchObject({ status: 'failed', settledBy: 'other', refund: { amount: REFUND, toRequester: false } });
+    expect(result).toMatchObject({
+      status: 'failed',
+      settledBy: 'other',
+      refund: { amount: REFUND, toRequester: false, toCommitters: 0n },
+    });
     expect(c.read.queryFilter).toHaveBeenCalledWith({ id: AGG_ID }, B0);
   });
 

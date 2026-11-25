@@ -46,7 +46,7 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      a round with no verdict reads as one as soon as the aggregator is done with it, before
                      anyone finalizes it; a round whose jury is not drawn yet waits (claim draws it, as anyone may,
                      and the site's keeper does): the listing's jury timeout runs from the draw, and a round left undrawn
-                     can only be cancelled, its prepay to the aggregator's treasury (about 8,191 blocks after the
+                     can only be cancelled, its prepay to the aggregator's arbiter pool (about 8,191 blocks after the
                      request if its seed was never stored, a day after it if it was)
                      --wait stops after 15 minutes at most (exit 4 if the claim is still pending): run it again
                      the reveal deadline is the chain's, and status says when a release moved it

@@ -190,7 +190,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await keeper.setApproved(agg.target, true);
     await keeper.setApproved(beacons.target, true);
     await beacons.setApproved(agg.target, true);
-    await agg.setContracts(keeper.target, beacons.target, deployer.address);
+    await agg.setContracts(keeper.target, beacons.target);
     await agg.setLimits(50, 3600, 155);                                                 // dispatcher deploy/03_config.js
     expect(await agg.maxJury()).to.equal(50n);
     expect(await agg.maxTimeout()).to.equal(3600n);
@@ -329,7 +329,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await lens(scn, "expired", b, s, "DONE");
   });
 
-  it("4b. M commits but never closed/promoted: closeFailedRound -> prepay to treasury, bond kept", async () => {
+  it("4b. M commits but never closed/promoted: closeFailedRound -> prepay shared by the committers, bond kept", async () => {
     const scn = "4b M commits unpromoted";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
@@ -339,18 +339,28 @@ describe("BountyEscrow x real v2 aggregator", function () {
     for (const x of [0, 1, 2, 3, 4]) await round.drv.commit(round, x, [100_000n, PASS]);
     await time.increase(301);
     await lens(scn, "past deadline", b, s, "CLOSE_FAILED");
-    const t0 = await agg.ethOwed(deployer.address);
+    const p0 = await agg.ethOwed(ethers.ZeroAddress);                                  // the arbiter pool
     const hb = await ethers.provider.getBalance(hunter.address);
+    const left = (r) => r[4] - r[5] - r[6] - r[7];
+    const before = left(await agg.getRoundInfo(aggId));
     await sendExact("closeFailedRound (settle path, K=6)", escrow.connect(other), "closeFailedRound", [b, s]);
     const i = await agg.getRoundInfo(aggId);
     const sub = await escrow.getSubmission(b, s);
-    results[scn] = { phase: i[0], status: sub.status, treasuryGot: (await agg.ethOwed(deployer.address)) - t0, hunterGot: (await ethers.provider.getBalance(hunter.address)) - hb };
+    // the 5 committed slots share the unspent prepay (CommitPayment, counted in rewards); the rest to the pool
+    const shares = await agg.queryFilter(agg.filters.CommitPayment(aggId));
+    expect(shares.length).to.equal(5);
+    const share = before / 5n;
+    for (const e of shares) expect(e.args.amount).to.equal(share);
+    const poolGot = (await agg.ethOwed(ethers.ZeroAddress)) - p0;
+    expect(poolGot).to.equal(before - share * 5n);
+    expect(left(i)).to.equal(poolGot);
+    results[scn] = { phase: i[0], status: sub.status, committersGot: share * 5n, poolGot, hunterGot: (await ethers.provider.getBalance(hunter.address)) - hb };
     expect(sub.status).to.equal(6n);
     expect(sub.bondHeld).to.equal(BOND);
   });
 
   // ------------------------------------------------------------------ 5. undrawn round
-  it("5a. undrawn, unsealed: after 1 day still AWAIT_ORACLE; after 8,192 blocks closeFailedRound cancels (prepay to treasury)", async () => {
+  it("5a. undrawn, unsealed: after 1 day still AWAIT_ORACLE; after 8,192 blocks closeFailedRound cancels (prepay to the arbiter pool)", async () => {
     const scn = "5a undrawn unsealed";
     const { b, evalCid } = await createBounty();
     const { s, aggId } = await prepareStart(b, evalCid);
@@ -358,13 +368,14 @@ describe("BountyEscrow x real v2 aggregator", function () {
     await lens(scn, "1 day, unsealed", b, s, "AWAIT_ORACLE");
     await mine(8200);
     await lens(scn, "past 8,191 blocks", b, s, "CLOSE_FAILED");
-    const t0 = await agg.ethOwed(deployer.address);
+    const p0 = await agg.ethOwed(ethers.ZeroAddress);                                  // the arbiter pool
     const hb = await ethers.provider.getBalance(hunter.address);
     await sendExact("closeFailedRound (cancelUnsealed path)", escrow.connect(other), "closeFailedRound", [b, s]);
     const i = await agg.getRoundInfo(aggId);
     const sub = await escrow.getSubmission(b, s);
-    results[scn] = { phase: i[0], status: sub.status, bondHeld: sub.bondHeld, treasuryGot: (await agg.ethOwed(deployer.address)) - t0, received: i[4], hunterGot: (await ethers.provider.getBalance(hunter.address)) - hb };
+    results[scn] = { phase: i[0], status: sub.status, bondHeld: sub.bondHeld, poolGot: (await agg.ethOwed(ethers.ZeroAddress)) - p0, received: i[4], hunterGot: (await ethers.provider.getBalance(hunter.address)) - hb };
     expect(i[0]).to.equal(9n);
+    expect(results[scn].poolGot).to.equal(i[4]);                                         // the whole prepay
     expect(sub.status).to.equal(6n);
     expect(sub.bondHeld).to.equal(BOND);
     await lens(scn, "after cancel", b, s, "RERUN");

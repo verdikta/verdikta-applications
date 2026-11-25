@@ -364,12 +364,17 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
 
 /**
  * Round-level v2 facts over every cached round (the collector's look-back): how rounds ended,
- * beacon stages, prepay lost to the treasury, and late reveals (scored, not counted).
+ * beacon stages, prepay forfeited to the arbiter pool, never-promoted rounds' prepay shared by their
+ * committers, the pool's payouts at draws, and late reveals (scored, not counted). A record cached
+ * before the arbiter pool carries the old cache field toTreasuryWei (not an event field), read as the pool's.
  */
 function summarizeRounds(state) {
-  const out = { rounds: 0, finalized: 0, failed: 0, cancelled: 0, beaconRounds: 0, treasuryRounds: 0,
-    toTreasuryWei: '0', lateReveals: 0, roundsWithLate: 0, lookbackDays: LOOKBACK_DAYS };
+  const out = { rounds: 0, finalized: 0, failed: 0, cancelled: 0, beaconRounds: 0, poolRounds: 0,
+    toPoolWei: '0', committerRounds: 0, toCommittersWei: '0', poolPayouts: 0, poolPaidWei: '0',
+    lateReveals: 0, roundsWithLate: 0, lookbackDays: LOOKBACK_DAYS };
   let wei = 0n;
+  let committersWei = 0n;
+  let poolPaidWei = 0n;
   for (const r of Object.values(state?.rounds || {})) {
     if (r.notFound || !r.settled) continue;
     out.rounds++;
@@ -377,14 +382,22 @@ function summarizeRounds(state) {
     else if (r.phase === 9) out.cancelled++;
     else if (r.phase === 8) out.failed++;
     if (r.beacons > 0) out.beaconRounds++;
-    const t = BigInt(r.toTreasuryWei || '0');
-    if (t > 0n) { out.treasuryRounds++; wei += t; }
+    const t = BigInt(r.toPoolWei ?? r.toTreasuryWei ?? '0');
+    if (t > 0n) { out.poolRounds++; wei += t; }
+    const c = BigInt(r.toCommittersWei || '0');
+    if (c > 0n) { out.committerRounds++; committersWei += c; }
+    const pp = BigInt(r.poolPaidWei || '0');
+    if (pp > 0n) { out.poolPayouts++; poolPaidWei += pp; }
     const late = (r.late || []).length;
     out.lateReveals += late;
     if (late) out.roundsWithLate++;
   }
-  out.toTreasuryWei = wei.toString();
-  out.toTreasuryEth = ethers.formatEther(wei);
+  out.toPoolWei = wei.toString();
+  out.toPoolEth = ethers.formatEther(wei);
+  out.toCommittersWei = committersWei.toString();
+  out.toCommittersEth = ethers.formatEther(committersWei);
+  out.poolPaidWei = poolPaidWei.toString();
+  out.poolPaidEth = ethers.formatEther(poolPaidWei);
   return out;
 }
 
@@ -517,14 +530,18 @@ async function fetchRound(ctx, aggregator, aggId, hintTs = 0) {
 /**
  * Where an ended round's unspent prepay went, and whether it ran a beacon stage (analytics' v2
  * section). A finalized round refunds the requester; a cancelled one (phase 9) sends everything
- * received to the treasury (RoundCancelled); a failed one (phase 8) emits RequesterRefunded, whose
- * payee is the treasury for a missed beacon quorum, a commit phase with M commits never closed or
- * promoted, or a failed draw after beacons when the walk does not scan the whole class.
- * Returns { beacons, failPhase, refundedWei, toTreasuryWei } (null: the event was not found).
+ * received to the arbiter pool (RoundCancelled); a failed one (phase 8) emits RequesterRefunded, whose
+ * payee is address(0), the arbiter pool, for a missed beacon quorum, a failed draw after beacons when
+ * the walk does not scan the whole class, and the indivisible rest of a round with M commits never
+ * closed or promoted, whose prepay is otherwise shared by its committers (CommitPayment). A drawn
+ * round's draw also paid an eighth of the pool to a random registered arbiter (PoolPayment).
+ * Returns { beacons, failPhase, refundedWei, toPoolWei, toCommittersWei, poolPaidWei }
+ * (null: the event was not found).
  */
 async function roundMoney(ctx, aggAddr, aggId, info, phase) {
   if (phase === 9) {
-    return { beacons: null, failPhase: null, refundedWei: '0', toTreasuryWei: info.received.toString() };
+    return { beacons: null, failPhase: null, refundedWei: '0', toPoolWei: info.received.toString(),
+      toCommittersWei: '0', poolPaidWei: '0' };
   }
   // A failed round's refund comes when it is settled, possibly well after the deadline (or, for a
   // failed draw, within the draw's 1-day limit): scan a day past either.
@@ -537,21 +554,23 @@ async function roundMoney(ctx, aggAddr, aggId, info, phase) {
     .map((log) => AGG_IFACE.parseLog(log)).filter(Boolean);
   const beaconLogs = await scan('BeaconStageStarted');
   const beacons = beaconLogs.length ? Number(beaconLogs[0].args.beacons) : 0;
-  if (phase !== 8) return { beacons, failPhase: null, refundedWei: null, toTreasuryWei: '0' };
-  ctx.treasuries = ctx.treasuries || {};
-  if (!ctx.treasuries[aggAddr]) ctx.treasuries[aggAddr] = lc((await aggCall(ctx, aggAddr, 'treasury', []))[0]);
-  const [refunds, fails] = [await scan('RequesterRefunded'), await scan('EvaluationFailed')];
+  const sum = (logs) => logs.reduce((a, e) => a + e.args.amount, 0n).toString();
+  const poolPaidWei = sum(await scan('PoolPayment'));
+  if (phase !== 8) return { beacons, failPhase: null, refundedWei: null, toPoolWei: '0', toCommittersWei: '0', poolPaidWei };
+  const [refunds, fails, shares] = [await scan('RequesterRefunded'), await scan('EvaluationFailed'), await scan('CommitPayment')];
   let refunded = 0n;
-  let toTreasury = 0n;
+  let toPool = 0n;
   for (const e of refunds) {
-    if (lc(e.args.requester) === ctx.treasuries[aggAddr]) toTreasury += e.args.amount;
+    if (lc(e.args.requester) === ethers.ZeroAddress) toPool += e.args.amount;
     else refunded += e.args.amount;
   }
   return {
     beacons,
     failPhase: fails.length ? Number(fails[0].args.phase) : null,
     refundedWei: refunded.toString(),
-    toTreasuryWei: toTreasury.toString()
+    toPoolWei: toPool.toString(),
+    toCommittersWei: sum(shares),
+    poolPaidWei
   };
 }
 

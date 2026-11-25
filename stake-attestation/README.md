@@ -1638,7 +1638,7 @@ goes in a URL.
   hold without a first step of its own. The section reports that transaction as the page's other actions report theirs, by
   the hash it was mined under, and that line says nothing of what the listing is. Once the page has
   read the hold, it says the listing is on hold, with the time, beside its state (which stays Open
-  or Depleted, and is no longer drawn as taking claims), and in every sentence it has about taking
+  or Depleted, and is no longer drawn as taking claims), and in its sentences about taking
   claims: no "open until", a commit offer that says the site does not offer it, a renewal and a
   top-up that do not make it take claims again. Roll forward stays offered, and close by its own
   terms. The queue line counts the late claims a listing on hold takes with the claims from before
@@ -1655,10 +1655,10 @@ goes in a URL.
   the page sent stands in for a read, not the hold's and not the opening's. *Off the page at once,
   back only from a read.* Each transaction the page sends and sees mined (every action, on every
   path that sends: a call the wallet sent again at a higher fee, a replacement, a revert), and
-  each read through the wallet that refuses an action because it has the listing otherwise than
-  the page shows it, tells the page that the read it shows is behind. That read asks the count
-  first (`listingAt` in `client/src/chain/wallet.js`), for the top-up, the renewal, the hold, the
-  close and the roll alike, so a listing the wallet's node does not have at that block is an
+  each read through the wallet that refuses a top-up, a renewal, a hold, a close or a roll forward
+  because it has the listing otherwise than the page shows it, tells the page that the read it
+  shows is behind. That read asks the count first (`listingAt` in `client/src/chain/wallet.js`),
+  for all five, so a listing the wallet's node does not have at that block is an
   answer, and a disagreement like any other. Where an action reads something besides the
   listing (a roll its successor, a renewal its fee, a hold the hold's time), the listing is read
   first and the other only when the listing alone does not rule the action out, so what the
@@ -1668,15 +1668,20 @@ goes in a URL.
   any new read answers, the page shows nothing that says the listing is on hold or what its maker
   may do because of it, and nothing that shows it as taking claims: its state, "open until", the
   commit offer, the hold's section, the roll-forward panel and the forms of top-up, renew and
-  close are off. Each action's line for its own transaction stays. Its own error is shown where
-  its section is drawn: the hold and the roll forward draw theirs whatever the read says; top up,
-  renewal and close draw no section, as before this node, for a listing the page's read rules the
-  action out on, unless that action's own transaction line is there, so an error of theirs that
-  arrives then is not shown (verdikta-applications issue 240). The page
-  then reads the listing again until a read is of that block or a later one (`readFrom` in
-  `client/src/lib/poll.js`), and everything comes back from that read alone. While it reads it
-  says so; when its reads are over and none was taken, it names the block its next read has to
-  reach, with "Read again", and stays as it is. That block is the floor (the newest block the
+  close are off. Each action's line for its own transaction stays, worded by its receipt (a
+  top-up's "The listing is open again" is its `Reopened` event). Its own error is shown where its
+  section is drawn, and no further. As before this node, the opening, top up, renewal and close
+  draw no section for a listing the page's read rules the action out on, and a withdrawal none for
+  a wallet that is held nothing, unless that action's own transaction line is there: an error of
+  theirs that arrives then is not shown (verdikta-applications issue 240). The hold and the roll
+  forward draw theirs while the listing is on the page and has opened (one refusal apart, the
+  roll's "that successor is on hold", which is drawn only with the panel). The page
+  then reads the listing again, a fixed number of times, until a read is of that block or a later
+  one (`readFrom` in `client/src/lib/poll.js`), and everything comes back from that read alone.
+  While it reads it says so; when its reads are over and none was taken, it names the block its
+  next read has to reach, with "Read again", and stays as it is. A re-read through a wallet that
+  is on another network is such a read: the page does not name the network there
+  (verdikta-applications issue 247). That block is the floor (the newest block the
   page was told of or has shown a read of, whichever is later), never an earlier block it was
   told of: a read between the two was not taken, and the page does not say it has not read that
   far. A read that fails on load is the page's failed-read state
@@ -1694,13 +1699,14 @@ goes in a URL.
   "no such listing" page, when an action that was still out when that read was taken asks for
   another.
   Against a contract with no hold there is no line of a hold to take off, and nothing is: the
-  page reads again from the block and says which block it has not read, and shows the listing it
-  read meanwhile, as the site did before.
-  **The page's own transactions** are shown as the site has always shown them: the transaction,
+  page reads again from the block and shows the listing it read meanwhile, as the site did before;
+  when its reads are over and none reached the block, it says which block it has not read.
+  **The page's own transactions** are shown as the site showed them before this node: the transaction,
   and what its receipt said (a close's refund, a top-up's amounts, a renewal's date, a
   withdrawal's amount, the opening). Such a line is kept while its listing is on the page,
   through every re-read of it, and is not checked against a later read. A read that says the
-  listing is gone, or not opened, takes the page with its actions. The opening's form (the escrow
+  listing is gone takes the page with its actions, and one that says it has not opened takes the
+  hold's and the roll's, whose panel is an opened listing's. The opening's form (the escrow
   field and its button) is the read's all along: it is drawn only while the listing on display is
   Listed, so a listing read again as open has none, whenever the opening's receipt arrived.
   Whether a line should outlive
@@ -1716,23 +1722,26 @@ goes in a URL.
   was made, and never learned from what a node answers. The site's read address
   (`VITE_SA_RPC_URL`) is asked at the block's hash (an EIP-1898 block parameter, `{blockHash,
   requireCanonical: true}`): a node that does not have that block as the chain's refuses the
-  call, any refusal is a failed read, and nothing is read by number in its place. A wallet's node
+  call, that refusal or a refusal of the form itself is a failed read, and nothing is read by
+  number in its place. A wallet's node
   is asked at the block's number, and is never sent the hash form. Either way the answers are
   taken only when the block at that number still has the hash it had before the calls; otherwise
-  the read is made again, three times at most, and then it is a failed read.
+  the read is made again, three times in all at most, and then it is a failed read.
   A wallet can change network at any moment, so a read through one is also held to the site's
   chain (`VITE_SA_CHAIN_ID`): the wallet is asked its chain after the calls of every try, and any
-  other chain is a failed read, said with the wallet's wrong-network message and never made again
-  on that network. A try during which the wallet reported a change of network (its `chainChanged`
+  other chain fails the read there, with no further try of it. The page's first read and an
+  action's read say that failure with the wallet's wrong-network message; a re-read of the page
+  does not name the network (above; verdikta-applications issue 247). A try during which the wallet reported a change of network (its `chainChanged`
   event) is not taken either, since the wallet may have gone to another network and come back: the
   read is made again, as for a replaced block. The site's read address is one chain's by how it is
   made, and is asked neither.
   `test/snapshot.test.js` runs it against nodes whose blocks are replaced under it, and fails
   when a hold is read outside a snapshot.
   **The page reads; it does not watch.** It reads on load, after each of its own transactions and
-  each refusal by the wallet's read, until it has read that block, and when asked. A block
-  replaced after its latest read is seen at its next read, not before; what another tab or
-  another sender did is caught by the read before sending and by the contract's own checks; a
+  each such refusal by the wallet's read (until it has read that block, or its reads are over),
+  and when asked. A block replaced after its latest read is seen at its next read, not before;
+  what another tab or another sender did is left to the read before sending and to the contract's
+  own checks; a
   node is taken to answer truly for the block it names; and the nodes behind one address are
   taken to agree on the chain (owner decision, 2026-11-24). What the page holds all the same,
   where a read address is configured (`VITE_SA_RPC_URL`): a hold's state and its next step, as the
@@ -1759,8 +1768,8 @@ goes in a URL.
   `execution reverted: unknown function`. That is the reason of the contract's own fallback
   (its lens's `revert("unknown function")`), which a contract that has `heldAt` never reaches
   for it, and which no failure of a node or a network says. One code and one whole message,
-  compared as they are: any other code, reason or wording, and anything nested in a wallet's own
-  error, is a failed read.
+  compared as they are: any other code, reason or wording, and that code and message nested in a
+  wallet's own error with no revert data, is a failed read.
   `test/rollGuidance.test.js` checks both sets of lines against `hold`, `close` and `rollForward`
   in the contract's source and refuses any wording that would call a roll harmless after a public
   push; `test/hold.test.js` holds the warning's three statements to the source, one by one, and
@@ -2010,7 +2019,9 @@ maker's and its time the block's and the view's, the state is what it was, `acce
 field what they were. The site then says it (`labels.heldAt`, `live` false, the state still the chain's, the claim still
 pending, the badge "stake on hold since", and no entry in the feed), and so do the pages in Chromium: the listing's own,
 which reads the chain, the record and the feed. **A commit is refused**: the tool, given `--yes` for the folder it priced
-before the hold, exits as it does for a refusal, and what that leaves is checked and not its code or its words: nothing
+before the hold, exits as it does for a refusal (exit 1 with one of the tool's own error codes on its error line; the
+line is read only to tell a refusal from `INTERNAL` and `RPC_UNAVAILABLE`, and neither which refusal code it names nor
+any prose is gone by), and what that leaves is checked: nothing
 pinned, the hunter's nonce and the contract's claim count unmoved, the listing's counts and queue as they were. An
 unrelated failure would leave the same, so that one invocation reaches the chain through a recording proxy, and what it
 asked is read back, in order: whether this listing takes a commit, the chain's answer no, no transaction sent, and

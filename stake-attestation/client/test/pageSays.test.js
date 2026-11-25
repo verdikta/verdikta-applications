@@ -406,13 +406,16 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(rule, /everything comes back from that read alone/);
   // R6-F1: an action's own error is said as it is, where its section is drawn; the rest is issue 240's
   assert.doesNotMatch(readme, /and its own error, stay/);
-  assert.match(rule, /Each action's line for its own transaction stays\. Its own error is shown where its section is drawn: the hold and the roll forward draw theirs whatever the read says; top up, renewal and close draw no section, as before this node, for a listing the page's read rules the action out on, unless that action's own transaction line is there, so an error of theirs that arrives then is not shown \(verdikta-applications issue 240\)\./);
+  assert.match(rule, /Its own error is shown where its section is drawn, and no further\. As before this node, the opening, top up, renewal and close draw no section for a listing the page's read rules the action out on, and a withdrawal none for a wallet that is held nothing, unless that action's own transaction line is there: an error of theirs that arrives then is not shown \(verdikta-applications issue 240\)\./);
+  assert.match(rule, /The hold and the roll forward draw theirs while the listing is on the page and has opened \(one refusal apart, the roll's "that successor is on hold", which is drawn only with the panel\)\./);
+  // R7-F2: a re-read through a wallet on another network is a re-read that reached no block; the network is not named there
+  assert.match(rule, /A re-read through a wallet that is on another network is such a read: the page does not name the network there \(verdikta-applications issue 247\)\./);
   assert.match(rule, /No read of an earlier block is taken after a later one was shown, or after the page was told of a later one/);
   assert.match(rule, /Against a contract with no hold there is no line of a hold to take off, and nothing is/);
   const own = between('**The page\'s own transactions**', '**One read is one block, and a block is its hash, never its number**');
   // R1-F6: what is so of an action's own line, and no more: kept while its listing is on the page
   assert.match(own, /Such a line is kept while its listing is on the page, through every re-read of it, and is not checked against a later read\./);
-  assert.match(own, /A read that says the listing is gone, or not opened, takes the page with its actions\./);
+  assert.match(own, /A read that says the listing is gone takes the page with its actions, and one that says it has not opened takes the hold's and the roll's, whose panel is an opened listing's\./);
   assert.match(own, /The opening's form \(the escrow field and its button\) is the read's all along: it is drawn only while the listing on display is Listed/);
   assert.doesNotMatch(readme, /for the visit/);
   assert.match(rule, /it names the block its next read has to reach, with "Read again"/);
@@ -425,7 +428,9 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(reads, /stand on the assumption alone, that the nodes behind the wallet's address agree on the chain/);
   // R5-F2: a wallet's node is held to the site's chain in every read, and R5-F1: a listing's id has one form
   const oneBlock = between('**One read is one block, and a block is its hash, never its number**', '**The page reads; it does not watch.**');
-  assert.match(oneBlock, /A wallet can change network at any moment, so a read through one is also held to the site's chain \(`VITE_SA_CHAIN_ID`\): the wallet is asked its chain after the calls of every try, and any other chain is a failed read, said with the wallet's wrong-network message and never made again on that network/);
+  assert.match(oneBlock, /A wallet can change network at any moment, so a read through one is also held to the site's chain \(`VITE_SA_CHAIN_ID`\): the wallet is asked its chain after the calls of every try, and any other chain fails the read there, with no further try of it\./);
+  assert.match(oneBlock, /The page's first read and an action's read say that failure with the wallet's wrong-network message; a re-read of the page does not name the network/);
+  assert.doesNotMatch(readme, /never made again on that network/);
   assert.match(oneBlock, /A try during which the wallet reported a change of network \(its `chainChanged` event\) is not taken either/);
   assert.match(reads, /Such a read is held to the site's chain all the same/);
   assert.match(readme, /The id in the address is read once and has one form from there on, the decimal number with no leading zeros: `#\/fund\/001` is the page of listing 1/);

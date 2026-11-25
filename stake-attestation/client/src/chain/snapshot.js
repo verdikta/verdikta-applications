@@ -80,8 +80,8 @@ export async function snapshot(provider, read, { tries = SNAPSHOT_TRIES, chainId
     }
     // the block at that number, asked again after the calls: the same hash, and every answer above is that block's
     const stood = hashOf(await header(provider, block)) === blockHash;
-    // A wallet on another network by now fails the read here, whatever its blocks say: no try is ever made again on
-    // that network. A try it reported a change during is not taken either: it may have gone there and come back.
+    // A wallet on another network by now fails the read here, whatever its blocks say: this read makes no further
+    // try. A try it reported a change during is not taken either: it may have gone there and come back.
     if (ofWallet) await verifyChain(provider, chainId);
     if (stood && (!ofWallet || switches === reported)) {
       // a read that failed while its block was being replaced is read again; one that failed on a block that stood, fails

@@ -373,12 +373,13 @@ test('the action asks for confirmation before anything is sent, reads the listin
   assert.equal(body.split('.hold(BigInt(listingId))').length, 2, 'hold() is sent in one place');
   assert.ok(body.indexOf('const send = async') < body.indexOf('.hold(BigInt(listingId))'), 'inside send');
   // just before sending: the listing and its hold, through the wallet, in one snapshot of one block
-  assert.match(body, /const \{ value: \[mine, now\], block \} = await snapshot\(provider, \(at\) => \{\s*const view = stakeAttestation\(at\);\s*return Promise\.all\(\[listingAt\(view, listingId\), readHold\(view, listingId\)\]\);\s*\}\);/);
+  assert.match(body, /const \{ value: \[mine, now\], block \} = await snapshot\(provider, async \(at\) => \{\s*const view = stakeAttestation\(at\);\s*const source = await listingAt\(view, listingId\);\s*return \[source, holdable\(source\) \? await readHold\(view, listingId\) : NO_HOLD\];\s*\}\);/);
   // A hold has no way back: it is sent only for the listing the page showed (the same artifact, the same maker's),
   // and only while that listing can be held. Otherwise nothing is sent, the confirmation is taken back, and the page
   // is told the wallet's read disagreed with it, at that read's block.
-  assert.match(body, /if \(!sameListing\(mine, asking\) \|\| !holdTerms\(mine, now\)\.can\) \{\s*setError\(fill\(H\.changed, \{ id: listingId \}\)\);\s*setAsking\(null\);\s*onChanged\(disagreedAt\(block\)\);\s*return undefined;\s*\}\s*const tx = await stakeAttestation\(signer\)\.hold\(BigInt\(listingId\)\);/);
-  assert.doesNotMatch(body, /sameListing\(mine, listing\)/, 'the wallet\'s read is held to the listing of the first step, not to whatever the page shows at the click');
+  assert.match(body, /const holdable = \(l\) => sameListing\(l, asking\) && holdTerms\(l, NOT_ON_HOLD\)\.can;/);
+  assert.match(body, /if \(!holdable\(mine\) \|\| !holdTerms\(mine, now\)\.can\) \{\s*setError\(fill\(H\.changed, \{ id: listingId \}\)\);\s*setAsking\(null\);\s*onChanged\(disagreedAt\(block\)\);\s*return undefined;\s*\}\s*const tx = await stakeAttestation\(signer\)\.hold\(BigInt\(listingId\)\);/);
+  assert.doesNotMatch(body, /sameListing\((?:mine|l|source), listing\)/, 'the wallet\'s read is held to the listing of the first step, not to whatever the page shows at the click');
   const shown = { maker: '0xAbC0000000000000000000000000000000000001', artifactHash: `0x${'ab'.repeat(32)}` };
   assert.equal(sameListing({ maker: shown.maker.toLowerCase(), artifactHash: shown.artifactHash.toUpperCase().replace('0X', '0x') }, shown), true);
   assert.equal(sameListing({ ...shown, artifactHash: `0x${'cd'.repeat(32)}` }, shown), false, 'another artifact under the id');

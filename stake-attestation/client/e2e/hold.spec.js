@@ -807,6 +807,95 @@ test.describe('the maker\'s hold', () => {
     expect((await chain.sa.getListing(successor.listingId)).predecessor).toBe(0n);
   });
 
+  test('a renewal whose read finds this listing closed tells the page, whatever its fee read would have come to (R1-F4)', async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient, spec: { repo: ownRepo('renew-source') } });
+    const heldAt = await holdOnChain(chain, stack, listingId);
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+    await expect(renewButton(page, stack)).toBeEnabled();
+    // In another tab the maker closes this listing. And the wallet's node cannot give the listing fee: that read fails.
+    await (await (await chain.as(stack.accounts.maker)).close(listingId)).wait();
+    const fee = chain.sa.interface.encodeFunctionData('listingFeeWei');
+    const asked = { fee: 0 };
+    await interceptRpc(page, stack, (p) => {
+      if (!isCallWith(fee)(p)) return undefined;
+      asked.fee += 1;
+      return { error: { code: -32005, message: 'rate limit exceeded' } };
+    }, { from: 'wallet' });
+    const sent = Number(await chain.provider.send('eth_blockNumber', []));
+    await renewButton(page, stack).click();
+    // What the wallet has of this listing rules the renewal out by itself: the fee is not asked, nothing is sent, the
+    // page is told, and it reads the listing from that block. It stops saying on hold of a listing that is closed.
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    for (const id of ['listing-held', 'listing-held-since', 'hold', 'roll-forward', 'listing-behind']) await expect(page.getByTestId(id)).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText('push the fix');
+    expect(asked.fee, 'the fee was not asked of the wallet\'s node').toBe(0);
+    expect(Number(await chain.provider.send('eth_blockNumber', []))).toBe(sent);
+  });
+
+  test('an action still out when a read says "no such listing" asks for another read: the page says it is reading, and offers Read again by the floor (R2-F2)', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient, spec: { repo: ownRepo('still-out') } });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
+    await expect(renewButton(page, stack)).toBeEnabled();
+    const start = await chain.provider.send('eth_getBlockByNumber', ['latest', false]);
+    // The wallet's node holds back the receipt of the first transaction it is asked about: the renewal, which stays out.
+    const wallet = { heldTx: null };
+    let releaseReceipt;
+    const receiptReleased = new Promise((resolve) => { releaseReceipt = resolve; });
+    await interceptRpc(page, stack, async (p) => {
+      if (p.method !== 'eth_getTransactionReceipt') return undefined;
+      wallet.heldTx ??= p.params[0];
+      if (p.params[0] === wallet.heldTx) await receiptReleased;
+      return undefined;
+    }, { from: 'wallet' });
+    await renewButton(page, stack).click();
+    await expect.poll(() => wallet.heldTx).not.toBeNull();
+    // Meanwhile the site's reader comes to a chain that ends before this listing (its block was replaced): the
+    // contract counts one listing fewer there. A top-up from the page is mined, and the page reads again.
+    const count = chain.sa.interface.encodeFunctionData('listingCount');
+    const reader = { missing: true, trailing: false };
+    await interceptRpc(page, stack, (p) => {
+      if (reader.missing && isCallWith(count)(p)) return { result: word(BigInt(listingId) - 1n) };
+      return reader.trailing && p.method === 'eth_getBlockByNumber' && p.params?.[0] === 'latest' ? { result: start } : undefined;
+    }, { from: 'reader' });
+    const topUp = page.getByTestId('top-up');
+    await topUp.getByTestId('top-up-amount').fill('0.01');
+    await topUp.getByRole('button', { name: fill(STRINGS.topUp.button, { eth: '0.01' }) }).click();
+    await expect(page.getByText(fill(F.notFound, { id: listingId }))).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('listing-summary')).toHaveCount(0);
+    for (const id of ['listing-reading', 'listing-behind', 'listing-read-again']) await expect(page.getByTestId(id)).toHaveCount(0);
+    const [toppedUp] = (await chain.sa.queryFilter(chain.sa.filters.Funded(listingId))).slice(-1);
+    const [renewed] = (await chain.sa.queryFilter(chain.sa.filters.Renewed(listingId))).slice(-1);
+    expect(renewed.blockNumber).toBeLessThan(toppedUp.blockNumber);
+    // Now the renewal's receipt arrives: a transaction of the page was mined, and the page is told. Its reader trails.
+    // On the "no such listing" page it says it is reading, and then names the block its next read has to reach, which
+    // is the floor (the block of the read on display, later than the renewal's), with Read again.
+    reader.trailing = true;
+    releaseReceipt();
+    const behind = page.getByTestId('listing-behind');
+    await expect(behind).toBeVisible({ timeout: 30_000 });
+    const said = new RegExp(`^${fill(F.behind, { block: '(\\d+)' }).replace(/[.:]/g, '\\$&')}$`).exec(await behind.innerText());
+    expect(said, await behind.innerText()).not.toBeNull();
+    expect(Number(said[1]), 'the block of the read on display, not the renewal\'s').toBeGreaterThanOrEqual(toppedUp.blockNumber);
+    await expect(page.getByText(fill(F.notFound, { id: listingId }))).toBeVisible();
+    // asked again of a reader that still trails: reading, then the same
+    await page.getByTestId('listing-read-again').click();
+    await expect(behind).toBeVisible({ timeout: 30_000 });
+    // a reader that has caught up, on a chain that has the listing: Read again takes that read, and the page is the listing's
+    reader.trailing = false;
+    reader.missing = false;
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open, { timeout: 30_000 });
+    await expect(behind).toHaveCount(0);
+    await expect(page.getByText(fill(F.notFound, { id: listingId }))).toHaveCount(0);
+  });
+
   // ---------------------------------------------------------------- one read is one block
   test('a block replaced under the page\'s read: the listing of one chain is never shown with the hold of the other', async ({ page, stack, chain }) => {
     const held = await chain.openListing({ recipient: key.recipient });

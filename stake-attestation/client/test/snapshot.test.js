@@ -8,6 +8,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
+import { BrowserProvider } from 'ethers';
+
 import * as snapshots from '../src/chain/snapshot.js';
 import { WalletError } from '../src/chain/wallet.js';
 
@@ -280,6 +282,34 @@ test('snapshot, a wallet\'s node: it is asked its chain after the calls of every
   const address = site(90, { 90: hash('a1') });
   await snapshot(address.provider, async (at) => at.call(TX));
   assert.deepEqual(address.state.methods, ['eth_getBlockByNumber', 'eth_call', 'eth_getBlockByNumber']);
+});
+
+test('snapshot through ethers\' own BrowserProvider, as a page has a wallet: its chain is what the wallet answers each time, never an answer ethers kept (R5-F2)', async () => {
+  const here = wallet(90, { 90: hash('a1') }, () => '0x01');
+  const there = wallet(90, { 90: hash('b2') }, () => '0x02');
+  there.state.chainId = hex(OTHER_CHAIN);
+  const w = between({ here, there }, 'here');
+  // an injected EIP-1193 provider, with ethers' provider in front, made as chain/wallet.js makes it
+  const provider = new BrowserProvider({ request: ({ method, params }) => w.provider.send(method, params ?? []) }, undefined, { pollingInterval: 5000 });
+  try {
+    assert.deepEqual(await snapshot(provider, async (at) => at.call(TX)), { value: '0x01', block: 90, blockHash: hash('a1') });
+    // ethers has asked this wallet its chain by now, and has the site's. The wallet changes network during the next read.
+    await assert.rejects(
+      snapshot(provider, async (at) => {
+        const answer = await at.call(TX);
+        w.to('there');
+        return answer;
+      }),
+      wrongChain(OTHER_CHAIN),
+    );
+    assert.deepEqual(there.state.calls, [], 'no call of a second try reached the other network');
+    // still there when the next read starts: no read; and back on the site's chain, it reads again
+    await assert.rejects(snapshot(provider, async (at) => at.call(TX)), wrongChain(OTHER_CHAIN));
+    w.to('here');
+    assert.equal((await snapshot(provider, async (at) => at.call(TX))).value, '0x01');
+  } finally {
+    provider.destroy();
+  }
 });
 
 test('snapshot, a wallet\'s node: a try the wallet said it changed network during is not taken, though it is back on the site\'s chain when asked (R5-F2)', async () => {

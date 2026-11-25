@@ -263,7 +263,7 @@ test('every read of a hold on the listing\'s page is made on a snapshot\'s contr
       assert.ok(opened > -1, `${name}: readHold inside a snapshot`);
       const inside = source.slice(opened, m.index);
       assert.match(inside, /\(at\) => \{\s*const (?:view|sa) = stakeAttestation\(at\);/, `${name}: on the snapshot's own contract`);
-      assert.match(inside, /(?:listingAt\(view, |\.getListing\(BigInt\()/, `${name}: with the listing, in the same read`);
+      assert.match(inside, /(?:listingAt\((?:view|sa), |\.getListing\(BigInt\()/, `${name}: with the listing, in the same read`);
       reads += 1;
     }
   }

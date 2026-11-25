@@ -9,6 +9,8 @@
 // lists (the record, the other listings of a repository on a listing's page and in a feed entry) say the hold from the
 // API. Against a contract deployed before the hold, whose heldAt call the node refuses, there is no hold action and
 // the page says what it said. Each step is checked against the chain.
+import { Interface } from 'ethers';
+
 import { formatEth } from '../src/lib/format.js';
 import { STRINGS, fill } from '../src/strings.js';
 import { AFTER_TX_READS } from '../src/lib/poll.js';
@@ -437,7 +439,7 @@ test.describe('the maker\'s hold', () => {
     await stop();
   });
 
-  test('an action\'s own line stays through the page\'s reads: said by its receipt, never taken off and never re-worded', async ({ page, stack, chain }) => {
+  test('an action\'s own line stays through the page\'s re-reads of its listing: said by its receipt, never taken off and never re-worded', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient, spec: { repo: ownRepo('own-line') } });
     const heldAt = await holdOnChain(chain, stack, listingId);
     await installWallet(page, stack);
@@ -692,6 +694,117 @@ test.describe('the maker\'s hold', () => {
     await expect(failure).toBeVisible();
     await expect(page.getByTestId('roll-forward')).toHaveCount(0);
     await expect(page.getByTestId('rolled')).toHaveCount(0);
+  });
+
+  test('the wallet\'s node has no listing under the id: a renewal, a top-up and a close each send nothing and tell the page, as any other disagreement; a read that fails on the way tells it nothing (R1-F4)', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient, spec: { repo: ownRepo('missing') } });
+    const heldAt = await holdOnChain(chain, stack, listingId);
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await connect(page, stack.accounts.maker);
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+    await expect(page.getByTestId('roll-forward').getByTestId('roll-hold-first')).toContainText('push the fix');
+    await expect(renewButton(page, stack)).toBeEnabled();
+    // The wallet's node has a chain that ends before this listing: the contract counts one listing fewer there, and
+    // getListing reverts for the id, as the contract does for an id it has not. The site's reader still has the listing.
+    const count = chain.sa.interface.encodeFunctionData('listingCount');
+    const mine = await listingCall(chain, listingId);
+    const badId = new Interface(['error Error(string)']).encodeErrorResult('Error', ['bad listingId']);
+    const wallet = { mode: 'missing' };
+    await interceptRpc(page, stack, (p) => {
+      if (wallet.mode === 'failing' && isCallWith(count)(p)) return { error: { code: -32005, message: 'rate limit exceeded' } };
+      if (wallet.mode !== 'missing') return undefined;
+      if (isCallWith(count)(p)) return { result: word(BigInt(listingId) - 1n) };
+      return isCallWith(mine.data)(p) ? { error: { code: 3, message: 'execution reverted: bad listingId', data: badId } } : undefined;
+    }, { from: 'wallet' });
+    // the site's reader: counted, and for the first refusal held back, so that what the page does at once shows
+    const reader = { reads: 0, hold: true };
+    let release;
+    const released = new Promise((resolve) => { release = resolve; });
+    await interceptRpc(page, stack, async (p) => {
+      if (isCallWith(mine.data)(p)) reader.reads += 1;
+      if (reader.hold) await released;
+      return undefined;
+    }, { from: 'reader' });
+    const sent = async () => Number(await chain.provider.send('eth_blockNumber', []));
+    const before = await sent();
+
+    // a renewal: nothing is sent, and the page is told at once, before its reader answers
+    const renew = page.getByTestId('renew');
+    await renewButton(page, stack).click();
+    await expect(renew.getByRole('alert')).toHaveText(fill(STRINGS.renew.changed, { id: listingId, state: F.missing }), { timeout: 30_000 });
+    await expect(page.getByTestId('listing-reading')).toHaveText(F.reading);
+    await expectHoldOff(page);
+    // its reader has the listing: the page reads it again, and says what that read says
+    reader.hold = false;
+    release();
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt), { timeout: 30_000 });
+    await expect(page.getByTestId('listing-behind')).toHaveCount(0);
+    expect(await sent()).toBe(before);
+
+    // a top-up: the same
+    const topUp = page.getByTestId('top-up');
+    let reads = reader.reads;
+    await topUp.getByTestId('top-up-amount').fill('0.01');
+    await topUp.getByRole('button', { name: fill(STRINGS.topUp.button, { eth: '0.01' }) }).click();
+    await expect(topUp.getByRole('alert')).toHaveText(fill(STRINGS.topUp.changed, { id: listingId, state: F.missing }), { timeout: 30_000 });
+    await expect.poll(() => reader.reads).toBeGreaterThan(reads);
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt), { timeout: 30_000 });
+    expect(await sent()).toBe(before);
+
+    // a close, in its two steps: the same, and the confirmation is taken back
+    const close = page.getByTestId('close');
+    reads = reader.reads;
+    const escrow = formatEth((await chain.sa.getListing(listingId)).escrowWei);
+    await close.getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) }).click();
+    await close.getByRole('button', { name: fill(STRINGS.close.confirm, { id: listingId, eth: escrow }) }).click();
+    await expect(close.getByRole('alert')).toHaveText(fill(STRINGS.close.changed, { id: listingId }), { timeout: 30_000 });
+    await expect(close.getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) })).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => reader.reads).toBeGreaterThan(reads);
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt), { timeout: 30_000 });
+    expect(await sent()).toBe(before);
+    expect(Number((await chain.sa.getListing(listingId)).state)).toBe(1); // Open: not closed
+
+    // A read through the wallet that fails on the way (the node, not the contract) is the action's failure, and no
+    // disagreement: the page is told nothing, reads nothing, and goes on saying what its read says.
+    wallet.mode = 'failing';
+    reads = reader.reads;
+    await renewButton(page, stack).click();
+    await expect(renew.getByRole('alert')).toContainText(fill(C.failed, { reason: '' }), { timeout: 30_000 });
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+    await expect(page.getByTestId('roll-forward').getByTestId('roll-hold-first')).toContainText('push the fix');
+    for (const id of ['listing-reading', 'listing-behind']) await expect(page.getByTestId(id)).toHaveCount(0);
+    expect(reader.reads).toBe(reads);
+    expect(await sent()).toBe(before);
+  });
+
+  test('a roll whose read finds this listing closed tells the page, whatever the successor\'s read would have come to (R1-F4)', async ({ page, stack, chain }) => {
+    const repo = ownRepo('roll-source');
+    const first = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    const heldAt = await holdOnChain(chain, stack, first.listingId);
+    const successor = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    await chain.until(async () => ((await api(stack, '/api/feed'))?.listings ?? []).some((l) => l.listingId === String(successor.listingId)), { what: 'the successor in the feed' });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${first.listingId}`);
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+    const pick = field(page, RF.pick);
+    await expect(pick).toBeVisible();
+    await pick.selectOption(String(successor.listingId));
+    const button = page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) });
+    await expect(button).toBeVisible();
+    // In another tab the maker closes this listing. And the wallet's node cannot give the successor: its read fails.
+    await (await (await chain.as(stack.accounts.maker)).close(first.listingId)).wait();
+    const theirs = await listingCall(chain, successor.listingId);
+    await interceptRpc(page, stack, (p) => (isCallWith(theirs.data)(p) ? { error: { code: -32005, message: 'rate limit exceeded' } } : undefined), { from: 'wallet' });
+    await button.click();
+    // What the wallet has of this listing is not lost to that failure: nothing is sent, the page is told, and it
+    // reads the listing from that block. It stops saying on hold and "push the fix" of a listing that is closed.
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    for (const id of ['listing-held', 'listing-held-since', 'hold', 'roll-forward', 'rolled', 'listing-behind']) await expect(page.getByTestId(id)).toHaveCount(0);
+    await expect(page.locator('main')).not.toContainText('push the fix');
+    await expect(page.getByRole('alert').filter({ hasText: fill(RF.changed, { id: successor.listingId }) })).toBeVisible();
+    expect((await chain.sa.getListing(successor.listingId)).predecessor).toBe(0n);
   });
 
   // ---------------------------------------------------------------- one read is one block

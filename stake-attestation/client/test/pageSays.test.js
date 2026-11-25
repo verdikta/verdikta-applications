@@ -68,8 +68,25 @@ test('what the page says is one function of what happened to it: a row for each 
     ['and that floor holds: no read from before it is taken, and its block is said', [loaded(listing(103, HELD)), disagreed(105, false), answered(listing(104)), SETTLED], { ...SHOWN, unread: 105 }, 103],
     ['a disagreement for another listing does not bring back lines a transaction took off', [loaded(listing(100, HELD)), mined(101), disagreed(102, false), SETTLED], { ...SHOWN, off: true, unread: 102 }, 100],
 
+    // R1-F8: the notice names the block the next read has to reach, the floor, and never an earlier block the page
+    // was told of: a read of a block between the two was not taken, and the page must not say it has not read that far
+    ['shown 110, a refusal at 105: while it reads, the lines are off and it says it is reading', [loaded(listing(110, HELD)), disagreed(105)], { ...SHOWN, off: true, reading: true }, 110],
+    ['shown 110, a refusal at 105, reads of 109 not taken: the notice says 110, not 105', [loaded(listing(110, HELD)), disagreed(105), answered(listing(109, HELD)), answered(listing(109, HELD)), answered(listing(109, HELD)), answered(listing(109, HELD)), SETTLED], { ...SHOWN, off: true, unread: 110 }, 110],
+    ['and a read of 110 taken after it brings the lines back', [loaded(listing(110, HELD)), disagreed(105), answered(listing(109, HELD)), answered(listing(110, HELD)), SETTLED], SHOWN, 110],
+    ['an own transaction mined below the block shown: the same floor is said', [loaded(listing(110, HELD)), mined(108), answered(listing(109)), SETTLED], { ...SHOWN, off: true, unread: 110 }, 110],
+    // R1-F8: the late refusal of a replaced listing, at or below the height shown. A read was asked for, so the page
+    // says it is reading and ends in Read again when no read was taken, for both listings: the one no longer on
+    // display (nothing of the listing now shown is off) and the one on display (its lines are off).
+    ['a late refusal at 105 for a listing no longer on display, shown 110: reading, and nothing is off', [loaded(listing(110, HELD)), disagreed(105, false)], { ...SHOWN, reading: true }, 110],
+    ['and no read taken: Read again, by the floor, with the listing now shown whole', [loaded(listing(110, HELD)), disagreed(105, false), answered(listing(109)), SETTLED], { ...SHOWN, unread: 110 }, 110],
+    ['the same at the height shown', [loaded(listing(110, HELD)), disagreed(110, false), SETTLED], { ...SHOWN, unread: 110 }, 110],
+    ['and a read taken ends it', [loaded(listing(110, HELD)), disagreed(105, false), answered(listing(110, HELD)), SETTLED], SHOWN, 110],
+    ['the same refusal at 105 for the listing on display, shown 110: reading, with its lines off', [loaded(listing(110, HELD)), disagreed(105, true)], { ...SHOWN, off: true, reading: true }, 110],
+    ['and no read taken: Read again, by the floor, with its lines off', [loaded(listing(110, HELD)), disagreed(105, true), answered(listing(109)), SETTLED], { ...SHOWN, off: true, unread: 110 }, 110],
+    ['Read again that the visitor asks for is a read asked for: reading, then the floor again', [loaded(listing(110, HELD)), disagreed(105, false), SETTLED, AGAIN], { ...SHOWN, reading: true }, 110],
+
     // never backward
-    ['a trailing read after a later one was shown is not taken', [loaded(listing(103)), AGAIN, answered(listing(102, HELD)), SETTLED], SHOWN, 103],
+    ['a trailing read after a later one was shown is not taken', [loaded(listing(103)), AGAIN, answered(listing(102, HELD)), SETTLED], { ...SHOWN, unread: 103 }, 103],
     ['nor after a later one was taken in the same reading', [loaded(listing(100)), mined(101), answered(listing(103)), answered(listing(101, HELD)), SETTLED], SHOWN, 103],
 
     // a contract with no hold: there is no line of a hold to take off; the floor and what it says are the same
@@ -89,7 +106,17 @@ test('what the page says is one function of what happened to it: a row for each 
     'a read that reached the block',
     'a trailing read that is not taken',
     'a disagreement for a listing no longer on display sets the floor and hides nothing',
+    'shown 110, a refusal at 105, reads of 109 not taken: the notice says 110, not 105',
+    'a late refusal at 105 for a listing no longer on display, shown 110',
+    'the same refusal at 105 for the listing on display, shown 110',
   ]) assert.ok(rows.some(([what]) => what.startsWith(named)), `a row for: ${named}`);
+  // the block said is always the floor: never one below a block the read on display is of
+  for (const [what, events] of rows) {
+    const page = after(...events);
+    const says = pageSays(page);
+    if (says.unread !== null) assert.equal(says.unread, floorOf(page), what);
+    if (says.unread !== null && page.read?.block) assert.ok(says.unread >= page.read.block, what);
+  }
 });
 
 test('every short history of a page keeps the three parts of the rule', () => {
@@ -100,24 +127,35 @@ test('every short history of a page keeps the three parts of the rule', () => {
     AGAIN, SETTLED,
   ];
   let histories = 0;
-  const walk = (page, told, mustBeOff, depth) => {
+  // `asked`: a read was asked for and none was taken since; `out`: the reads made for it are still out
+  const walk = (page, told, mustBeOff, asked, out, depth) => {
     histories += 1;
     const says = pageSays(page);
+    const floor = Math.max(told, page.read.block);
     // part 2: off from the instant the page was told, until a read is taken
     assert.equal(says.off, mustBeOff, 'the hold\'s lines are off exactly while the page knows its read is behind');
-    // while they are off the page says why: it is reading, or it names the block and offers to read again
-    if (says.off) assert.equal(says.reading, says.unread === null, 'reading, or the block with Read again: one of the two');
-    if (says.unread !== null) assert.equal(says.unread, told, 'the block said is the newest the page was told of');
-    assert.equal(floorOf(page), Math.max(told, page.read.block), 'the floor');
+    // every read that was asked for says so while it is out, and ends in the floor's block with Read again when none
+    // was taken: whether or not anything is off the page, and whatever block the page was told of (R1-F8)
+    assert.equal(says.reading, asked && out, 'reading, exactly while a read that was asked for is out');
+    assert.equal(says.unread, asked && !out ? floor : null, 'the floor with Read again, exactly when its reads are over and none was taken');
+    if (says.off) assert.ok(asked, 'never off without saying why');
+    assert.equal(floorOf(page), floor, 'the floor');
     if (depth === 0) return;
     for (const event of events) {
       const next = pageAfter(page, event);
       let nextTold = told;
       let nextOff = mustBeOff;
+      let nextAsked = asked;
+      let nextOut = out;
       if (event.type === 'mined' || event.type === 'disagreed') {
         nextTold = Math.max(told, event.block);
         if (event.type === 'mined' || event.shown) nextOff = true;
       }
+      if (event.type === 'mined' || event.type === 'disagreed' || event.type === 'again') {
+        nextAsked = true;
+        nextOut = true;
+      }
+      if (event.type === 'settled') nextOut = false;
       if (event.type === 'read') {
         // a read that is not taken changes nothing: the record is the same one
         const taken = next !== page;
@@ -125,13 +163,16 @@ test('every short history of a page keeps the three parts of the rule', () => {
         assert.equal(taken, event.read.block >= Math.max(told, page.read.block), 'taken only from the floor up');
         if (taken) assert.equal(next.read, event.read, 'and it is the read on display');
         // part 2: back only from a read of that block or a later one
-        if (taken) nextOff = false;
+        if (taken) {
+          nextOff = false;
+          nextAsked = false;
+        }
       }
       assert.ok(next.read.block >= page.read.block, 'the read on display never goes back');
-      walk(next, nextTold, nextOff, depth - 1);
+      walk(next, nextTold, nextOff, nextAsked, nextOut, depth - 1);
     }
   };
-  walk(pageAfter(NOTHING_READ, start), 0, false, 4);
+  walk(pageAfter(NOTHING_READ, start), 0, false, false, false, 4);
   assert.ok(histories > 20_000, `${histories} histories`);
   assert.throws(() => pageAfter(NOTHING_READ, { type: 'receipt' }), /no such event/);
 });
@@ -167,7 +208,10 @@ test('the page draws what it says from that function alone, and is told by every
   // what it says of the block it has not read
   assert.match(page, /\{says\.reading && <p className="hint" role="status" data-testid="listing-reading">\{F\.reading\}<\/p>\}/);
   assert.match(page, /\{says\.unread !== null && \(\s*<>\s*<p className="warning" role="status" data-testid="listing-behind">\{fill\(F\.behind, \{ block: says\.unread \}\)\}<\/p>\s*<button type="button" className="secondary" data-testid="listing-read-again" onClick=\{\(\) => refresh\(\)\}>\{F\.retry\}<\/button>/);
-  assert.equal(fill(STRINGS.fund.behind, { block: 90 }), 'This page has not read the chain at block 90 or later since a change there was sent or seen through the wallet: what it shows of the listing may be from before that change.');
+  assert.equal(fill(STRINGS.fund.behind, { block: 90 }), 'This page has not read the chain at block 90 or later since a change was sent or seen through the wallet: what it shows of the listing may be from before that change.');
+  // R1-F8: the block is the floor's, so the sentence is true of every read the page did not take; it names no block
+  // "there", since the change may have been seen at an earlier one
+  assert.doesNotMatch(STRINGS.fund.behind, /a change there/);
   for (const text of [STRINGS.fund.behind, STRINGS.fund.reading]) {
     assert.doesNotMatch(text, /[\n\r\t]| {2}/);
     assert.deepEqual(wordingProblems(text), []);
@@ -196,10 +240,29 @@ test('every action tells the page: the block its transaction was mined in, on ev
   assert.equal(sends(actions) + sends(extras) + sends(funding), 7, 'and there is no other transaction on the page');
   // a refusal by the read through the wallet, where it is the listing the wallet has otherwise: handed over with that
   // read's block, never as a bare number (which would say a transaction was mined)
-  assert.equal(actions.split('onChanged(disagreedAt(blockTag));').length - 1, 3, 'top-up, renew, close');
-  assert.equal(actions.split('onChanged(disagreedAt(block));').length - 1, 1, 'hold');
-  assert.equal(extras.split('if (!rollable) onChanged(disagreedAt(block));').length - 1, 1, 'roll forward, when it is this listing that changed');
+  assert.equal(actions.split('onChanged(disagreedAt(block));').length - 1, 4, 'top-up, renew, hold, close');
+  assert.equal(extras.split('onChanged(disagreedAt(block));').length - 1, 1, 'roll forward, when it is this listing that changed');
   for (const source of [actions, extras]) assert.doesNotMatch(source, /onChanged\(\)|onChanged\(block(?:Tag)?\)/);
+  // R1-F4: that read is one snapshot through the wallet with the count asked first, so a listing the wallet's node
+  // does not have at that block is an answer (null) and a disagreement like any other. getListing alone reverts for
+  // such an id, which would end in the action's failure and tell the page nothing.
+  assert.equal(actions.split('await snapshot(provider, (at) => listingAt(stakeAttestation(at), listingId));').length - 1, 2, 'top-up, close');
+  assert.match(actions, /const \{ value: \[mine, due\], block \} = await snapshot\(provider, \(at\) => \{\s*const view = stakeAttestation\(at\);\s*return Promise\.all\(\[listingAt\(view, listingId\), view\.listingFeeWei\(\)\]\);\s*\}\);/);
+  assert.equal(actions.split('if (mine === null || !').length - 1, 3, 'top-up, renew, close: no listing is a refusal, with the others');
+  assert.doesNotMatch(actions, /\.getListing\(BigInt\(listingId\), \{ blockTag/, 'no read before sending asks getListing for an id the contract may not have');
+  assert.match(actions, /const stateWords = \(l\) => \(l === null \? STRINGS\.fund\.missing : /);
+  assert.equal(fill(STRINGS.topUp.changed, { id: 7, state: STRINGS.fund.missing }), 'Nothing was sent: listing 7 can no longer be topped up (it is not on the chain as your wallet reads it). It has been read again.');
+  // The roll reads this listing first, and the successor only when this one can still roll: what the wallet has of
+  // this listing is never lost to a failure of the successor's read (no Promise.all over the two).
+  assert.match(extras, /const \{ value: \[mine, successor, successorHold\], block \} = await snapshot\(provider, async \(at\) => \{\s*const sa = stakeAttestation\(at\);\s*const source = await listingAt\(sa, listingId\);\s*if \(!canRoll\(source\)\) return \[source, null, NO_HOLD\];\s*return \[source, await listingAt\(sa, pick\), hold\.supported \? await readHold\(sa, pick\) : NO_HOLD\];\s*\}\);\s*if \(!canRoll\(mine\)\) \{\s*(?:\/\/[^\n]*\n\s*)?onChanged\(disagreedAt\(block\)\);\s*return setError\(fill\(RF\.changed, \{ id: pick \}\)\);\s*\}/);
+  assert.match(extras, /const canRoll = \(l\) => l !== null && ROLLABLE\.has\(LISTING_STATES\[Number\(l\.state\)\]\) && same\(l\.maker, account\);/);
+  // a read that failed on the way is the action's failure: it is thrown past the refusal, and tells the page nothing
+  for (const source of [actions, extras]) assert.doesNotMatch(source, /catch \([^)]*\) \{[^}]*onChanged\(/);
+  assert.match(read('../src/chain/wallet.js'), /if \(id === 0n \|\| id > BigInt\(await contract\.listingCount\(\)\)\) return null;/);
+  // and nothing of identity in those four: the listing's maker and artifact are held to the page's only by the hold
+  assert.equal(actions.split('sameListing(').length - 1, 2, 'the hold\'s first step and its read, and no other action');
+  assert.doesNotMatch(extras, /sameListing/);
+  assert.equal(STRINGS.fund.replaced, undefined);
 });
 
 test('while the page knows its read is behind, a section draws its own transaction\'s line and its own error, and nothing of the read', () => {
@@ -242,7 +305,8 @@ test('while the page knows its read is behind, a section draws its own transacti
 
 test('the lines of the page\'s other actions for their own transactions are the site\'s as they were: the transaction, and what its receipt said', () => {
   const actions = component('ListingActions.jsx');
-  // drawn while the action has its transaction, whatever the page reads after: never under `quiet`, never taken back
+  // drawn while the action has its transaction and its listing is on the page, through every re-read of it: never
+  // under `quiet`, never checked against a later read
   assert.match(actions, /\{done && \(\s*<p className="ok" data-testid="topped-up">\s*\{done\.toOwed > 0n\s*\? fill\(T\.doneOwed, \{ tx: done\.tx, owed: formatEth\(done\.toOwed\), eth: formatEth\(done\.escrow\) \}\)\s*: fill\(T\.done, \{ tx: done\.tx, eth: formatEth\(done\.escrow\) \}\)\}\s*\{done\.reopened \? ` \$\{T\.reopened\}` : ''\}\s*<\/p>\s*\)\}/);
   assert.match(actions, /\{done && <p className="ok" data-testid="renewed">\{fill\(R\.done, \{ tx: done\.tx, until: formatTime\(done\.until\) \}\)\}<\/p>\}/);
   assert.match(actions, /if \(done\) \{\s*body = \(\s*<p className="ok" data-testid="closed">\s*\{fill\(done\.deferred \? C\.doneDeferred : C\.done, \{ id: listingId, tx: done\.tx, eth: formatEth\(done\.amount\), account: done\.account \}\)\}\s*<\/p>\s*\);/);
@@ -306,7 +370,12 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(rule, /No read of an earlier block is taken after a later one was shown, or after the page was told of a later one/);
   assert.match(rule, /Against a contract with no hold there is no line of a hold to take off, and nothing is/);
   const own = between('**The page\'s own transactions**', '**One read is one block, and a block is its hash, never its number**');
-  assert.match(own, /it is not checked against a later read and not taken back/);
+  // R1-F6: what is so of an action's own line, and no more: kept while its listing is on the page
+  assert.match(own, /Such a line is kept while its listing is on the page, through every re-read of it, and is not checked against a later read\./);
+  assert.match(own, /A read that says the listing is gone, or not opened, takes the page with its actions\./);
+  assert.doesNotMatch(readme, /for the visit/);
+  assert.match(rule, /it names the block its next read has to reach, with "Read again"/);
+  assert.match(rule, /so a listing the wallet's node does not have at that block is an answer, and a disagreement like any other/);
   // the owner's assumption (2026-11-24), what the page holds all the same, and for which reads
   const reads = between('**The page reads; it does not watch.**', '**How the page knows.**');
   assert.match(reads, /the nodes behind one address are taken to agree on the chain \(owner decision, 2026-11-24\)/);

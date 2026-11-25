@@ -449,8 +449,8 @@ test('a successor is never a listing on hold: the picker leaves it out, the read
   const panel = extras.slice(extras.indexOf('export function RollForward('), extras.indexOf('function CommitOffer('));
   // the picker: each candidate and its hold, in one snapshot
   assert.match(panel, /const \[s, onHold\] = await Promise\.all\(\[sa\.getListing\(BigInt\(e\.listingId\)\), hold\.supported \? readHold\(sa, e\.listingId\) : NO_HOLD\]\);\s*if \(!onHold\.held && confirmSuccessor\(/);
-  // the read before sending: this listing, the successor and the successor's hold, in one snapshot through the wallet
-  assert.match(panel, /return Promise\.all\(\[sa\.getListing\(BigInt\(listingId\)\), sa\.getListing\(BigInt\(pick\)\), hold\.supported \? readHold\(sa, pick\) : NO_HOLD\]\);/);
+  // the read before sending: this listing, then the successor and the successor's hold, in one snapshot through the wallet
+  assert.match(panel, /return \[source, await listingAt\(sa, pick\), hold\.supported \? await readHold\(sa, pick\) : NO_HOLD\];/);
   assert.match(panel, /if \(successorHold\.held\) \{\s*setAgain\(\(n\) => n \+ 1\);\s*return setHeldSuccessor\(pick\);\s*\}\s*const tx = await stakeAttestation\(signer\)\.rollForward\(/);
   assert.equal(fill(STRINGS.roll.successorOnHold, { id: 9 }), 'Nothing was sent: listing 9 is on hold and takes no commits, so this listing is not rolled forward to it. Choose another listing.');
   // looked for again when asked, where the contract has the hold; against one without, the panel is what it was

@@ -960,6 +960,53 @@ test.describe('the maker\'s hold', () => {
     expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
   });
 
+  test('an opening whose receipt arrives after another action had the page read the same listing as open: the receipt\'s line appears, and nothing offers to open it (R7-F1)', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient, fund: false, spec: { repo: ownRepo('late-receipt') } });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Listed);
+    const openingForm = [page.getByLabel(STRINGS.chain.escrow, { exact: true }), page.getByRole('button', { name: STRINGS.chain.fund })];
+    for (const part of openingForm) await expect(part).toBeVisible();
+    // the wallet's node holds back the receipt of the opening, the first transaction it is asked about
+    const wallet = { heldTx: null };
+    let releaseReceipt;
+    const receiptReleased = new Promise((resolve) => { releaseReceipt = resolve; });
+    await interceptRpc(page, stack, async (p) => {
+      if (p.method !== 'eth_getTransactionReceipt') return undefined;
+      wallet.heldTx ??= p.params[0];
+      if (p.params[0] === wallet.heldTx) await receiptReleased;
+      return undefined;
+    }, { from: 'wallet' });
+    await openingForm[1].click();
+    await expect.poll(() => wallet.heldTx).not.toBeNull();
+    await chain.until(async () => Number((await chain.sa.getListing(listingId)).state) === 1, { what: 'the opening mined' });
+    // The page has not been told: it shows the listing as it read it, Listed. A close from it is refused by its read
+    // through the wallet (the escrow is no longer the one the page shows), and the page reads: the listing is open.
+    const close = page.getByTestId('close');
+    await close.getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) }).click();
+    await close.getByRole('button', { name: fill(STRINGS.close.confirm, { id: listingId, eth: formatEth(0n) }) }).click();
+    await expect(close.getByRole('alert')).toHaveText(fill(STRINGS.close.changed, { id: listingId }), { timeout: 30_000 });
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open, { timeout: 30_000 });
+    // the same listing, read as open: the form is the read's and is gone, and the opening has no line before its receipt
+    for (const part of openingForm) await expect(part).toHaveCount(0);
+    await expect(page.getByTestId('opened')).toHaveCount(0);
+    // The receipt arrives. The opening's line is on the page, with the transaction the chain has, and stays through
+    // the read the receipt asks for; nothing offers to open the listing.
+    releaseReceipt();
+    const [funded] = await chain.sa.queryFilter(chain.sa.filters.Opened(listingId));
+    expect(funded.transactionHash).toBe(wallet.heldTx);
+    const opened = await chain.sa.getListing(listingId);
+    const line = fill(STRINGS.chain.opened, { id: String(listingId), until: at(opened.fundedUntil), tx: funded.transactionHash });
+    await expect(page.getByTestId('opened')).toHaveText(line, { timeout: 30_000 });
+    await expect(page.getByTestId('listing-reading')).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
+    await expect(page.getByTestId('opened')).toHaveText(line);
+    for (const part of openingForm) await expect(part).toHaveCount(0);
+    expect(Number((await chain.sa.getListing(listingId)).state)).toBe(1); // Open: the close sent nothing
+    expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
+  });
+
   // ---------------------------------------------------------------- one read is one block
   test('a block replaced under the page\'s read: the listing of one chain is never shown with the hold of the other', async ({ page, stack, chain }) => {
     const held = await chain.openListing({ recipient: key.recipient });

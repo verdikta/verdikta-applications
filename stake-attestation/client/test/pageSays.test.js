@@ -253,7 +253,7 @@ test('every action tells the page: the block its transaction was mined in, on ev
   assert.equal(actions.split('await minedReceipt(tx, onChanged);').length - 1, 5, 'top-up, renew, hold, close, withdraw');
   assert.equal(extras.split('await minedReceipt(tx, onChanged);').length - 1, 1, 'roll forward');
   assert.equal(funding.split('await minedReceipt(tx, onMined);').length - 1, 1, 'the opening');
-  assert.match(component('FundPage.jsx'), /<FundListing listingId=\{BigInt\(listingId\)\} top=\{l\.awards\[3\]\} maker=\{l\.maker\} artifactHash=\{l\.artifactHash\} listed=\{state === 'Listed'\} onMined=\{onChanged\} onOpened=\{\(\) => setOpenedHere\(true\)\} \/>/);
+  assert.match(component('FundPage.jsx'), /\n\s*<FundListing listingId=\{BigInt\(listingId\)\} top=\{l\.awards\[3\]\} maker=\{l\.maker\} artifactHash=\{l\.artifactHash\} listed=\{state === 'Listed'\} onMined=\{onChanged\} \/>/);
   const sends = (source) => source.split(/stakeAttestation\(signer\)\.[a-zA-Z]+\(/).length - 1;
   assert.equal(sends(actions) + sends(extras) + sends(funding), 7, 'and there is no other transaction on the page');
   // a refusal by the read through the wallet, where it is the listing the wallet has otherwise: handed over with that
@@ -349,18 +349,19 @@ test('the lines of the page\'s other actions for their own transactions are the 
   assert.equal(STRINGS.close.doneDeferred, 'Listing {id} is closed (transaction {tx}). The contract could not send the {eth} ETH of escrow to {account}, so it holds the amount for that wallet: withdraw it below.');
   assert.equal(STRINGS.withdraw.done, 'Withdrawn (transaction {tx}): {eth} ETH to {account}.');
   assert.equal(STRINGS.roll.done, 'Rolled forward to listing {id} (transaction {tx}).');
-  // On the listing's own page the opening's line stays once the page has read the listing as open: `openedHere` keeps
-  // the form's place for it. It stands in for nothing: the state on the page is the read's.
+  // On the listing's own page one FundListing is on the page for as long as its listing is, whatever the listing's
+  // state (R7-F1): it is drawn under a listing with no condition, so an opening's receipt that arrives after the page
+  // read the listing as Open still has the instance that sent it, and its line. The page keeps no flag for it.
   const page = component('FundPage.jsx');
-  assert.match(page, /\{\(state === 'Listed' \|\| openedHere\) && <FundListing /);
-  assert.equal(page.split(/\bopenedHere\b/).length - 1, 2, 'declared, and used to keep the line: nowhere near the state');
-  assert.doesNotMatch(page, /openedHere \? 'Open'/);
-  // The flag keeps the place of a line, never a form (R5-F4). The opening's form is the read's: FundListing draws the
-  // escrow field and the button only while the listing on display is Listed, whatever instance of it is on the page.
-  // So a listing read again as Open after "no such listing" has no opening form, also when the opening's receipt
-  // arrived after that read and set the flag on a page with no listing.
-  assert.equal(page.split('setOpenedHere(').length - 1, 1, 'set by the opening\'s receipt, and by nothing else');
+  assert.equal(page.split('<FundListing ').length - 1, 1);
+  assert.doesNotMatch(page, /&& <FundListing /);
+  assert.doesNotMatch(page, /openedHere|setOpenedHere|onOpened/);
+  // The opening's form is the read's (R5-F4): FundListing draws the escrow field and the button only while the listing
+  // on display is Listed, and a form that is not drawn reads no fee. So a listing read again as Open after "no such
+  // listing" has no opening form, whenever the opening's receipt arrived.
   const opening = component('FundListing.jsx');
+  assert.match(opening, /useEffect\(\(\) => \{\s*if \(!listed\) return undefined;\s*let live = true;\s*chainReader\(\)\.then\(\(p\) => stakeAttestation\(p\)\.feeDue\(listingId\)\)[^\n]*\n\s*return \(\) => \{ live = false; \};\s*\}, \[listingId, listed\]\);/);
+  assert.equal(opening.split('useEffect(').length - 1, 1, 'its one read outside a click');
   assert.match(opening, /export function FundListing\(\{ listingId, top, maker, artifactHash, listed = true, onMined = \(\) => \{\}, onOpened = \(\) => \{\} \}\) \{/);
   const drawn = opening.slice(opening.indexOf('  if (opened) {'));
   assert.match(drawn, /^ {2}if \(opened\) \{\s*return \(\s*<p data-testid="opened" className="ok">[\s\S]*?\);\s*\}\s*(?:\/\/[^\n]*\n\s*)*if \(!listed\) return null;\s*return \(\s*<>\s*\{fee !== null/);

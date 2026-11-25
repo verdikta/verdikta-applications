@@ -908,6 +908,58 @@ test.describe('the maker\'s hold', () => {
     for (const part of openingForm) await expect(part).toHaveCount(0);
   });
 
+  test('an opening whose receipt arrives after a read said "no such listing": the listing read again as open has no opening form (R5-F4)', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient, fund: false, spec: { repo: ownRepo('late-opening') } });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Listed);
+    const openingForm = [page.getByLabel(STRINGS.chain.escrow, { exact: true }), page.getByRole('button', { name: STRINGS.chain.fund })];
+    for (const part of openingForm) await expect(part).toBeVisible();
+    // The wallet's node holds back the receipt of the opening, the first transaction it is asked about. Later in the
+    // test (`missing`) it is on a chain that ends before this listing: the contract counts one listing fewer there.
+    const count = chain.sa.interface.encodeFunctionData('listingCount');
+    const fewer = { result: word(BigInt(listingId) - 1n) };
+    const wallet = { heldTx: null, missing: false };
+    let releaseReceipt;
+    const receiptReleased = new Promise((resolve) => { releaseReceipt = resolve; });
+    await interceptRpc(page, stack, async (p) => {
+      if (wallet.missing && isCallWith(count)(p)) return fewer;
+      if (p.method !== 'eth_getTransactionReceipt') return undefined;
+      wallet.heldTx ??= p.params[0];
+      if (p.params[0] === wallet.heldTx) await receiptReleased;
+      return undefined;
+    }, { from: 'wallet' });
+    await openingForm[1].click();
+    await expect.poll(() => wallet.heldTx).not.toBeNull();
+    await chain.until(async () => Number((await chain.sa.getListing(listingId)).state) === 1, { what: 'the opening mined' });
+    // The page has not been told: it shows the listing it read, Listed. A close from it is refused by its read through
+    // the wallet, which has no listing under the id; the page reads again, and its reader has none either.
+    const reader = { missing: true };
+    await interceptRpc(page, stack, (p) => (reader.missing && isCallWith(count)(p) ? fewer : undefined), { from: 'reader' });
+    wallet.missing = true;
+    const close = page.getByTestId('close');
+    await close.getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) }).click();
+    await close.getByRole('button', { name: fill(STRINGS.close.confirm, { id: listingId, eth: formatEth(0n) }) }).click();
+    await expect(page.getByText(fill(F.notFound, { id: listingId }))).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('listing-summary')).toHaveCount(0);
+    for (const part of openingForm) await expect(part).toHaveCount(0);
+    // Now the opening's receipt arrives, on a page that shows no listing: the page is told of its block and reads, and
+    // both nodes have the listing again. It is drawn from that read: open, with nothing that offers to open it. The
+    // opening's own line went with the page that had the opening.
+    reader.missing = false;
+    wallet.missing = false;
+    releaseReceipt();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open, { timeout: 30_000 });
+    await expect(page.getByTestId('top-up')).toBeVisible();
+    await expect(page.getByTestId('listing-reading')).toHaveCount(0, { timeout: 30_000 });
+    for (const part of openingForm) await expect(part).toHaveCount(0);
+    await expect(page.getByTestId('opened')).toHaveCount(0);
+    const [funded] = await chain.sa.queryFilter(chain.sa.filters.Opened(listingId));
+    expect(funded.transactionHash).toBe(wallet.heldTx);
+    expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
+  });
+
   // ---------------------------------------------------------------- one read is one block
   test('a block replaced under the page\'s read: the listing of one chain is never shown with the hold of the other', async ({ page, stack, chain }) => {
     const held = await chain.openListing({ recipient: key.recipient });

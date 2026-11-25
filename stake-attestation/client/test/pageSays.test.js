@@ -191,8 +191,7 @@ test('the page draws what it says from that function alone, and is told by every
   const page = component('FundPage.jsx');
   // one record, moved on in one place, and one function that reads it
   assert.match(page, /const record = useRef\(NOTHING_READ\);/);
-  // (the one thing done beside it: an accepted "no such listing" takes the opening's own line with the listing, R5-F4)
-  assert.match(page, /const happened = useCallback\(\(event\) => \{\s*record\.current = pageAfter\(record\.current, event\);\s*\/\/[^\n]*\n\s*if \(record\.current\.read\?\.missing\) setOpenedHere\(false\);\s*redraw\(\(n\) => n \+ 1\);\s*\}, \[\]\);/);
+  assert.match(page, /const happened = useCallback\(\(event\) => \{\s*record\.current = pageAfter\(record\.current, event\);\s*redraw\(\(n\) => n \+ 1\);\s*\}, \[\]\);/);
   assert.equal(page.split('record.current =').length - 1, 1, 'the record is written in one place');
   assert.match(page, /const loaded = record\.current\.read;[^\n]*\n\s*const says = pageSays\(record\.current\);/);
   assert.doesNotMatch(page, /setLoaded|useState\(null\)/, 'no second copy of the read');
@@ -254,7 +253,7 @@ test('every action tells the page: the block its transaction was mined in, on ev
   assert.equal(actions.split('await minedReceipt(tx, onChanged);').length - 1, 5, 'top-up, renew, hold, close, withdraw');
   assert.equal(extras.split('await minedReceipt(tx, onChanged);').length - 1, 1, 'roll forward');
   assert.equal(funding.split('await minedReceipt(tx, onMined);').length - 1, 1, 'the opening');
-  assert.match(component('FundPage.jsx'), /<FundListing listingId=\{BigInt\(listingId\)\} top=\{l\.awards\[3\]\} maker=\{l\.maker\} artifactHash=\{l\.artifactHash\} onMined=\{onChanged\} onOpened=\{\(\) => setOpenedHere\(true\)\} \/>/);
+  assert.match(component('FundPage.jsx'), /<FundListing listingId=\{BigInt\(listingId\)\} top=\{l\.awards\[3\]\} maker=\{l\.maker\} artifactHash=\{l\.artifactHash\} listed=\{state === 'Listed'\} onMined=\{onChanged\} onOpened=\{\(\) => setOpenedHere\(true\)\} \/>/);
   const sends = (source) => source.split(/stakeAttestation\(signer\)\.[a-zA-Z]+\(/).length - 1;
   assert.equal(sends(actions) + sends(extras) + sends(funding), 7, 'and there is no other transaction on the page');
   // a refusal by the read through the wallet, where it is the listing the wallet has otherwise: handed over with that
@@ -356,11 +355,17 @@ test('the lines of the page\'s other actions for their own transactions are the 
   assert.match(page, /\{\(state === 'Listed' \|\| openedHere\) && <FundListing /);
   assert.equal(page.split(/\bopenedHere\b/).length - 1, 2, 'declared, and used to keep the line: nowhere near the state');
   assert.doesNotMatch(page, /openedHere \? 'Open'/);
-  // The line is kept while its listing is on the page, and no longer (R5-F4): a read that says no listing is here
-  // takes it, where the record takes that read. A listing read after that is drawn from its read alone: Open, it has
-  // no opening form. Set true by the opening's receipt, false by that read, and by nothing else.
-  assert.deepEqual(page.match(/setOpenedHere\((?:true|false)\)/g), ['setOpenedHere(false)', 'setOpenedHere(true)']);
-  assert.equal(page.split('setOpenedHere(').length - 1, 2);
+  // The flag keeps the place of a line, never a form (R5-F4). The opening's form is the read's: FundListing draws the
+  // escrow field and the button only while the listing on display is Listed, whatever instance of it is on the page.
+  // So a listing read again as Open after "no such listing" has no opening form, also when the opening's receipt
+  // arrived after that read and set the flag on a page with no listing.
+  assert.equal(page.split('setOpenedHere(').length - 1, 1, 'set by the opening\'s receipt, and by nothing else');
+  const opening = component('FundListing.jsx');
+  assert.match(opening, /export function FundListing\(\{ listingId, top, maker, artifactHash, listed = true, onMined = \(\) => \{\}, onOpened = \(\) => \{\} \}\) \{/);
+  const drawn = opening.slice(opening.indexOf('  if (opened) {'));
+  assert.match(drawn, /^ {2}if \(opened\) \{\s*return \(\s*<p data-testid="opened" className="ok">[\s\S]*?\);\s*\}\s*(?:\/\/[^\n]*\n\s*)*if \(!listed\) return null;\s*return \(\s*<>\s*\{fee !== null/);
+  // the listing flow has just listed the listing it funds, and says nothing of `listed`
+  assert.match(component('ListAndFund.jsx'), /<FundListing listingId=\{listed\.listingId\} top=\{BigInt\(params\.awards\[3\]\)\} maker=\{listed\.maker\} artifactHash=\{view\.artifactHash\} onOpened=\{\(\) => setOpened\(true\)\} \/>/);
 });
 
 test('the page keeps no receipt to check against later reads: nothing of that mechanism is left in the client', () => {
@@ -398,6 +403,9 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(rule, /no receipt of a transaction the page sent stands in for a read, not the hold's and not the opening's/);
   assert.match(rule, /From that instant, before any new read answers, the page shows nothing that says the listing is on hold or what its maker may do because of it, and nothing that shows it as taking claims/);
   assert.match(rule, /everything comes back from that read alone/);
+  // R6-F1: an action's own error is said as it is, where its section is drawn; the rest is issue 240's
+  assert.doesNotMatch(readme, /and its own error, stay/);
+  assert.match(rule, /Each action's line for its own transaction stays\. Its own error is shown where its section is drawn: the hold and the roll forward draw theirs whatever the read says; top up, renewal and close draw no section, as before this node, for a listing the page's read rules the action out on, unless that action's own transaction line is there, so an error of theirs that arrives then is not shown \(verdikta-applications issue 240\)\./);
   assert.match(rule, /No read of an earlier block is taken after a later one was shown, or after the page was told of a later one/);
   assert.match(rule, /Against a contract with no hold there is no line of a hold to take off, and nothing is/);
   const own = between('**The page\'s own transactions**', '**One read is one block, and a block is its hash, never its number**');

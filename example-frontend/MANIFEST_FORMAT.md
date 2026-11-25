@@ -72,7 +72,7 @@ Subsequent manifest.json:
     "NUMBER_OF_OUTCOMES": 10,
     "AI_NODES": [
       {
-        "AI_MODEL": "gpt-4o",
+        "AI_MODEL": "gpt-5.2-2025-12-11",
         "AI_PROVIDER": "OpenAI",
         "NO_COUNTS": 1,
         "WEIGHT": 1
@@ -115,13 +115,13 @@ With the following manifest.json:
     "NUMBER_OF_OUTCOMES": 2,
     "AI_NODES": [
       {
-        "AI_MODEL": "gpt-4o",
+        "AI_MODEL": "gpt-5.2-2025-12-11",
         "AI_PROVIDER": "OpenAI",
         "NO_COUNTS": 1,
         "WEIGHT": 0.5
       },
       {
-        "AI_MODEL": "claude-3-5-sonnet-20241022",
+        "AI_MODEL": "claude-haiku-4-5-20251001",
         "AI_PROVIDER": "Anthropic",
         "NO_COUNTS": 1,
         "WEIGHT": 0.5
@@ -159,6 +159,18 @@ With the following manifest.json:
 ```
 
 ## Implementation Notes
+
+### Jury models
+- Every `AI_NODES` entry must name a model that the class the request is sent to
+  lists (the class map ships in `@verdikta/common`). An arbiter answers only when
+  every juror answered, so a single retired or unlisted model leaves the request
+  without a verdict.
+- Class pools change between `@verdikta/common` releases, and the server's
+  `prestart` step installs the latest one. For a package that is pinned once and
+  reused, prefer models every recent release lists.
+- The example frontend's default query package is kept in
+  [`default-query-package/`](default-query-package/README.md), with a check that
+  its jury is in class 128's pool.
 
 ### File References
 - The primary file is always JSON with a "query" field and an optional "references" array.  

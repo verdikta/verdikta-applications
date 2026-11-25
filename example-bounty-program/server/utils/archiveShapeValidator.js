@@ -40,6 +40,14 @@ const MAX_ARCHIVE_BYTES = 11 * MAX_FILE_SIZE;
 // which also bounds zip-bomb expansion (adm-zip caps output at the declared size).
 const MAX_JSON_ENTRY_BYTES = 1024 * 1024;
 
+// The arbiters' default work limits for one archive (verdikta-arbiter external-adapter
+// utils/workBudget.js: EA_MAX_ARCHIVE_ENTRIES, EA_MAX_EXTRACTED_BYTES). An archive over them is judged
+// a malformed submission without an AI call (the first outcome, DONT_FUND: a hard fail, the bond to
+// the creator), so the site refuses it before the prepay. Read from the central directory: no entry
+// is inflated here.
+const ARBITER_MAX_ENTRIES = 2000;
+const ARBITER_MAX_EXTRACTED_BYTES = 256 * 1024 * 1024;
+
 const DEFAULT_PER_GATEWAY_TIMEOUT_MS = 15000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 40000;
 
@@ -182,6 +190,17 @@ function validateArchiveShape(buffer) {
     return { ok: false, check: 'not-a-zip', message: 'Archive is not a readable ZIP file.' };
   }
 
+  const entries = zip.getEntries();
+  const declared = entries.reduce((sum, e) => sum + (Number(e.header.size) || 0), 0);
+  if (entries.length > ARBITER_MAX_ENTRIES || declared > ARBITER_MAX_EXTRACTED_BYTES) {
+    return {
+      ok: false,
+      check: 'over-arbiter-limits',
+      message: `The archive has ${entries.length} entries and inflates to ${declared} bytes; arbiters accept at most ` +
+        `${ARBITER_MAX_ENTRIES} entries and ${ARBITER_MAX_EXTRACTED_BYTES} bytes, and judge a larger archive malformed (DONT_FUND).`,
+    };
+  }
+
   const manifestEntry = zip.getEntry('manifest.json');
   if (!manifestEntry) {
     return { ok: false, check: 'manifest-missing', message: 'manifest.json not found at the archive root.' };
@@ -298,6 +317,8 @@ function archiveShapeLabel(result) {
 }
 
 module.exports = {
+  ARBITER_MAX_ENTRIES,
+  ARBITER_MAX_EXTRACTED_BYTES,
   validateArchiveShape,
   fetchArchiveBuffer,
   fetchAndValidateArchiveShape,

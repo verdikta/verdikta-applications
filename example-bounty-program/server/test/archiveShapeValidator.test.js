@@ -86,6 +86,29 @@ describe('validateArchiveShape', () => {
     expect(validateArchiveShape(buf).ok).toBe(true);
   });
 
+  // sec5 e2e: arbiters judge an archive over their work limits a malformed submission (DONT_FUND).
+  it('rejects an archive with more entries than the arbiters accept', () => {
+    const files = {
+      'manifest.json': JSON.stringify(CONFORMING_SHAPE_EXAMPLE),
+      'primary_query.json': JSON.stringify({ query: 'Here is my submission for the bounty, attached below.' }),
+      'submission.md': '# Work',
+    };
+    for (let i = 0; i < 2001; i++) files[`pad/${i}.txt`] = 'x';
+    const result = validateArchiveShape(zipOf(files));
+    expect(result.ok).toBe(false);
+    expect(result.check).toBe('over-arbiter-limits');
+  });
+
+  it('rejects an archive that declares more bytes than the arbiters inflate, without inflating it', () => {
+    const zip = new AdmZip();
+    zip.addFile('manifest.json', Buffer.from(JSON.stringify(CONFORMING_SHAPE_EXAMPLE)));
+    zip.addFile('primary_query.json', Buffer.from(JSON.stringify({ query: 'Here is my submission for the bounty, attached below.' })));
+    zip.addFile('submission.md', Buffer.alloc(300 * 1024 * 1024));
+    const result = validateArchiveShape(zip.toBuffer());
+    expect(result.ok).toBe(false);
+    expect(result.check).toBe('over-arbiter-limits');
+  });
+
   it('rejects a manifest.json that is not valid JSON', () => {
     const zip = new AdmZip();
     zip.addFile('manifest.json', Buffer.from('{not valid json', 'utf8'));

@@ -1,4 +1,5 @@
 // server/middleware/adminAuth.js
+const crypto = require('crypto');
 const { isAdmin } = require('../utils/adminsManager');
 const { verifySignature } = require('../utils/signatureVerification');
 
@@ -67,11 +68,13 @@ async function requireAdmin(req, res, next) {
 const SIGNATURE_WINDOW_MS = 5 * 60 * 1000;
 const MESSAGE_RE = /^Verdikta Playground - ([^\n]+)\n\n([\s\S]*)\n\nTimestamp: (\d{1,16})\nThis signature authorizes the above action\.$/;
 
-// signature (lowercase) -> expiry ms; a signature is good for one request.
+// signed message (its hash) -> expiry ms; a signed message is good for one request. Keyed by the
+// message, not the signature text: one ECDSA signature has several encodings that all recover the
+// same signer (v as 27/28 or 0/1, the 64-byte compact form), and each was a fresh replay.
 const usedSignatures = new Map();
-function claimSignature(signature, now) {
-  for (const [sig, exp] of usedSignatures) if (exp <= now) usedSignatures.delete(sig);
-  const key = String(signature).toLowerCase();
+function claimSignature(message, now) {
+  for (const [k, exp] of usedSignatures) if (exp <= now) usedSignatures.delete(k);
+  const key = crypto.createHash('sha256').update(String(message)).digest('hex');
   if (usedSignatures.has(key)) return false;
   usedSignatures.set(key, now + 2 * SIGNATURE_WINDOW_MS);
   return true;
@@ -124,7 +127,7 @@ function checkSignedAction(req, action, { targetParam = null, now = Date.now() }
   if (!verifySignature(message, signature, address)) {
     return { ok: false, status: 401, error: 'Invalid signature' };
   }
-  if (!claimSignature(signature, now)) {
+  if (!claimSignature(message, now)) {
     return { ok: false, status: 401, error: 'Signature already used. Please sign again.' };
   }
   return { ok: true, address: address.toLowerCase() };

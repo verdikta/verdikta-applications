@@ -47,7 +47,7 @@ server {
 
     # Health check (served by Express)
     location = /health {
-        proxy_pass http://localhost:6008/health;
+        proxy_pass http://127.0.0.1:6008/health;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -58,7 +58,7 @@ server {
     # API (served by Express)
     location /api/ {
         client_max_body_size 25m;
-        proxy_pass http://localhost:6008/api/;
+        proxy_pass http://127.0.0.1:6008/api/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

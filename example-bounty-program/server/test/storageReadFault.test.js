@@ -29,6 +29,7 @@ jest.mock('fs', () => {
       }),
       writeFile: jest.fn().mockImplementation(async (p, data) => { mockFiles[p] = data; }),
       rename: jest.fn().mockImplementation(async (a, b) => { mockFiles[b] = mockFiles[a]; delete mockFiles[a]; }),
+      unlink: jest.fn().mockImplementation(async (p) => { delete mockFiles[p]; }),
     },
   };
 });
@@ -97,5 +98,15 @@ describe('jobs.json read faults never become writes', () => {
     expect(tmps).toHaveLength(2);
     expect(new Set(tmps).size).toBe(2);
     for (const t of tmps) expect(path.dirname(t)).toBe(path.dirname(STORE));
+  });
+
+  test('a failed write removes its temp file (sec5 fix review: one per write, so a full disk kept every partial copy)', async () => {
+    fs.writeFile.mockImplementationOnce(async (p, data) => {
+      mockFiles[p] = data.slice(0, 10); // partial, then the disk is full
+      throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    });
+    await expect(jobStorage.createJob({ title: 'x' })).rejects.toThrow(/ENOSPC/);
+    expect(Object.keys(mockFiles)).toEqual([STORE]);
+    expect(JSON.parse(mockFiles[STORE]).jobs).toHaveLength(3);
   });
 });

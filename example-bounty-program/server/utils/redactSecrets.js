@@ -7,10 +7,13 @@
  */
 const SECRET_NAME = /(KEY|SECRET|TOKEN|PASSWORD|JWT|PRIVATE|RPC|URL)/i;
 const PUBLIC_NAMES = new Set(['FRONTEND_CLIENT_KEY', 'PUBLIC_SITE_URL', 'IPFS_GATEWAY', 'PINATA_GATEWAY', 'IPFS_PINNING_SERVICE']);
+// Each anchored on a provider host, or on an http(s) URL for the query form: every JSON response
+// passes through here, including submitted files (GET .../content serves binaries as base64), and a
+// bare "/v2/" + 24 base64 characters occurs in about half of all 10 MiB random files (sec5 fix review).
 const URL_KEY_PATTERNS = [
-  /(\/v3\/)[0-9a-fA-F]{32}/g,               // Infura
-  /(\/v2\/)[A-Za-z0-9_-]{24,}/g,            // Alchemy
-  /([?&](?:apikey|api_key|key|token)=)[^&"\s]+/gi,
+  /(infura\.io\/v3\/)[0-9a-fA-F]{32}/g,                                  // Infura
+  /(alchemy\.com\/v2\/)[A-Za-z0-9_-]{24,}/g,                             // Alchemy
+  /(https?:\/\/[^\s"?]+\?(?:[^\s"&]*&)*(?:apikey|api_key|key|token)=)[^&"\s]+/gi,
 ];
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

@@ -86,3 +86,17 @@ test('contract names cannot add lines or fields to client/.env', () => {
   assert.equal(sanitizeContractName('a,b\r\nc'), 'a b c');
   assert.equal(sanitizeContractName('x'.repeat(200)).length, 80);
 });
+
+test('a replay with the same signature re-encoded (v as 0/1, or uppercase) is refused too (sec5 fix review)', async () => {
+  const w = ethers.Wallet.createRandom();
+  const req = await signedReq(w, 'Update Contract', { contracts: [{ address: '0x' + '77'.repeat(20), name: 'A' }] });
+  assert.equal(checkSignedAction(req, 'Update Contract').ok, true);
+  const sig = ethers.Signature.from(req.body.auth.signature);
+  // the same (r, s) with v written as 0/1: ethers recovers the same signer from it
+  const v01 = ethers.concat([sig.r, sig.s, ethers.toBeHex(sig.v - 27, 1)]);
+  assert.equal(ethers.verifyMessage(req.body.auth.message, v01), w.address);
+  const replay = { ...req, body: { ...req.body, auth: { ...req.body.auth, signature: v01 } } };
+  assert.match(checkSignedAction(replay, 'Update Contract').error, /already used/);
+  const compact = { ...req, body: { ...req.body, auth: { ...req.body.auth, signature: sig.compactSerialized } } };
+  assert.equal(checkSignedAction(compact, 'Update Contract').ok, false);
+});

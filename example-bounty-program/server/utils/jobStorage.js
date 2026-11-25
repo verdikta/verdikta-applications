@@ -162,15 +162,18 @@ async function writeSyncState(syncState) {
  */
 let _tmpSeq = 0;
 async function writeStorage(data) {
+  // Atomic write: write to temp file then rename, so concurrent readers
+  // never see a truncated/empty file (fs.writeFile truncates before writing).
+  // A temp file per write: with one fixed name, two writers (a second process on the same data
+  // dir, say) write into the same inode and the rename publishes their interleaved bytes.
+  const tmpFile = `${STORAGE_FILE}.${process.pid}.${Date.now()}.${(++_tmpSeq).toString(36)}.tmp`;
   try {
-    // Atomic write: write to temp file then rename, so concurrent readers
-    // never see a truncated/empty file (fs.writeFile truncates before writing).
-    // A temp file per write: with one fixed name, two writers (a second process on the same data
-    // dir, say) write into the same inode and the rename publishes their interleaved bytes.
-    const tmpFile = `${STORAGE_FILE}.${process.pid}.${Date.now()}.${(++_tmpSeq).toString(36)}.tmp`;
     await fs.writeFile(tmpFile, JSON.stringify(data, null, 2));
     await fs.rename(tmpFile, STORAGE_FILE);
   } catch (error) {
+    // A name per write means a failed one (ENOSPC) must remove its own partial copy, or a full
+    // disk keeps one more of them, each the size of the whole store, at every retry.
+    await fs.unlink(tmpFile).catch(() => {});
     logger.error('Error writing storage:', error);
     throw error;
   }

@@ -1049,9 +1049,10 @@ export const STRINGS = {
         'This listing is on hold since {time} and takes no new commits. What is left of the order: push the fix; ' +
         'validate the fixed commit, list it and fund it; then roll forward to it here.',
       close:
-        'If no claim on this listing is pending and no award is owed, you can close it once it is on hold, instead of ' +
-        'rolling forward. A close is refused while a claim is pending or an award is owed: a top-up pays what is owed ' +
-        'first.',
+        'If no claim committed before the hold is pending and no award is owed, you can close this listing once it is ' +
+        'on hold, instead of rolling forward. A close is refused while such a claim is pending or an award is owed: a ' +
+        'top-up pays what is owed first. A late claim does not hold a close back: it carries no award, and it is ' +
+        'judged and recorded after the close as before.',
     },
     loading: 'Looking for your open listings of this repository…',
     pick: 'Successor listing',
@@ -1104,7 +1105,7 @@ export const STRINGS = {
     since: 'This listing is on hold since {time}.',
     next:
       'What is left is on this page: roll forward to the fixed version once it is listed and funded, or close, when no ' +
-      'claim is pending and no award is owed.',
+      'claim committed before the hold is pending and no award is owed. A late claim does not hold a close back.',
   },
   // A listing's later life, on its own page (design §13.2): the contract's renew(), close() and withdraw().
   topUp: {

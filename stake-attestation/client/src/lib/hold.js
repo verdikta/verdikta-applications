@@ -4,9 +4,10 @@
 // says since when, or 0.
 //
 // The site is also used against a contract deployed before the hold, which has neither hold() nor heldAt(). There the
-// call is refused: the contract has no such function, so the EVM reverts. That, and only that, reads as "no hold
-// here": the page then offers none and says what it said. A read that fails any other way (the node, the network, a
-// timeout) is a failed read, as any of the page's reads, and never "not on hold".
+// call is refused: the contract has no such function, so the EVM reverts, and the node hands over the revert's data.
+// That, and only that, reads as "no hold here": the page then offers none and says what it said. A read that fails
+// any other way (the node, the network, a timeout, an error with no revert data) is a failed read, as any of the
+// page's reads, and never "not on hold".
 //
 // That a listing is on hold is said from this read alone, made with the listing in one snapshot of one block
 // (chain/snapshot.js): never from the receipt of a hold the page sent (lib/pageSays.js).
@@ -19,25 +20,17 @@ const HOLDABLE = new Set(['Open', 'Depleted']);
 /** What a contract with no hold answers to: never on hold, and no hold to offer. */
 export const NO_HOLD = Object.freeze({ supported: false, heldAt: 0n, held: false });
 
-/** Every text a node's error holds: its message, its data when that is text, and those nested in it (a wallet wraps its node's answer). */
-function textsOf(value, depth = 0) {
-  if (typeof value === 'string') return [value];
-  if (value === null || typeof value !== 'object' || depth > 4) return [];
-  return Object.values(value).flatMap((v) => textsOf(v, depth + 1));
-}
-
 /**
  * Whether a failed call was refused by the contract: the EVM ran it and reverted. ethers reports EVERY JSON-RPC error
  * on an eth_call as CALL_EXCEPTION (a rate limit and a block the node does not have included), so that code alone
- * says nothing. A revert is known by what the node reported: the revert's data, which ethers keeps only when the
- * node's own message says "revert" (empty, "0x", for a function the contract does not have), or, from a node that
- * gives an empty revert no data at all or words it elsewhere, the node's own text saying it reverted.
+ * says nothing. A revert is known by the contract's own revert data, and by nothing else: ethers keeps that data only
+ * when the node handed it over with a message that says "revert". The contract deployed before the hold answers a
+ * function it does not have through its lens's fallback, revert("unknown function"), so the data is there. No word
+ * of a node's or a wallet's error is read: an error that only says "revert" somewhere, with no data, is a failed read.
  * @param {unknown} err - what a contract call threw
  */
 export function refusedByContract(err) {
-  if (err?.code !== 'CALL_EXCEPTION') return false;
-  if (typeof err.data === 'string') return true;
-  return textsOf(err.info?.error).some((t) => /\brevert/i.test(t));
+  return err?.code === 'CALL_EXCEPTION' && typeof err.data === 'string';
 }
 
 /**

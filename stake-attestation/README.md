@@ -1596,7 +1596,10 @@ goes in a URL.
   listing's maker's and for no other: two steps before the wallet's own, as close has; the wallet
   asked again at the click; the listing and its hold read again at one block through the wallet
   (another listing under the id or none, or a listing that can no longer be held, sends nothing);
-  then `hold`. The section reports that transaction as the page's other actions report theirs, by
+  then `hold`. The first step is taken for one listing, by its maker and artifact: the
+  confirmation is drawn, and taken, only while that listing is the one on display, and the
+  wallet's read is held to that same listing, so another listing that comes under the id gets no
+  hold without a first step of its own. The section reports that transaction as the page's other actions report theirs, by
   the hash it was mined under, and that line says nothing of what the listing is. Once the page has
   read the hold, it says the listing is on hold, with the time, beside its state (which stays Open
   or Depleted, and is no longer drawn as taking claims), and in every sentence it has about taking
@@ -1684,7 +1687,11 @@ goes in a URL.
   roll forward in one sitting, the listing taking claims as before until it has rolled (none
   while it is Depleted or its paid period is over)). A read that fails any other way is a failed
   read of the page, never "not on hold": ethers reports every JSON-RPC error on a call as
-  `CALL_EXCEPTION`, so the reader goes by the revert the node reports and not by that code.
+  `CALL_EXCEPTION`, so the reader goes by the contract's own revert data, which the node hands
+  over, and by nothing else. The contract deployed before the hold answers a function it does
+  not have through its lens's fallback, `revert("unknown function")`, so the data is there; no
+  word of a node's or a wallet's error is read, and an error with no revert data is a failed
+  read.
   `test/rollGuidance.test.js` checks both sets of lines against `hold`, `close` and `rollForward`
   in the contract's source and refuses any wording that would call a roll harmless after a public
   push; `test/hold.test.js` holds the warning's three statements to the source, one by one, and

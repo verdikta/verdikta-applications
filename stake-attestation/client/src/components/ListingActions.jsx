@@ -247,7 +247,9 @@ export function RenewListing({ listingId, listing, held = false, quiet = false, 
  * action is drawn for the listing's maker only: for the connected wallet when it is the maker's, and for no other
  * wallet and none. The wallet is asked again at the click, since one can change its account without saying so. Just
  * before sending, the listing and its hold are read again at one block through the wallet: another listing under the
- * id or none, a listing that is no longer Open or Depleted, or one on hold already, sends nothing.
+ * id or none, a listing that is no longer Open or Depleted, or one on hold already, sends nothing. The first step is
+ * taken for one listing, by its maker and artifact: the confirmation is drawn, and taken, only while that listing is
+ * the one on display, and the wallet's read is held to that same listing.
  *
  * `hold` is the listing's hold as the page read it, in the snapshot it read the listing in (lib/hold.js readHold).
  * Against a contract deployed before the hold (`hold.supported` false) nothing is drawn: no section, no action. That
@@ -260,7 +262,10 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, quiet = false,
   const w = useWalletContext();
   const id = useId();
   const H = STRINGS.hold;
-  const [asking, setAsking] = useState(false);
+  // The listing the first step was taken for, by its maker and artifact; null until the maker takes it. The
+  // confirmation is drawn and taken for that listing only: if the page comes to show another listing under the id
+  // (its blocks were replaced), the first step is to take again, for the listing now shown.
+  const [asking, setAsking] = useState(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null); // { tx }: the hold() this page saw mined
   const [error, setError] = useState(null);
@@ -274,25 +279,28 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, quiet = false,
 
   const account = w.wallet?.account ?? null;
   const isMaker = account !== null && same(account, listing.maker);
+  const confirming = asking !== null && sameListing(listing, asking);
 
   const send = async () => {
+    // only for the listing the first step was taken for, and only while it is the one on display
+    if (!confirming) return undefined;
     setBusy(true);
     setError(null);
     try {
       const { signer, provider, account: sender } = await w.ensure();
-      if (!same(sender, listing.maker)) {
-        setAsking(false);
-        return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account: sender }));
+      if (!same(sender, asking.maker)) {
+        setAsking(null);
+        return setError(fill(STRINGS.claim.notMaker, { maker: asking.maker, account: sender }));
       }
       const { value: [mine, now], block } = await snapshot(provider, (at) => {
         const view = stakeAttestation(at);
         return Promise.all([listingAt(view, listingId), readHold(view, listingId)]);
       });
-      // A hold has no way back, so it is sent only for the listing this page showed the maker (the same artifact, the
-      // same maker's), and only while that listing can be held.
-      if (!sameListing(mine, listing) || !holdTerms(mine, now).can) {
+      // A hold has no way back, so it is sent only for the listing the maker took the first step for (the same
+      // artifact, the same maker's), and only while that listing can be held.
+      if (!sameListing(mine, asking) || !holdTerms(mine, now).can) {
         setError(fill(H.changed, { id: listingId }));
-        setAsking(false);
+        setAsking(null);
         onChanged(disagreedAt(block));
         return undefined;
       }
@@ -300,7 +308,7 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, quiet = false,
       // also when the wallet sent it again at a higher fee: the receipt is then the replacement's, with its own hash
       const receipt = await minedReceipt(tx, onChanged);
       setDone({ tx: receipt.hash });
-      setAsking(false);
+      setAsking(null);
     } catch (err) {
       setError(fill(STRINGS.claim.failed, { reason: walletMessage(err) }));
     } finally {
@@ -320,18 +328,18 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, quiet = false,
   } else if (!off) {
     let action;
     if (!isMaker) action = <p className="hint" data-testid="hold-maker-only">{H.makerOnly}</p>;
-    else if (asking) {
+    else if (confirming) {
       action = (
         <p className="actions">
           <button type="button" className="danger" onClick={send} disabled={busy}>
             {busy ? H.sending : fill(H.confirm, { id: listingId })}
           </button>
-          <button type="button" className="secondary" onClick={() => setAsking(false)} disabled={busy}>{H.keep}</button>
+          <button type="button" className="secondary" onClick={() => setAsking(null)} disabled={busy}>{H.keep}</button>
         </p>
       );
     } else {
       action = (
-        <button type="button" className="secondary" onClick={() => { setError(null); setAsking(true); }}>
+        <button type="button" className="secondary" onClick={() => { setError(null); setAsking({ maker: listing.maker, artifactHash: listing.artifactHash }); }}>
           {fill(H.ask, { id: listingId })}<ArrowRight size={16} aria-hidden="true" />
         </button>
       );

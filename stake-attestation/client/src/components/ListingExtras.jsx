@@ -3,7 +3,7 @@ import { ArrowRight, FileText } from 'lucide-react';
 
 import { LISTING_STATES } from '../chain/abi.js';
 import { snapshot } from '../chain/snapshot.js';
-import { chainReader, minedReceipt, stakeAttestation } from '../chain/wallet.js';
+import { chainReader, listingAt, minedReceipt, stakeAttestation } from '../chain/wallet.js';
 import { getFeed, getRecord } from '../lib/api.js';
 import { NO_HOLD, readHold } from '../lib/hold.js';
 import { listingQueue } from '../lib/listingActions.js';
@@ -162,7 +162,8 @@ export function RollForward({ listingId, listing, record, recordReading = false,
 
   if (done) return <p data-testid="rolled" className="ok">{fill(RF.done, { id: done.id, tx: done.tx })}</p>;
   // Where the panel is not drawn its own error still is: while the page knows its read is behind (`quiet`), and once
-  // a read has the listing neither Open nor Depleted. A roll that was mined and failed stays said for the visit.
+  // a read has the listing neither Open nor Depleted. A roll that was mined and failed stays said while its listing
+  // is on the page.
   if (quiet || !ROLLABLE.has(state)) return error ? <p className="error" role="alert">{error}</p> : null;
 
   const roll = async () => {
@@ -172,17 +173,23 @@ export function RollForward({ listingId, listing, record, recordReading = false,
     try {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
-      // this listing, the successor and the successor's hold, as one block has them through the wallet
-      const { value: [mine, successor, successorHold], block } = await snapshot(provider, (at) => {
+      // This listing, the successor and the successor's hold, as one block has them through the wallet, the count
+      // asked first (chain/wallet.js listingAt): a listing the wallet's node does not have is an answer, null. This
+      // listing is read first, and the successor only when this one can still roll: what the wallet has of this
+      // listing is never lost to a failure of the successor's read.
+      const canRoll = (l) => l !== null && ROLLABLE.has(LISTING_STATES[Number(l.state)]) && same(l.maker, account);
+      const { value: [mine, successor, successorHold], block } = await snapshot(provider, async (at) => {
         const sa = stakeAttestation(at);
-        return Promise.all([sa.getListing(BigInt(listingId)), sa.getListing(BigInt(pick)), hold.supported ? readHold(sa, pick) : NO_HOLD]);
+        const source = await listingAt(sa, listingId);
+        if (!canRoll(source)) return [source, null, NO_HOLD];
+        return [source, await listingAt(sa, pick), hold.supported ? await readHold(sa, pick) : NO_HOLD];
       });
-      const rollable = ROLLABLE.has(LISTING_STATES[Number(mine.state)]) && same(mine.maker, account);
-      if (!rollable || !confirmSuccessor(successor, { successorId: BigInt(pick), listingId: BigInt(listingId), account })) {
-        // this listing is not as the page shows it (rolled or closed elsewhere): the page reads it again from that block
-        if (!rollable) onChanged(disagreedAt(block));
+      if (!canRoll(mine)) {
+        // this listing is not as the page shows it (rolled or closed elsewhere, or not there): the page reads it again from that block
+        onChanged(disagreedAt(block));
         return setError(fill(RF.changed, { id: pick }));
       }
+      if (successor === null || !confirmSuccessor(successor, { successorId: BigInt(pick), listingId: BigInt(listingId), account })) return setError(fill(RF.changed, { id: pick }));
       // Open, the maker's, no predecessor: the contract would take it. On hold it takes no commits, and for good.
       if (successorHold.held) {
         setAgain((n) => n + 1);

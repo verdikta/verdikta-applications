@@ -1628,15 +1628,24 @@ goes in a URL.
   back only from a read.* Each transaction the page sends and sees mined (every action, on every
   path that sends: a call the wallet sent again at a higher fee, a replacement, a revert), and
   each read through the wallet that refuses an action because it has the listing otherwise than
-  the page shows it, tells the page that the read it shows is behind. From that instant, before
+  the page shows it, tells the page that the read it shows is behind. That read asks the count
+  first (`listingAt` in `client/src/chain/wallet.js`), for the top-up, the renewal, the hold, the
+  close and the roll alike, so a listing the wallet's node does not have at that block is an
+  answer, and a disagreement like any other; a roll reads this listing before its successor, so
+  what the wallet has of this listing is never lost to a failure of the successor's read. A read
+  that fails on the way (the node, the network) is the action's failure, and tells the page
+  nothing. From that instant, before
   any new read answers, the page shows nothing that says the listing is on hold or what its maker
   may do because of it, and nothing that shows it as taking claims: its state, "open until", the
   commit offer, the hold's section, the roll-forward panel and the forms of top-up, renew and
   close are off. Each action's line for its own transaction, and its own error, stay. The page
   then reads the listing again until a read is of that block or a later one (`readFrom` in
   `client/src/lib/poll.js`), and everything comes back from that read alone. While it reads it
-  says so; when none of its reads reached the block it says which block it has not read, with
-  "Read again", and stays as it is. A read that fails on load is the page's failed-read state
+  says so; when its reads are over and none was taken, it names the block its next read has to
+  reach, with "Read again", and stays as it is. That block is the floor (the newest block the
+  page was told of or has shown a read of, whichever is later), never an earlier block it was
+  told of: a read between the two was not taken, and the page does not say it has not read that
+  far. A read that fails on load is the page's failed-read state
   ("The listing could not be read", with Read again). *Never backward.* No read of an earlier
   block is taken after a later one was shown, or after the page was told of a later one: a node
   that trails the one that answered before cannot put an earlier state of the listing back. One
@@ -1646,16 +1655,19 @@ goes in a URL.
   decide none of it. `client/test/pageSays.test.js` holds the function to a table with a row for
   each case, runs every short history of a page against the three parts, and holds the
   components to it. A refusal by the wallet's read that arrives once the page shows another
-  listing under the id sets the floor and takes nothing of the listing now shown off the page.
+  listing under the id sets the floor and takes nothing of the listing now shown off the page;
+  the page still says it is reading, and offers Read again when no read was taken.
   Against a contract with no hold there is no line of a hold to take off, and nothing is: the
   page reads again from the block and says which block it has not read, and shows the listing it
   read meanwhile, as the site did before.
   **The page's own transactions** are shown as the site has always shown them: the transaction,
   and what its receipt said (a close's refund, a top-up's amounts, a renewal's date, a
-  withdrawal's amount, the opening). Such a line stays through the page's reads; it is not
-  checked against a later read and not taken back. How those lines hold up when the site's
-  reader trails the wallet, a second tab acts or a block is replaced is separate work
-  (verdikta-applications issue 240), with a design first.
+  withdrawal's amount, the opening). Such a line is kept while its listing is on the page,
+  through every re-read of it, and is not checked against a later read. A read that says the
+  listing is gone, or not opened, takes the page with its actions. Whether a line should outlive
+  that, and how those lines hold up when the site's reader trails the wallet, a second tab acts
+  or a block is replaced, is separate work (verdikta-applications issue 240), with a design
+  first.
   **One read is one block, and a block is its hash, never its number** (`snapshot` in
   `client/src/chain/snapshot.js`). Every read of a hold goes through it, with the listing the
   hold is of: the page's read (the count, the listing and `heldAt`), the hold's read through the

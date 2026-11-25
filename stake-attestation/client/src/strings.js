@@ -416,11 +416,14 @@ export const STRINGS = {
     // the page says the hold beside the state, with its time, and never "open until" of a listing that takes no claims.
     heldSince: 'On hold since',
     // After a transaction sent from this page, or a read through the wallet that has the listing otherwise than this
-    // page shows it: the page knows its read is from before that block (lib/pageSays.js). `reading` while it reads for
-    // the block; `behind`, with "Read again", once its reads are over and none was of that block or a later one.
+    // page shows it (lib/pageSays.js). `reading` while the page reads again; `behind`, with "Read again", once its
+    // reads are over and none was taken. {block} is the block the next read has to reach: the newest the page was told
+    // of or has shown, whichever is later.
+    // `missing`: what an action says in place of a state when the wallet's node has no listing under the id.
     reading: 'Reading the listing again…',
+    missing: 'not on the chain as your wallet reads it',
     behind:
-      'This page has not read the chain at block {block} or later since a change there was sent or seen through the ' +
+      'This page has not read the chain at block {block} or later since a change was sent or seen through the ' +
       'wallet: what it shows of the listing may be from before that change.',
     held:
       'Listing {id} is on hold since {time}: it takes no new claims. Claims committed before the hold run as before, and ' +

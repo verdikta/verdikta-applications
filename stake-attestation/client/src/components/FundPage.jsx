@@ -51,7 +51,8 @@ export function FundPage({ listingId }) {
   const headingId = useId();
   const [lookup, setLookup] = useState('');
   const [attempt, setAttempt] = useState(0);
-  // the opening fund() sent from this page was mined: its own line stays (FundListing). The state is the read's.
+  // the opening fund() sent from this page was mined: its own line stays while the listing is on the page
+  // (FundListing). The state is the read's.
   const [openedHere, setOpenedHere] = useState(false);
   // how many times an action on this page changed the chain: what reads it (the withdrawable amount) reads again
   const [version, setVersion] = useState(0);

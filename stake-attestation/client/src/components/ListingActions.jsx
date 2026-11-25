@@ -14,7 +14,8 @@ import { TextField } from './Field.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
-const stateWords = (l) => STRINGS.fund.states[LISTING_STATES[Number(l.state)]] ?? String(l.state);
+/** A listing's state in the page's words; for a listing the wallet's node does not have (null), that it is not there. */
+const stateWords = (l) => (l === null ? STRINGS.fund.missing : STRINGS.fund.states[LISTING_STATES[Number(l.state)]] ?? String(l.state));
 /** The block the wallet's node is at: a raw eth_blockNumber, since ethers' getBlockNumber() may answer from a cache. */
 const blockNow = async (provider) => Number(await provider.send('eth_blockNumber', []));
 // What every action below tells the listing's page (node P42; lib/pageSays.js), through `onChanged`: the block its
@@ -23,6 +24,10 @@ const blockNow = async (provider) => Number(await provider.send('eth_blockNumber
 // page then knows the read it shows is behind. While it does (`quiet`), a section draws the line of its own
 // transaction and its own error, and nothing of what the page read of the listing. `held`: the listing is on hold,
 // by the page's read.
+// The read before sending is one snapshot through the wallet (chain/snapshot.js), with the count asked first
+// (chain/wallet.js listingAt): a listing the wallet's node does not have at that block is an answer, null, and a
+// disagreement like any other, where getListing alone would revert and tell the page nothing. A read that failed on
+// the way (the node, the network) throws, and is the action's failure: never a disagreement.
 
 /**
  * A top-up (design §13.2): fund() on a listing that has opened, with no fee. The contract pays what the
@@ -73,11 +78,10 @@ export function TopUpEscrow({ listingId, listing, held = false, quiet = false, o
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
-      const blockTag = await blockNow(provider);
-      const mine = await reader.getListing(BigInt(listingId), { blockTag });
-      if (!topUpTerms(mine).can || !same(mine.maker, account)) {
+      const { value: mine, block } = await snapshot(provider, (at) => listingAt(stakeAttestation(at), listingId));
+      if (mine === null || !topUpTerms(mine).can || !same(mine.maker, account)) {
         setError(fill(T.changed, { id: listingId, state: stateWords(mine) }));
-        onChanged(disagreedAt(blockTag));
+        onChanged(disagreedAt(block));
         return undefined;
       }
       const tx = await stakeAttestation(signer).fund(BigInt(listingId), 0n, { value: wei });
@@ -192,12 +196,13 @@ export function RenewListing({ listingId, listing, held = false, quiet = false, 
     try {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
-      const reader = stakeAttestation(provider);
-      const blockTag = await blockNow(provider);
-      const [mine, due] = await Promise.all([reader.getListing(BigInt(listingId), { blockTag }), reader.listingFeeWei({ blockTag })]);
-      if (!renewTerms(mine, 0).can || !same(mine.maker, account)) {
+      const { value: [mine, due], block } = await snapshot(provider, (at) => {
+        const view = stakeAttestation(at);
+        return Promise.all([listingAt(view, listingId), view.listingFeeWei()]);
+      });
+      if (mine === null || !renewTerms(mine, 0).can || !same(mine.maker, account)) {
         setError(fill(R.changed, { id: listingId, state: stateWords(mine) }));
-        onChanged(disagreedAt(blockTag));
+        onChanged(disagreedAt(block));
         return undefined;
       }
       if (due !== fee) {
@@ -395,13 +400,12 @@ export function CloseListing({ listingId, listing, quiet = false, onChanged = ()
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
       const reader = stakeAttestation(provider);
-      const blockTag = await blockNow(provider);
-      const mine = await reader.getListing(BigInt(listingId), { blockTag });
+      const { value: mine, block } = await snapshot(provider, (at) => listingAt(stakeAttestation(at), listingId));
       // what this page offered is what is sent: a claim that came in, or an escrow that moved, asks again
-      if (!closeTerms(mine).can || !same(mine.maker, account) || BigInt(mine.escrowWei) !== terms.escrowWei) {
+      if (mine === null || !closeTerms(mine).can || !same(mine.maker, account) || BigInt(mine.escrowWei) !== terms.escrowWei) {
         setError(fill(C.changed, { id: listingId }));
         setAsking(false);
-        onChanged(disagreedAt(blockTag));
+        onChanged(disagreedAt(block));
         return undefined;
       }
       const tx = await stakeAttestation(signer).close(BigInt(listingId));

@@ -65,8 +65,8 @@ async function withNode(answer, run) {
 
 // What nodes say of a call to a function the contract does not have. StakeAttestation hands a selector it does not
 // implement to its lens, whose own fallback reverts with Error("unknown function"): that is what a contract deployed
-// before the hold answers for heldAt, and what the first two shapes carry. The others are a contract with no fallback
-// at all (the EVM reverts with no data) and the ways nodes and wallets word a revert.
+// before the hold answers for heldAt, and what the first two shapes carry, both as measured. In each of these the node
+// hands over the revert's data, which is the one thing the reader goes by.
 const UNKNOWN_FUNCTION = new Interface(['error Error(string)']).encodeErrorResult('Error', ['unknown function']);
 const LOCAL_UNKNOWN_FUNCTION = "Error: VM Exception while processing transaction: reverted with reason string 'unknown function'";
 const NO_SUCH_FUNCTION = "Error: Transaction reverted: function selector was not recognized and there's no fallback function";
@@ -78,10 +78,19 @@ const REFUSALS = Object.freeze({
   // a contract with no fallback, on the local development node
   'a development node, no fallback': { code: -32603, message: NO_SUCH_FUNCTION, data: { message: NO_SUCH_FUNCTION, data: '0x' } },
   'a node that returns the empty revert data': { code: 3, message: 'execution reverted', data: '0x' },
-  'a node that returns no data for an empty revert': { code: -32000, message: 'execution reverted' },
-  'a wallet that wraps its node\'s answer': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: -32000, message: 'execution reverted' } },
-  'a node that says it in its data, in words': { code: -32015, message: 'VM execution error.', data: 'Reverted 0x' },
+  'a wallet that wraps its node\'s answer, the revert\'s data inside': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: 3, message: 'execution reverted: unknown function', data: UNKNOWN_FUNCTION } },
   'a revert with a reason': { code: 3, message: 'execution reverted: no such view', data: '0x08c379a0' + '0'.repeat(62) + '20' + '0'.repeat(62) + '0c' + Buffer.from('no such view').toString('hex').padEnd(64, '0') },
+});
+// An error that says "revert" somewhere and hands over no revert data. The contract deployed before the hold never
+// answers so (its lens's fallback reverts with data), and a word in an error is not the contract's: each of these is a
+// failed read. The last is a wallet passing on a library's own wording over a block its node did not have: taken as
+// "no hold", it would show a listing that is on hold as one that takes claims.
+const NO_REVERT_DATA = Object.freeze({
+  'a node that returns no data for an empty revert': { code: -32000, message: 'execution reverted' },
+  'a wallet that wraps its node\'s answer, with no data': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: -32000, message: 'execution reverted' } },
+  'a node that says it in its data, in words': { code: -32015, message: 'VM execution error.', data: 'Reverted 0x' },
+  'a wallet that says "missing revert data" over a block the node does not have': { code: -32603, message: 'missing revert data', data: { code: -32000, message: 'header not found' } },
+  'the same, the wording nested': { code: -32603, message: 'Internal JSON-RPC error.', data: { code: -32000, message: 'header not found', cause: { message: 'missing revert data (action="call", data=null, reason=null)' } } },
 });
 // What is not a refusal: the node, or the way to it, failed. ethers reports every JSON-RPC error on an eth_call as
 // CALL_EXCEPTION, so the code alone does not tell these from the refusals above.
@@ -123,11 +132,15 @@ test('readHold: the view\'s answer, and whether the listing is on hold by it', a
   assert.match(fn(SOURCE, 'heldAt'), /s == ListingState\.Open \|\| s == ListingState\.Depleted \? _heldAt\[listingId\] : 0/);
 });
 
-test('readHold: a call the contract refuses means a contract with no hold, whatever shape the node gives the revert', async () => {
+test('readHold: a call the contract refuses means a contract with no hold, by the revert data the node hands over', async () => {
   for (const [name, error] of Object.entries(REFUSALS)) {
     await withNode(() => ({ error }), async (sa) => {
       assert.deepEqual(await readHold(sa, 7n), { supported: false, heldAt: 0n, held: false }, name);
     });
+  }
+  // and the two measured answers of the contract deployed today are among them, with the lens's own revert as data
+  for (const name of ['the deployed contract with no hold, over a public node', 'the same refusal on the local development node']) {
+    assert.ok(JSON.stringify(REFUSALS[name]).includes(UNKNOWN_FUNCTION), name);
   }
   // why a contract from before the hold refuses: a selector StakeAttestation does not implement goes to the lens, whose
   // fallback reverts with these words
@@ -136,6 +149,23 @@ test('readHold: a call the contract refuses means a contract with no hold, whate
   assert.equal(new Interface(['error Error(string)']).decodeErrorResult('Error', UNKNOWN_FUNCTION)[0], 'unknown function');
   assert.deepEqual(NO_HOLD, { supported: false, heldAt: 0n, held: false });
   assert.ok(Object.isFrozen(NO_HOLD));
+});
+
+test('readHold: an error with no revert data is a failed read, never "no hold", whatever its words say (R1-F9)', async () => {
+  for (const [name, error] of Object.entries(NO_REVERT_DATA)) {
+    await withNode(() => ({ error }), async (sa) => {
+      await assert.rejects(readHold(sa, 7n), (err) => {
+        assert.equal(err.code, 'CALL_EXCEPTION', name);
+        assert.equal(err.data, null, `${name}: ethers kept no revert data`);
+        assert.equal(refusedByContract(err), false, name);
+        return true;
+      }, name);
+    });
+  }
+  // the reader reads no word of an error: not the node's, not a wallet's
+  const lib = read('../src/lib/hold.js');
+  assert.match(lib, /export function refusedByContract\(err\) \{\s*return err\?\.code === 'CALL_EXCEPTION' && typeof err\.data === 'string';\s*\}/);
+  assert.doesNotMatch(lib.replace(/^\s*(?:\/\/|\*|\/\*).*$/gm, ''), /textsOf|\.info\b|\.message\b|\.test\(|\/i\b/);
 });
 
 test('readHold: a read that fails another way is a failed read, never "not on hold"', async () => {
@@ -161,13 +191,17 @@ test('readHold: a read that fails another way is a failed read, never "not on ho
   });
 });
 
-test('refusedByContract: only a revert the node reports, by its data or in its own words', () => {
+test('refusedByContract: only a revert the node reports, by the revert\'s own data', () => {
   assert.equal(refusedByContract(null), false);
   assert.equal(refusedByContract(new Error('execution reverted')), false, 'not ethers\' CALL_EXCEPTION');
   assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: '0x' }), true, 'the revert\'s data, empty');
-  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: -32000, message: 'execution reverted' } } }), true);
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: UNKNOWN_FUNCTION }), true, 'the lens\'s own revert');
+  // no data: whatever the error says, in whatever place
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: -32000, message: 'execution reverted' } } }), false);
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, shortMessage: 'missing revert data', info: { error: { code: -32603, message: 'missing revert data', data: { message: 'header not found' } } } }), false);
   assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null, info: { error: { code: -32000, message: 'header not found' } } }), false);
-  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null }), false, 'no word from the node: not a refusal');
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION', data: null }), false);
+  assert.equal(refusedByContract({ code: 'CALL_EXCEPTION' }), false);
   assert.equal(refusedByContract({ code: 'NETWORK_ERROR', data: '0x' }), false);
 });
 
@@ -314,8 +348,8 @@ test('the action is offered to the listing\'s maker only, and to no other wallet
   assert.ok(body.indexOf('if (!isMaker) action =') < body.indexOf('<button'), 'the buttons come after the check');
   assert.match(H.makerOnly, /^Only this listing's maker can hold it/);
   // and the wallet that sends is checked again, since it can change between the page and the click
-  assert.match(body, /const \{ signer, provider, account: sender \} = await w\.ensure\(\);\s*if \(!same\(sender, listing\.maker\)\) /);
-  assert.match(body, /fill\(STRINGS\.claim\.notMaker, \{ maker: listing\.maker, account: sender \}\)/);
+  assert.match(body, /const \{ signer, provider, account: sender \} = await w\.ensure\(\);\s*if \(!same\(sender, asking\.maker\)\) /);
+  assert.match(body, /fill\(STRINGS\.claim\.notMaker, \{ maker: asking\.maker, account: sender \}\)/);
   // the contract's own rule
   assert.match(fn(LOGIC, 'hold'), /require\(msg\.sender == l\.maker, "not maker"\);/);
 });
@@ -323,10 +357,19 @@ test('the action is offered to the listing\'s maker only, and to no other wallet
 test('the action asks for confirmation before anything is sent, reads the listing and its hold again at one block, and reports the transaction', () => {
   const body = holdSection();
   // two steps before the wallet's own, as close(): the first button only asks
-  assert.match(body, /const \[asking, setAsking\] = useState\(false\);/);
-  assert.match(body, /onClick=\{\(\) => \{ setError\(null\); setAsking\(true\); \}\}>\s*\{fill\(H\.ask, \{ id: listingId \}\)\}/);
+  assert.match(body, /const \[asking, setAsking\] = useState\(null\);/);
   assert.match(body, /<button type="button" className="danger" onClick=\{send\} disabled=\{busy\}>\s*\{busy \? H\.sending : fill\(H\.confirm, \{ id: listingId \}\)\}/);
-  assert.match(body, /<button type="button" className="secondary" onClick=\{\(\) => setAsking\(false\)\} disabled=\{busy\}>\{H\.keep\}<\/button>/);
+  assert.match(body, /<button type="button" className="secondary" onClick=\{\(\) => setAsking\(null\)\} disabled=\{busy\}>\{H\.keep\}<\/button>/);
+  // R1-F3: the first step is taken for one listing, by its maker and artifact, and is kept with them. The
+  // confirmation is drawn only while that listing is the one on display, and is taken for that listing alone: if the
+  // page comes to show another of the maker's listings under the id, the first step is to take again.
+  assert.match(body, /onClick=\{\(\) => \{ setError\(null\); setAsking\(\{ maker: listing\.maker, artifactHash: listing\.artifactHash \}\); \}\}>\s*\{fill\(H\.ask, \{ id: listingId \}\)\}/);
+  assert.match(body, /const confirming = asking !== null && sameListing\(listing, asking\);/);
+  assert.match(body, /else if \(confirming\) \{\s*action = \(\s*<p className="actions">/);
+  assert.doesNotMatch(body, /else if \(asking\)/, 'never drawn from the first step alone');
+  assert.match(body, /const send = async \(\) => \{\s*(?:\/\/[^\n]*\n\s*)?if \(!confirming\) return undefined;/);
+  assert.match(body, /if \(!same\(sender, asking\.maker\)\) \{\s*setAsking\(null\);/);
+  assert.doesNotMatch(body, /setAsking\((?:true|false)\)/);
   assert.equal(body.split('.hold(BigInt(listingId))').length, 2, 'hold() is sent in one place');
   assert.ok(body.indexOf('const send = async') < body.indexOf('.hold(BigInt(listingId))'), 'inside send');
   // just before sending: the listing and its hold, through the wallet, in one snapshot of one block
@@ -334,7 +377,8 @@ test('the action asks for confirmation before anything is sent, reads the listin
   // A hold has no way back: it is sent only for the listing the page showed (the same artifact, the same maker's),
   // and only while that listing can be held. Otherwise nothing is sent, the confirmation is taken back, and the page
   // is told the wallet's read disagreed with it, at that read's block.
-  assert.match(body, /if \(!sameListing\(mine, listing\) \|\| !holdTerms\(mine, now\)\.can\) \{\s*setError\(fill\(H\.changed, \{ id: listingId \}\)\);\s*setAsking\(false\);\s*onChanged\(disagreedAt\(block\)\);\s*return undefined;\s*\}\s*const tx = await stakeAttestation\(signer\)\.hold\(BigInt\(listingId\)\);/);
+  assert.match(body, /if \(!sameListing\(mine, asking\) \|\| !holdTerms\(mine, now\)\.can\) \{\s*setError\(fill\(H\.changed, \{ id: listingId \}\)\);\s*setAsking\(null\);\s*onChanged\(disagreedAt\(block\)\);\s*return undefined;\s*\}\s*const tx = await stakeAttestation\(signer\)\.hold\(BigInt\(listingId\)\);/);
+  assert.doesNotMatch(body, /sameListing\(mine, listing\)/, 'the wallet\'s read is held to the listing of the first step, not to whatever the page shows at the click');
   const shown = { maker: '0xAbC0000000000000000000000000000000000001', artifactHash: `0x${'ab'.repeat(32)}` };
   assert.equal(sameListing({ maker: shown.maker.toLowerCase(), artifactHash: shown.artifactHash.toUpperCase().replace('0X', '0x') }, shown), true);
   assert.equal(sameListing({ ...shown, artifactHash: `0x${'cd'.repeat(32)}` }, shown), false, 'another artifact under the id');
@@ -386,7 +430,9 @@ test('once on hold, the page says so with the time, from its read, and still off
   assert.doesNotMatch(STRINGS.offer.held, /offers it to hunters\.$/);
   // roll forward and close are drawn from the listing's state and its pending claims, as before: a hold changes neither
   const roll = extras.slice(extras.indexOf('export function RollForward('), extras.indexOf('function CommitOffer('));
-  assert.match(roll, /if \(!ROLLABLE\.has\(state\)\) return null;/);
+  // no panel for a listing that is neither Open nor Depleted (nor while the page knows its read is behind): only the
+  // panel's own error, if it has one
+  assert.match(roll, /if \(quiet \|\| !ROLLABLE\.has\(state\)\) return error \? <p className="error" role="alert">\{error\}<\/p> : null;/);
   assert.doesNotMatch(roll, /hold\.held && return|if \(hold\.held\) return/);
   const actions = component('ListingActions.jsx');
   const close = actions.slice(actions.indexOf('export function CloseListing('), actions.indexOf('\n}\n', actions.indexOf('export function CloseListing(')));
@@ -405,13 +451,13 @@ test('a successor is never a listing on hold: the picker leaves it out, the read
   assert.match(panel, /const \[s, onHold\] = await Promise\.all\(\[sa\.getListing\(BigInt\(e\.listingId\)\), hold\.supported \? readHold\(sa, e\.listingId\) : NO_HOLD\]\);\s*if \(!onHold\.held && confirmSuccessor\(/);
   // the read before sending: this listing, the successor and the successor's hold, in one snapshot through the wallet
   assert.match(panel, /return Promise\.all\(\[sa\.getListing\(BigInt\(listingId\)\), sa\.getListing\(BigInt\(pick\)\), hold\.supported \? readHold\(sa, pick\) : NO_HOLD\]\);/);
-  assert.match(panel, /if \(successorHold\.held\) \{\s*setAgain\(\(n\) => n \+ 1\);\s*return setError\(fill\(RF\.successorOnHold, \{ id: pick \}\)\);\s*\}\s*const tx = await stakeAttestation\(signer\)\.rollForward\(/);
+  assert.match(panel, /if \(successorHold\.held\) \{\s*setAgain\(\(n\) => n \+ 1\);\s*return setHeldSuccessor\(pick\);\s*\}\s*const tx = await stakeAttestation\(signer\)\.rollForward\(/);
   assert.equal(fill(STRINGS.roll.successorOnHold, { id: 9 }), 'Nothing was sent: listing 9 is on hold and takes no commits, so this listing is not rolled forward to it. Choose another listing.');
   // looked for again when asked, where the contract has the hold; against one without, the panel is what it was
   assert.match(panel, /\{hold\.supported && record && !recordReading && \(!identity \|\| options !== null\) && \(\s*<button type="button" className="secondary" data-testid="roll-look-again" onClick=\{lookAgain\}/);
   // a record that did not have this listing yet (the site's mirror trailed its opening), or whose read failed, is
   // read again first; the successors are then looked for by the identity it brings
-  assert.match(panel, /const lookAgain = \(\) => \{\s*setError\(null\);\s*setRefusal\(null\);\s*if \(!identity\) return onRecordAgain\(\);\s*setOptions\(null\);\s*return setAgain\(\(n\) => n \+ 1\);\s*\};/);
+  assert.match(panel, /const lookAgain = \(\) => \{\s*setError\(null\);\s*setHeldSuccessor\(null\);\s*if \(!identity\) return onRecordAgain\(\);\s*setOptions\(null\);\s*return setAgain\(\(n\) => n \+ 1\);\s*\};/);
   assert.match(extras, /export function useListingRecord\(listingId, artifactHash, opened, again = 0\) \{/);
   assert.match(extras, /\}, \[listingId, artifactHash, opened, again\]\);/);
   assert.match(panel, /\}, \[listingId, listing\.maker, state, identity, hold\.supported, again\]\);/);

@@ -121,7 +121,9 @@ test('the panel shows from the listing\'s state on-chain: a record that is still
   // inside, only the state decides whether there is a panel, and the record only what the picker's place holds
   const body = panel.slice(panel.indexOf('export function RollForward('), panel.indexOf('function CommitOffer('));
   assert.match(body, /const identity = record && !record\.failed \? record\.identity : null;/);
-  assert.match(body, /if \(!ROLLABLE\.has\(state\)\) return null;/);
+  // no panel for a listing that is neither Open nor Depleted (nor while the page knows its read is behind): only the
+  // panel's own error, if it has one
+  assert.match(body, /if \(quiet \|\| !ROLLABLE\.has\(state\)\) return error \? <p className="error" role="alert">\{error\}<\/p> : null;/);
   assert.match(body, /if \(!record \|\| recordReading\) body = <p className="hint">\{RF\.loading\}<\/p>;\s*else if \(record\.failed\) body = <p className="hint" data-testid="roll-record-failed">\{fill\(RF\.recordFailed, \{ reason: record\.failed \}\)\}<\/p>;/);
   assert.match(R.recordFailed, /^This listing's record could not be read, so its successors cannot be found here: \{reason\}$/);
 });
@@ -187,16 +189,27 @@ test('hold line 3: a listing already on hold says since when, and what is left o
   assert.ok(R.hold.order.endsWith(text.slice(text.indexOf('push the fix'))), 'the rest of the order, word for word');
 });
 
-test('hold line 4: or close, once on hold, when no claim is pending and no award is owed', () => {
+test('hold line 4: or close, once on hold, when no claim from before the hold is pending and no award is owed; a late claim does not hold it back', () => {
   const text = R.hold.close;
-  assert.match(text, /^If no claim on this listing is pending and no award is owed, you can close it /);
+  assert.match(text, /^If no claim committed before the hold is pending and no award is owed, you can close this listing /);
   assert.match(text, /instead of rolling forward\./);
-  assert.match(text, /A close is refused while a claim is pending or an award is owed/);
+  assert.match(text, /A close is refused while such a claim is pending or an award is owed/);
   // close() as the contract has it, on hold or not: it reads no hold
   const close = solidity('close');
   assert.match(close, /require\(l\.pendingClaims == 0, "claims pending"\);/);
   assert.match(close, /require\(l\.owedWei == 0, "amount owed"\);/);
   assert.doesNotMatch(close.replace(/\/\/.*$/gm, ''), /_heldAt/);
+  // R1-F11: on a listing on hold the only claims that can come are late claims, and a late claim is never one of
+  // pendingClaims (no award rides on it): it does not hold a close back, and it runs on after the close, since a
+  // listing closed after it opened takes late claims. The line says so, and names no claim the page counts as open.
+  assert.match(text, /A late claim does not hold a close back: it carries no award, and it is judged and recorded after the close as before\.$/);
+  assert.doesNotMatch(text, /while a claim is pending|no claim on this listing is pending/, 'never "a claim", which a late claim in the queue would read as');
+  const commit = /function commit\([\s\S]*?\n {4}\}/.exec(logic())[0];
+  assert.match(commit, /if \(late\) \{[\s\S]*?c\.late = true;\s*l\.lateClaims \+= 1;[\s\S]*?\} else \{\s*l\.pendingClaims \+= 1;/);
+  assert.match(commit, /s == StakeAttestation\.ListingState\.Rolled\s*\|\| \(s == StakeAttestation\.ListingState\.Closed && l\.openedAt != 0\)\s*\|\| listingHeld,/);
+  assert.match(logic(), /if \(!c\.late\) l\.pendingClaims -= 1;/);
+  // the hold's own section says the same of what is left
+  assert.match(STRINGS.hold.next, /or close, when no claim committed before the hold is pending and no award is owed\. A late claim does not hold a close back\.$/);
 });
 
 test('with a hold the panel renders its own lines after the intro and before the picker: the first two until the hold, then the line of a listing on hold', () => {

@@ -198,7 +198,7 @@ test('every action tells the page: the block its transaction was mined in, on ev
   // read's block, never as a bare number (which would say a transaction was mined)
   assert.equal(actions.split('onChanged(disagreedAt(blockTag));').length - 1, 3, 'top-up, renew, close');
   assert.equal(actions.split('onChanged(disagreedAt(block));').length - 1, 1, 'hold');
-  assert.equal(extras.split('onChanged(disagreedAt(block));').length - 1, 1, 'roll forward, when it is this listing that changed');
+  assert.equal(extras.split('if (!rollable) onChanged(disagreedAt(block));').length - 1, 1, 'roll forward, when it is this listing that changed');
   for (const source of [actions, extras]) assert.doesNotMatch(source, /onChanged\(\)|onChanged\(block(?:Tag)?\)/);
 });
 
@@ -222,10 +222,19 @@ test('while the page knows its read is behind, a section draws its own transacti
   assert.match(close, /if \(terms\.why === 'closed' && !done\) return null;\s*if \(quiet && !done && !error\) return null;/);
   assert.match(close, /if \(done\) \{[\s\S]*?\} else if \(quiet\) \{\s*body = null;\s*\} else if \(terms\.why === 'pending'\) \{/);
   const extras = component('ListingExtras.jsx');
-  assert.match(extras, /if \(done\) return <p data-testid="rolled" className="ok">\{fill\(RF\.done, \{ id: done\.id, tx: done\.tx \}\)\}<\/p>;\s*if \(!ROLLABLE\.has\(state\)\) return null;\s*if \(quiet\) return refusal \? <p className="error" role="alert">\{refusal\}<\/p> : null;/);
-  // the roll panel's other errors name a successor (one of them, that it is on hold): they are not drawn then
-  assert.match(extras, /if \(!rollable\) \{\s*(?:\/\/[^\n]*\n\s*)?onChanged\(disagreedAt\(block\)\);\s*return setRefusal\(fill\(RF\.changed, \{ id: pick \}\)\);\s*\}/);
-  assert.equal(extras.split('setRefusal(fill(').length - 1, 1, 'set by that refusal alone');
+  // R1-F5: the roll panel's own error is drawn where the panel is not: while the page knows its read is behind, and
+  // once a read has the listing neither Open nor Depleted. A roll that was mined and failed stays said.
+  assert.match(extras, /if \(done\) return <p data-testid="rolled" className="ok">\{fill\(RF\.done, \{ id: done\.id, tx: done\.tx \}\)\}<\/p>;\s*(?:\/\/[^\n]*\n\s*)*if \(quiet \|\| !ROLLABLE\.has\(state\)\) return error \? <p className="error" role="alert">\{error\}<\/p> : null;/);
+  assert.match(extras, /\} catch \(err\) \{\s*setError\(fill\(STRINGS\.claim\.failed, \{ reason: walletMessage\(err\) \}\)\);/);
+  // One of the roll panel's refusals says that a successor is on hold. It is kept apart from the panel's own error,
+  // and so is not drawn while the page knows its read is behind: nothing on the page says "on hold" then.
+  assert.match(extras, /if \(successorHold\.held\) \{\s*setAgain\(\(n\) => n \+ 1\);\s*return setHeldSuccessor\(pick\);\s*\}/);
+  assert.match(extras, /\{\(error \?\? heldSuccessor\) && <p className="error" role="alert">\{error \?\? fill\(RF\.successorOnHold, \{ id: heldSuccessor \}\)\}<\/p>\}/);
+  assert.equal(extras.split('RF.successorOnHold').length - 1, 1, 'said in one place, which `quiet` never reaches');
+  // no error that stays while the page is behind says the listing is on hold, or what to do because of it
+  for (const [at, text] of [['roll.changed', STRINGS.roll.changed], ['hold.changed', STRINGS.hold.changed], ['hold.mined', STRINGS.hold.mined], ['topUp.changed', STRINGS.topUp.changed], ['renew.changed', STRINGS.renew.changed], ['renew.feeChanged', STRINGS.renew.feeChanged], ['close.changed', STRINGS.close.changed], ['claim.failed', STRINGS.claim.failed], ['claim.notMaker', STRINGS.claim.notMaker]]) {
+    assert.doesNotMatch(text, /on hold|push the fix/i, at);
+  }
   assert.match(extras, /if \(!data \|\| quiet\) return null;/);
   assert.match(extras, /<CommitOffer data=\{data\} held=\{hold\.held\} quiet=\{quiet\} \/>/);
   assert.match(extras, /<HoldListing listingId=\{listingId\} listing=\{listing\} hold=\{hold\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);
@@ -248,6 +257,7 @@ test('the lines of the page\'s other actions for their own transactions are the 
   assert.equal(STRINGS.topUp.reopened, 'The listing is open again.');
   assert.equal(STRINGS.renew.done, 'Renewed (transaction {tx}). The listing fee is paid until {until}.');
   assert.equal(STRINGS.close.done, 'Listing {id} is closed (transaction {tx}). {eth} ETH of escrow went back to {account}.');
+  assert.equal(STRINGS.close.doneDeferred, 'Listing {id} is closed (transaction {tx}). The contract could not send the {eth} ETH of escrow to {account}, so it holds the amount for that wallet: withdraw it below.');
   assert.equal(STRINGS.withdraw.done, 'Withdrawn (transaction {tx}): {eth} ETH to {account}.');
   assert.equal(STRINGS.roll.done, 'Rolled forward to listing {id} (transaction {tx}).');
   // On the listing's own page the opening's line stays once the page has read the listing as open: `openedHere` keeps

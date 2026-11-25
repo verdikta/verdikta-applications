@@ -612,6 +612,88 @@ test.describe('the maker\'s hold', () => {
     await expect(section.getByRole('alert')).toHaveText(fill(H.changed, { id: shown.listingId }));
   });
 
+  test('the hold\'s first step is for the listing it was taken on: another of the maker\'s listings under the id gets no confirmation without a first step of its own (R1-F3)', async ({ page, stack, chain }) => {
+    const shown = await chain.openListing({ recipient: key.recipient });
+    const other = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${shown.listingId}`);
+    await connect(page, stack.accounts.maker);
+    const section = page.getByTestId('hold');
+    const ask = section.getByRole('button', { name: fill(H.ask, { id: shown.listingId }) });
+    const confirm = section.getByRole('button', { name: fill(H.confirm, { id: shown.listingId }) });
+    // the first step, taken for the listing the maker is looking at
+    await ask.click();
+    await expect(confirm).toBeVisible();
+    // From here the site's reader has another of the maker's listings under this id, open and not on hold (the chain's
+    // blocks were replaced). Another action of the page has it read the listing again: a top-up, which the wallet's
+    // node takes for the listing it has.
+    const mine = await listingCall(chain, shown.listingId);
+    const theirs = await listingCall(chain, other.listingId);
+    await interceptRpc(page, stack, (p) => (isCallWith(mine.data)(p) ? { result: theirs.result } : undefined), { from: 'reader' });
+    const topUp = page.getByTestId('top-up');
+    await topUp.getByTestId('top-up-amount').fill('0.01');
+    await topUp.getByRole('button', { name: fill(STRINGS.topUp.button, { eth: '0.01' }) }).click();
+    await expect(topUp.getByTestId('topped-up')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('listing-summary')).toContainText((await chain.sa.getListing(other.listingId)).listingCid, { timeout: 30_000 });
+    // The confirmation that was taken for the first listing is not offered for this one: one click would have held a
+    // version the maker never took the first step for, and a hold has no way back. The first step is to take again.
+    await expect(section.getByTestId('hold-warning')).toBeVisible();
+    await expect(confirm).toHaveCount(0);
+    await expect(ask).toBeVisible();
+    expect(await chain.sa.heldAt(shown.listingId)).toBe(0n);
+    expect(await chain.sa.heldAt(other.listingId)).toBe(0n);
+    // Taken again, it is for the listing now shown, and the wallet's read is held to that same listing. The wallet's
+    // node has the first listing under the id, so nothing is sent, for either.
+    await ask.click();
+    await confirm.click();
+    await expect(section.getByRole('alert')).toHaveText(fill(H.changed, { id: shown.listingId }), { timeout: 30_000 });
+    expect(await chain.sa.heldAt(shown.listingId)).toBe(0n);
+    expect(await chain.sa.heldAt(other.listingId)).toBe(0n);
+    await expect(section.getByTestId('hold-mined')).toHaveCount(0);
+  });
+
+  test('a roll that was mined and failed keeps its error on the page while the page reads, and after (R1-F5)', async ({ page, stack, chain }) => {
+    const repo = ownRepo('roll-failed');
+    const first = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    await holdOnChain(chain, stack, first.listingId);
+    const successor = await chain.openListing({ recipient: key.recipient, spec: { repo } });
+    await chain.until(async () => ((await api(stack, '/api/feed'))?.listings ?? []).some((l) => l.listingId === String(successor.listingId)), { what: 'the successor in the feed' });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${first.listingId}`);
+    const pick = field(page, RF.pick);
+    await expect(pick).toBeVisible();
+    await pick.selectOption(String(successor.listingId));
+    // The wallet's node reports the roll's transaction as mined and reverted: its receipt, with the status of a
+    // failure. The page is told the block all the same, and the site's reader trails it.
+    const receipts = { failed: 0 };
+    await interceptRpc(page, stack, async (p) => {
+      if (p.method !== 'eth_getTransactionReceipt') return undefined;
+      const receipt = await ofNode(stack, p);
+      if (!receipt) return undefined;
+      receipts.failed += 1;
+      return { result: { ...receipt, status: '0x0' } };
+    }, { from: 'wallet' });
+    const letGo = await freezeReader(page, stack, chain);
+    await page.getByRole('button', { name: fill(RF.button, { id: successor.listingId }) }).click();
+    // the roll's own error: said at once, while the page reads, and with the block it has not read once its reads are over
+    const failure = page.getByRole('alert').filter({ hasText: fill(C.failed, { reason: '' }) });
+    await expect(failure).toBeVisible({ timeout: 30_000 });
+    expect(receipts.failed).toBeGreaterThan(0);
+    const [mined] = await chain.sa.queryFilter(chain.sa.filters.RolledForward(first.listingId));
+    await expect(page.getByTestId('listing-behind')).toHaveText(fill(F.behind, { block: mined.blockNumber }), { timeout: 30_000 });
+    await expect(failure).toBeVisible();
+    await expect(page.getByTestId('rolled')).toHaveCount(0);
+    await expectHoldOff(page);
+    // and after: the page reads that block, where the listing is no longer one to roll, and the error is still said
+    await letGo();
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Rolled);
+    await expect(page.getByTestId('listing-behind')).toHaveCount(0);
+    await expect(failure).toBeVisible();
+    await expect(page.getByTestId('roll-forward')).toHaveCount(0);
+    await expect(page.getByTestId('rolled')).toHaveCount(0);
+  });
+
   // ---------------------------------------------------------------- one read is one block
   test('a block replaced under the page\'s read: the listing of one chain is never shown with the hold of the other', async ({ page, stack, chain }) => {
     const held = await chain.openListing({ recipient: key.recipient });
@@ -977,19 +1059,23 @@ test.describe('the maker\'s hold', () => {
     expect(await page.locator('main').innerText()).not.toMatch(/\bhold\b/i);
   });
 
-  test('a read of the hold that fails another way is a failed read of the page, never "not on hold"', async ({ page, stack, chain }) => {
+  // "This contract has no hold" is said only from the contract's own revert data. Any other failure of that call is a
+  // failed read: the node's own (a rate limit), and an error that says "revert" in its words and hands over no revert
+  // data, as a wallet does when it passes on a library's wording over a block its node did not have (R1-F9).
+  for (const [what, error] of [
+    ['the node\'s own failure', { code: -32005, message: 'rate limit exceeded' }],
+    ['"missing revert data" over a block the node does not have', { code: -32603, message: 'missing revert data', data: { code: -32000, message: 'header not found' } }],
+  ]) test(`a read of the hold that fails another way is a failed read of the page, never "not on hold": ${what}`, async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     const heldAt = await holdOnChain(chain, stack, listingId);
-    // the node's own failure on that call: no revert, so no word of the contract
-    const failed = await answerHeldAt(page, stack, { code: -32005, message: 'rate limit exceeded' });
+    const failed = await answerHeldAt(page, stack, error);
     await installWallet(page, stack);
     await page.goto(`/#/fund/${listingId}`);
     await expect(page.getByText(F.readFailed.replace('{reason}', ''), { exact: false })).toBeVisible();
     expect(failed.calls).toBeGreaterThan(0);
-    // nothing of the listing is drawn from half a read: not its state, not an action, not "open until"
-    await expect(page.getByTestId('listing-summary')).toHaveCount(0);
-    await expect(page.getByTestId('roll-forward')).toHaveCount(0);
-    await expect(page.getByTestId('hold')).toHaveCount(0);
+    // nothing of the listing is drawn from half a read: not its state, not an action, not "open until", and least of
+    // all a listing on hold shown as one that takes claims
+    for (const id of ['listing-summary', 'listing-open-until', 'commit-offer', 'roll-forward', 'hold']) await expect(page.getByTestId(id)).toHaveCount(0);
     // once the node answers, reading again shows the listing as it is: on hold
     await page.unrouteAll({ behavior: 'wait' });
     await page.getByRole('button', { name: F.retry }).click();

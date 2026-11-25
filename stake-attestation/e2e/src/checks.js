@@ -486,6 +486,20 @@ export function laterRecordChecks(prefix, { record, lateClaims, lateOutcomes, cl
 }
 
 /**
+ * No award rides on a late claim. The listing's escrow is read before the late claim is released (`baseline`), once
+ * it is Judged and once it is Settled, and is the same wei all three times: a debit while the claim was revealed or
+ * judged shows at Judged, and one at the settle shows at Settled. The claim itself was paid nothing and is owed nothing.
+ * @param {{ paidWei: bigint, owedWei: bigint, baseline: bigint, judged: bigint, settled: bigint }} o
+ */
+export function lateNoAwardChecks(prefix, { paidWei, owedWei, baseline, judged, settled }) {
+  const read = [baseline, judged, settled].every((wei) => typeof wei === 'bigint');
+  return [
+    check(`${prefix}.late.judged.escrowUntouched`, read && judged === baseline, `escrow ${baseline} before the late claim was released, ${judged} with it judged`),
+    check(`${prefix}.late.noAward`, read && paidWei === 0n && owedWei === 0n && settled === baseline, `paid ${paidWei}, owed ${owedWei}; escrow ${baseline} before the late claim was released, ${settled} with it settled`),
+  ];
+}
+
+/**
  * The roll forward from the hold: the maker's own call naming the successor; the old listing Rolled and linked both
  * ways; the hold ended (the view answers 0, no commit, late claims as any Rolled listing); a successor that was never
  * on hold and takes commits; and the site saying all of it, in the old version's record, the successor's, and the feed.

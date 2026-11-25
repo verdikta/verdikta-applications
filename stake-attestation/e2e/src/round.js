@@ -23,7 +23,7 @@ import { createBridge, evaluateOver } from './bridge.js';
 import { readHoldPages, readPages } from './browser.js';
 import { startChain } from './chain.js';
 import {
-  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, lateClaimChecks, laterRecordChecks, moneyChecks, pageChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, lateNoAwardChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, lateClaimChecks, laterRecordChecks, moneyChecks, pageChecks,
   noDocumentsTierChecks, recordChecks, refusedCommitChecks, requestChecks, rolledFromHoldChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
@@ -1047,8 +1047,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     expect(holdPageChecks('held', holdPages, { heldAt, state: STATE_WORDS[afterHold.state] }));
 
     stage('hold: a commit is refused');
-    // By what a refusal leaves, never by its code or its words: no claim, nothing pinned, nothing sent, the listing's
-    // counts and queue as they were.
+    // By what a refusal leaves, and not by which error code it names or by any prose: no claim, nothing pinned, nothing
+    // sent, the listing's counts and queue as they were.
     const commitCounts = async () => {
       const l = await sa.getListing(listingId);
       return {
@@ -1223,7 +1223,7 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     await stateIs(lateId, 'Judged');
     const lateJudged = (await eventOf('Judged', lateId))[0];
     one('held.late.judged.outcome', OUTCOMES[Number(lateJudged.args.outcome)] === 'HIGH', OUTCOMES[Number(lateJudged.args.outcome)]);
-    const beforeLateSettle = await listingOnChain(listingId);
+    const lateJudgedListing = await listingOnChain(listingId);
     await chain.advance(WINDOWS.dispute + 1);
     await stateIs(lateId, 'Settled');
     const lateSettled = (await eventOf('Settled', lateId))[0];
@@ -1243,7 +1243,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     // come back to the hunter, and nothing else moves.
     const afterLateSettle = await listingOnChain(listingId);
     one('held.late.noConfirmation', (await eventOf('ConfirmationRequested', lateId)).length === 0 && (await eventOf('DisputeJudged', lateId)).length === 0, `${(await eventOf('ConfirmationRequested', lateId)).length} confirmation(s) asked for claim ${lateId}`);
-    one('held.late.noAward', lateFinal.paidWei === 0n && lateFinal.owedWei === 0n && afterLateSettle.escrowWei === beforeLateSettle.escrowWei, `paid ${lateFinal.paidWei}, owed ${lateFinal.owedWei}; escrow ${beforeLateSettle.escrowWei} then ${afterLateSettle.escrowWei}`);
+    // the baseline is the escrow once the earlier claim was paid, before this claim's release: a debit while it was
+    // revealed or judged shows at Judged, and one at the settle shows at Settled
+    expect(lateNoAwardChecks('held', { paidWei: lateFinal.paidWei, owedWei: lateFinal.owedWei, baseline: afterHeldPaid.escrowWei, judged: lateJudgedListing.escrowWei, settled: afterLateSettle.escrowWei }));
     expect(moneyChecks('late', [
       { name: 'bondBack', before: hunterAfterLateReveal, after: await balance(hunter), expected: BOND_WEI + (lateRound.required - lateRound.spent) },
       { name: 'makerUntouched', before: makerBeforeLateJudge, after: await balance(maker), expected: 0n },

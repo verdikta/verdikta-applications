@@ -113,14 +113,14 @@ test('node P42: the maker holds the listing: a commit is then refused and a late
   has('held.site.fresh', 'held.site.heldAt', 'held.site.notLive', 'held.site.stateIsTheChains', 'held.site.pendingStays', 'held.site.badge', 'held.site.feedWithoutIt');
   has('held.page.listingOnHold', 'held.page.listingState', 'held.page.recordOnHold', 'held.page.feedWithoutIt', 'held.page.noErrors');
   assert.match(detail('held.site.badge'), /stake on hold since \d{4}-\d{2}-\d{2}/);
-  // a commit refused, by what it leaves, and by what that invocation asked the chain: never by its code or its words
+  // a commit refused, by what it leaves, and by what that invocation asked the chain: not by which error code it names
   has('held.commit.toolWasWatched', 'held.commit.refused', 'held.commit.nothingPinned', 'held.commit.nothingSent', 'held.commit.claimCountAsItWas', 'held.commit.chainRefuses', 'held.commit.stoppedAtTheChainsAnswer');
   // a late claim, through the tool's commit --late: nothing sent without --yes; then taken by LateClaim and not
   // Committed, disclosed, behind the claim from before the hold, never one of the pending claims, the escrow untouched
   has('held.late.asksYes', 'held.late.taken', 'held.late.isALateClaim', 'held.late.neverPending', 'held.late.behindTheEarlierClaim', 'held.late.disclosed', 'held.late.escrowUntouched', 'held.late.stillOnHold', 'held.late.toolSaysLate');
   // that late claim, once the earlier one is settled: released, revealed, judged by the jury, and settled by the
   // keeper with no confirmation and no award; the record counts it under its late claims and publishes it as found later
-  has('held.late.waitedItsTurn', 'held.late.jury.scriptInStep', 'held.late.released', 'late.request.cids', 'late.request.disclosureLine', 'late.round.vector', 'late.round.everyRevealSame', 'held.late.jury.reached', 'held.late.judged.outcome');
+  has('held.late.waitedItsTurn', 'held.late.jury.scriptInStep', 'held.late.released', 'late.request.cids', 'late.request.disclosureLine', 'late.round.vector', 'late.round.everyRevealSame', 'held.late.jury.reached', 'held.late.judged.outcome', 'held.late.judged.escrowUntouched');
   has('late.settled.state', 'late.settled.outcome', 'late.keeper.finalized', 'late.keeper.settled', 'held.late.noConfirmation', 'held.late.noAward', 'late.money.bondBack', 'late.money.makerUntouched', 'held.late.settled.stillOnHold');
   has('held.record.lateClaims', 'held.record.lateOutcomes', 'held.record.notAmongTheClaims', 'held.record.lateFindings', 'held.record.noAward', 'held.late.record.stillOnHold');
   assert.match(detail('held.late.judged.outcome'), /HIGH/);

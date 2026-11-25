@@ -327,16 +327,38 @@ function shownIn(text) {
   return out;
 }
 
-/** A usage line of the help as a command line with everything on it: the brackets, the parentheses and the | between choices taken off. */
-const helpLine = (line) => line.trim().replace(/[[\]()]/g, '').split(/\s+/).filter((word) => word !== '|');
+/**
+ * A usage line of the help as the command lines it shows, each with every optional part on it: the brackets taken
+ * off, and one line for each choice of a parenthesized `(a | b)`, which a command takes one of (R1-F2).
+ */
+function helpCommandLines(line) {
+  const choice = /\(([^()]+)\)/.exec(line);
+  const each = choice ? choice[1].split(' | ').map((one) => line.replace(choice[0], one)) : [line];
+  return each.map((one) => one.trim().replace(/[[\]]/g, '').split(/\s+/));
+}
 
-test('every command line the help, the README and the agent guide show is one the parser takes, each read from its file', () => {
+test('every command line the help, the README and the agent guide show is one the parser takes, each read from its file', async () => {
   const sources = {
-    'the help': Object.values(helpLines().per).map((line, i) => ({ line: i + 1, argv: helpLine(line) })),
+    'the help': Object.values(helpLines().per).flatMap((line, i) => helpCommandLines(line).map((argv) => ({ line: i + 1, argv }))),
     'README.md': shownIn(fs.readFileSync(new URL('../../README.md', import.meta.url), 'utf8')),
     'client/public/agents.txt': shownIn(fs.readFileSync(new URL('../../client/public/agents.txt', import.meta.url), 'utf8')),
   };
-  const least = { 'the help': 6, 'README.md': 11, 'client/public/agents.txt': 20 };
+  // check's line shows two: with --listing, and with --listing-archive in its place
+  assert.deepEqual(sources['the help'].filter(({ argv }) => argv[0] === 'check').map(({ argv }) => argv.join(' ')), [
+    'check <claim-dir> --listing <id> --no-pack --remote-runner',
+    'check <claim-dir> --listing-archive <file> --no-pack --remote-runner',
+  ]);
+  // each of the two gets past check's own reading of its arguments, to the first thing check needs; both together do not
+  for (const [args, code, said] of [
+    [['--listing', '7'], 1, /^verdikta-attest: RUNNER_NOT_CONFIGURED: /],
+    [['--listing-archive', 'listing.zip'], 1, /^verdikta-attest: RUNNER_NOT_CONFIGURED: /],
+    [['--listing', '7', '--listing-archive', 'listing.zip'], 2, /^verdikta-attest: check: check needs --listing <id> or --listing-archive <file>\n$/],
+  ]) {
+    const res = await capture(['check', './claim', ...args, '--no-pack', '--remote-runner']);
+    assert.equal(res.code, code, args.join(' '));
+    assert.match(res.stderr, said, args.join(' '));
+  }
+  const least = { 'the help': 7, 'README.md': 11, 'client/public/agents.txt': 20 };
   for (const [name, shown] of Object.entries(sources)) {
     assert.ok(shown.length >= least[name], `${name}: ${shown.length} command lines were read`);
     const verbs = new Set();

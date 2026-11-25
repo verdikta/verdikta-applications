@@ -78,8 +78,8 @@ function takes() {
   return rows;
 }
 
-/** Whether the table gives `flag` to `command`: in its own row or in the row of every command. */
-const takesIt = (command, flag) => [takes().get(command), takes().get('*')].some((row) => row.flags.includes(flag) || row.values.includes(flag));
+/** Whether the table gives `flag` to `command`, in its own row or in the row of every command: as a flag or an option, or as the `kind` named. */
+const takesIt = (command, flag, kinds = ['flags', 'values']) => [takes().get(command), takes().get('*')].some((row) => kinds.some((kind) => row[kind].includes(flag)));
 
 /** What the tool's argument parser takes: every flag and option of its table, and the two answers run() gives before them. */
 function parsedFlags() {
@@ -244,26 +244,40 @@ test('every verdikta-attest command they name is one of the CLI\'s, and each fla
   const parsed = parsedFlags();
   const { per, global } = usageFlags();
   assert.ok(cmds.length >= 6 && parsed.size >= 10, 'the CLI\'s lists were read');
+  /** One invocation, held to the CLI: `at` says where it stands. */
+  const held = (at, [first, ...rest]) => {
+    if (first.startsWith('-')) {
+      assert.ok(parsed.has(first) && global.has(first), `${at}: verdikta-attest ${first} is no option of the CLI`);
+      return;
+    }
+    assert.ok(cmds.includes(first), `${at}: '${first}' is no verdikta-attest command (${cmds.join(', ')})`);
+    for (const token of rest.filter((a) => a.startsWith('--'))) {
+      // an option's value may stand inline, after an = (--listing=<listingId>): the name is what comes before it
+      const flag = token.split('=')[0];
+      assert.ok(parsed.has(flag), `${at}: ${flag} is no flag the CLI parses`);
+      assert.ok(per.get(first).has(flag) || global.has(flag), `${at}: ${flag} is not documented for ${first}`);
+      // and the parser takes it on that command: on another it is a usage error, as a flag written with a value is
+      // (node P46)
+      assert.ok(takesIt(first, flag), `${at}: the parser's table does not give ${flag} to ${first}`);
+      assert.ok(token === flag || takesIt(first, flag, ['values']), `${at}: ${flag} is a flag, and a flag takes no value`);
+    }
+  };
   let seen = 0;
   for (const [name, text] of docs()) {
     for (const { line, args } of invocations(text)) {
       if (args.length === 0) continue;
       seen += 1;
-      const [first, ...rest] = args;
-      if (first.startsWith('-')) {
-        assert.ok(parsed.has(first) && global.has(first), `${name}:${line}: verdikta-attest ${first} is no option of the CLI`);
-        continue;
-      }
-      assert.ok(cmds.includes(first), `${name}:${line}: '${first}' is no verdikta-attest command (${cmds.join(', ')})`);
-      for (const flag of rest.filter((a) => a.startsWith('--'))) {
-        assert.ok(parsed.has(flag), `${name}:${line}: ${flag} is no flag the CLI parses`);
-        assert.ok(per.get(first).has(flag) || global.has(flag), `${name}:${line}: ${flag} is not documented for ${first}`);
-        // and the parser takes it on that command: on another it is a usage error (node P46)
-        assert.ok(takesIt(first, flag), `${name}:${line}: the parser's table does not give ${flag} to ${first}`);
-      }
+      held(`${name}:${line}`, args);
     }
   }
   assert.ok(seen >= 10, `the documents name the commands (${seen} found)`);
+  // the check itself (R1-F1): an option's inline value is taken as the guide says it may be written, a flag's is not,
+  // and a flag of another command is not
+  for (const args of [['check', './claim', '--listing=<listingId>'], ['status', './claim', '--wait', '--max-wait-ms=<ms>', '--rpc-url=<url>']]) assert.doesNotThrow(() => held('an example', args), args.join(' '));
+  assert.throws(() => held('an example', ['commit', './claim', '--listing', '<listingId>', '--yes=false']), /an example: --yes is a flag, and a flag takes no value/);
+  assert.throws(() => held('an example', ['status', './claim', '--json=true']), /an example: --json is a flag, and a flag takes no value/);
+  assert.throws(() => held('an example', ['reveal', './claim', '--waive-appeal']), /an example: --waive-appeal is not documented for reveal/);
+  assert.throws(() => held('an example', ['claim', './claim', '--listing=<listingId>']), /an example: --listing is not documented for claim/);
   // the commands an agent needs, each shown at least once
   const named = new Set(docs().flatMap(([, t]) => invocations(t).map((x) => x.args[0])));
   for (const c of cmds) assert.ok(named.has(c), `agents.txt shows ${c}`);

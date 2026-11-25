@@ -1736,11 +1736,13 @@ goes in a URL.
   roll forward in one sitting, the listing taking claims as before until it has rolled (none
   while it is Depleted or its paid period is over)). A read that fails any other way is a failed
   read of the page, never "not on hold": ethers reports every JSON-RPC error on a call as
-  `CALL_EXCEPTION`, so the reader goes by the contract's own revert data, which the node hands
-  over, and by nothing else. The contract deployed before the hold answers a function it does
-  not have through its lens's fallback, `revert("unknown function")`, so the data is there; no
-  word of a node's or a wallet's error is read, and an error with no revert data is a failed
-  read.
+  `CALL_EXCEPTION`, so the reader goes by the contract's own refusal and not by that code: the
+  revert's data, or, with no data, the node's error of code 3 whose message is exactly
+  `execution reverted: unknown function`. That is the reason of the contract's own fallback
+  (its lens's `revert("unknown function")`), which a contract that has `heldAt` never reaches
+  for it, and which no failure of a node or a network says. One code and one whole message,
+  compared as they are: any other code, reason or wording, and anything nested in a wallet's own
+  error, is a failed read.
   `test/rollGuidance.test.js` checks both sets of lines against `hold`, `close` and `rollForward`
   in the contract's source and refuses any wording that would call a roll harmless after a public
   push; `test/hold.test.js` holds the warning's three statements to the source, one by one, and
@@ -1874,11 +1876,12 @@ gateway origin or several, comma-separated; the record page links to the first).
 The read address has to take a block's hash on `eth_call` (EIP-1898, `{blockHash,
 requireCanonical: true}`), as Base's public endpoints do: a listing's page reads the listing and
 its hold at one block's hash, and a refusal is a failed read of the page, with no fallback to
-the block's number. It also has to hand over a revert's data on `eth_call`, as nodes do: against
-a contract from before the hold, the page knows there is no hold from that data alone (the
-contract's own `revert("unknown function")`) and reads no word of an error, so an address that
-drops the data gives a failed read of every listing's page there, and never a listing on hold
-shown as one that is not. The nodes behind the address are taken to agree on the chain; what the page
+the block's number. Against a contract from before the hold, the page knows there is no hold
+from the contract's own refusal of `heldAt`: the revert's data where the node hands it over, and
+where it does not, the node's error of code 3 whose message is exactly `execution reverted:
+unknown function`, the reason of the contract's own fallback. Any other failure of that call is
+a failed read of the page, never a listing on hold shown as one that is not. The nodes behind
+the address are taken to agree on the chain; what the page
 holds all the same, and the case that is left, are under "The page reads; it does not watch"
 above. Without a read address the page's reads go through the visitor's wallet, by block number,
 and what they show of a hold is not tied to a block's hash: it stands on the nodes behind the

@@ -1358,7 +1358,8 @@ Each command takes the flags and options on its own usage line in `--help`, and 
 reads a command's arguments against its row, and a test holds the help's usage lines to it. A flag is the bare word:
 written with a value (`--yes=false` too, or an empty one) it is a usage error (exit 2), and so is a flag or an option on
 a command that does not take it, as the arguments are read: before the wallet key, the chain or the claim folder. An
-option's value follows it or an `=` (`--listing 12` or `--listing=12`), and is never echoed.
+option's value follows it or an `=` (`--listing 12` or `--listing=12`). A usage error names the flag or the option, and
+never its value.
 
 - **`check`** runs the arbiters' code-runner minus the jury, on the request an arbiter would send, and prints the gate forecast
   and the context pack. The pack, build output and recorded messages quote the proof in the clear, on this terminal only

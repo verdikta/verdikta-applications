@@ -100,9 +100,10 @@ test('node P18: a narrow INVALID, read from the contract, waits out its appeal w
   assert.match(detail('narrow.judged.narrow'), /narrow/);
 });
 
-test('node P42: the maker holds the listing: a commit is then refused, the claim from before the hold is judged and paid from the held listing\'s escrow, and only then is the fix published and the listing rolled forward to it', () => {
-  // the maker's order: a claim is pending; hold; the fix is published, validated, listed and funded; roll forward
-  const order = ['narrow: the appeal window, then the bond back', 'hold: a claim committed before it', 'hold: the maker holds the listing', 'hold: a commit is refused', 'hold: the earlier claim is judged and paid as before', 'documents: a listing that names them', 'hold: the fix is published, validated, listed and funded', 'hold: roll forward to the fixed version', 'nothing live'];
+test('node P42: the maker holds the listing: a commit is then refused and a late claim taken, the claim from before the hold is judged and paid from the held listing\'s escrow, the late claim is judged and recorded as found later, and only then is the fix published and the listing rolled forward to it', () => {
+  // the maker's order: a claim is pending; hold; the fix is published, validated, listed and funded; roll forward.
+  // A hunter's, on the listing on hold: a commit refused, then a late claim, which waits behind the pending claim.
+  const order = ['narrow: the appeal window, then the bond back', 'hold: a claim committed before it', 'hold: the maker holds the listing', 'hold: a commit is refused', 'hold: a late claim is taken', 'hold: the earlier claim is judged and paid as before', 'hold: the late claim is judged and recorded as found later', 'documents: a listing that names them', 'hold: the fix is published, validated, listed and funded', 'hold: roll forward to the fixed version', 'nothing live'];
   const at = order.map((name) => report.stages.findIndex((s) => s.name === name));
   assert.ok(at.every((i) => i >= 0), JSON.stringify(at));
   assert.deepEqual([...at].sort((a, b) => a - b), at);
@@ -114,6 +115,17 @@ test('node P42: the maker holds the listing: a commit is then refused, the claim
   assert.match(detail('held.site.badge'), /stake on hold since \d{4}-\d{2}-\d{2}/);
   // a commit refused, by what it leaves, and by what that invocation asked the chain: never by its code or its words
   has('held.commit.toolWasWatched', 'held.commit.refused', 'held.commit.nothingPinned', 'held.commit.nothingSent', 'held.commit.claimCountAsItWas', 'held.commit.chainRefuses', 'held.commit.stoppedAtTheChainsAnswer');
+  // a late claim, through the tool's commit --late: nothing sent without --yes; then taken by LateClaim and not
+  // Committed, disclosed, behind the claim from before the hold, never one of the pending claims, the escrow untouched
+  has('held.late.asksYes', 'held.late.taken', 'held.late.isALateClaim', 'held.late.neverPending', 'held.late.behindTheEarlierClaim', 'held.late.disclosed', 'held.late.escrowUntouched', 'held.late.stillOnHold', 'held.late.toolSaysLate');
+  // that late claim, once the earlier one is settled: released, revealed, judged by the jury, and settled by the
+  // keeper with no confirmation and no award; the record counts it under its late claims and publishes it as found later
+  has('held.late.waitedItsTurn', 'held.late.jury.scriptInStep', 'held.late.released', 'late.request.cids', 'late.request.disclosureLine', 'late.round.vector', 'late.round.everyRevealSame', 'held.late.jury.reached', 'held.late.judged.outcome');
+  has('late.settled.state', 'late.settled.outcome', 'late.keeper.finalized', 'late.keeper.settled', 'held.late.noConfirmation', 'held.late.noAward', 'late.money.bondBack', 'late.money.makerUntouched', 'held.late.settled.stillOnHold');
+  has('held.record.lateClaims', 'held.record.lateOutcomes', 'held.record.notAmongTheClaims', 'held.record.lateFindings', 'held.record.noAward', 'held.late.record.stillOnHold');
+  assert.match(detail('held.late.judged.outcome'), /HIGH/);
+  assert.match(detail('held.late.isALateClaim'), /1 LateClaim, 0 Committed/);
+  assert.match(detail('held.record.lateFindings'), /"outcome":"HIGH"/);
   // the claim from before the hold: released, revealed, judged by the jury, confirmed from the escrow and paid, on hold throughout
   has('held.jury.scriptInStep', 'held.release.released', 'held.request.cids', 'held.round.vector', 'held.round.everyRevealSame', 'held.jury.reached', 'held.judged.outcome', 'held.confirm.byKeeper', 'held.confirm.held');
   has('held.settled.outcome', 'held.keeper.finalized', 'held.keeper.settled', 'held.money.hunter', 'held.money.makerUntouched', 'held.paid.fromTheEscrow', 'held.paid.stillOnHold', 'held.record.finding', 'held.record.stillOnHold');

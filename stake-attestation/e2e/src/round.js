@@ -23,7 +23,7 @@ import { createBridge, evaluateOver } from './bridge.js';
 import { readHoldPages, readPages } from './browser.js';
 import { startChain } from './chain.js';
 import {
-  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, moneyChecks, pageChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, lateClaimChecks, laterRecordChecks, moneyChecks, pageChecks,
   noDocumentsTierChecks, recordChecks, refusedCommitChecks, requestChecks, rolledFromHoldChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
@@ -303,7 +303,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const script = {
       [panel[0].model]: juror(panel[0].model, JUROR_SCORES[0]),
       // the valid claim's K jobs, one call each, then the narrow claim's K, then the claim committed before the maker's
-      // hold, which it answers as the first (the last entry repeats): fixtures.js
+      // hold and the late claim filed on the listing on hold, which it answers as the first (the last entry repeats):
+      // fixtures.js
       [panel[1].model]: [
         ...Array.from({ length: REAL_CONFIG.k }, () => juror(panel[1].model, JUROR_SCORES[1])),
         ...Array.from({ length: REAL_CONFIG.k }, () => juror(panel[1].model, NARROW_SCORES)),
@@ -1086,6 +1087,33 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     one('held.commit.toolWasWatched', toolRpc.length > 0 && toolRpc.every((c) => c.status === 200) && toolCalls.every((c) => typeof c.method === 'string'), `${toolCalls.length} JSON-RPC calls of this invocation recorded: ${toolCalls.map((c) => c.asks ?? c.view ?? c.method).join(', ')}`);
     expect(refusedCommitChecks('held', { run: refusedCommit, before: beforeRefusal, after: await commitCounts(), asked }));
 
+    stage('hold: a late claim is taken');
+    // A finding can still be filed on a listing on hold, as a late claim (decision D6): through the tool's
+    // commit --late (node P43), in a folder of its own. Without --yes the tool prints its terms and sends nothing.
+    // With it the claim is taken by lateClaim: behind the claim from before the hold in the same queue, never one of
+    // the listing's pending claims, with the escrow untouched and the listing on hold as it was.
+    const lateDir = claimFolder(workDir, 'late');
+    const beforeLateTerms = await commitCounts();
+    const lateTerms = await tool('commit', lateDir, '--listing', String(listingId), '--late');
+    const afterLateTerms = await commitCounts();
+    one('held.late.asksYes', lateTerms.code === 3 && !lateTerms.json?.claimId && afterLateTerms.nonce === beforeLateTerms.nonce && afterLateTerms.claimCount === beforeLateTerms.claimCount && afterLateTerms.lateClaims === beforeLateTerms.lateClaims,
+      `exit ${lateTerms.code} without --yes; the hunter's nonce ${beforeLateTerms.nonce} then ${afterLateTerms.nonce}, claims on the contract ${beforeLateTerms.claimCount} then ${afterLateTerms.claimCount}, late claims ${beforeLateTerms.lateClaims} then ${afterLateTerms.lateClaims}`);
+    const beforeLate = await listingOnChain(listingId);
+    const lateCommit = await tool('commit', lateDir, '--listing', String(listingId), '--late', '--yes');
+    const lateId = /^[1-9]\d*$/.test(String(lateCommit.json?.claimId ?? '')) ? BigInt(lateCommit.json.claimId) : 0n;
+    expect(lateClaimChecks('held', {
+      run: lateCommit,
+      claimId: lateId,
+      claim: lateId > 0n ? await sa.getClaim(lateId) : null,
+      events: { late: (await eventOf('LateClaim', lateId)).length, committed: (await eventOf('Committed', lateId)).length },
+      before: beforeLate,
+      after: await listingOnChain(listingId),
+      earlier: heldId,
+      listingId,
+    }));
+    // the tool says which kind it filed, by the chain's word
+    one('held.late.toolSaysLate', lateCommit.json?.late === true, `the tool's answer: late ${lateCommit.json?.late}`);
+
     stage('hold: the earlier claim is judged and paid as before');
     // The jury's script is a sequence by call (fixtures.js): the second juror answers this claim as it answered the
     // first only if it has answered the two claims before it and nothing else.
@@ -1156,6 +1184,84 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const heldLabels = recordAfterHeld.labels?.listings?.[String(listingId)];
     one('held.record.finding', heldFinding?.outcome === 'HIGH' && heldFinding.paidWei === AWARDS_WEI.HIGH.toString() && heldFinding.owedWei === '0' && recordAfterHeld.record.history.pending === '0', `claim ${heldId}: ${heldFinding?.outcome}, paid ${heldFinding?.paidWei}, owed ${heldFinding?.owedWei}; pending ${recordAfterHeld.record.history.pending}`);
     one('held.record.stillOnHold', heldLabels?.heldAt === Number(heldAt) && heldLabels.live === false && recordAfterHeld.record.listings.find((l) => l.listingId === String(listingId))?.state === stateAfterHeld, `labels.heldAt ${heldLabels?.heldAt}, live ${heldLabels?.live}`);
+
+    stage('hold: the late claim is judged and recorded as found later');
+    // The late claim waited behind the claim from before the hold: with that one settled it is first, and from here
+    // it takes a claim's own path (the maker's release, the reveal, the runner and the jury, the dispute window, the
+    // keeper's settle), with the listing on hold throughout. What differs is what the contract says of a late claim:
+    // no award at any class, so no confirmation is asked, the escrow is untouched and the bond comes back; and it is
+    // counted under the record's late claims and published as found later, never among the stake's own claims.
+    one('held.late.waitedItsTurn', (await listingOnChain(listingId)).headClaim === lateId && (await claimStateOf(lateId)) === 'Committed', `claim ${lateId} is ${await claimStateOf(lateId)} and first in the queue once claim ${heldId} is settled`);
+    // the second juror's script is a sequence by call: it answers this claim as the first only after the three before it
+    const jurorCallsBeforeLate = providerCalls().filter((c) => c.model === panel[1].model).length;
+    one('held.late.jury.scriptInStep', jurorCallsBeforeLate === 3 * REAL_CONFIG.k, `${panel[1].model} has answered ${jurorCallsBeforeLate} calls, ${3 * REAL_CONFIG.k} expected: the valid claim's K, the narrow claim's K and the K of the claim from before the hold`);
+    const historyBeforeLate = recordAfterHeld.record.history;
+    await makerRelease(lateId);
+    one('held.late.released', (await eventOf('Released', lateId)).length === 1, 'Released on the chain: the maker\'s own move on a late claim, with the listing on hold');
+    const beforeLateRun = counts();
+    const lateReveal = await tool('reveal', lateDir, '--yes');
+    toolDone('reveal', lateReveal);
+    const hunterAfterLateReveal = await balanceAfterTx(hunter, lateReveal.json.tx);
+    const makerBeforeLateJudge = await balanceAfterTx(maker, lateReveal.json.tx);
+    const lateRound = await roundOf(lateId);
+    const lateRevealed = await sa.getClaim(lateId);
+    // the request is a claim's: the listing's archive, this claim's, and the two valid findings before it, oldest first
+    expect(requestChecks('late', lateRound, {
+      listingCid: view.list.listingCid,
+      bcid: lateRevealed.bcid,
+      priorBcids: [validFinal.bcid, heldFinal.bcid],
+      requestedClass: codeReview.CODE_CLASSES['code-standard'].classId,
+      oracle: view.list.params.oracle,
+      disclosure: { parsed: parsedLine(lateRound.addendum), archiveSha256: lateRevealed.archiveHash, ciphertextSha256: lateRevealed.ciphertextSha256, ciphertextCid: lateRevealed.ciphertextCid },
+    }));
+    expect(servedRoundChecks('late', lateRound, { vector: JURY_AVERAGE }));
+    const latePath = since(beforeLateRun);
+    one('held.late.jury.reached', latePath.runnerCalls.length === 1 && latePath.runnerCalls[0].response?.outcome === 'definitive' && latePath.aiCalls.length === REAL_CONFIG.k && latePath.aiCalls.every((c) => c.status === 200), `${latePath.runnerCalls.length} run(s), ${latePath.aiCalls.length} AI Node calls for K = ${REAL_CONFIG.k} jobs`);
+    await stateIs(lateId, 'Judged');
+    const lateJudged = (await eventOf('Judged', lateId))[0];
+    one('held.late.judged.outcome', OUTCOMES[Number(lateJudged.args.outcome)] === 'HIGH', OUTCOMES[Number(lateJudged.args.outcome)]);
+    const beforeLateSettle = await listingOnChain(listingId);
+    await chain.advance(WINDOWS.dispute + 1);
+    await stateIs(lateId, 'Settled');
+    const lateSettled = (await eventOf('Settled', lateId))[0];
+    const lateFinal = await sa.getClaim(lateId);
+    expect(settlementChecks('late', {
+      state: await claimStateOf(lateId),
+      outcome: OUTCOMES[Number(lateFinal.outcome)],
+      expectedOutcome: 'HIGH',
+      finalizeFrom: await senderOf(lateJudged),
+      settleFrom: await senderOf(lateSettled),
+      keeper: chain.accounts.keeper.address,
+      vector: lateFinal.vector.map((v) => BigInt(v)),
+      expectedVector: [...JURY_AVERAGE],
+    }));
+    // No award rides on a late claim. The same HIGH that waited for the dispute panel's confirmation and was paid from
+    // the escrow, twice, asks no confirmation here and moves no wei of the escrow: the bond and the unspent prepay
+    // come back to the hunter, and nothing else moves.
+    const afterLateSettle = await listingOnChain(listingId);
+    one('held.late.noConfirmation', (await eventOf('ConfirmationRequested', lateId)).length === 0 && (await eventOf('DisputeJudged', lateId)).length === 0, `${(await eventOf('ConfirmationRequested', lateId)).length} confirmation(s) asked for claim ${lateId}`);
+    one('held.late.noAward', lateFinal.paidWei === 0n && lateFinal.owedWei === 0n && afterLateSettle.escrowWei === beforeLateSettle.escrowWei, `paid ${lateFinal.paidWei}, owed ${lateFinal.owedWei}; escrow ${beforeLateSettle.escrowWei} then ${afterLateSettle.escrowWei}`);
+    expect(moneyChecks('late', [
+      { name: 'bondBack', before: hunterAfterLateReveal, after: await balance(hunter), expected: BOND_WEI + (lateRound.required - lateRound.spent) },
+      { name: 'makerUntouched', before: makerBeforeLateJudge, after: await balance(maker), expected: 0n },
+    ]));
+    one('held.late.settled.stillOnHold', afterLateSettle.heldAt === heldAt && afterLateSettle.acceptsCommits === false && afterLateSettle.state === stateAfterHeld && afterLateSettle.pendingClaims === 0n && afterLateSettle.headClaim === 0n, `heldAt ${afterLateSettle.heldAt}, ${afterLateSettle.state}, ${afterLateSettle.pendingClaims} pending, first in the queue ${afterLateSettle.headClaim}`);
+    // the site's record: one late claim, a HIGH, none expired; the stake's own claims and verdicts as they were before
+    // it; and the finding published as found later, with no wei paid or owed
+    const recordAfterLate = await settleOutcome(async () => {
+      const r = await recordView();
+      return r.record?.history?.lateOutcomes?.[4] === '1' ? r : null;
+    }, 'waiting for the record to count the late claim');
+    expect(laterRecordChecks('held', {
+      record: recordAfterLate,
+      lateClaims: 1,
+      lateOutcomes: [0, 0, 0, 0, 1, 0],
+      claims: historyBeforeLate.claims,
+      outcomes: historyBeforeLate.outcomes,
+      findings: [{ claimId: String(lateId), outcome: 'HIGH' }],
+    }));
+    const lateLabels = recordAfterLate.labels?.listings?.[String(listingId)];
+    one('held.late.record.stillOnHold', lateLabels?.heldAt === Number(heldAt) && lateLabels.live === false, `labels.heldAt ${lateLabels?.heldAt}, live ${lateLabels?.live}`);
 
     // ---------------------------------------------------------------- a listing that names its documents (node P20)
     // The same repository at a commit that adds the maker's documents, listed through the site with stake.documents:

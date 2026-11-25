@@ -196,6 +196,13 @@ const CLAIMS = Object.freeze({
     finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that edits the source, brought to the listing on hold' },
     poc: 'diff --git a/src/Vault.sol b/src/Vault.sol\n--- a/src/Vault.sol\n+++ b/src/Vault.sol\n@@ -11,5 +11,5 @@\n \n     function deposit(uint256 amount) external {\n-        balanceOf[msg.sender] += amount + 1;\n+        balanceOf[msg.sender] += amount + 4;\n     }\n }\n',
   },
+  // Node P42: the valid claim's proof, filed on the listing on hold as a late claim, in a folder of its own (the
+  // tool's commit --late). It waits behind the claim from before the hold, is judged by the jury as that one was, and
+  // is recorded as found later: no award, the bond back.
+  late: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, filed as a late claim on the listing on hold' },
+    poc: null, // the valid claim's (claimFolder)
+  },
   // Node P42: the valid claim's proof, checked by the hunter against the fixed version the old listing rolls forward
   // to: deposit credits exactly the amount there, so the proof's test passes and the proof reproduces nothing.
   fixed: {
@@ -233,10 +240,11 @@ export const JURY_AVERAGE = Object.freeze([0n, 0n, 0n, 0n, 700000n, 300000n]);
  * then NARROW_SCORES for the narrow claim's K: with the first juror's [0, 0, 0, 0, 800000, 200000] the narrow claim's
  * average is NARROW_AVERAGE, an INVALID (no class reaches THRESHOLD, and INVALID outweighs DUPLICATE) with 500,000 of
  * valid mass, inside the band of the round's floor (NARROW_FLOOR, 25 points) up to THRESHOLD - 1: its bond comes back.
- * Node P42: after those it answers JUROR_SCORES[1] again, for the claim committed before the maker's hold, whose
- * average is JURY_AVERAGE as the first claim's was. The script is a sequence by call, so the round checks, before
- * that claim is revealed, that the second juror has answered exactly the two claims before it. No other claim of the
- * round reaches the claim panel's jury: the gates settle the others, or they abstain.
+ * Node P42: after those it answers JUROR_SCORES[1] again, for the claim committed before the maker's hold and then for
+ * the late claim filed on the listing on hold, whose averages are JURY_AVERAGE as the first claim's was. The script is
+ * a sequence by call, so the round checks, before each of the two is revealed, that the second juror has answered
+ * exactly the claims before it. No other claim of the round reaches the claim panel's jury: the gates settle the
+ * others, or they abstain.
  */
 export const NARROW_SCORES = Object.freeze([1000000, 0, 0, 0, 0, 0]);
 export const NARROW_AVERAGE = Object.freeze([500000n, 0n, 0n, 0n, 400000n, 100000n]);

@@ -1945,9 +1945,25 @@ main, whose head had not moved since before the hold. The site validates it (the
 hunter's `check` of the proof that was paid on the old version, against the new listing's archive, now fails at
 `reproduces`: its test passes there. The fixed version is listed and funded, and **the listing rolls forward from the
 hold** to it: the old listing is Rolled with the lineage both ways, `heldAt` answers 0, the successor takes commits,
-the site's two records and its feed say the same, and the record of the successor is the fixed commit's. A late claim
-on the listing on hold (`commit --late`, node P43) is not in the round yet: `e2e/src/checks.js` holds its checks, each
-with its test.
+the site's two records and its feed say the same, and the record of the successor is the fixed commit's.
+
+**A late claim on the listing on hold** (decision D6; the tool's `commit --late`, node P43), in two stages of the same
+round. *Taken*, right after the refused commit, while the claim from before the hold is still pending: the valid
+claim's proof in a folder of its own. Without `--yes` the tool exits 3 and sends nothing (the hunter's nonce, the
+contract's claim count and the listing's late claims as they were). With it the claim is on the chain by `LateClaim`
+and not `Committed`, `late` is set, it is disclosed, it is at the tail of the queue behind the claim from before the
+hold, the listing's `pendingClaims` and `claimsCommitted` are what they were and `lateClaims` is one more, the escrow
+is untouched and the listing is on hold as it was; and the tool's answer says `late`. *Judged and recorded as found
+later*, once the earlier claim is settled and the late claim is first: the maker releases it, the hunter reveals it,
+the request carries the listing's archive, the claim's and the two valid findings before it, oldest first, the runner
+and the jury give the first claim's HIGH (the second juror's script answers it so, and the round first checks that
+juror has answered exactly the three claims before), and after the dispute window the keeper settles it. No award
+rides on a late claim: no confirmation is asked of the dispute panel, the claim is paid and owed nothing, not a wei of
+the escrow moves, and the bond and the unspent prepay come back to the hunter, to the wei, with the maker's balance
+untouched and the listing still on hold. The site's record then has one late claim, a HIGH, none expired; its stake's
+own claims and verdicts are what they were before it; and the finding is published as found later, with nothing paid
+or owed.
+
 
 | Piece | Here |
 |---|---|

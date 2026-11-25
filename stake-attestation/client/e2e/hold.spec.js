@@ -3,7 +3,7 @@
 // alone; and it has no resume. The page offers it to the listing's maker and to no other wallet, next to roll forward,
 // with that warning; asks for confirmation; and reports the transaction. That the listing is on hold, since when, and
 // what its maker may do because of it, the page says from its read of the chain alone (one snapshot of one block),
-// in every sentence it has about taking claims, while roll forward and close stay offered: never from the receipt of
+// in its own sentences about taking claims, while roll forward and close stay offered: never from the receipt of
 // a transaction it sent. After each of its own transactions, and each time the wallet's read disagrees with it, those
 // lines are off the page at once, and back only from a read of that block or a later one (src/lib/pageSays.js). The
 // lists (the record, the other listings of a repository on a listing's page and in a feed entry) say the hold from the
@@ -439,14 +439,14 @@ test.describe('the maker\'s hold', () => {
     await stop();
   });
 
-  test('an action\'s own line stays through the page\'s re-reads of its listing: said by its receipt, never taken off and never re-worded', async ({ page, stack, chain }) => {
+  test('an action\'s own line stays through the page\'s re-reads of its listing, as it was drawn', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient, spec: { repo: ownRepo('own-line') } });
     const heldAt = await holdOnChain(chain, stack, listingId);
     await installWallet(page, stack);
     await page.goto(`/#/fund/${listingId}`);
     await connect(page, stack.accounts.maker);
     await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
-    // a top-up and a renewal sent from the page, with a reader that trails: each line is there at once, by its receipt
+    // a top-up and a renewal sent from the page, with a reader that trails: each line is there at once, from its own transaction
     const letGo = await freezeReader(page, stack, chain);
     const topUp = page.getByTestId('top-up');
     await topUp.getByTestId('top-up-amount').fill('0.01');

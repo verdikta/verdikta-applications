@@ -1623,8 +1623,10 @@ goes in a URL.
   push the fix; validate the fixed commit, list it and fund it; roll forward to it; or, once on
   hold, close, when no claim is pending and no award is owed. On a listing that is on hold the
   panel says since when, and what is left of that order. Those lines depend on the chain alone
-  (the listing's state and its hold), so the panel shows for every Open or Depleted listing, also
-  while the site's record is read and when it cannot be: only the picker waits for the record.
+  (the listing's state and its hold), so the panel does not wait for the site's record: it shows
+  for an Open or a Depleted listing also while the record is read and when it cannot be, and only
+  the picker waits for the record. It is off while the page knows its read is behind, and once a
+  roll sent from the page was mined it is that roll's own line.
   Next to it, **hold** (node P42; `HoldListing` in `client/src/components/ListingActions.jsx`,
   the rules in `client/src/lib/hold.js`): a warning in three statements (it stops new claims at
   once, it does not touch pending claims, it cannot be undone), that a finding can still be filed
@@ -1638,9 +1640,11 @@ goes in a URL.
   hold without a first step of its own. The section reports that transaction as the page's other actions report theirs, by
   the hash it was mined under, and that line says nothing of what the listing is. Once the page has
   read the hold, it says the listing is on hold, with the time, beside its state (which stays Open
-  or Depleted, and is no longer drawn as taking claims), and in its sentences about taking
-  claims: no "open until", a commit offer that says the site does not offer it, a renewal and a
-  top-up that do not make it take claims again. Roll forward stays offered, and close by its own
+  or Depleted, and is no longer drawn as taking claims), and in its own sentences about taking
+  claims: its "open until" line is gone, the commit offer says the site does not offer it, and a
+  renewal, and a top-up that brings a Depleted listing back to open, are said not to make it take
+  claims again. The line of an opening sent from
+  this page is that transaction's, and stays as it was drawn, "is open until" in it. Roll forward stays offered, and close by its own
   terms. The queue line counts the late claims a listing on hold takes with the claims from before
   the hold. A successor is never a listing that is itself on hold: it is Open, and the contract
   would take it, but it takes no commits and a hold has no resume, so the picker leaves it out and
@@ -1667,9 +1671,9 @@ goes in a URL.
   nothing. From that instant, before
   any new read answers, the page shows nothing that says the listing is on hold or what its maker
   may do because of it, and nothing that shows it as taking claims: its state, "open until", the
-  commit offer, the hold's section, the roll-forward panel and the forms of top-up, renew and
-  close are off. Each action's line for its own transaction stays, worded by its receipt (a
-  top-up's "The listing is open again" is its `Reopened` event). Its own error is shown where its
+  commit offer, the hold's section, the roll-forward panel and the forms of the opening, top-up,
+  renew and close are off. Each action's line for its own transaction stays as it was drawn (a
+  top-up's "The listing is open again", from its receipt's `Reopened` event, among them). Its own error is shown where its
   section is drawn, and no further. As before this node, the opening, top up, renewal and close
   draw no section for a listing the page's read rules the action out on, and a withdrawal none for
   a wallet that is held nothing, unless that action's own transaction line is there: an error of
@@ -1692,8 +1696,10 @@ goes in a URL.
   display, the newest block it was told of, whether it knows that read is behind, whether it is
   reading), and `pageAfter` moves that record on for each thing that happens; the components
   decide none of it. `client/test/pageSays.test.js` holds the function to a table with a row for
-  each case, runs every short history of a page against the three parts, and holds the
-  components to it. A refusal by the wallet's read that arrives once the page shows another
+  each case, walks every sequence of up to four events drawn from twelve fixed ones, from one
+  start (a held listing read at one block), against the three parts, and holds the components to
+  it. The walk has no "no such listing" read and no contract without a hold; the table has rows
+  for both. A refusal by the wallet's read that arrives once the page shows another
   listing under the id sets the floor and takes nothing of the listing now shown off the page;
   the page still says it is reading, and offers Read again when no read was taken. So does the
   "no such listing" page, when an action that was still out when that read was taken asks for
@@ -1702,8 +1708,10 @@ goes in a URL.
   page reads again from the block and shows the listing it read meanwhile, as the site did before;
   when its reads are over and none reached the block, it says which block it has not read.
   **The page's own transactions** are shown as the site showed them before this node: the transaction,
-  and what its receipt said (a close's refund, a top-up's amounts, a renewal's date, a
-  withdrawal's amount, the opening). Such a line is kept while its listing is on the page,
+  and the values that go with it. A close's refund and a top-up's amounts are taken from the
+  receipt's events (each with a fallback only for a receipt without its event); an opening's and
+  a renewal's date are a read through the wallet after the receipt; a withdrawal's amount is the
+  one read through the wallet before it was sent. Such a line is kept while its listing is on the page,
   through every re-read of it, and is not checked against a later read. A read that says the
   listing is gone takes the page with its actions, and one that says it has not opened takes the
   hold's and the roll's, whose panel is an opened listing's. The opening's form (the escrow

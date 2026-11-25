@@ -98,9 +98,10 @@ export function ListingClaims({ artifactHash, data, listing = null }) {
  * close when nothing is pending; a listing already on hold says since when and what is left.
  * Against a contract with no hold it is node P38's three lines, as they were: this listing takes
  * commits until it is closed or rolled forward. Either text depends on the chain alone (the
- * listing's state and its hold, as the page read them in one snapshot), so the panel shows for
- * every Open or Depleted listing: `record` (useListingRecord's answer) is null while the site's
- * record is read and { failed } when it cannot be, and only the picker waits for it. A listing on
+ * listing's state and its hold, as the page read them in one snapshot), so the panel does not wait
+ * for the site's record: `record` (useListingRecord's answer) is null while it is read and
+ * { failed } when it cannot be, and only the picker waits for it. The panel is off while the page
+ * knows its read is behind (`quiet`), and after a roll it is the roll's own line. A listing on
  * hold rolls forward as any other. Without a `hold` the panel is the one for a contract with none.
  *
  * A successor is never a listing that is itself on hold: such a listing is Open, and the contract

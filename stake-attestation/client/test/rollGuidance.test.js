@@ -320,7 +320,8 @@ test('the README says the hold, and why: the builder fetches the fixed commit fr
   // what the page does against a contract with no hold
   const client = readme.slice(readme.indexOf('\n## The client\n'), readme.indexOf('\n## The local round\n')).replace(/\s+/g, ' ');
   assert.match(client, /what a maker does before publishing a fix \(`STRINGS\.roll\.hold`; "The contract: listings"\)/);
-  assert.match(client, /the panel shows for every Open or Depleted listing, also while the site's record is read and when it cannot be: only the picker waits for the record/);
+  assert.match(client, /so the panel does not wait for the site's record: it shows for an Open or a Depleted listing also while the record is read and when it cannot be, and only the picker waits for the record\. It is off while the page knows its read is behind, and once a roll sent from the page was mined it is that roll's own line\./);
+  assert.doesNotMatch(client, /the panel shows for every Open or Depleted listing/);
   assert.match(client, /A call the contract refuses means a contract from before the hold: the page then draws no hold section, and the roll-forward panel says what it said before the hold existed, character for character \(`STRINGS\.roll\.fix`/);
   assert.match(client, /the listing taking claims as before until it has rolled \(none while it is Depleted or its paid period is over\)/);
   assert.match(client, /A read that fails any other way is a failed read of the page, never "not on hold"/);

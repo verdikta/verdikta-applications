@@ -333,7 +333,7 @@ test('while the page knows its read is behind, a section draws its own transacti
   assert.match(extras, /<HoldListing listingId=\{listingId\} listing=\{listing\} hold=\{hold\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);
 });
 
-test('the lines of the page\'s other actions for their own transactions are the site\'s as they were: the transaction, and what its receipt said', () => {
+test('the lines of the page\'s other actions for their own transactions are the site\'s as they were: the transaction, and the values drawn with it', () => {
   const actions = component('ListingActions.jsx');
   // drawn while the action has its transaction and its listing is on the page, through every re-read of it: never
   // under `quiet`, never checked against a later read
@@ -413,6 +413,12 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(rule, /no receipt of a transaction the page sent stands in for a read, not the hold's and not the opening's/);
   assert.match(rule, /From that instant, before any new read answers, the page shows nothing that says the listing is on hold or what its maker may do because of it, and nothing that shows it as taking claims/);
   assert.match(rule, /everything comes back from that read alone/);
+  // what is off names the opening's form too, and what stays is said as it is drawn: not every value of a line is its receipt's
+  assert.match(rule, /the forms of the opening, top-up, renew and close are off\. Each action's line for its own transaction stays as it was drawn/);
+  assert.doesNotMatch(readme, /worded by its receipt|what its receipt said/);
+  assert.match(readme, /A close's refund and a top-up's amounts are taken from the receipt's events \(each with a fallback only for a receipt without its event\); an opening's and a renewal's date are a read through the wallet after the receipt; a withdrawal's amount is the one read through the wallet before it was sent\./);
+  assert.match(rule, /walks every sequence of up to four events drawn from twelve fixed ones, from one start \(a held listing read at one block\), against the three parts/);
+  assert.doesNotMatch(readme, /runs every short history/);
   // R6-F1: an action's own error is said as it is, where its section is drawn; the rest is issue 240's
   assert.doesNotMatch(readme, /and its own error, stay/);
   assert.match(rule, /Its own error is shown where its section is drawn, and no further\. As before this node, the opening, top up, renewal and close draw no section for a listing the page's read rules the action out on, and a withdrawal none for a wallet that is held nothing, unless that action's own transaction line is there: an error of theirs that arrives then is not shown \(verdikta-applications issue 240\)\./);

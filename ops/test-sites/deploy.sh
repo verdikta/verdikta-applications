@@ -29,7 +29,7 @@ git -C "$TEST" checkout -q --detach "$REF"
 echo "deploy: $TEST at $(git -C "$TEST" log -1 --format='%h %s')"
 
 # packages: npm ci where the lockfile changed (a stamp in node_modules records the last one installed)
-for pkg in example-bounty-program/server example-bounty-program/client example-arbiters/server example-arbiters/client; do
+for pkg in skills/verdikta-discover example-bounty-program/server example-bounty-program/client example-arbiters/server example-arbiters/client; do
   dir="$TEST/$pkg"
   sum=$(sha256sum "$dir/package-lock.json" | cut -d' ' -f1)
   if [ "$(cat "$dir/node_modules/.deploy-lock-sha" 2>/dev/null)" != "$sum" ]; then

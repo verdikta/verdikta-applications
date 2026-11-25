@@ -6,7 +6,9 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 // ~/verdikta/secrets — referenced relatively from __dirname so the path stays
 // portable across hosts/users. Loaded after .env so it only fills in vars that
 // .env didn't already set (dotenv does not override existing process.env).
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', 'secrets', '.env.secrets') });
+// VERDIKTA_SECRETS_FILE (set by the service, e.g. a test site's unit) points a separate deployment at
+// its own file.
+require('dotenv').config({ path: process.env.VERDIKTA_SECRETS_FILE || path.join(__dirname, '..', '..', '..', 'secrets', '.env.secrets') });
 
 const logger = require('./utils/logger');
 const statusRoutes = require('./routes/statusRoutes');

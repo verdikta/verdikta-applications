@@ -1,0 +1,25 @@
+# TEST site (v2, beacon branch). Install: see ops/test-sites/README.md.
+[Unit]
+Description=Verdikta TEST bounty backend (v2) - base/mainnet (:6005)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/verdikta/applications-test/example-bounty-program/server
+Environment=NODE_ENV=production
+Environment=PORT=6005
+Environment=NETWORK=base
+Environment=PUBLIC_SITE_URL=https://test.bounties.verdikta.org
+Environment=VERDIKTA_TMP_DIR=/tmp/verdikta-test
+# The test servers' own secrets (never production's: no shared keeper key or nonces)
+Environment=VERDIKTA_SECRETS_FILE=/root/verdikta/secrets-test/.env.secrets
+ExecStart=/opt/node22/bin/node server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/root/verdikta/applications-test/example-bounty-program/server/server-test-6005.log
+StandardError=append:/root/verdikta/applications-test/example-bounty-program/server/server-test-6005.log
+
+[Install]
+WantedBy=multi-user.target

@@ -14,8 +14,10 @@ if (_envLocalResult.error) {
 } else {
   console.log('[boot] local .env loaded', { path: _envLocalPath, keysParsed: Object.keys(_envLocalResult.parsed || {}).length });
 }
-// Load secrets from shared secrets file (overrides local .env)
-const secretsPath = path.join(__dirname, '../../../secrets/.env.secrets');
+// Load secrets from shared secrets file (overrides local .env). VERDIKTA_SECRETS_FILE (set by the
+// service, e.g. a test site's unit) points a separate deployment at its own file, so it never runs
+// with production's keys.
+const secretsPath = process.env.VERDIKTA_SECRETS_FILE || path.join(__dirname, '../../../secrets/.env.secrets');
 const _secretsResult = require('dotenv').config({ path: secretsPath, override: true });
 if (_secretsResult.error) {
   console.warn('[boot] secrets .env.secrets load failed — falling back to defaults (e.g. public RPC). This is the most common cause of sync trouble.', {

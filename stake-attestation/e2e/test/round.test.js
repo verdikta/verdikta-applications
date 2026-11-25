@@ -127,7 +127,7 @@ test('node P42: the maker holds the listing: a commit is then refused and a late
   assert.match(detail('held.late.isALateClaim'), /1 LateClaim, 0 Committed/);
   assert.match(detail('held.record.lateFindings'), /"outcome":"HIGH"/);
   // the claim from before the hold: released, revealed, judged by the jury, confirmed from the escrow and paid, on hold throughout
-  has('held.jury.scriptInStep', 'held.release.released', 'held.request.cids', 'held.round.vector', 'held.round.everyRevealSame', 'held.jury.reached', 'held.judged.outcome', 'held.confirm.byKeeper', 'held.confirm.held');
+  has('held.jury.scriptInStep', 'held.release.released', 'held.request.cids', 'held.round.vector', 'held.round.everyRevealSame', 'held.jury.reached', 'held.judged.outcome', 'held.judged.escrowUntouched', 'held.confirm.byKeeper', 'held.confirm.held');
   has('held.settled.outcome', 'held.keeper.finalized', 'held.keeper.settled', 'held.money.hunter', 'held.money.makerUntouched', 'held.paid.fromTheEscrow', 'held.paid.stillOnHold', 'held.record.finding', 'held.record.stillOnHold');
   assert.match(detail('held.judged.outcome'), /HIGH/);
   // the fix: published only with the listing on hold, validated by the real builder, and a fix (the old proof reproduces nothing there)

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, noDocumentsTierChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, lateNoAwardChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, lateClaimChecks, laterRecordChecks, moneyChecks, pageChecks, recordChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, noDocumentsTierChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, judgedEscrowChecks, lateNoAwardChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, lateClaimChecks, laterRecordChecks, moneyChecks, pageChecks, recordChecks,
   refusedCommitChecks, requestChecks, rolledFromHoldChecks, servedRoundChecks, settlementChecks,
 } from '../src/checks.js';
 
@@ -576,6 +576,21 @@ test('lateClaimChecks: taken on the listing on hold as a late claim, behind the 
   fails(lateClaimChecks('x', o({ claim: claim({ disclosedAt: 0n }) })), 'x.late.disclosed');
   fails(lateClaimChecks('x', o({ after: held({ lateClaims: 1n, tailClaim: 10n, escrowWei: 25n }) })), 'x.late.escrowUntouched');
   fails(lateClaimChecks('x', o({ after: held({ lateClaims: 1n, tailClaim: 10n, heldAt: 0n }) })), 'x.late.stillOnHold');
+});
+
+test('judgedEscrowChecks: a claim from before the hold is released, revealed and judged with the escrow as it was before its release', () => {
+  allPass(judgedEscrowChecks('x', { baseline: 900n, judged: 900n }));
+  // A debit while the claim was released, revealed or judged. The payout's check starts from the balance read at
+  // Judged, takes the confirmation's cost and the award from it and compares the result with the balance after the
+  // payout: the debit is on both sides of that, and it passes. This check is the one that sees it.
+  const [baseline, judged, confirmation, award] = [900n, 850n, 20n, 100n];
+  const afterPaid = judged - confirmation - award;
+  assert.equal(afterPaid, judged - confirmation - award, 'what held.paid.fromTheEscrow compares: equal, with the debit in both');
+  assert.deepEqual(failing(judgedEscrowChecks('x', { baseline, judged })), ['x.judged.escrowUntouched']);
+  // a credit is a move of the escrow too, and a balance that was not read is no evidence
+  fails(judgedEscrowChecks('x', { baseline: 900n, judged: 950n }), 'x.judged.escrowUntouched');
+  fails(judgedEscrowChecks('x', { baseline: undefined, judged: undefined }), 'x.judged.escrowUntouched');
+  fails(judgedEscrowChecks('x', { baseline: 900n, judged: undefined }), 'x.judged.escrowUntouched');
 });
 
 test('lateNoAwardChecks: the escrow is the one from before the late claim was released, when it is judged and when it is settled (PR 242, R7-F3)', () => {

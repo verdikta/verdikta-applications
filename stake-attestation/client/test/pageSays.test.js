@@ -253,7 +253,7 @@ test('every action tells the page: the block its transaction was mined in, on ev
   assert.equal(actions.split('await minedReceipt(tx, onChanged);').length - 1, 5, 'top-up, renew, hold, close, withdraw');
   assert.equal(extras.split('await minedReceipt(tx, onChanged);').length - 1, 1, 'roll forward');
   assert.equal(funding.split('await minedReceipt(tx, onMined);').length - 1, 1, 'the opening');
-  assert.match(component('FundPage.jsx'), /\n\s*<FundListing listingId=\{BigInt\(listingId\)\} top=\{l\.awards\[3\]\} maker=\{l\.maker\} artifactHash=\{l\.artifactHash\} listed=\{state === 'Listed'\} onMined=\{onChanged\} \/>/);
+  assert.match(component('FundPage.jsx'), /\n\s*<FundListing listingId=\{BigInt\(listingId\)\} top=\{l\.awards\[3\]\} maker=\{l\.maker\} artifactHash=\{l\.artifactHash\} listed=\{state === 'Listed'\} quiet=\{quiet\} onMined=\{onChanged\} \/>/);
   const sends = (source) => source.split(/stakeAttestation\(signer\)\.[a-zA-Z]+\(/).length - 1;
   assert.equal(sends(actions) + sends(extras) + sends(funding), 7, 'and there is no other transaction on the page');
   // a refusal by the read through the wallet, where it is the listing the wallet has otherwise: handed over with that
@@ -275,7 +275,12 @@ test('every action tells the page: the block its transaction was mined in, on ev
   for (const source of [actions, extras]) assert.doesNotMatch(source, /Promise\.all\(\[listingAt\(/, 'the listing is never read beside another read that can fail it');
   assert.doesNotMatch(actions, /\.getListing\(BigInt\(listingId\), \{ blockTag/, 'no read before sending asks getListing for an id the contract may not have');
   assert.match(actions, /const stateWords = \(l\) => \(l === null \? STRINGS\.fund\.missing : /);
-  assert.equal(fill(STRINGS.topUp.changed, { id: 7, state: STRINGS.fund.missing }), 'Nothing was sent: listing 7 can no longer be topped up (it is not on the chain as your wallet reads it). It has been read again.');
+  // The refusal says what the page does next, not that it has done it: the alert is drawn before any read answers,
+  // and can stand beside "has not read the chain at block N or later".
+  assert.equal(fill(STRINGS.topUp.changed, { id: 7, state: STRINGS.fund.missing }), 'Nothing was sent: listing 7 can no longer be topped up (it is not on the chain as your wallet reads it). This page reads it again.');
+  assert.equal(fill(STRINGS.renew.changed, { id: 7, state: 'closed' }), 'Nothing was sent: listing 7 can no longer be renewed (it is closed). This page reads it again.');
+  assert.equal(fill(STRINGS.close.changed, { id: 7 }), 'Nothing was sent: listing 7 changed on-chain since this page read it. This page reads it again.');
+  for (const key of ['topUp', 'renew', 'close', 'hold']) assert.doesNotMatch(STRINGS[key].changed, /has been read/, key);
   // The roll reads this listing first, and the successor only when this one can still roll: what the wallet has of
   // this listing is never lost to a failure of the successor's read (no Promise.all over the two).
   assert.match(extras, /const \{ value: \[mine, successor, successorHold\], block \} = await snapshot\(provider, async \(at\) => \{\s*const sa = stakeAttestation\(at\);\s*const source = await listingAt\(sa, listingId\);\s*if \(!canRoll\(source\)\) return \[source, null, NO_HOLD\];\s*return \[source, await listingAt\(sa, pick\), hold\.supported \? await readHold\(sa, pick\) : NO_HOLD\];\s*\}\);\s*if \(!canRoll\(mine\)\) \{\s*(?:\/\/[^\n]*\n\s*)?onChanged\(disagreedAt\(block\)\);\s*return setError\(fill\(RF\.changed, \{ id: pick \}\)\);\s*\}/);
@@ -362,6 +367,12 @@ test('the lines of the page\'s other actions for their own transactions are the 
   const opening = component('FundListing.jsx');
   assert.match(opening, /useEffect\(\(\) => \{\s*if \(!listed\) return undefined;\s*let live = true;\s*chainReader\(\)\.then\(\(p\) => stakeAttestation\(p\)\.feeDue\(listingId\)\)[^\n]*\n\s*return \(\) => \{ live = false; \};\s*\}, \[listingId, listed\]\);/);
   assert.equal(opening.split('useEffect(').length - 1, 1, 'its one read outside a click');
+  // While the page knows its read is behind, the form is off as the forms of top-up, renewal and close are: the
+  // opening's own line first, then its own error if it has one, and nothing else. `quiet` is not folded into `listed`:
+  // the error of an opening that failed stays while the reader trails.
+  assert.match(opening, /export function FundListing\(\{ listingId, top, maker, artifactHash, listed = true, quiet = false, onMined = \(\) => \{\}, onOpened = \(\) => \{\} \}\) \{/);
+  assert.match(opening.slice(opening.indexOf('  if (opened) {')), /^ {2}if \(opened\) \{[\s\S]*?\n {2}\}\s*(?:\/\/[^\n]*\n\s*)*if \(!listed\) return null;\s*(?:\/\/[^\n]*\n\s*)*if \(quiet\) return error \? <p className="error" role="alert">\{error\}<\/p> : null;\s*return \(\s*<>\s*\{fee !== null/);
+  assert.doesNotMatch(opening, /listed && !quiet|!listed \|\| quiet/);
   assert.match(opening, /export function FundListing\(\{ listingId, top, maker, artifactHash, listed = true, onMined = \(\) => \{\}, onOpened = \(\) => \{\} \}\) \{/);
   const drawn = opening.slice(opening.indexOf('  if (opened) {'));
   assert.match(drawn, /^ {2}if \(opened\) \{\s*return \(\s*<p data-testid="opened" className="ok">[\s\S]*?\);\s*\}\s*(?:\/\/[^\n]*\n\s*)*if \(!listed\) return null;\s*return \(\s*<>\s*\{fee !== null/);

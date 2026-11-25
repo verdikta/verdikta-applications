@@ -1007,6 +1007,45 @@ test.describe('the maker\'s hold', () => {
     expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
   });
 
+  test('a listing not yet opened, and a close from its page mined ahead of the reader: the opening\'s form is off with the other forms, and its own error stays', async ({ page, stack, chain }) => {
+    test.setTimeout(120_000);
+    const { listingId } = await chain.openListing({ recipient: key.recipient, fund: false, spec: { repo: ownRepo('listed-behind') } });
+    // another wallet first: the opening is refused for it, and that is the opening's own error on the page
+    await installWallet(page, stack, stack.accounts.other);
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Listed);
+    const openingForm = [page.getByLabel(STRINGS.chain.escrow, { exact: true }), page.getByRole('button', { name: STRINGS.chain.fund })];
+    for (const part of openingForm) await expect(part).toBeVisible();
+    await openingForm[1].click();
+    const refused = page.getByRole('alert').filter({ hasText: fill(STRINGS.fund.notMaker, { maker: stack.accounts.maker, account: stack.accounts.other }) });
+    await expect(refused).toBeVisible({ timeout: 30_000 });
+    for (const part of openingForm) await expect(part).toBeVisible();
+    // from here the site's reader answers for this block; the maker's wallet closes the listing from the page
+    const letGo = await freezeReader(page, stack, chain);
+    await useAccount(page, stack.accounts.maker);
+    const close = page.getByTestId('close');
+    await close.getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) }).click();
+    await close.getByRole('button', { name: fill(STRINGS.close.confirm, { id: listingId, eth: formatEth(0n) }) }).click();
+    await expect(page.getByTestId('closed')).toBeVisible({ timeout: 30_000 });
+    const [closed] = await chain.sa.queryFilter(chain.sa.filters.Closed(listingId));
+    // The page knows its read is behind, and says which block it has not read. Beside that notice nothing offers to
+    // open the listing: no escrow field, no button, as the forms of top-up, renewal and close are off. What the
+    // opening itself said stays, and so does the close's own line.
+    await expect(page.getByTestId('listing-behind')).toHaveText(fill(F.behind, { block: closed.blockNumber }), { timeout: 30_000 });
+    for (const part of openingForm) await expect(part).toHaveCount(0);
+    await expect(page.getByText(fill(STRINGS.chain.fee, { fee: formatEth(BigInt(stack.listingFeeWei)) }))).toHaveCount(0);
+    await expect(refused).toBeVisible();
+    await expect(page.getByTestId('closed')).toBeVisible();
+    await expect(page.getByTestId('listing-state')).toHaveCount(0);
+    // the reader catches up: closed, by the read, and still nothing offers to open it
+    await letGo();
+    await page.getByTestId('listing-read-again').click();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
+    await expect(page.getByTestId('listing-behind')).toHaveCount(0);
+    for (const part of openingForm) await expect(part).toHaveCount(0);
+    expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
+  });
+
   // ---------------------------------------------------------------- one read is one block
   test('a block replaced under the page\'s read: the listing of one chain is never shown with the hold of the other', async ({ page, stack, chain }) => {
     const held = await chain.openListing({ recipient: key.recipient });

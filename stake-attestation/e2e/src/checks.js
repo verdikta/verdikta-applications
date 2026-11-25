@@ -398,9 +398,10 @@ const COMMIT_ONLY = Object.freeze({
 });
 
 /**
- * A commit the tool refused on the listing on hold, by what it left and not by its code or its words (a later node
- * gives a listing on hold a refusal of its own): the tool exited as it does for a refusal, with one of its own
- * errors and no claim; nothing was pinned; the wallet sent nothing; the contract holds no new claim, and the
+ * A commit the tool refused on the listing on hold, by what it left. The tool's error-code line is read only to tell
+ * a refusal from INTERNAL and RPC_UNAVAILABLE, the two that mean it never got an answer: neither which refusal code
+ * it names nor any prose is gone by. The tool exited as it does for a refusal, with one of its own errors and no
+ * claim; nothing was pinned; the wallet sent nothing; the contract holds no new claim, and the
  * listing's counts and queue are what they were; and the chain takes no commit there.
  *
  * An unrelated failure leaves the same things untouched (an archive that could not be read, a folder in use), so what
@@ -483,6 +484,17 @@ export function laterRecordChecks(prefix, { record, lateClaims, lateOutcomes, cl
     check(`${prefix}.record.lateFindings`, eq(named(late), named(findings)), `published as found later: ${JSON.stringify(named(late))}, expected ${JSON.stringify(named(findings))}`),
     check(`${prefix}.record.noAward`, late.every((f) => f.paidWei === '0' && f.owedWei === '0'), JSON.stringify(late.map((f) => [f.claimId, f.paidWei, f.owedWei]))),
   ];
+}
+
+/**
+ * A claim from before the hold is released, revealed and judged without the listing's escrow moving: the escrow read
+ * once the claim is Judged (`judged`) is the one read before its release (`baseline`). What leaves the escrow after
+ * that, the confirmation's cost and the award, is held to `judged` by the round's own payout check.
+ * @param {{ baseline: bigint, judged: bigint }} o
+ */
+export function judgedEscrowChecks(prefix, { baseline, judged }) {
+  const read = typeof baseline === 'bigint' && typeof judged === 'bigint';
+  return [check(`${prefix}.judged.escrowUntouched`, read && judged === baseline, `escrow ${baseline} before the claim was released, ${judged} with it judged`)];
 }
 
 /**

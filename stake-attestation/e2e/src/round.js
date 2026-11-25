@@ -23,7 +23,7 @@ import { createBridge, evaluateOver } from './bridge.js';
 import { readHoldPages, readPages } from './browser.js';
 import { startChain } from './chain.js';
 import {
-  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, lateNoAwardChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, lateClaimChecks, laterRecordChecks, moneyChecks, pageChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, judgedEscrowChecks, lateNoAwardChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, lateClaimChecks, laterRecordChecks, moneyChecks, pageChecks,
   noDocumentsTierChecks, recordChecks, refusedCommitChecks, requestChecks, rolledFromHoldChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
@@ -1101,13 +1101,14 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const beforeLate = await listingOnChain(listingId);
     const lateCommit = await tool('commit', lateDir, '--listing', String(listingId), '--late', '--yes');
     const lateId = /^[1-9]\d*$/.test(String(lateCommit.json?.claimId ?? '')) ? BigInt(lateCommit.json.claimId) : 0n;
+    const afterLate = await listingOnChain(listingId);
     expect(lateClaimChecks('held', {
       run: lateCommit,
       claimId: lateId,
       claim: lateId > 0n ? await sa.getClaim(lateId) : null,
       events: { late: (await eventOf('LateClaim', lateId)).length, committed: (await eventOf('Committed', lateId)).length },
       before: beforeLate,
-      after: await listingOnChain(listingId),
+      after: afterLate,
       earlier: heldId,
       listingId,
     }));
@@ -1146,6 +1147,9 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     // The award is above the listing's confirmation size, as the first HIGH was: after the dispute window the keeper
     // starts the dispute panel's round, the held listing's escrow pays it, the panel holds it, and it settles.
     const escrowBeforeHeldConfirm = (await sa.getListing(listingId)).escrowWei;
+    // and that balance is the one from before this claim's release (held to the hold's by held.late.escrowUntouched):
+    // a debit while the claim was released, revealed or judged would be on both sides of the payout's check below
+    expect(judgedEscrowChecks('held', { baseline: afterLate.escrowWei, judged: escrowBeforeHeldConfirm }));
     await chain.advance(WINDOWS.dispute + 1);
     const heldConfirm = await settleOutcome(async () => (await eventOf('ConfirmationRequested', heldId))[0] ?? null, 'waiting for the keeper to call confirm on the listing on hold');
     one('held.confirm.byKeeper', (await senderOf(heldConfirm)) === chain.accounts.keeper.address, `confirm from ${await senderOf(heldConfirm)}`);

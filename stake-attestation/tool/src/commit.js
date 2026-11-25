@@ -25,10 +25,15 @@
 //   - --restart never starts a late claim over (owner, 2026-11-24): a changed late claim goes in a new folder.
 //
 // A commit asks, sends and says what it did before there was a late claim: test/late.test.js holds its calls, in order.
+//
+// A listing on hold (node P41). Its maker's hold stops new commits and leaves its state Open or Depleted, so it takes
+// late claims only, as a listing that rolled forward or closed does. A commit there is refused where that one is
+// refused, in commitPreflight, with a code of its own and the hold's time. The hold is read for that refusal alone:
+// a commit that is accepted reads nothing of it, and a late claim's run never does.
 import { formatEther } from 'ethers';
 
 import { buildClaimArchive, checkClaimInputs, readClaimInputs } from './archive.js';
-import { CLAIM_STATES, EXPIRIES } from './abi.js';
+import { CLAIM_STATES, EXPIRIES, LISTING_STATES } from './abi.js';
 import { codeReview } from './common.js';
 import { fail, ToolError } from './errors.js';
 import { rawCid, isRawSha256Cid, isStorableCid, sha256Hex0x, gatewayGet } from './ipfs.js';
@@ -281,10 +286,32 @@ async function takesLateClaimsOnly(ctx, listingId) {
 }
 
 /**
+ * Since when a listing that takes late claims only is on hold, by the contract's heldAt; null when it is not (node
+ * P41). Asked for a commit's refusal alone, and only of a listing whose state is Open or Depleted, the two a hold is
+ * made in and lasts in: heldAt answers 0 for every other. So a contract from before the hold, whose lens says late
+ * claims of a Rolled or a Closed listing only, is never asked for a view it does not have: only a contract that has
+ * the hold reaches this read, and there heldAt never reverts. A read that fails with no word of the contract's is
+ * therefore never "a contract with no hold", whatever its data: it is said as the RPC's (ethers gives a node's own
+ * error on a call and a revert with no data one shape), never as not on hold. Should a contract refuse the view in
+ * its own words all the same (the fallback's "unknown function"), the listing is not said to be on hold.
+ */
+async function onHoldSince(ctx, listingId) {
+  const { state } = await ctx.read('getListing', [listingId]);
+  if (!['Open', 'Depleted'].includes(LISTING_STATES[Number(state)])) return null;
+  try {
+    return (await ctx.read('heldAt', [listingId])) || null;
+  } catch (err) {
+    if (err.code === 'CONTRACT_REFUSED') return null;
+    throw err;
+  }
+}
+
+/**
  * The chain's rules for a commit now, and the wallet. With `late` (node P43) a late claim's rules: a listing the lens
  * says takes late claims (acceptsLateClaims, ClaimLogic.commit's own rule) and no allowlist; the price is commitPrice's
  * for both. The wrong kind for the listing is refused here, before anything is drawn, pinned or signed, with a text
- * that names the other kind.
+ * that names the other kind. A commit on a listing that takes late claims only is told which it is: on hold, with the
+ * time of the hold as the CLI prints a time (LISTING_ON_HOLD, node P41), or rolled forward or closed (LATE_CLAIMS_ONLY).
  * @param {bigint|null} [quoted] the price a late claim's terms named on this run, when it is about to be signed: a
  *   live price that is another is said here, before the wallet's balance is asked, and nothing is signed
  * @returns {Promise<bigint>} the live price
@@ -293,7 +320,12 @@ async function commitPreflight(ctx, listingId, hunter, late = false, quoted = nu
   const price = await ctx.read('commitPrice', [listingId]);
   if (late && quoted !== null && price !== quoted) throw latePriceChanged(price, quoted);
   if (late && !await ctx.read('acceptsLateClaims', [listingId])) throw fail(await ctx.read('acceptsCommits', [listingId]) ? 'LISTING_TAKES_COMMITS' : 'NO_LATE_CLAIMS', `Listing ${listingId}.`);
-  if (!late && !await ctx.read('acceptsCommits', [listingId])) throw fail(await takesLateClaimsOnly(ctx, listingId) ? 'LATE_CLAIMS_ONLY' : 'LISTING_NOT_ACCEPTING', `Listing ${listingId}.`);
+  if (!late && !await ctx.read('acceptsCommits', [listingId])) {
+    if (!await takesLateClaimsOnly(ctx, listingId)) throw fail('LISTING_NOT_ACCEPTING', `Listing ${listingId}.`);
+    const heldAt = await onHoldSince(ctx, listingId);
+    if (heldAt === null) throw fail('LATE_CLAIMS_ONLY', `Listing ${listingId}.`);
+    throw fail('LISTING_ON_HOLD', `Listing ${listingId}, on hold since ${heldAt} (${new Date(Number(heldAt) * 1000).toISOString()}).`);
+  }
   if (!late && !await ctx.read('isAllowed', [listingId, hunter])) throw fail('NOT_ALLOWED');
   const fee = await ctx.feeCap();
   const balance = await ctx.rpc(() => ctx.provider.getBalance(hunter));

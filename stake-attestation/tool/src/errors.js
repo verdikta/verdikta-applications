@@ -2,6 +2,13 @@
 // caller. No error relays the text of an ethers error, an RPC, a pin service or a runner's credentials: ethers
 // puts a transaction's calldata in its messages, and at reveal that calldata holds the keys. So a ToolError has
 // no `cause`, and what is known of a failure from outside is a code or an allow-listed revert reason.
+/**
+ * What a refusal that sends a hunter to a late claim says of it (nodes P43 and P41): what one is, and in which folder
+ * `commit --late` is a dry run. One sentence for both refusals, so that the two cannot drift: a prepared folder whose
+ * two hashes already have a claim on the chain has that claim disclosed, --yes or not (commit.js, runCommit).
+ */
+const LATE_CLAIM_INSTEAD = 'A late claim is judged and recorded, and pays no award: in a folder where nothing is saved yet, commit --late prints its terms and its price, and with --yes files one. In a prepared folder, commit --late first looks for a claim of these files on the chain, and discloses one it finds, --yes or not. Nothing was pinned or sent.';
+
 export const ERROR_TEXTS = Object.freeze({
   APPEAL_REFUSED: 'The contract would refuse this appeal. Nothing was sent.',
   APPEAL_REVERTED: 'The appeal transaction reverted. Run appeal again to see where the claim stands.',
@@ -27,12 +34,13 @@ export const ERROR_TEXTS = Object.freeze({
   INSUFFICIENT_FUNDS: 'This wallet cannot pay for this. Nothing was sent.',
   INTERNAL: 'The tool failed unexpectedly.',
   LATE_INPUTS_CHANGED: 'The claim files changed since this late claim was prepared, and nothing has been signed. Restore them, or prepare the changed claim in a new folder: a late claim is not started over.',
-  LATE_CLAIMS_ONLY: 'This listing takes no commits now, only late claims. A late claim is judged and recorded, and pays no award: commit --late prints its terms and its price, and with --yes files one. Nothing was pinned or sent.',
+  LATE_CLAIMS_ONLY: `This listing takes no commits now, only late claims. ${LATE_CLAIM_INSTEAD}`,
   LATE_NEEDS_NEW_FOLDER: 'A late claim is not started over: --restart is refused for one, and a changed late claim goes in a new folder. Copy finding.json, report.md and the patches to a new folder and run commit --late there. Keep this folder as it is: nothing in it was deleted, and nothing was pinned or sent.',
   LATE_PRICE_CHANGED: 'The price of this late claim changed after its terms were printed, so nothing was signed or sent. Run the same command again: it prints the terms with the price as it is now.',
   LISTING_ARCHIVE_INVALID: 'That is no listing archive this tool can read.',
   LISTING_NOT_ACCEPTING: 'This listing takes no commits now.',
   LISTING_NOT_FOUND: 'No such listing on this contract.',
+  LISTING_ON_HOLD: `This listing is on hold: its maker stopped new commits on it, and a hold is not lifted, so it takes late claims only from now on. ${LATE_CLAIM_INSTEAD}`,
   LISTING_TAKES_COMMITS: 'This listing takes commits, so it takes no late claim: --late is for a listing that takes none any more. Run commit without --late. Nothing was pinned or sent.',
   NEEDS_ACKNOWLEDGEMENT: 'Read the above, then run again with --yes. Nothing was sent.',
   NETWORK_NOT_ALLOWED: 'This tool is for Base Sepolia and local nodes for now. Refused.',

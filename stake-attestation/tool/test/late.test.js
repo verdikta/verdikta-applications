@@ -1410,7 +1410,7 @@ test('--help describes the late claim: the flag on commit\'s own line, when a li
   assert.match(flat, /a later run goes on with that one, with --late or without it/);
   assert.match(flat, /--restart does not start a late claim over: a changed one goes in a new folder/);
   // the help says it of every flag now, --late among them, in one line (node P46; test/cli.test.js holds the line)
-  assert.match(flat, /A flag with a value \(--yes=false too\), and a flag or an option on a command that does not take it, is a usage error: nothing is read or sent\./);
+  assert.match(flat, /A flag with a value \(--yes=false too\) is a usage error, and so is a flag or an option on a command that does not take it: nothing is read or sent\./);
   // and what the help said of a commit, it says still
   assert.ok(USAGE.includes('                     on a folder with no commit signed yet, without --yes it prints the terms, the price and how\n                     many claims on the listing are open ahead of yours, and sends nothing\n'));
 });

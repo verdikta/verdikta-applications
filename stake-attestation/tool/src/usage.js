@@ -50,8 +50,6 @@ ${Object.entries(COMMANDS).map(([name, about]) => `  ${name.padEnd(8)}${about}`)
                      a prepared folder whose two hashes already have a claim on the chain, a commit's or a late
                      claim's, has that claim disclosed, --yes or not, as a signed one is. --restart does not
                      start a late claim over: a changed one goes in a new folder
-                     --late is the bare flag, on commit only: with a value (--late=false too) or on another
-                     command it is a usage error, and nothing is read or sent
   reveal <claim-dir> [--retrigger] [--yes]
                      pins the plaintext and pays any top-up the live fee needs; prints it, and sends only with --yes
                      --retrigger pays the top-up to send a failed round again; prints it, and sends only with --yes
@@ -91,6 +89,11 @@ Options:
   --gateway <url>    An IPFS gateway (or VERDIKTA_IPFS_GATEWAY)
   -h, --help         Show this help
   -v, --version      Print the version
+
+Each command takes what its own line above shows, and --json, --key-file, --rpc-url, --contract and
+--gateway. A flag is the bare word, and an option's value follows it or an = (--listing 7, --listing=7).
+A flag with a value (--yes=false too) is a usage error, and so is a flag or an option on a command that
+does not take it: nothing is read or sent.
 
 Environment:
   VERDIKTA_WALLET_KEY          The wallet key, instead of --key-file. Never pass a key as an argument.

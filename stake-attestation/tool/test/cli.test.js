@@ -9,10 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 import { wordingProblems } from '@verdikta/stake-attestation-shared';
 
-import * as cli from '../src/cli.js';
+import { run, COMMANDS, TAKES, parseArgs } from '../src/cli.js';
 import { USAGE } from '../src/usage.js';
-
-const { run, COMMANDS, TAKES, parseArgs } = cli;
 
 const bin = fileURLToPath(new URL('../bin/verdikta-attest.js', import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -194,6 +192,23 @@ test('the help\'s usage lines are the table, in both directions: a command takes
   for (const m of USAGE.matchAll(/(?<![\w-])--[a-z][a-z-]*/g)) assert.ok(known.has(m[0]), `the help names ${m[0]}`);
 });
 
+// The table against the code, so that nothing is taken that a command never reads: each command's own case in
+// dispatch reads the options of its row, all of them and no other, and what is read outside those cases is the "*"
+// row's (and --listing, through listingOf, which check and commit call).
+test('each command reads the flags and options of its row, all of them and no other', () => {
+  const src = fs.readFileSync(new URL('../src/cli.js', import.meta.url), 'utf8');
+  const read = (text) => [...new Set([...text.matchAll(/options\['(--[a-z-]+)'\]/g)].map((m) => m[1]))].sort();
+  let outside = src;
+  for (const verb of VERBS) {
+    const block = new RegExp(`\\n {4}case '${verb}': \\{\\n[\\s\\S]*?\\n {4}\\}\\n`).exec(src)?.[0];
+    assert.ok(block, `dispatch has a case for ${verb}`);
+    outside = outside.replace(block, '\n');
+    const names = [...read(block), ...(block.includes('listingOf()') ? ['--listing'] : [])].sort();
+    assert.deepEqual(names, [...TAKES[verb].flags, ...TAKES[verb].values].sort(), verb);
+  }
+  assert.deepEqual(read(outside), [...TAKES['*'].flags, ...TAKES['*'].values, '--listing'].sort());
+});
+
 test('a flag written with = and a value, an empty one too, is a usage error (exit 2) on every command that takes it: it names the flag and never the value, before anything is read', async () => {
   const world = await nothingIsRead();
   try {
@@ -265,7 +280,7 @@ test('an option that takes a value takes it inline or as the next argument, on e
       // inline, everything after the first = is the value; as the next argument, whatever it is
       assert.deepEqual(parseArgs(verb, ['./claim', `${name}=a=b`]), { options: { [name]: 'a=b' }, positional: ['./claim'] }, `${verb} ${name}=`);
       assert.deepEqual(parseArgs(verb, [name, 'v', './claim']), { options: { [name]: 'v' }, positional: ['./claim'] }, `${verb} ${name}`);
-      assert.deepEqual(parseArgs(verb, ['./claim', name, 'v', ...WHOLE[verb]]).options[name], 'v', `${verb} ${name} on a whole line`);
+      assert.deepEqual(parseArgs(verb, ['./claim', ...WHOLE[verb], name, 'v']).options[name], 'v', `${verb} ${name} on a whole line`);
       const none = await capture([verb, './claim', name]);
       assert.equal(none.code, 2, `${verb} ${name}`);
       assert.equal(none.stderr, `verdikta-attest: ${verb}: ${name} needs a value\n`);
@@ -347,7 +362,7 @@ test('every command line the help, the README and the agent guide show is one th
 
 test('the help and the README say the rule once, for every flag, and nothing of the reading it replaced', () => {
   const help = USAGE.replace(/\s+/g, ' ');
-  assert.match(help, /Each command takes what its own line above shows, and --json, --key-file, --rpc-url, --contract and --gateway\. A flag is the bare word, and an option's value follows it or an = \(--listing 7, --listing=7\)\. A flag with a value \(--yes=false too\), and a flag or an option on a command that does not take it, is a usage error: nothing is read or sent\./);
+  assert.match(help, /Each command takes what its own line above shows, and --json, --key-file, --rpc-url, --contract and --gateway\. A flag is the bare word, and an option's value follows it or an = \(--listing 7, --listing=7\)\. A flag with a value \(--yes=false too\) is a usage error, and so is a flag or an option on a command that does not take it: nothing is read or sent\./);
   assert.doesNotMatch(help, /--late is the bare flag/, 'the line on --late alone is the general one now');
   const readme = fs.readFileSync(new URL('../../README.md', import.meta.url), 'utf8');
   const start = readme.indexOf('\n## The hunter tool\n');

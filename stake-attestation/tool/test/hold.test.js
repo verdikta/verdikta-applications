@@ -447,9 +447,22 @@ test('a contract that says late claims of an Open listing and has no view of the
 test('an RPC that does not answer for the hold is said as that, never as a listing that is not on hold', async () => {
   const l = await onHold();
   const down = () => new Error('socket hang up');
+  // ethers gives every error a node answers an eth_call with one shape, CALL_EXCEPTION with no revert data: a rate
+  // limit, a node's own fault and a revert with empty data alike (JsonRpcApiProvider.getRpcError). So a call that
+  // failed with no reason of the contract's is not the contract's word, and is never read as "not on hold". Nor is a
+  // reason that is none of the contract's: only its own revert strings are (errors.js, KNOWN_REVERTS)
+  const call = { to: w.address, data: iface.encodeFunctionData('heldAt', [l.listingId]) };
+  const noData = () => ethers.AbiCoder.getBuiltinCallException('call', call, null);
+  const otherReason = () => ethers.AbiCoder.getBuiltinCallException('call', call, ethers.concat(['0x08c379a0', ethers.AbiCoder.defaultAbiCoder().encode(['string'], ['rate limit reached'])]));
+  assert.equal(noData().code, 'CALL_EXCEPTION');
+  assert.equal(noData().data, null);
+  assert.equal(revertReasonOf(noData()), null);
+  assert.equal(revertReasonOf(otherReason()), null);
   const cases = [
     ['the hold\'s time', { heldAt: down }],
     ['the listing\'s state, in the refusal', { getListing: (seen) => (seen.includes('acceptsLateClaims') ? down() : null) }],
+    ['the hold\'s time, answered with an error and no revert data', { heldAt: noData }],
+    ['the hold\'s time, answered with a reason that is none of the contract\'s', { heldAt: otherReason }],
   ];
   for (const [name, answers] of cases) {
     const dir = makeClaimDir();

@@ -1306,23 +1306,31 @@ test('node P41: a listing on hold is what the contract, the site and the tool ma
   assert.match(feed, /const candidates = \[\.\.\.projection\.listings\.values\(\)\]\.filter\(\(l\) => l\.opened && !l\.rolled && !l\.closed && l\.heldAt === null\);/);
   assert.match(feed, /const asRecord = \{ listingId: l\.listingId, state: onchain\.state, lapsed, heldAt: l\.heldAt,/, 'an entry\'s labels are made with the candidate\'s heldAt, which is null');
   assert.match(section(2), /No entry's queue holds a late claim: a listing that takes one \(section 3, "Late claims"\) is not in the feed\. That holds for a listing on hold too, whose state stays Open or Depleted: it is not a feed entry \("A listing on hold", below\)\./);
-  // `heldAt`, where the site writes it: the time of the Held event, a number, until a roll forward or a close
-  assert.ok(para.includes('`heldAt` in an entry of `sameRepository`, a feed entry\'s or a record\'s, and in the record\'s `labels.listings[<listingId>]` (GET /api/records/<artifactHash>): the time of the hold, in unix seconds, while the listing is on hold, and null otherwise. A record\'s `notCounted.listings` entries carry it too.'));
+  // `heldAt`, where the site writes it: the time of the Held event, a number, until a roll forward or a close. A
+  // related listing carries it counted or not; a record's labels hold the listings the site counts, and each of the
+  // others carries it in notCounted.listings
+  assert.ok(para.includes('`heldAt` in an entry of `sameRepository`, a feed entry\'s or a record\'s: the time of the hold, in unix seconds, while the listing is on hold, and null otherwise.'));
+  assert.ok(para.includes('The record (GET /api/records/<artifactHash>): the same `heldAt`, in `labels.listings[<listingId>]` for a listing the site counts, and in its entry of `notCounted.listings` for one it does not.'));
   assert.match(read('server', 'src', 'site', 'sameRepository.js'), /state, lapsed, heldAt: l\.heldAt, page: /);
   const labels = read('server', 'src', 'record', 'labels.js');
   assert.match(labels, /const heldAt = listing\.heldAt \?\? null;\s*return \{[\s\S]*?\n {4}heldAt,\n/);
   const siteIndex = read('server', 'src', 'site', 'index.js');
   assert.match(siteIndex, /listings: Object\.fromEntries\(rec\.listings\.map\(\(l\) => \[l\.listingId, listingLabels\(\{ \.\.\.l, heldAt: heldAtOf\(l\) \}, ctx\)\]\)\),/, 'labels.listings is keyed by the listing\'s id');
   assert.match(siteIndex, /lapsed: l\.lapsed, heldAt: view\.labels\.listings\[id\]\?\.heldAt \?\? null, reason: /, 'notCounted.listings');
+  assert.match(siteIndex, /labels: \{ \.\.\.view\.labels, listings: Object\.fromEntries\(Object\.entries\(view\.labels\.listings\)\.filter\(\(\[id\]\) => counted\.has\(id\)\)\) \},/, 'the answer\'s labels.listings keeps the counted listings');
+  assert.match(siteIndex, /const apart = view\.record\.listings\.filter\(\(l\) => !counted\.has\(String\(l\.listingId\)\)\);/, 'and notCounted.listings the others');
   const projection = read('server', 'src', 'site', 'projection.js');
   assert.match(projection, /\} else if \(e\.name === 'Held'\) \{\s*const l = listings\.get\(a\.listingId\);\s*if \(l\) l\.heldAt = Number\(a\.heldAt\);/);
   assert.match(projection, /l\.rolled = true;\s*l\.heldAt = null;/);
   assert.match(projection, /l\.closed = true;\s*l\.heldAt = null;/);
-  assert.match(section(2), / labels\.listings each listing's labels, by listingId, `heldAt` among them \(below, "A listing on hold"\)/);
+  assert.match(section(2), / labels\.listings each counted listing's labels, by listingId, `heldAt` among them \(below, "A listing on hold"\)/);
   assert.ok(listedFields('- GET https://verifiers.verdikta.org/api/records/<artifactHash>').includes('labels.listings'), 'the record\'s field is listed');
-  // the badge: when no listing of the version takes commits and one is on hold, with the hold's UTC day
-  assert.ok(para.includes('The badge of a version whose listing is on hold, with no other listing of it taking commits, reads "stake on hold since YYYY-MM-DD", the hold\'s day in UTC.'));
+  // the badge is drawn from the counted listings (the record's): when none of them takes commits and one is on hold,
+  // with the hold's UTC day; with no counted listing at all it says so, whatever an uncounted one is
+  assert.ok(para.includes('The badge speaks of counted listings only: when none of the version\'s takes commits and one is on hold, it reads "stake on hold since YYYY-MM-DD", the hold\'s day in UTC. A version with no counted listing reads "no counted stake", on hold or not.'));
   const badge = read('server', 'src', 'record', 'badge.js');
+  assert.match(badge, /if \(!record\.listings\.length\) return plain\('none', 'no counted stake'\);\s*const live = record\.listings\.filter\(/, 'no counted listing: said before any hold is looked for');
+  assert.match(siteIndex, /const \{ record: rec, findings, flags \} = partitionRecord\(view\.record, counted\);[\s\S]*?\n {6}record: rec,\n {6}labels: [\s\S]*?\n {4}out\.badge = badgeFor\(out\);/, 'the badge is drawn from the answer, whose record and labels hold the counted listings');
   assert.match(badge, /if \(!live\.length\) \{[\s\S]*?if \(held\) return plain\('ended', `stake on hold since \$\{utcDay\(heldAtOf\(held\)\)\}`, held\.listingId\);/);
   assert.match(badge, /const utcDay = \(seconds\) => new Date\(seconds \* 1000\)\.toISOString\(\)\.slice\(0, 10\);/);
   // the event: every event that carries a listingId is a feed event, with its arguments
@@ -1334,6 +1342,11 @@ test('node P41: a listing on hold is what the contract, the site and the tool ma
   // the chain: the view, by the line that reads it, at the RPC every other line of the guide uses
   assert.ok(para.includes('On the chain, `heldAt(listingId)`: the time while the listing is on hold, 0 otherwise:'));
   assert.ok(raw.includes('\n      cast call "$VERDIKTA_CONTRACT" "heldAt(uint256)(uint64)" <listingId> --rpc-url https://sepolia.base.org\n'), 'the line that reads it');
+  // a contract from before the hold answers neither function: a call of one reaches the fallback, and the lens it
+  // forwards to reverts with these words (the tool knows them as the contract's own: tool/src/errors.js)
+  assert.ok(para.includes('A contract deployed before the hold has no such view and no `hold`: there this call reverts with "unknown function", and no listing is on hold.'));
+  assert.match(read('onchain', 'contracts', 'StakeAttestationLens.sol'), /revert\("unknown function"\);/);
+  assert.match(toolSrc('errors.js'), /'unknown function'/);
   const abiView = ABI.find((f) => f.name === 'heldAt');
   assert.deepEqual([abiView.inputs.map((i) => `${i.type} ${i.name}`), abiView.outputs.map((o) => o.type)], [['uint256 listingId'], ['uint64']]);
   assert.deepEqual([...new Set([...text.matchAll(/--rpc-url (\S+)/g)].map((m) => m[1]))], ['https://sepolia.base.org'], 'one RPC, the one the guide had');
@@ -1372,8 +1385,13 @@ test('node P41: a listing on hold is what the contract, the site and the tool ma
   const s3 = section(3);
   assert.match(s3, /A listing that takes none may take a late claim instead \("Late claims", after step 8\)\. One its maker holds \(section 2, "A listing on hold"\) is such a listing: `verdikta-attest commit` refuses it with LISTING_ON_HOLD, before anything is pinned or sent, and says since when\. It takes no commit again\. What is left there is a late claim, judged and recorded for no award \(`commit --late`\); or claim on another listing: if the maker rolls the stake forward, the fixed version is a listing of its own, and your proof must fail at that listing's baseCommit\./);
   assert.match(s3, /A feed entry's and a record's `sameRepository` give each related listing's state, and `heldAt` while its maker holds it; read the answer itself from the contract:/);
-  // section 4: no price for a commit there
-  assert.match(section(4), /Read the price for such a folder with cast too\. For a listing on hold, `commit` prints no terms and no price: it is refused \(LISTING_ON_HOLD\), and `commit --late` prints a late claim's\./);
+  // section 4: no price for a commit there, said of a folder with nothing saved. A claim under way is resumed on a
+  // listing on hold as on any other, by either command, so neither is a way to read its price (commit.js: a folder
+  // with something signed keeps its kind and is settled before the listing is asked)
+  assert.match(section(4), /Read the price for such a folder with cast too\. On a listing on hold, in a folder where `commit` has saved nothing yet, `commit` prints no terms and no price: it is refused \(LISTING_ON_HOLD\), and `commit --late` prints a late claim's, as above\. A hold changes nothing for a claim already under way: a commit signed or on the chain is resumed by `commit`, and by `commit --late`, on every run, --yes or not, and its disclose is sent\. Read the price of a claim under way with cast, never with either command\./);
+  const runCommit = /export async function runCommit[\s\S]*$/.exec(commit)[0];
+  assert.ok(runCommit.indexOf('if (state?.stage === \'commit-signed\') state = await settleCommit(ctx, ws, state);') < runCommit.indexOf('await readyToCommit('), 'a signed commit is settled before the listing is asked anything');
+  assert.match(runCommit, /if \(!state \|\| state\.stage === 'prepared'\) \{\s*const \{ listing, inputs \} = await readyToCommit\(/, 'and only a folder with nothing signed reaches the refusal');
   // the exit codes: exit 1's line names it
   const exits = text.slice(text.indexOf('\nExit codes:\n') + 1).split('\n\n')[0];
   assert.match(exits, /\n {2}1 {2}[^\n]+\n {5}LISTING_ON_HOLD: `commit` on a listing its maker holds; nothing was sent, and section 3,\n {5}step 1, says what is left to do\n {2}2 {2}/);

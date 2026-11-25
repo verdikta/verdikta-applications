@@ -37,6 +37,11 @@ export async function runClaim(lib, { contract = (address, abi, provider) => new
     if (process.argv.includes('--approve-as-creator')) {
       const bounty = await escrow.getBounty(jobId);
       if (next !== 'AWAIT_CREATOR' || bounty.creator.toLowerCase() !== signer.address.toLowerCase()) throw new Error('Creator approval unavailable to this signer');
+      // Approval sends no value, so maxValueWei never saw the ETH it releases: the payout is the
+      // creator's spend, and a hunter's narrative is exactly the text that would ask an agent to
+      // approve. Capped like any spend: maxCreatorReleaseWei in the owner's policy, else maxValueWei.
+      const releaseCap = BigInt(policy.maxCreatorReleaseWei ?? policy.maxValueWei);
+      if (BigInt(bounty.creatorDeterminationPayment) > releaseCap) throw new Error(`Creator approval would release ${bounty.creatorDeterminationPayment} wei, above the policy's ${policy.maxCreatorReleaseWei != null ? 'maxCreatorReleaseWei' : 'maxValueWei'}; the owner decides this one`);
       const submission = await escrow.getSubmission(jobId, submissionId);
       review = [`Release creator-determination payout: ${formatEther(bounty.creatorDeterminationPayment)} ETH (${bounty.creatorDeterminationPayment} wei)`, `Hunter: ${submission.hunter}`, `Work CID: ${submission.hunterCid}`];
       method = 'creatorApproveSubmission';

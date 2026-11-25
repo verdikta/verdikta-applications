@@ -36,6 +36,7 @@ Size the caps for the largest transaction the wallet will sign. On the v1 escrow
 - `maxFeePerGasWei` and `maxPriorityFeePerGasWei`: the executor signs with exactly these values (EIP-1559 `maxFeePerGas` and `maxPriorityFeePerGas`). Set them above the network's current base fee plus tip, or a transaction waits unmined. You pay the actual base fee plus tip, not the cap.
 - `maxTotalWei`: at least the sum, over the transactions of one run, of value + gas limit × `maxFeePerGasWei`. Every transaction reserves that much before signing. For example, at `maxFeePerGasWei` `100000000` (0.1 gwei), a 4,150,503-gas start reserves 0.000415 ETH plus its evaluation prepay. A close that first clears claims reserves once per clearing call and once for the close.
 - `maxValueWei`: the largest single value, such as a reward, or a start's `startValue` (the evaluation prepay plus the bounty's hunter bond).
+- `maxCreatorReleaseWei` (optional): the largest creator-determination payout `claim_bounty.js --approve-as-creator` may release. When it is unset, `maxValueWei` applies. The approval transaction carries no value, but the payout it releases is the creator's.
 
 When a cap stops a transaction, nothing is signed, and the refusal names the cap, the amount the call needs and the policy file (`Gas limit exceeds owner cap: startPreparedSubmission needs a gas limit of 4150503, and maxGasLimit is 2000000 in the spend policy …`). Raising a cap is the owner's decision: report the message instead of editing the policy.
 

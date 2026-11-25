@@ -3,6 +3,7 @@
  * Handles job/bounty creation, listing, and submission workflow
  */
 
+const { untrustedContent } = require('../utils/untrustedContent');
 const { ethers } = require('ethers');
 const { readEntry, readEntryText, readBodyCapped } = require('../utils/safeZip');
 const { bountyAmountWei, bountyAmountFields } = require('../utils/bountyAmounts');
@@ -3539,6 +3540,7 @@ router.get('/', async (req, res) => {
 
     return res.json({
       success: true,
+      untrustedContent: untrustedContent(['jobs[].title', 'jobs[].description', 'jobs[].workProductType', 'jobs[].validationStatus']),
       jobs: jobSummaries,
       total: allJobs.length,
       limit: limitNum,
@@ -4293,6 +4295,8 @@ router.get('/:jobId', async (req, res) => {
     const jobIdVal = job.jobId;
     return res.json({
       success: true,
+      untrustedContent: untrustedContent(['job.title', 'job.description', 'job.workProductType', 'job.rubricContent',
+        'job.submissions[].narrative', 'job.submissions[].files', 'job.validationStatus']),
       job: {
         ...jobForClient,
         rubricContent: rubricContent || null,
@@ -8247,6 +8251,7 @@ router.get('/:jobId/submissions/:submissionId/evaluation', async (req, res) => {
 
     return res.json({
       success: true,
+      untrustedContent: untrustedContent(['evaluation', 'warnings', 'meta.jobTitle']),
       scores,
       evaluation: evaluationContent,
       evaluationAvailable: true,
@@ -8431,7 +8436,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
         return res.status(404).json({
           success: false,
           error: 'File not found in submission',
-          details: `No file named "${requestedFile}" found in the submission archive`,
+          details: 'No file with that name was found in the submission archive',
           availableFiles: submissionFiles.map(f => f.filename)
         });
       }
@@ -8444,6 +8449,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
 
       return res.json({
         success: true,
+        untrustedContent: untrustedContent(['file']),
         file: {
           ...fileInfo,
           content: isTextFile ? fileData.toString('utf8') : fileData.toString('base64'),
@@ -8485,6 +8491,7 @@ router.get('/:jobId/submissions/:submissionId/content', async (req, res) => {
 
     return res.json({
       success: true,
+      untrustedContent: untrustedContent(['manifest', 'narrative', 'files', 'meta.jobTitle']),
       manifest,
       narrative,
       files: filesWithContent,

@@ -27,7 +27,10 @@ export async function loadSpendPolicy() {
   const p = JSON.parse(await fs.readFile(file, 'utf8'));
   for (const field of ['maxValueWei','maxTotalWei','maxGasLimit','maxFeePerGasWei','maxPriorityFeePerGasWei']) uint(p[field], field);
   if (!BigInt(p.maxGasLimit) || !BigInt(p.maxFeePerGasWei) || BigInt(p.maxPriorityFeePerGasWei) > BigInt(p.maxFeePerGasWei)) throw new Error('Invalid gas policy');
-  return Object.fromEntries(['maxValueWei', 'maxTotalWei', 'maxGasLimit', 'maxFeePerGasWei', 'maxPriorityFeePerGasWei'].map(key => [key, p[key]]));
+  // optional: the most a creator approval may release (claim_bounty.js --approve-as-creator); defaults to maxValueWei
+  if (p.maxCreatorReleaseWei != null) uint(p.maxCreatorReleaseWei, 'maxCreatorReleaseWei');
+  const keys = ['maxValueWei', 'maxTotalWei', 'maxGasLimit', 'maxFeePerGasWei', 'maxPriorityFeePerGasWei', ...(p.maxCreatorReleaseWei != null ? ['maxCreatorReleaseWei'] : [])];
+  return Object.fromEntries(keys.map(key => [key, p[key]]));
 }
 // round = { bountyId, submissionId } for closeCommits / promote: they go to the escrow's aggregator, which is read here
 // from the reviewed escrow (aggregator()), with the round's aggregation id, never taken from the caller or the API.

@@ -228,10 +228,31 @@ async function withStorage(mutator) {
 /**
  * Create a new job
  */
+// A job created through the API that never went on chain (no PATCH /bountyId, never seen by the
+// sync) is hidden from every listing after an hour, but it used to stay in jobs.json for good. Any
+// caller with a free key could add 40 per 10 minutes per address, up to 29 KB each, and every read
+// parses the whole file: 5,000 of them (a day from one address) made each request block the event
+// loop for ~0.7 s and the process hold ~700 MB (sec4-outside). createJob drops these after
+// GHOST_JOB_TTL_HOURS (default 2). A creator who sends the transaction later loses nothing: the sync
+// builds the job from the BountyCreated event and its evaluation package.
+const GHOST_JOB_TTL_SECONDS = Math.round((Number(process.env.GHOST_JOB_TTL_HOURS) > 0 ? Number(process.env.GHOST_JOB_TTL_HOURS) : 2) * 3600);
+function pruneStaleGhosts(storage, nowSec = Math.floor(Date.now() / 1000), ttl = GHOST_JOB_TTL_SECONDS) {
+  const current = getCurrentContractAddress();
+  const before = storage.jobs.length;
+  // Only this contract's API jobs of known age: legacy records (no createdAt, another contract) stay.
+  const stale = (j) => !j.onChain && !j.syncedFromBlockchain && j.bountyId == null && j.status === 'OPEN' &&
+    !(j.submissions && j.submissions.length) && Number.isFinite(j.createdAt) && nowSec - j.createdAt > ttl &&
+    !!current && String(j.contractAddress || '').toLowerCase() === current;
+  storage.jobs = storage.jobs.filter((j) => !stale(j));
+  return before - storage.jobs.length;
+}
+
 async function createJob(jobData) {
   try {
     const contractAddress = getCurrentContractAddress();
     return await withStorage((storage) => {
+      const pruned = pruneStaleGhosts(storage);
+      if (pruned) logger.info('Pruned never-linked API jobs', { pruned, ttlSeconds: GHOST_JOB_TTL_SECONDS });
       const job = {
         jobId: storage.nextId,
         ...jobData,
@@ -393,6 +414,10 @@ async function listJobs(filters = {}) {
         return true;
       });
     }
+
+    // Public, unauthenticated surfaces (jobs.txt, feed.xml, sitemap, market summary) list only jobs
+    // the chain confirms: a pending API job carries whatever title, amount and creator its caller sent.
+    if (filters.confirmedOnly) jobs = jobs.filter((j) => j.syncedFromBlockchain || j.onChain);
 
     // Apply filters
     if (filters.status) {
@@ -852,6 +877,8 @@ module.exports = {
   deleteOrphanedJobs,
   migrateLegacyJobs,
   getDiagnostics,
-  getCurrentContractAddress
+  getCurrentContractAddress,
+  pruneStaleGhosts,
+  GHOST_JOB_TTL_SECONDS
 };
 

@@ -1896,7 +1896,7 @@ router.get('/api/docs', (req, res) => {
 
 router.get('/api/jobs.txt', async (req, res) => {
   try {
-    const allJobs = await jobStorage.listJobs({ includeOrphans: false });
+    const allJobs = await jobStorage.listJobs({ includeOrphans: false, confirmedOnly: true });
     const base = getBaseUrl(req);
     const now = new Date();
     const nowSec = Math.floor(now.getTime() / 1000);
@@ -1973,7 +1973,7 @@ router.get('/api/market-summary', async (req, res) => {
   try {
     const ttlSeconds = marketSummary.DEFAULT_TTL_SECONDS;
     const summary = await marketSummary.getMarketSummary(async () => {
-      const jobs = await jobStorage.listJobs({ includeOrphans: false });
+      const jobs = await jobStorage.listJobs({ includeOrphans: false, confirmedOnly: true });
       return marketSummary.buildMarketSummary(jobs, {
         windowDays: marketSummary.windowDaysFromEnv(),
         ttlSeconds,
@@ -2019,7 +2019,7 @@ router.get('/sitemap.xml', async (req, res) => {
       { loc: '/learn/faq/', changefreq: 'monthly', priority: '0.8' },
     ];
 
-    const allJobs = await jobStorage.listJobs({ includeOrphans: false });
+    const allJobs = await jobStorage.listJobs({ includeOrphans: false, confirmedOnly: true });
     const bounties = allJobs.filter(j => j.status !== 'ORPHANED');
 
     const urlEntry = (loc, lastmod, changefreq, priority) => {
@@ -2059,7 +2059,7 @@ ${[...staticEntries, ...bountyEntries].join('\n')}
 
 router.get('/feed.xml', async (req, res) => {
   try {
-    const allJobs = await jobStorage.listJobs({ includeOrphans: false });
+    const allJobs = await jobStorage.listJobs({ includeOrphans: false, confirmedOnly: true });
     const base = getBaseUrl(req);
 
     // Sort by creation date descending, take latest 50

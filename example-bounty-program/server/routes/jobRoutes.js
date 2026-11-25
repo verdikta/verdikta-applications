@@ -4148,11 +4148,12 @@ router.get('/:jobId', async (req, res) => {
     // backstop for the window between creation and that sweep.
     const GHOST_GRACE_SECS = 3600;
     const nowSec = Math.floor(Date.now() / 1000);
-    const isUnconfirmedGhost =
-      !job.onChain &&
-      !job.syncedFromBlockchain &&
-      job.status !== 'ORPHANED' &&
-      (nowSec - (job.createdAt || 0)) > GHOST_GRACE_SECS;
+    // An anonymous read gets no grace at all (sec4-outside): anyone with a free key can create a job
+    // that never goes on chain, with any title, amount and creator address, and jurors and link
+    // holders read this path to verify a bounty. Only its creator's tools (keyed) see it pending.
+    const unconfirmed = !job.onChain && !job.syncedFromBlockchain && job.status !== 'ORPHANED';
+    const isUnconfirmedGhost = unconfirmed &&
+      (req.clientType === 'public' || (nowSec - (job.createdAt || 0)) > GHOST_GRACE_SECS);
     if (isUnconfirmedGhost) {
       logger.warn('[jobs/details] ghost job served as 404', {
         jobId: job.jobId, ageSec: nowSec - (job.createdAt || 0)
@@ -4160,7 +4161,9 @@ router.get('/:jobId', async (req, res) => {
       return res.status(404).json({
         success: false,
         error: 'Bounty not found',
-        details: `Job ${jobId} was never confirmed on-chain and has exceeded the 1h grace window.`
+        details: req.clientType === 'public'
+          ? `Job ${jobId} is not confirmed on-chain.`
+          : `Job ${jobId} was never confirmed on-chain and has exceeded the 1h grace window.`
       });
     }
 
@@ -6403,13 +6406,23 @@ router.patch('/:jobId/public-submissions', async (req, res) => {
     // Apply under the storage lock (re-find the job in a fresh copy) so this
     // PATCH can't be lost to a concurrent sync/mutation write.
     const updatedAt = Math.floor(Date.now() / 1000);
-    const applied = await jobStorage.withStorage((s) => {
+    // Each signed change must be newer than the last one applied. A signature stays valid for five
+    // minutes, so without this anyone who saw a "Public: true" request could replay it right after
+    // the creator revoked, and undo the revocation (sec4-outside).
+    const applied = await jobStorage.withStorage((s, ctx) => {
       const freshJob = s.jobs.find(j => j.jobId === parseInt(jobId, 10));
-      if (!freshJob) return false;
+      if (!freshJob) { ctx.skipWrite = true; return false; }
+      if (Number(freshJob.publicSubmissionsSignedAtMs) >= parsed.timestampMs) { ctx.skipWrite = true; return 'stale'; }
       freshJob.publicSubmissions = publicSubmissions;
       freshJob.publicSubmissionsUpdatedAt = updatedAt;
+      freshJob.publicSubmissionsSignedAtMs = parsed.timestampMs;
       return true;
     });
+    if (applied === 'stale') {
+      return res.status(409).json({ success: false, error: 'A newer signed change was already applied',
+        details: 'This message is not newer than the last publicSubmissions change for this bounty.',
+        fix: 'GET /api/jobs/:id/public-submissions/sign-payload for a fresh message and sign it.' });
+    }
     if (!applied) return res.status(404).json({ success: false, error: 'Job not found' });
 
     logger.info('[public-submissions] updated', { jobId, publicSubmissions, creator: job.creator });
@@ -6582,6 +6595,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
       return res.status(503).json({ success: false, error: 'Server has no escrow address configured', details: 'Cannot verify the createBounty receipt.' });
     }
     let eventEvaluationCid = null; // from the receipt's BountyCreated — identifies the job authoritatively
+    let eventCreator = null;       // ...and its creator, which must be the job's (sec4-outside)
     if (txHash && currentContract) {
       try {
         const contractService = getContractService();
@@ -6616,6 +6630,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
               foundBountyId = Number(parsed.args.bountyId);
               emittingContract = log.address.toLowerCase();
               eventEvaluationCid = parsed.args.evaluationCid || null;
+              eventCreator = parsed.args.creator || null;
               break;
             }
           } catch {}
@@ -6685,7 +6700,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     // backfill as ONE serialized critical section on a FRESH storage copy, so
     // the linked job (and the splice) can't be lost to — or clobber — a
     // concurrent sync/API write. All chain I/O happened above, outside the lock.
-    const { applyChainBountyFields } = require('../utils/syncService');
+    const { applyChainBountyFields, creatorMatches } = require('../utils/syncService');
     const nowSec = Math.floor(Date.now() / 1000);
     const outcome = await jobStorage.withStorage((store, ctx) => {
       // Locate the job. The caller names it by the id it got from POST /jobs/create, but a
@@ -6712,6 +6727,11 @@ router.patch('/:jobId/bountyId', async (req, res) => {
         }
       }
       if (!freshJob) { ctx.skipWrite = true; return { notFound: true }; }
+      // The evaluationCid of a pending job is public, so someone else's createBounty can carry it.
+      if (isUnlinked(freshJob) && !creatorMatches(freshJob, eventCreator)) {
+        ctx.skipWrite = true;
+        return { creatorMismatch: { jobCreator: freshJob.creator, eventCreator } };
+      }
 
       freshJob.txHash      = txHash;
       freshJob.blockNumber = blockNumber;
@@ -6809,6 +6829,14 @@ router.patch('/:jobId/bountyId', async (req, res) => {
       return { ok: true, job: freshJob, deadlineWarning };
     });
 
+    if (outcome.creatorMismatch) {
+      return res.status(409).json({
+        success: false,
+        error: 'createBounty was sent by a different creator',
+        details: `This job was created for ${outcome.creatorMismatch.jobCreator}, but the BountyCreated event in this transaction names ${outcome.creatorMismatch.eventCreator}. Nothing was changed.`,
+        fix: 'Link the job with the txHash of the createBounty you sent from the creator address the job names.'
+      });
+    }
     if (outcome.notFound) {
       return res.status(404).json({ success: false, error: 'Job not found' });
     }

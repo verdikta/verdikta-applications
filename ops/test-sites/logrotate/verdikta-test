@@ -1,0 +1,16 @@
+# TEST sites: the units append stdout/stderr to these files (StandardOutput=append:), which nothing else
+# rotates. Without this a busy or abusive client fills the disk that production shares.
+# Install: cp ops/test-sites/logrotate/verdikta-test /etc/logrotate.d/  (then: logrotate -d /etc/logrotate.d/verdikta-test)
+# copytruncate: systemd keeps the file open in append mode, so truncating in place is safe.
+/root/verdikta/applications-test/example-bounty-program/server/server-test-*.log
+/root/verdikta/applications-test/example-arbiters/server/server-test-*.log
+{
+    daily
+    maxsize 200M
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

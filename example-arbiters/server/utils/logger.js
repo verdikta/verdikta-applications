@@ -32,7 +32,9 @@ const colors = {
 
 class Logger {
   constructor(config = {}) {
-    this.level = config.level || process.env.LOG_LEVEL || 'INFO';
+    // Upper-cased: the env templates say LOG_LEVEL=info, and an unknown level used to log DEBUG too.
+    this.level = String(config.level || process.env.LOG_LEVEL || 'INFO').toUpperCase();
+    if (!Object.values(LOG_LEVELS).includes(this.level)) this.level = 'INFO';
     this.enableColors = config.enableColors !== false;
   }
 
@@ -58,3 +60,4 @@ class Logger {
 }
 
 module.exports = new Logger();
+module.exports.Logger = Logger;

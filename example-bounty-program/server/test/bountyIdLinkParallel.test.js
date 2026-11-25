@@ -37,8 +37,8 @@ const { findPendingJobForBountyCreated } = require('../utils/syncService');
 
 const CREATOR = '0x' + 'c1'.repeat(20);
 const iface = new ethers.Interface(['event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)']);
-function receiptFor(bountyId, evaluationCid, address = ESCROW) {
-  const { topics, data } = iface.encodeEventLog('BountyCreated', [bountyId, CREATOR, evaluationCid, 128, 60, 1000n, 1789400000]);
+function receiptFor(bountyId, evaluationCid, address = ESCROW, creator = CREATOR) {
+  const { topics, data } = iface.encodeEventLog('BountyCreated', [bountyId, creator, evaluationCid, 128, 60, 1000n, 1789400000]);
   return { blockNumber: 100, logs: [{ address, topics, data }] };
 }
 function app() { const a = express(); a.use(express.json()); a.use('/jobs', jobRoutes); return a; }
@@ -123,5 +123,25 @@ describe('sync BountyCreated matcher', () => {
     const hit = findPendingJobForBountyCreated(jobs, { evaluationCid: 'QmZ', creator: CREATOR, deadline: 1789400010 });
     expect(hit.jobId).toBe(38);
     expect(findPendingJobForBountyCreated(jobs, { evaluationCid: 'QmZ', creator: '0x' + 'd'.repeat(40), deadline: 1789400010 })).toBeNull();
+  });
+});
+
+// sec4-outside: a pending job's evaluationCid is public; another wallet's createBounty carrying it
+// (a dust bounty sent first) must not take the job, through the PATCH or through the sync.
+describe('evaluationCid squatting', () => {
+  const SQUATTER = '0x' + '5'.repeat(40);
+  it('PATCH with a receipt whose creator is not the job\'s answers 409 and changes nothing', async () => {
+    mockReceipts['0xtxSquat'] = receiptFor(36, 'QmSupply', ESCROW, SQUATTER);
+    const before = JSON.stringify(mockStorageData);
+    const r = await link(39, 36, '0xtxSquat');
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/different creator/);
+    expect(JSON.stringify(mockStorageData)).toBe(before);
+  });
+  it('the sync matcher does not link a job to a bounty by another creator, even on its CID', () => {
+    const jobs = [job(38, 'QmC', 'c')];
+    expect(findPendingJobForBountyCreated(jobs, { evaluationCid: 'QmC', creator: SQUATTER, deadline: 1 })).toBeNull();
+    expect(findPendingJobForBountyCreated(jobs, { evaluationCid: 'QmC', creator: CREATOR.toUpperCase().replace('0X', '0x'), deadline: 1 }).jobId).toBe(38);
+    expect(findPendingJobForBountyCreated([{ ...job(38, 'QmC', 'c'), creator: undefined }], { evaluationCid: 'QmC', creator: SQUATTER, deadline: 1 }).jobId).toBe(38);
   });
 });

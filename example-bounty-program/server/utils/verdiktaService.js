@@ -264,17 +264,37 @@ class VerdiktaService {
     return this._oraclesInFlight;
   }
 
+  /**
+   * The keys registered now, from the keeper's ArbiterRegistered / ArbiterRemoved logs, scanned
+   * incrementally: only blocks after the last scan. It used to rescan from the deploy block on every
+   * walk (each cache expiry, a minute), and read every key that had ever registered: ~1,750 getLogs
+   * chunks per walk after a year of Base blocks, growing with churn too (sec4-outside).
+   */
+  async _registeredKeys(keeper, head) {
+    const scan = this._registryScan || { toBlock: this.aggregatorDeployBlock - 1, byKey: new Map() };
+    const from = scan.toBlock + 1;
+    if (from <= head) {
+      const reg = keeper.interface.getEvent('ArbiterRegistered').topicHash;
+      const rem = keeper.interface.getEvent('ArbiterRemoved').topicHash;
+      const logs = await this._getLogsChunked(this.keeperAddress, [[reg, rem]], from, head);
+      const byKey = new Map(scan.byKey);
+      for (const log of logs) {
+        const p = keeper.interface.parseLog(log);
+        const key = String(p.args.key);
+        if (p.name === 'ArbiterRegistered') {
+          if (byKey.has(key)) byKey.delete(key);    // re-registration: keep first-seen order by re-inserting
+          byKey.set(key, { key, jobId: p.args.jobId });
+        } else byKey.delete(key);
+      }
+      this._registryScan = { toBlock: head, byKey };   // only after every chunk succeeded
+    }
+    return [...this._registryScan.byKey.values()];
+  }
+
   async _walkOracles() {
     const keeper = await this.getReputationKeeper();
     const head = await this.provider.getBlockNumber();
-    const topic = keeper.interface.getEvent('ArbiterRegistered').topicHash;
-    const logs = await this._getLogsChunked(this.keeperAddress, [topic], this.aggregatorDeployBlock, head);
-    const keys = [];
-    const seen = new Set();
-    for (const log of logs) {
-      const p = keeper.interface.parseLog(log);
-      if (!seen.has(p.args.key)) { seen.add(p.args.key); keys.push({ key: p.args.key, jobId: p.args.jobId }); }
-    }
+    const keys = await this._registeredKeys(keeper, head);
     const oracles = [];
     const batchSize = 6;
     for (let i = 0; i < keys.length; i += batchSize) {

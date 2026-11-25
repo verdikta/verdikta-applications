@@ -177,7 +177,7 @@ describe('route', () => {
     expect(res.body.not_a_quote).toBe(true);
     expect(res.body.network).toEqual({ name: 'Base Sepolia', chain_id: 84532 });
     expect(res.body.by_service['source-check-v1'].open).toBe(1);
-    expect(jobStorage.listJobs).toHaveBeenCalledWith({ includeOrphans: false });
+    expect(jobStorage.listJobs).toHaveBeenCalledWith({ includeOrphans: false, confirmedOnly: true });
   });
 
   test('ignores query parameters and stays cached across requests', async () => {

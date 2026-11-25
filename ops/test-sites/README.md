@@ -67,6 +67,11 @@ The production equivalents are 5006, 5005 and 5008, served from `/root/verdikta/
    systemctl enable --now verdikta-test-bounty-testnet verdikta-test-arbiters-server
    curl -s localhost:6006/health; curl -s localhost:6008/health
    ```
+   Rotate their logs (the units append to `server-test-*.log`; nothing else rotates them, and the disk
+   is production's):
+   ```
+   cp ops/test-sites/logrotate/verdikta-test /etc/logrotate.d/ && logrotate -d /etc/logrotate.d/verdikta-test
+   ```
 8. **nginx and certificates.** This adds three new files and changes no production file. A reload keeps
    live connections.
    ```

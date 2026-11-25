@@ -71,3 +71,15 @@ test('receipts reuse one provider with a static network', () => {
   expect(p1).toBe(p2);
   p1.destroy();
 });
+
+// sec4-outside: anyone with a free key can create an API job that never goes on chain, with any
+// title, amount and creator. The unauthenticated agent surfaces must list only chain-confirmed jobs.
+test('jobs.txt, feed.xml, sitemap and market-summary ask storage for confirmed jobs only', async () => {
+  jobStorage.listJobs.mockClear();
+  jobStorage.listJobs.mockResolvedValue([]);
+  for (const path of ['/api/jobs.txt', '/feed.xml', '/sitemap.xml', '/api/market-summary']) {
+    await request(app).get(path).set('Host', 'bounties.example');
+  }
+  expect(jobStorage.listJobs).toHaveBeenCalledTimes(4);
+  for (const [filters] of jobStorage.listJobs.mock.calls) expect(filters).toMatchObject({ confirmedOnly: true });
+});

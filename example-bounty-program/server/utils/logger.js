@@ -6,6 +6,14 @@
 const util = require('util');
 const { redact } = require('./redactSecrets');
 
+// Request-derived strings (User-Agent, Origin/Referer, paths, bodies quoted in errors) reach the log
+// from anonymous callers. Unclipped, one request with 7 KB headers wrote 12.5 KB of log, and the
+// services append stdout to a file with no rotation, so a single client filled the host's disk at
+// about 5 MB/s (sec4-outside). Every string is clipped at LOG_MAX_STRING characters.
+const LOG_MAX_STRING = Math.max(64, parseInt(process.env.LOG_MAX_STRING, 10) || 512);
+const clip = (s) => (typeof s === 'string' && s.length > LOG_MAX_STRING
+  ? `${s.slice(0, LOG_MAX_STRING)}... (${s.length - LOG_MAX_STRING} more characters)` : s);
+
 const LOG_LEVELS = {
   ERROR: 'ERROR',
   WARN: 'WARN',
@@ -23,7 +31,9 @@ const colors = {
 
 class Logger {
   constructor(config = {}) {
-    this.level = config.level || process.env.LOG_LEVEL || 'INFO';
+    // Upper-cased: the env templates say LOG_LEVEL=info, and an unknown level used to log DEBUG too.
+    this.level = String(config.level || process.env.LOG_LEVEL || 'INFO').toUpperCase();
+    if (!Object.values(LOG_LEVELS).includes(this.level)) this.level = 'INFO';
     this.enableColors = config.enableColors !== false;
   }
 
@@ -41,7 +51,8 @@ class Logger {
 
     if (this.shouldLog(level)) {
       // Redacted: ethers errors embed the RPC URL (and its key) in their messages.
-      console.log(redact(util.format(`${color}[${timestamp}] [${level}] ${message}${reset}`, meta)));
+      console.log(redact(util.formatWithOptions({ maxStringLength: LOG_MAX_STRING },
+        `${color}[${timestamp}] [${level}] ${clip(String(message))}${reset}`, meta)));
     }
   }
 
@@ -69,6 +80,7 @@ class Logger {
   }
 
   setLevel(level) {
+    level = String(level || '').toUpperCase();
     if (Object.values(LOG_LEVELS).includes(level)) {
       this.level = level;
     }
@@ -77,6 +89,8 @@ class Logger {
 
 // Export singleton instance
 module.exports = new Logger();
+module.exports.LOG_MAX_STRING = LOG_MAX_STRING;
+module.exports.Logger = Logger;
 
 
 

@@ -132,8 +132,9 @@ function clientIdentification(req, res, next) {
   const clientKey = req.headers['x-client-key'] || req.headers['X-Client-Key'];
   const botApiKey = req.headers['x-bot-api-key'] || req.headers['X-Bot-API-Key'];
 
-  // Debug logging
-  logger.info('Client auth check', {
+  // Debug logging (debug, not info: it ran for every request, so it doubled the log volume an
+  // anonymous client can write; sec4-outside)
+  logger.debug('Client auth check', {
     path: req.path,
     hasClientKey: !!clientKey,
     clientKeyMatch: clientKey === process.env.FRONTEND_CLIENT_KEY,

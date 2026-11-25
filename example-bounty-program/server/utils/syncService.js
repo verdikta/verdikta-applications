@@ -317,10 +317,23 @@ function evictUnlinkedSquatters(storage, bountyId, currentContract, vacatedId = 
   return moves;
 }
 
+/**
+ * Whether an API job may be linked to a bounty created on chain by `creator`. A pending job's
+ * evaluationCid is public (GET /api/jobs/:id), so anyone could create an on-chain bounty with it
+ * first, from their own wallet and for a dust amount, and the sync used to hand them the job: its
+ * title, description and settings went to their bounty and the real creator's link was refused
+ * (sec4-outside). The job's creator is the address its create named; a job that names none matches.
+ */
+function creatorMatches(job, creator) {
+  const want = String(job?.creator || '').toLowerCase();
+  if (!want || !creator) return true;
+  return want === String(creator).toLowerCase();
+}
+
 function findPendingJobForBountyCreated(jobs, { evaluationCid, creator, deadline }) {
   const candidates = (jobs || []).filter((j) => !j.syncedFromBlockchain && j.status !== 'ORPHANED');
   if (evaluationCid) {
-    const byCid = candidates.find((j) => j.evaluationCid === evaluationCid);
+    const byCid = candidates.find((j) => j.evaluationCid === evaluationCid && creatorMatches(j, creator));
     if (byCid) return byCid;
   }
   return candidates.find((j) =>
@@ -1902,7 +1915,8 @@ class SyncService {
       const pendingJob = storage.jobs.find(j =>
         !j.syncedFromBlockchain &&
         j.status !== 'ORPHANED' &&
-        j.evaluationCid === bounty.evaluationCid
+        j.evaluationCid === bounty.evaluationCid &&
+        creatorMatches(j, bounty.creator)
       );
 
       if (pendingJob) {
@@ -2447,5 +2461,5 @@ module.exports = {
   initializeSyncService,
   getSyncService,
   SyncService, syncHead,
-  applyChainBountyFields, findPendingJobForBountyCreated, evictUnlinkedSquatters, needsChainFieldHeal,
+  applyChainBountyFields, findPendingJobForBountyCreated, creatorMatches, evictUnlinkedSquatters, needsChainFieldHeal,
   needsMetadataHeal, applyEvaluationMetadata, healJobMetadata, fetchEvaluationMetadata };

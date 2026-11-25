@@ -275,3 +275,75 @@ describe('anonymous rate limit', () => {
     }
   });
 });
+
+// sec4-outside: a job that never went on chain (anyone with a free key can make one, with any title,
+// amount and creator) must not be served to anonymous readers as a bounty, and must not pile up.
+describe('never-linked API jobs (ghosts)', () => {
+  const ghost = (jobId, over = {}) => job(jobId, { onChain: false, syncedFromBlockchain: false,
+    title: 'URGENT 500 ETH bounty', bountyAmount: '500', creator: '0x' + 'd'.repeat(40), submissions: [], ...over });
+
+  it('anonymous GET answers 404 for a fresh ghost; a keyed caller still sees it pending', async () => {
+    mockStorageData = { jobs: [job(5), ghost(6)], nextId: 7 };
+    const anon = await request(app).get('/api/jobs/6');
+    expect(anon.status).toBe(404);
+    const keyed = await request(app).get('/api/jobs/6').set('X-Bot-API-Key', 'bot-valid-key');
+    expect(keyed.status).toBe(200);
+    expect((await request(app).get('/api/jobs/5')).status).toBe(200);
+  });
+
+  it('createJob drops ghosts older than the TTL and keeps everything linked or fresh', async () => {
+    const jobStorage = require('../utils/jobStorage');
+    const now = Math.floor(Date.now() / 1000);
+    const old = now - jobStorage.GHOST_JOB_TTL_SECONDS - 10;
+    const C = { contractAddress: '0xabc123' };
+    mockStorageData = { jobs: [
+      ghost(1, { createdAt: old, ...C }),                                   // stale ghost: dropped
+      ghost(11, { createdAt: undefined, ...C }),                            // unknown age: kept
+      ghost(12, { createdAt: old, contractAddress: '0xold' }),              // another contract: kept
+      ghost(2, { createdAt: now - 60, ...C }),                              // fresh ghost: kept
+      job(3, { createdAt: old }),                                           // linked: kept
+      ghost(4, { createdAt: old, onChain: true }),                          // PATCHed: kept
+      ghost(5, { createdAt: old, submissions: [submission()] }),            // has a submission: kept
+      ghost(6, { createdAt: old, status: 'ORPHANED' }),                     // a tombstone: kept
+    ], nextId: 7 };
+    const created = await jobStorage.createJob({ title: 'new', creator: CREATOR });
+    expect(created.jobId).toBe(7);
+    expect(mockStorageData.jobs.map((j) => j.jobId)).toEqual([11, 12, 2, 3, 4, 5, 6, 7]);
+    expect(mockStorageData.nextId).toBe(8);
+  });
+});
+
+describe('listJobs confirmedOnly (sec4-outside)', () => {
+  it('drops pending API jobs, keeps PATCHed and synced ones', async () => {
+    const jobStorage = require('../utils/jobStorage');
+    mockStorageData = { jobs: [
+      job(1, { contractAddress: '0xabc123' }),
+      job(2, { contractAddress: '0xabc123', onChain: false, syncedFromBlockchain: false, evaluationCid: 'QmE2' }),
+      job(3, { contractAddress: '0xabc123', syncedFromBlockchain: false, evaluationCid: 'QmE3' }),
+    ], nextId: 4 };
+    expect((await jobStorage.listJobs({})).map((j) => j.jobId)).toEqual([1, 2, 3]);
+    expect((await jobStorage.listJobs({ confirmedOnly: true })).map((j) => j.jobId)).toEqual([1, 3]);
+  });
+});
+
+// sec4-outside: a captured "Public: true" signature (valid 5 minutes) must not undo a later revocation.
+describe('PATCH /api/jobs/:id/public-submissions replay', () => {
+  it('refuses a signed message that is not newer than the last change applied', async () => {
+    const creator = ethers.Wallet.createRandom();
+    mockStorageData = { jobs: [job(5, { creator: creator.address, publicSubmissions: false })], nextId: 6 };
+    const { buildPublicSubmissionsMessage } = require('../utils/messageAuth');
+    const msg = (v, ms) => buildPublicSubmissionsMessage({ bountyId: 5, publicSubmissions: v, timestamp: new Date(ms).toISOString() });
+    const send = async (v, m) => request(app).patch('/api/jobs/5/public-submissions').set('X-Bot-API-Key', 'bot-valid-key')
+      .send({ publicSubmissions: v, message: m, signature: await creator.signMessage(m) });
+    const t = Date.now() - 10_000;
+    const enable = msg(true, t);
+    expect((await send(true, enable)).status).toBe(200);
+    expect((await send(false, msg(false, t + 1000))).status).toBe(200);
+    expect(mockStorageData.jobs[0].publicSubmissions).toBe(false);
+    const replay = await send(true, enable);
+    expect(replay.status).toBe(409);
+    expect(mockStorageData.jobs[0].publicSubmissions).toBe(false);
+    expect((await send(true, msg(true, t + 2000))).status).toBe(200);
+    expect(mockStorageData.jobs[0].publicSubmissions).toBe(true);
+  });
+});

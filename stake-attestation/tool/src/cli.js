@@ -21,35 +21,55 @@ export { COMMANDS } from './usage.js';
 
 const { version } = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
-const FLAGS = new Set(['--json', '--no-pack', '--remote-runner', '--yes', '--late', '--restart', '--accept-unread-pin', '--retrigger', '--wait', '--waive-appeal']);
-const VALUES = new Set(['--listing', '--listing-archive', '--key-file', '--rpc-url', '--contract', '--gateway', '--max-wait-ms']);
+// What each command takes, and the one list of it (node P46): its `flags`, each the bare word, and its `values`, the
+// options that take a value. The '*' row is every command's: the help's "Options". The parser reads a command's
+// arguments against its row and that one, and the help's usage lines are held to the table (test/cli.test.js).
+export const TAKES = Object.freeze({
+  '*': { flags: ['--json'], values: ['--key-file', '--rpc-url', '--contract', '--gateway'] },
+  check: { flags: ['--no-pack', '--remote-runner'], values: ['--listing', '--listing-archive'] },
+  commit: { flags: ['--late', '--yes', '--restart', '--accept-unread-pin'], values: ['--listing'] },
+  reveal: { flags: ['--retrigger', '--yes'], values: [] },
+  status: { flags: ['--wait'], values: ['--max-wait-ms'] },
+  claim: { flags: ['--waive-appeal'], values: [] },
+  appeal: { flags: ['--yes'], values: [] },
+});
 
 function usageError(text) {
   return Object.assign(new ToolError('USAGE'), { usage: text });
 }
 
-// An option's value is never echoed: someone may have typed a key where a path goes.
-function parseArgs(args) {
+/**
+ * A command's arguments, read against its row of TAKES before anything else is read. A flag is the bare word or
+ * nothing: with a value, `--yes=false` too, it is no yes and no no. A flag or an option of another command's is not
+ * passed over, since the command would go on without it. An option's value is never echoed: someone may have typed a
+ * key where a path goes.
+ * @param {string} verb one of COMMANDS
+ * @param {string[]} args the arguments after it
+ */
+export function parseArgs(verb, args) {
   const options = {};
   const positional = [];
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
-    if (a.startsWith('-')) {
-      const name = a.split('=')[0];
-      // --late (node P43) is the bare token or nothing: with a value, `--late=false` too, it is no yes and no no
-      if (name === '--late' && a !== name) throw usageError('--late takes no value');
-      if (FLAGS.has(name)) {
-        options[name] = true;
-      } else if (VALUES.has(name)) {
-        const inline = a.includes('=') ? a.slice(a.indexOf('=') + 1) : undefined;
-        const value = inline ?? args[(i += 1)];
-        if (value === undefined) throw usageError(`${name} needs a value`);
-        options[name] = value;
-      } else {
-        throw usageError(`unknown option '${name}'`);
-      }
-    } else {
+    if (!a.startsWith('-')) {
       positional.push(a);
+      continue;
+    }
+    const name = a.split('=')[0];
+    const kind = ['flags', 'values'].find((k) => Object.values(TAKES).some((row) => row[k].includes(name)));
+    if (!kind) throw usageError(`unknown option '${name}'`);
+    if (![TAKES[verb], TAKES['*']].some((row) => row[kind].includes(name))) {
+      const whose = Object.keys(COMMANDS).filter((c) => TAKES[c][kind].includes(name)).map((c) => `${c}'s`);
+      throw usageError(`${name} is ${whose.length > 1 ? `${whose.slice(0, -1).join(', ')} and ${whose.at(-1)}` : whose[0]} ${kind === 'flags' ? 'flag' : 'option'}: no other command takes it`);
+    }
+    if (kind === 'flags') {
+      if (a !== name) throw usageError(`${name} takes no value`);
+      options[name] = true;
+    } else {
+      const inline = a.includes('=') ? a.slice(a.indexOf('=') + 1) : undefined;
+      const value = inline ?? args[(i += 1)];
+      if (value === undefined) throw usageError(`${name} needs a value`);
+      options[name] = value;
     }
   }
   return { options, positional };
@@ -248,9 +268,7 @@ function claimTarget(positional) {
 }
 
 async function dispatch(verb, args, io, env, write) {
-  const { options, positional } = parseArgs(args);
-  // and it is commit's alone: on another command it would be passed over, and that command would go on (node P43)
-  if (options['--late'] === true && verb !== 'commit') throw usageError('--late is commit\'s flag: no other command takes it');
+  const { options, positional } = parseArgs(verb, args);
   if (positional.length > 1) throw usageError('too many arguments');
   const out = (text) => write(io.stdout, `${text}\n`);
   const json = options['--json'] === true;

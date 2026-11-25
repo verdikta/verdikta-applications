@@ -325,8 +325,6 @@ of `commit`. `verdikta-attest commit` files one with --late.
 - The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
   listing that takes late claims only (LATE_CLAIMS_ONLY), --late on a listing that takes commits
   (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
-- --late takes no value and is `commit`'s alone: `--late=false`, any other value, or --late on
-  another command is a usage error (exit 2), before anything is read or sent.
 - A stopped run goes on with what the folder holds, with --late or without it: a signed commit or
   late claim is sent again as it was saved, and a folder prepared for a late claim stays a late
   claim's. --late changes nothing in a folder whose commit is signed: that run goes on as a
@@ -440,6 +438,11 @@ holds what `commit` printed, against which `status` tells a moved reveal deadlin
 the result as JSON on stdout. `status --wait` polls for up to 15 minutes; --max-wait-ms shortens
 it, so keep it under your shell's command timeout and run it again on exit 4. `commit` and
 `reveal` wait for their transactions too: if your shell stops one, run the same command again.
+
+A flag is the bare word: with a value (`--yes=false` too, or an empty one), or on a command that
+does not take it, it is a usage error (exit 2), and so is an option on a command that does not
+take it: nothing is read or sent. An option's value follows it or an = (`--listing <listingId>`
+or `--listing=<listingId>`). `verdikta-attest --help` shows what each command takes.
 
 A late claim (section 3, "Late claims") takes the same commands, with --late on `commit`:
 

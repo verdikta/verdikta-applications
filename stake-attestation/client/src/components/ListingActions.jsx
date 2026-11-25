@@ -14,6 +14,8 @@ import { TextField } from './Field.jsx';
 import { useWalletContext, walletMessage } from './wallet.js';
 
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+/** A hold that can be taken, as far as the hold itself goes: what a listing is held to before its hold is read. */
+const NOT_ON_HOLD = Object.freeze({ supported: true, heldAt: 0n });
 /** A listing's state in the page's words; for a listing the wallet's node does not have (null), that it is not there. */
 const stateWords = (l) => (l === null ? STRINGS.fund.missing : STRINGS.fund.states[LISTING_STATES[Number(l.state)]] ?? String(l.state));
 /** The block the wallet's node is at: a raw eth_blockNumber, since ethers' getBlockNumber() may answer from a cache. */
@@ -196,11 +198,15 @@ export function RenewListing({ listingId, listing, held = false, quiet = false, 
     try {
       const { signer, provider, account } = await w.ensure();
       if (!same(account, listing.maker)) return setError(fill(STRINGS.claim.notMaker, { maker: listing.maker, account }));
-      const { value: [mine, due], block } = await snapshot(provider, (at) => {
+      // The listing first, and the fee only when the listing alone does not rule the renewal out: what the wallet has
+      // of this listing is never lost to a failure of the fee's read.
+      const renewable = (l) => l !== null && renewTerms(l, 0).can && same(l.maker, account);
+      const { value: [mine, due], block } = await snapshot(provider, async (at) => {
         const view = stakeAttestation(at);
-        return Promise.all([listingAt(view, listingId), view.listingFeeWei()]);
+        const source = await listingAt(view, listingId);
+        return [source, renewable(source) ? await view.listingFeeWei() : null];
       });
-      if (mine === null || !renewTerms(mine, 0).can || !same(mine.maker, account)) {
+      if (!renewable(mine)) {
         setError(fill(R.changed, { id: listingId, state: stateWords(mine) }));
         onChanged(disagreedAt(block));
         return undefined;
@@ -297,13 +303,18 @@ export function HoldListing({ listingId, listing, hold = NO_HOLD, quiet = false,
         setAsking(null);
         return setError(fill(STRINGS.claim.notMaker, { maker: asking.maker, account: sender }));
       }
-      const { value: [mine, now], block } = await snapshot(provider, (at) => {
+      // The listing first, and its hold only when the listing alone does not rule the hold out (another listing under
+      // the id or none, or one that is neither Open nor Depleted): what the wallet has of this listing is never lost
+      // to a failure of the hold's read.
+      const holdable = (l) => sameListing(l, asking) && holdTerms(l, NOT_ON_HOLD).can;
+      const { value: [mine, now], block } = await snapshot(provider, async (at) => {
         const view = stakeAttestation(at);
-        return Promise.all([listingAt(view, listingId), readHold(view, listingId)]);
+        const source = await listingAt(view, listingId);
+        return [source, holdable(source) ? await readHold(view, listingId) : NO_HOLD];
       });
       // A hold has no way back, so it is sent only for the listing the maker took the first step for (the same
       // artifact, the same maker's), and only while that listing can be held.
-      if (!sameListing(mine, asking) || !holdTerms(mine, now).can) {
+      if (!holdable(mine) || !holdTerms(mine, now).can) {
         setError(fill(H.changed, { id: listingId }));
         setAsking(null);
         onChanged(disagreedAt(block));

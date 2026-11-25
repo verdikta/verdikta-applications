@@ -1195,7 +1195,10 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     // the second juror's script is a sequence by call: it answers this claim as the first only after the three before it
     const jurorCallsBeforeLate = providerCalls().filter((c) => c.model === panel[1].model).length;
     one('held.late.jury.scriptInStep', jurorCallsBeforeLate === 3 * REAL_CONFIG.k, `${panel[1].model} has answered ${jurorCallsBeforeLate} calls, ${3 * REAL_CONFIG.k} expected: the valid claim's K, the narrow claim's K and the K of the claim from before the hold`);
-    const historyBeforeLate = recordAfterHeld.record.history;
+    // The stake's own claims as the site counted them before the late claim was filed (a server that counted a late
+    // claim among them at filing would show here), and its verdicts as they are after the earlier claim settled.
+    const claimsBeforeLate = siteOnHold.record.record.history.claims;
+    const outcomesBeforeLate = recordAfterHeld.record.history.outcomes;
     await makerRelease(lateId);
     one('held.late.released', (await eventOf('Released', lateId)).length === 1, 'Released on the chain: the maker\'s own move on a late claim, with the listing on hold');
     const beforeLateRun = counts();
@@ -1256,8 +1259,8 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
       record: recordAfterLate,
       lateClaims: 1,
       lateOutcomes: [0, 0, 0, 0, 1, 0],
-      claims: historyBeforeLate.claims,
-      outcomes: historyBeforeLate.outcomes,
+      claims: claimsBeforeLate,
+      outcomes: outcomesBeforeLate,
       findings: [{ claimId: String(lateId), outcome: 'HIGH' }],
     }));
     const lateLabels = recordAfterLate.labels?.listings?.[String(listingId)];

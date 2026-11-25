@@ -409,6 +409,10 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(reads, /stand on the assumption alone, that the nodes behind the wallet's address agree on the chain/);
   const config = between('**Config** is Vite\'s build environment', '**Wording.**');
   assert.match(config, /The nodes behind the address are taken to agree on the chain/);
+  // what a contract with no hold asks of the read address: the revert's data, which is all the reader goes by
+  assert.match(config, /It also has to hand over a revert's data on `eth_call`, as nodes do: against a contract from before the hold, the page knows there is no hold from that data alone/);
+  assert.match(config, /an address that drops the data gives a failed read of every listing's page there, and never a listing on hold shown as one that is not/);
+  assert.match(read('../../deploy/client.env'), /# It also has to hand over a revert's data on eth_call, as nodes do/);
   assert.match(config, /Without a read address the page's reads go through the visitor's wallet, by block number, and what they show of a hold is not tied to a block's hash/);
   const env = read('../../deploy/client.env');
   assert.match(env, /# The nodes behind the address are taken to agree on the chain\./);

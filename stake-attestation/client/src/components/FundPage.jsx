@@ -127,9 +127,25 @@ export function FundPage({ listingId }) {
     </div>
   );
 
+  // A read that was asked for, and not taken yet (lib/pageSays.js): said while its reads are out, and with the block
+  // the next read has to reach and a way to read again once they are over. It is drawn wherever a read was taken:
+  // under a listing, and on the "no such listing" page, where an action that was still out when that read was taken
+  // can ask for another.
+  const notice = (
+    <>
+      {says.reading && <p className="hint" role="status" data-testid="listing-reading">{F.reading}</p>}
+      {says.unread !== null && (
+        <>
+          <p className="warning" role="status" data-testid="listing-behind">{fill(F.behind, { block: says.unread })}</p>
+          <button type="button" className="secondary" data-testid="listing-read-again" onClick={() => refresh()}>{F.retry}</button>
+        </>
+      )}
+    </>
+  );
+
   if (listingId === null) return <>{header}{lookupForm}</>;
   if (!loaded) return <>{header}<p className="hint">{F.loading}</p></>;
-  if (loaded.missing) return <>{header}<p className="error">{fill(F.notFound, { id: listingId })}</p>{lookupForm}</>;
+  if (loaded.missing) return <>{header}<p className="error">{fill(F.notFound, { id: listingId })}</p>{notice}{lookupForm}</>;
   if (says.failed !== null) {
     return (
       <>
@@ -171,14 +187,7 @@ export function FundPage({ listingId }) {
           <li data-testid="listing-size">{terms.size.all ? STRINGS.chain.sizeAll : fill(STRINGS.chain.size, { size: formatEth(terms.size.wei) })}</li>
         </ul>
       </section>
-      {/* the block the page was told of and has not read: said while it reads for it, and with a way to read again after */}
-      {says.reading && <p className="hint" role="status" data-testid="listing-reading">{F.reading}</p>}
-      {says.unread !== null && (
-        <>
-          <p className="warning" role="status" data-testid="listing-behind">{fill(F.behind, { block: says.unread })}</p>
-          <button type="button" className="secondary" data-testid="listing-read-again" onClick={() => refresh()}>{F.retry}</button>
-        </>
-      )}
+      {notice}
       {/* the funding form of a Listed listing; once this page opened it, the opening's own line, which stays */}
       {(state === 'Listed' || openedHere) && <FundListing listingId={BigInt(listingId)} top={l.awards[3]} maker={l.maker} artifactHash={l.artifactHash} onMined={onChanged} onOpened={() => setOpenedHere(true)} />}
       {!quiet && state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}

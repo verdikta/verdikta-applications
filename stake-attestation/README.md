@@ -1656,8 +1656,10 @@ goes in a URL.
   the page shows it, tells the page that the read it shows is behind. That read asks the count
   first (`listingAt` in `client/src/chain/wallet.js`), for the top-up, the renewal, the hold, the
   close and the roll alike, so a listing the wallet's node does not have at that block is an
-  answer, and a disagreement like any other; a roll reads this listing before its successor, so
-  what the wallet has of this listing is never lost to a failure of the successor's read. A read
+  answer, and a disagreement like any other. Where an action reads something besides the
+  listing (a roll its successor, a renewal its fee, a hold the hold's time), the listing is read
+  first and the other only when the listing alone does not rule the action out, so what the
+  wallet has of this listing is never lost to a failure of the other read. A read
   that fails on the way (the node, the network) is the action's failure, and tells the page
   nothing. From that instant, before
   any new read answers, the page shows nothing that says the listing is on hold or what its maker
@@ -1681,7 +1683,9 @@ goes in a URL.
   each case, runs every short history of a page against the three parts, and holds the
   components to it. A refusal by the wallet's read that arrives once the page shows another
   listing under the id sets the floor and takes nothing of the listing now shown off the page;
-  the page still says it is reading, and offers Read again when no read was taken.
+  the page still says it is reading, and offers Read again when no read was taken. So does the
+  "no such listing" page, when an action that was still out when that read was taken asks for
+  another.
   Against a contract with no hold there is no line of a hold to take off, and nothing is: the
   page reads again from the block and says which block it has not read, and shows the listing it
   read meanwhile, as the site did before.
@@ -1870,7 +1874,11 @@ gateway origin or several, comma-separated; the record page links to the first).
 The read address has to take a block's hash on `eth_call` (EIP-1898, `{blockHash,
 requireCanonical: true}`), as Base's public endpoints do: a listing's page reads the listing and
 its hold at one block's hash, and a refusal is a failed read of the page, with no fallback to
-the block's number. The nodes behind the address are taken to agree on the chain; what the page
+the block's number. It also has to hand over a revert's data on `eth_call`, as nodes do: against
+a contract from before the hold, the page knows there is no hold from that data alone (the
+contract's own `revert("unknown function")`) and reads no word of an error, so an address that
+drops the data gives a failed read of every listing's page there, and never a listing on hold
+shown as one that is not. The nodes behind the address are taken to agree on the chain; what the page
 holds all the same, and the case that is left, are under "The page reads; it does not watch"
 above. Without a read address the page's reads go through the visitor's wallet, by block number,
 and what they show of a hold is not tied to a block's hash: it stands on the nodes behind the

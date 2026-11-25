@@ -837,11 +837,18 @@ test.describe('the maker\'s hold', () => {
 
   test('an action still out when a read says "no such listing" asks for another read: the page says it is reading, and offers Read again by the floor (R2-F2)', async ({ page, stack, chain }) => {
     test.setTimeout(120_000);
-    const { listingId } = await chain.openListing({ recipient: key.recipient, spec: { repo: ownRepo('still-out') } });
+    const { listingId } = await chain.openListing({ recipient: key.recipient, fund: false, spec: { repo: ownRepo('still-out') } });
     await installWallet(page, stack);
     await page.goto(`/#/fund/${listingId}`);
-    await connect(page, stack.accounts.maker);
-    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
+    // the listing is opened from this page, so the opening's own line is on it (what becomes of it: R5-F4, at the end)
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Listed);
+    const openingForm = [page.getByLabel(STRINGS.chain.escrow, { exact: true }), page.getByRole('button', { name: STRINGS.chain.fund })];
+    for (const part of openingForm) await expect(part).toBeVisible();
+    await openingForm[1].click();
+    await expect(page.getByTestId('opened')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('wallet')).toHaveText(fill(STRINGS.wallet.connected, { account: stack.accounts.maker }));
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open, { timeout: 30_000 });
+    for (const part of openingForm) await expect(part).toHaveCount(0);
     await expect(renewButton(page, stack)).toBeEnabled();
     const start = await chain.provider.send('eth_getBlockByNumber', ['latest', false]);
     // The wallet's node holds back the receipt of the first transaction it is asked about: the renewal, which stays out.
@@ -894,6 +901,11 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open, { timeout: 30_000 });
     await expect(behind).toHaveCount(0);
     await expect(page.getByText(fill(F.notFound, { id: listingId }))).toHaveCount(0);
+    // The opening's own line went with the listing when the page took "no such listing". The listing read again is
+    // drawn from that read: it is Open, so nothing on the page offers to open it (R5-F4).
+    await expect(page.getByTestId('top-up')).toBeVisible();
+    await expect(page.getByTestId('opened')).toHaveCount(0);
+    for (const part of openingForm) await expect(part).toHaveCount(0);
   });
 
   // ---------------------------------------------------------------- one read is one block
@@ -1108,6 +1120,19 @@ test.describe('the maker\'s hold', () => {
     // and the open listing itself is drawn as before: it is not on hold
     await expect(page.getByTestId('listing-held')).toHaveCount(0);
     await expect(page.getByTestId('listing-summary').locator('.pill-ok')).toHaveCount(1);
+
+    // The held listing's own page, by an address that writes its id with leading zeros (R5-F1). An id is one listing's
+    // in one form: the page reads that listing, says its number as the chain has it, and never lists it among the
+    // other listings of its own repository. Not the line, and not the hold that line would say.
+    await page.goto(`/#/fund/00${held.listingId}`);
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+    const others = page.getByTestId('same-repository');
+    await expect(others.getByTestId(`same-repository-${open.listingId}`)).toBeVisible();
+    await expect(others.getByTestId(`same-repository-${held.listingId}`)).toHaveCount(0);
+    await expect(others.locator(`a[href="#/fund/${held.listingId}"]`)).toHaveCount(0);
+    expect(await others.innerText()).not.toContain(hint);
+    await expect(page.getByTestId('listing-summary').getByRole('heading')).toHaveText(fill(F.summary, { id: held.listingId }));
+    expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
   });
 
   test('on hold: the queue counts late claims with the claims from before the hold, and a claim\'s reveal text still names the roll-forward', async ({ page, stack, chain }) => {

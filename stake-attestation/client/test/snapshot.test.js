@@ -8,7 +8,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-import { SNAPSHOT_TRIES, SnapshotError, siteReader, snapshot } from '../src/chain/snapshot.js';
+import * as snapshots from '../src/chain/snapshot.js';
+import { WalletError } from '../src/chain/wallet.js';
+
+const { SNAPSHOT_TRIES, SnapshotError, siteReader } = snapshots;
+/** The site's chain in these tests (the build's VITE_SA_CHAIN_ID on a page), and another network a wallet can be on. */
+const SITE_CHAIN = 31337;
+const OTHER_CHAIN = 8453;
+/** `snapshot` as a page of a site on SITE_CHAIN calls it: a test has no build variables, so the chain is given here. */
+const snapshot = (provider, read, o = {}) => snapshots.snapshot(provider, read, { chainId: SITE_CHAIN, ...o });
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const hash = (byte) => `0x${byte.repeat(32)}`;
@@ -19,20 +27,23 @@ const TX = { to: '0x00000000000000000000000000000000000000aa', data: '0x1234' };
 
 /**
  * A node: `blocks` maps a height to its hash and may be changed by a test at any moment, as a node does when it
- * replaces a block. `call(selector, tx)` answers an eth_call, or throws. `asked` records every request.
+ * replaces a block. `call(selector, tx)` answers an eth_call, or throws. `asked` records every header asked for,
+ * `methods` every request in order, and `chainId` is what it answers eth_chainId with (a function is called for it).
  */
 function node(head, blocks, call = () => '0x01') {
-  const state = { head, blocks: { ...blocks }, parents: {}, asked: [], calls: [] };
+  const state = { head, blocks: { ...blocks }, parents: {}, asked: [], calls: [], methods: [], chainId: hex(SITE_CHAIN) };
   // `parents[n]`: the parent hash block n names (a node's header always has one; these tests give it where it matters)
   const header = (n) => (state.blocks[n] ? { number: hex(n), hash: state.blocks[n], parentHash: state.parents[n], timestamp: hex(1_800_000_000 + n) } : null);
   return {
     state,
     provider: {
       async send(method, params) {
+        state.methods.push(method);
         if (method === 'eth_call') {
           state.calls.push(params[1]);
           return call(params[1], params[0], state);
         }
+        if (method === 'eth_chainId') return typeof state.chainId === 'function' ? state.chainId() : state.chainId;
         assert.equal(method, 'eth_getBlockByNumber');
         assert.equal(params[1], false);
         state.asked.push(params[0]);
@@ -185,6 +196,145 @@ test('snapshot, a wallet\'s node: every call is made by the block\'s number, nev
   const failing = wallet(90, { 90: hash('a1') }, () => { throw callError(-32603, 'Internal error'); });
   await assert.rejects(snapshot(failing.provider, async (at) => at.call(TX)), (err) => err.info.error.message === 'Internal error');
   assert.deepEqual(failing.state.calls, [hex(90)]);
+});
+
+// ---------------------------------------------------------------- a wallet's node is held to the site's chain
+// A wallet can change network at any moment, and its provider goes with it: the next request is answered by the other
+// network. A read made through it is of the site's chain or it is no read (PR 242, R5-F2): another network can have a
+// contract at the same address, with a listing under the same id.
+/** A wallet between networks: each request goes to the node of the network it is on when the request is made. */
+function between(networks, on) {
+  const state = { on };
+  return { to: (name) => { state.on = name; }, provider: { send: (method, params) => networks[state.on].provider.send(method, params) } };
+}
+const wrongChain = (actual, expected = SITE_CHAIN) => (err) => err instanceof WalletError && err.code === 'wrongChain'
+  && Object.is(err.vars.actual, actual) && err.vars.expected === expected;
+
+test('snapshot, a wallet\'s node: a wallet that changes network during a read fails the read, and no try is made on the other network (R5-F2)', async () => {
+  // The other network has its own block at the height, and a contract at the address that answers every call. The
+  // hashes disagree, so the try is not one block's; made again, the read would be the other network's from end to end.
+  for (const [when, before] of [['before the calls of the first try', true], ['after them', false]]) {
+    const here = wallet(90, { 90: hash('a1') }, () => '0x01');
+    const there = wallet(90, { 90: hash('b2') }, () => '0x02');
+    there.state.chainId = hex(OTHER_CHAIN);
+    const w = between({ here, there }, 'here');
+    let tries = 0;
+    await assert.rejects(
+      snapshot(w.provider, async (at) => {
+        tries += 1;
+        if (before) w.to('there');
+        const answer = await at.call(TX);
+        w.to('there');
+        return answer;
+      }),
+      wrongChain(OTHER_CHAIN),
+      when,
+    );
+    assert.equal(tries, 1, `${when}: the read is not made again on the other network`);
+    // all the other network was asked after the switch: the closing header and its chain. No latest block of its own.
+    assert.deepEqual(there.state.asked, [hex(90)], when);
+    assert.deepEqual(there.state.methods, [...(before ? ['eth_call'] : []), 'eth_getBlockByNumber', 'eth_chainId'], when);
+  }
+  // A network that has the very block at that height (a fork of the site's chain under another chain id): the hashes
+  // agree, and the read is not taken all the same.
+  const site90 = wallet(90, { 90: hash('a1') }, () => '0x01');
+  const fork = wallet(90, { 90: hash('a1') }, () => '0x02');
+  fork.state.chainId = hex(OTHER_CHAIN);
+  const w = between({ site90, fork }, 'site90');
+  await assert.rejects(snapshot(w.provider, async (at) => { w.to('fork'); return at.call(TX); }), wrongChain(OTHER_CHAIN));
+  // The same when the read itself failed on the other network: what is said is the network, not that failure.
+  const refusing = wallet(90, { 90: hash('a1') }, () => { throw callError(3, 'execution reverted'); });
+  refusing.state.chainId = hex(OTHER_CHAIN);
+  const w2 = between({ site90, refusing }, 'site90');
+  await assert.rejects(snapshot(w2.provider, async (at) => { w2.to('refusing'); return at.call(TX); }), wrongChain(OTHER_CHAIN));
+});
+
+test('snapshot, a wallet\'s node: it is asked its chain after the calls of every try, and anything but the site\'s chain is a failed read', async () => {
+  // a wallet that stays on the site's chain reads as before: the header, the calls, the header again, and then its chain
+  const { provider, state } = wallet(90, { 90: hash('a1') });
+  assert.deepEqual(await snapshot(provider, async (at) => [await at.call(TX), await at.call(TX)]), { value: ['0x01', '0x01'], block: 90, blockHash: hash('a1') });
+  assert.deepEqual(state.methods, ['eth_getBlockByNumber', 'eth_call', 'eth_call', 'eth_getBlockByNumber', 'eth_chainId']);
+  // in every try: a block replaced under the first try is read again, on the same chain
+  const moving = wallet(90, { 90: hash('a1') });
+  let tries = 0;
+  await snapshot(moving.provider, async (at) => {
+    tries += 1;
+    if (tries === 1) moving.state.blocks[90] = hash('a2');
+    return at.call(TX);
+  });
+  assert.deepEqual(moving.state.methods.filter((m) => m !== 'eth_call'), ['eth_getBlockByNumber', 'eth_getBlockByNumber', 'eth_chainId', 'eth_getBlockByNumber', 'eth_getBlockByNumber', 'eth_chainId']);
+  // on another network from the start, or one that says anything else of its chain: no read, whatever its blocks say
+  for (const [said, actual] of [[hex(OTHER_CHAIN), OTHER_CHAIN], ['0x1', 1], ['0x', NaN], ['', 0], [null, 0], [undefined, NaN], ['base', NaN]]) {
+    const elsewhere = wallet(90, { 90: hash('a1') });
+    elsewhere.state.chainId = said;
+    await assert.rejects(snapshot(elsewhere.provider, async (at) => at.call(TX)), wrongChain(actual), JSON.stringify(said));
+  }
+  // a wallet that does not answer for its chain: a failed read, with the wallet's own failure
+  const silent = wallet(90, { 90: hash('a1') });
+  silent.state.chainId = () => { throw new Error('the wallet is locked'); };
+  await assert.rejects(snapshot(silent.provider, async (at) => at.call(TX)), /the wallet is locked/);
+  // a site whose chain is not configured holds a wallet to no chain: nothing is read through one
+  const unconfigured = wallet(90, { 90: hash('a1') });
+  await assert.rejects(snapshot(unconfigured.provider, async (at) => at.call(TX), { chainId: null }), wrongChain(SITE_CHAIN, null));
+  // The site's read address is not asked: it is one chain's by how it was made (chain/wallet.js chainReader).
+  const address = site(90, { 90: hash('a1') });
+  await snapshot(address.provider, async (at) => at.call(TX));
+  assert.deepEqual(address.state.methods, ['eth_getBlockByNumber', 'eth_call', 'eth_getBlockByNumber']);
+});
+
+test('snapshot, a wallet\'s node: a try the wallet said it changed network during is not taken, though it is back on the site\'s chain when asked (R5-F2)', async () => {
+  assert.equal(typeof snapshots.walletSwitched, 'function', 'chain/snapshot.js is told of the wallet\'s network changes');
+  const networks = () => {
+    const here = wallet(90, { 90: hash('a1') }, () => '0x01');
+    const there = wallet(90, { 90: hash('b2') }, () => '0x02');
+    there.state.chainId = hex(OTHER_CHAIN);
+    return between({ here, there }, 'here');
+  };
+  // as chain/wallet.js does when the wallet emits chainChanged
+  const announced = (w, name) => { w.to(name); snapshots.walletSwitched(); };
+  // away for the calls and back before the closing header: both headers are the site's block, and so is the chain
+  // when it is asked. The answers are the other network's. The try is not taken, and the read is made again.
+  const once = networks();
+  let tries = 0;
+  const got = await snapshot(once.provider, async (at) => {
+    tries += 1;
+    if (tries > 1) return at.call(TX);
+    announced(once, 'there');
+    const answer = await at.call(TX);
+    announced(once, 'here');
+    return answer;
+  });
+  assert.deepEqual(got, { value: '0x01', block: 90, blockHash: hash('a1') });
+  assert.equal(tries, 2);
+  // a wallet that does so during every try: after the fixed number of tries the read fails, and nothing is returned
+  const always = networks();
+  tries = 0;
+  await assert.rejects(
+    snapshot(always.provider, async (at) => {
+      tries += 1;
+      announced(always, 'there');
+      const answer = await at.call(TX);
+      announced(always, 'here');
+      return answer;
+    }),
+    (err) => err instanceof SnapshotError,
+  );
+  assert.equal(tries, SNAPSHOT_TRIES);
+  // a change reported between two reads is no part of either
+  snapshots.walletSwitched();
+  const calm = wallet(90, { 90: hash('a1') });
+  assert.equal((await snapshot(calm.provider, async (at) => at.call(TX))).value, '0x01');
+  assert.deepEqual(calm.state.asked, ['latest', hex(90)]);
+  // the site's read address is not the wallet's: a wallet's change of network is nothing to a read made there
+  const address = site(90, { 90: hash('a1') });
+  assert.equal((await snapshot(address.provider, async (at) => { snapshots.walletSwitched(); return at.call(TX); })).value, '0x01');
+  assert.deepEqual(address.state.asked, ['latest', hex(90)]);
+  // chain/wallet.js hears the wallet where a wallet's provider is made, by one listener per wallet
+  const made = read('../src/chain/wallet.js');
+  assert.match(made, /function hearWallet\(\) \{\s*if \(heard === window\.ethereum\) return;\s*heard = window\.ethereum;\s*heard\.on\?\.\('chainChanged', walletSwitched\);\s*\}/);
+  assert.equal(made.split('hearWallet();').length - 1, 2, 'on connecting, and for the reader of a site with no read address');
+  assert.match(made, /if \(!hasWallet\(\)\) throw new WalletError\('none'\);\s*hearWallet\(\);/);
+  assert.match(made, /else if \(hasWallet\(\)\) \{\s*hearWallet\(\);/);
 });
 
 test('snapshot: how a provider is asked is where it was made, and no answer changes it', async () => {

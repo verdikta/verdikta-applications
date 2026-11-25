@@ -191,7 +191,8 @@ test('the page draws what it says from that function alone, and is told by every
   const page = component('FundPage.jsx');
   // one record, moved on in one place, and one function that reads it
   assert.match(page, /const record = useRef\(NOTHING_READ\);/);
-  assert.match(page, /const happened = useCallback\(\(event\) => \{\s*record\.current = pageAfter\(record\.current, event\);\s*redraw\(\(n\) => n \+ 1\);\s*\}, \[\]\);/);
+  // (the one thing done beside it: an accepted "no such listing" takes the opening's own line with the listing, R5-F4)
+  assert.match(page, /const happened = useCallback\(\(event\) => \{\s*record\.current = pageAfter\(record\.current, event\);\s*\/\/[^\n]*\n\s*if \(record\.current\.read\?\.missing\) setOpenedHere\(false\);\s*redraw\(\(n\) => n \+ 1\);\s*\}, \[\]\);/);
   assert.equal(page.split('record.current =').length - 1, 1, 'the record is written in one place');
   assert.match(page, /const loaded = record\.current\.read;[^\n]*\n\s*const says = pageSays\(record\.current\);/);
   assert.doesNotMatch(page, /setLoaded|useState\(null\)/, 'no second copy of the read');
@@ -355,6 +356,11 @@ test('the lines of the page\'s other actions for their own transactions are the 
   assert.match(page, /\{\(state === 'Listed' \|\| openedHere\) && <FundListing /);
   assert.equal(page.split(/\bopenedHere\b/).length - 1, 2, 'declared, and used to keep the line: nowhere near the state');
   assert.doesNotMatch(page, /openedHere \? 'Open'/);
+  // The line is kept while its listing is on the page, and no longer (R5-F4): a read that says no listing is here
+  // takes it, where the record takes that read. A listing read after that is drawn from its read alone: Open, it has
+  // no opening form. Set true by the opening's receipt, false by that read, and by nothing else.
+  assert.deepEqual(page.match(/setOpenedHere\((?:true|false)\)/g), ['setOpenedHere(false)', 'setOpenedHere(true)']);
+  assert.equal(page.split('setOpenedHere(').length - 1, 2);
 });
 
 test('the page keeps no receipt to check against later reads: nothing of that mechanism is left in the client', () => {
@@ -407,6 +413,12 @@ test('the README and the deploy notes say the rule, and what the page assumes of
   assert.match(reads, /where a read address is configured \(`VITE_SA_RPC_URL`\): a hold's state and its next step, as the page shows them, come from one read tied to one block's hash, and a node without that block refuses the read/);
   assert.match(reads, /A wallet's node is asked by the block's number, so none of that is held for it/);
   assert.match(reads, /stand on the assumption alone, that the nodes behind the wallet's address agree on the chain/);
+  // R5-F2: a wallet's node is held to the site's chain in every read, and R5-F1: a listing's id has one form
+  const oneBlock = between('**One read is one block, and a block is its hash, never its number**', '**The page reads; it does not watch.**');
+  assert.match(oneBlock, /A wallet can change network at any moment, so a read through one is also held to the site's chain \(`VITE_SA_CHAIN_ID`\): the wallet is asked its chain after the calls of every try, and any other chain is a failed read, said with the wallet's wrong-network message and never made again on that network/);
+  assert.match(oneBlock, /A try during which the wallet reported a change of network \(its `chainChanged` event\) is not taken either/);
+  assert.match(reads, /Such a read is held to the site's chain all the same/);
+  assert.match(readme, /The id in the address is read once and has one form from there on, the decimal number with no leading zeros: `#\/fund\/001` is the page of listing 1/);
   const config = between('**Config** is Vite\'s build environment', '**Wording.**');
   assert.match(config, /The nodes behind the address are taken to agree on the chain/);
   // R2-F1: how the page knows a contract has no hold, said as it is: the revert's data, or the contract's one reason

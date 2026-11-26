@@ -1,6 +1,7 @@
 import { Fragment, useId } from 'react';
 
 import { disclosureRecipientOf } from '../lib/disclosure.js';
+import { formatTime } from '../lib/format.js';
 import { pieces } from '../lib/pieces.js';
 import { STRINGS, fill } from '../strings.js';
 import { StatePill } from './Awards.jsx';
@@ -54,15 +55,15 @@ export function DisclosureKeyForms({ bytes32, recipient = null, testId }) {
 
 /**
  * One other listing's line, the link to its page. The text is the line of strings.js; its commit is drawn in
- * monospace and its state as a pill, green only for a listing that takes claims here: open, its fee paid, and
- * offered by this site.
+ * monospace and its state as a pill, green only for a listing that takes claims here: open, its fee paid, not on
+ * hold (node P42), and offered by this site.
  */
 function OtherListing({ x }) {
   const line = pieces(S.line, { id: x.listingId, commit: x.baseCommit ?? S.none, state: STRINGS.fund.states[x.state] ?? x.state });
   return (
     <a className="same-line" href={x.page}>
       {line.map((p, i) => {
-        if (p.name === 'state') return <StatePill key="state" state={x.lapsed || !x.counted ? null : x.state} text={p.value} />;
+        if (p.name === 'state') return <StatePill key="state" state={x.lapsed || !x.counted || x.heldAt !== null ? null : x.state} text={p.value} />;
         // the words that lead to the state: in the text, not drawn beside a pill
         if (p.text && line[i + 1]?.name === 'state') return <span key={i} className="sep">{p.text}</span>;
         return <span key={p.name ?? i} className={p.name === 'commit' && x.baseCommit ? 'same-text mono' : 'same-text'}>{p.text ?? p.value}</span>;
@@ -79,6 +80,7 @@ export function SameRepositoryList({ list }) {
       {list.map((x) => (
         <li key={x.listingId} data-testid={`same-repository-${x.listingId}`}>
           <OtherListing x={x} />
+          {x.heldAt !== null && <span className="hint" data-testid={`same-repository-${x.listingId}-held`}> ({fill(S.held, { time: formatTime(x.heldAt) })})</span>}
           {x.lapsed && <span className="hint"> ({S.lapsed})</span>}
           {!x.counted && <span className="hint"> ({S.notCounted})</span>}
         </li>

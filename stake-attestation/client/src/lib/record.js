@@ -10,12 +10,19 @@ const DAY = 86400;
 const time = (s) => (BigInt(s) === 0n ? null : Number(s));
 const isZeroHash = (h) => /^0x0{64}$/.test(h);
 
-/** The stake label first, then invited and lapsed; 'noPrice' when the server could not price it. */
+/** A listing's hold as the server says it (node P40): unix seconds while it is on hold, else null. An answer without it: null. */
+const heldAtOf = (x) => (typeof x?.heldAt === 'number' ? x.heldAt : null);
+
+/**
+ * The stake label first, then invited, on hold (node P42: its maker holds it, by the server's labels) and lapsed;
+ * 'noPrice' when the server could not price it.
+ */
 function labelsOf(listing, label) {
   const out = [];
   if (label?.stake) out.push(label.stake);
   else if (label?.error) out.push('noPrice');
   if (listing.invited) out.push('invited');
+  if (heldAtOf(label) !== null) out.push('held');
   if (listing.lapsed) out.push('lapsed');
   return out;
 }
@@ -77,6 +84,9 @@ function listingView(l, label, blockTimestamp, control, integrity, documents) {
     listedAt: time(l.listedAt),
     openedAt: opened,
     fundedUntil: time(l.fundedUntil),
+    // node P42: since when its maker has it on hold, from the server's labels (the record itself is the lens's answer,
+    // and a listing on hold reads Open or Depleted there); null when it is not on hold
+    heldAt: heldAtOf(label),
     rolledAt: time(l.rolledAt),
     closedAt: time(l.closedAt),
     daysOpen: Math.max(0, Math.floor((end - opened) / DAY)),
@@ -182,7 +192,7 @@ export function recordView(view) {
       verdict: time(f.judgedAt) === null ? null : { outcome: f.outcome, at: Number(f.judgedAt) },
     })),
     notCounted: {
-      listings: (view.notCounted?.listings ?? []).map((l) => ({ id: String(l.listingId), maker: l.maker, state: l.state, reason: l.reason, detail: l.detail ?? null, control: view.control?.[String(l.listingId)] ?? NOT_CHECKED })),
+      listings: (view.notCounted?.listings ?? []).map((l) => ({ id: String(l.listingId), maker: l.maker, state: l.state, heldAt: heldAtOf(l), reason: l.reason, detail: l.detail ?? null, control: view.control?.[String(l.listingId)] ?? NOT_CHECKED })),
       findings: (view.notCounted?.findings ?? []).length,
     },
     block,

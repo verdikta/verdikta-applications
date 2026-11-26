@@ -272,9 +272,9 @@ export function RollForward({ listingId, listing, record, recordReading = false,
 /**
  * Whether the site offers a commit on this listing: only on one that counts and takes commits now (node P47).
  * `takesCommits` is the contract's acceptsCommits as the page read it, in the snapshot it read the listing in: that
- * one value decides both the sentence and `data-offered`. A listing that counts and takes none says so in one
- * sentence: the hold's while its maker has it on hold (node P42; `held`, of the same read), and otherwise only that it
- * takes none, with no reason by state. While the page knows that read is behind (`quiet`), the section says nothing.
+ * one value decides both what the section says and `data-offered`. A listing that counts and takes none says so: in
+ * the hold's own text while its maker has it on hold (node P42; `held`, of the same read), and otherwise in one
+ * sentence, with no reason by state. While the page knows that read is behind (`quiet`), the section says nothing.
  */
 function CommitOffer({ data, takesCommits = false, held = false, quiet = false }) {
   const id = useId();

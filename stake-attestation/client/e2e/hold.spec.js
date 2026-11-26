@@ -1090,26 +1090,36 @@ test.describe('the maker\'s hold', () => {
     // (the site's list of the repository's other listings still names the held one, truly: it is another listing)
     await expect(page.getByTestId('hold').getByTestId('hold-since')).toHaveCount(0);
     await expect(page.getByTestId('hold').getByTestId('hold-warning')).toBeVisible();
-    await expect(page.getByTestId('commit-offer')).not.toContainText(STRINGS.offer.held);
+    // The Commits section, whole. The site's record is the standing chain's, where this id is the listing on hold: it
+    // has no listing of the replacing chain's hash under the id, so the page says the listing does not count, and
+    // never the hold's text, whatever the listing takes. The next cases hold what a listing takes to the replaced
+    // block, where the record counts the listing.
+    await expectCommitOffer(page, chain, other.listingId, { takes: true, text: fill(O.no, { reason: STRINGS.notCounted.none }), offered: false });
     expect(await page.getByTestId('roll-forward').getByTestId('roll-hold-first').innerText()).toBe(RF.hold.first);
   });
 
-  test('a block replaced under the page\'s read: what the listing takes is never the replaced block\'s (node P47)', async ({ page, stack, chain }) => {
-    // the chain as it stands: the listing is on hold, and takes no commits
+  // Node P47, both ways. The block the page reads first is one the node then replaces, and what that block said of the
+  // listing is the opposite of what the chain says: the page says the chain's, by the node's own answer and the
+  // site's record of that listing.
+  for (const [what, onHold] of [
+    ['on hold on the chain, taking commits in the replaced block', true],
+    ['taking commits on the chain, on hold in the replaced block', false],
+  ]) test(`a block replaced under the page's read: what the listing takes is never the replaced block's (node P47): ${what}`, async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
-    const heldAt = await holdOnChain(chain, stack, listingId);
-    // the block the page reads first is one the node then replaces: in it the listing was not on hold, and took commits
+    const heldAt = onHold ? await holdOnChain(chain, stack, listingId) : 0n;
+    // the replaced block's answers: not on hold and taking commits, or on hold (since a time of its own) and taking none
+    const was = onHold ? { hold: word(0), takes: word(1) } : { hold: word(1_800_000_000), takes: word(0) };
     let moved = false;
     const replaced = { hold: 0, takes: 0 };
     await installWallet(page, stack);
     await interceptRpc(page, stack, async (p) => {
       if (isHeldAtCall(p) && !moved) {
         replaced.hold += 1;
-        return { result: word(0) };
+        return { result: was.hold };
       }
       if (isAcceptsCommitsCall(p) && !moved) {
         replaced.takes += 1;
-        return { result: word(1) };
+        return { result: was.takes };
       }
       // the block at that height has another hash when the page asks again after the first try's calls
       if (p.method === 'eth_getBlockByNumber' && p.params?.[0] !== 'latest' && !moved) {
@@ -1120,13 +1130,21 @@ test.describe('the maker\'s hold', () => {
       return undefined;
     }, { from: 'reader' });
     await page.goto(`/#/fund/${listingId}`);
-    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
     // the page did read the replaced block's answers, once each, and says neither: the read was made again
     expect(moved).toBe(true);
     expect(replaced).toEqual({ hold: 1, takes: 1 });
-    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false });
-    await expect(page.getByTestId('listing-open-until')).toHaveCount(0);
-    expect(await page.locator('main').innerText()).not.toMatch(/offers it to hunters/i);
+    if (onHold) {
+      await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+      await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false });
+      await expect(page.getByTestId('listing-open-until')).toHaveCount(0);
+      expect(await page.locator('main').innerText()).not.toMatch(/offers it to hunters/i);
+    } else {
+      for (const id of ['listing-held', 'listing-held-since']) await expect(page.getByTestId(id)).toHaveCount(0);
+      await expect(page.getByTestId('hold').getByTestId('hold-since')).toHaveCount(0);
+      await expect(page.getByTestId('listing-open-until')).toBeVisible();
+      await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
+    }
   });
 
   test('a node that does not have the block the page named refuses the page\'s calls: a failed read, and nothing read by number in its place', async ({ page, stack, chain }) => {

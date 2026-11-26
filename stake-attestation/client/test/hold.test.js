@@ -507,7 +507,7 @@ test('once on hold, the page says so with the time, from its read, and still off
   assert.match(body, /if \(!off && hold\.held\) \{\s*body = \(\s*<>\s*<p data-testid="hold-since">\{fill\(H\.since, \{ time: formatTime\(hold\.heldAt\) \}\)\}<\/p>\s*<p className="hint">\{H\.next\}<\/p>/);
   // The commit offer never says the site offers a listing on hold. Since node P47 "offered" is the contract's
   // acceptsCommits, as the page read it with the listing, and a hold turns that false; a counted listing that takes
-  // no commits says the hold's sentence while it is on hold, and otherwise only that it takes none
+  // no commits says the hold's own text while it is on hold, and otherwise only that it takes none
   // (test/commitOffer.test.js has the rule whole).
   const extras = component('ListingExtras.jsx');
   const offer = extras.slice(extras.indexOf('function CommitOffer('), extras.indexOf('\n}\n', extras.indexOf('function CommitOffer(')));

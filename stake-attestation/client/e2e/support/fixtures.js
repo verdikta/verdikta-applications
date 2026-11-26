@@ -144,12 +144,13 @@ export const isHeldAtCall = isCallOf('heldAt(uint256)');
 export const isAcceptsCommitsCall = isCallOf('acceptsCommits(uint256)');
 
 /**
- * Node P47: the "Commits" section of a listing's own page, held to the chain. The contract's acceptsCommits(listingId)
- * answers `takes` now (asked of the node itself: ethers answers a call it made in the last 250 ms from memory); the
- * section is one paragraph, whose visible text is `text`, whole; and its data-offered is `offered`. `shotAs` names a
- * screenshot of the section for the PR.
+ * Node P47: the "Commits" section of a listing's own page, held to the chain. The page is that listing's, by its
+ * address; the contract's acceptsCommits(listingId) answers `takes` now (asked of the node itself: ethers answers a
+ * call it made in the last 250 ms from memory); the section is one paragraph, whose visible text is `text`, whole; and
+ * its data-offered is `offered`. `shotAs` names a screenshot of the section for the PR.
  */
 export async function expectCommitOffer(page, chain, listingId, { takes, text, offered, shotAs = null }) {
+  expect(new URL(page.url()).hash, 'the page is the listing\'s own, and the chain is asked of that listing').toBe(`#/fund/${listingId}`);
   const data = chain.sa.interface.encodeFunctionData('acceptsCommits', [listingId]);
   const answer = await chain.provider.send('eth_call', [{ to: await chain.sa.getAddress(), data }, 'latest']);
   expect(chain.sa.interface.decodeFunctionResult('acceptsCommits', answer)[0], `acceptsCommits(${listingId}) on the chain`).toBe(takes);

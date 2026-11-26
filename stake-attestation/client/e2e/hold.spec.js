@@ -14,7 +14,7 @@ import { Interface } from 'ethers';
 import { formatEth } from '../src/lib/format.js';
 import { STRINGS, fill } from '../src/strings.js';
 import { AFTER_TX_READS } from '../src/lib/poll.js';
-import { REFUSED_CALL, answerHeldAt, archiveBytes, disclosure, expect, installWallet, interceptRpc, isHeldAtCall, shot, test } from './support/fixtures.js';
+import { REFUSED_CALL, answerHeldAt, archiveBytes, disclosure, expect, expectCommitOffer, installWallet, interceptRpc, isAcceptsCommitsCall, isHeldAtCall, shot, test } from './support/fixtures.js';
 import { field } from './support/listingForm.js';
 import { wordingProblems } from './support/wording.js';
 
@@ -22,6 +22,7 @@ const H = STRINGS.hold;
 const F = STRINGS.fund;
 const RF = STRINGS.roll;
 const C = STRINGS.claim;
+const O = STRINGS.offer;
 const at = (seconds) => new Date(Number(seconds) * 1000).toISOString().replace('.000Z', 'Z');
 const useAccount = (page, account, o) => page.evaluate(([a, opts]) => window.__testWallet.setAccount(a, opts), [account, o]);
 async function connect(page, account) {
@@ -120,6 +121,8 @@ test.describe('the maker\'s hold', () => {
     expect(await section.getByTestId('hold-late').innerText()).toBe(H.late);
     await expect(section.getByTestId('hold-maker-only')).toHaveText(H.makerOnly);
     await expect(section.getByRole('button')).toHaveCount(0);
+    // node P47: open and taking commits, so the site offers it
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true, shotAs: 'commit-offer-yes' });
     // another wallet, connected: the same, and no action
     await connect(page, stack.accounts.other);
     await expect(section.getByTestId('hold-maker-only')).toHaveText(H.makerOnly);
@@ -209,7 +212,7 @@ test.describe('the maker\'s hold', () => {
     await expect(section.getByRole('button')).toHaveCount(0);
     await expect(section.getByTestId('hold-warning')).toHaveCount(0);
     // every sentence about taking claims: the commit offer, the renewal, the order that is left
-    await expect(page.getByTestId('commit-offer')).toContainText(STRINGS.offer.held);
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false, shotAs: 'commit-offer-held' });
     await expect(page.getByTestId('renew').getByTestId('renew-held')).toHaveText(STRINGS.renew.held);
     expect(await roll.getByTestId('roll-hold-first').innerText()).toBe(fill(RF.hold.held, { time: at(heldAt) }));
     expect(await lines(roll.getByTestId('roll-hold-order'))).toEqual([RF.hold.close]);
@@ -237,6 +240,8 @@ test.describe('the maker\'s hold', () => {
     await expect(renew.getByTestId('renew-period')).toHaveText(fill(STRINGS.renew.lapsedHeld, { time: at(held.fundedUntil) }));
     await expect(renew.getByTestId('renew-held')).toHaveText(STRINGS.renew.held);
     await expect(renew).not.toContainText('until it is renewed');
+    // its paid period over and on hold: the sentence is the hold's
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false });
     await renew.getByRole('button', { name: fill(STRINGS.renew.button, { fee: formatEth(BigInt(stack.listingFeeWei)) }) }).click();
     await expect(renew.getByTestId('renewed')).toBeVisible({ timeout: 30_000 });
     expect((await chain.sa.getListing(listingId)).fundedUntil > held.fundedUntil).toBe(true);
@@ -244,6 +249,7 @@ test.describe('the maker\'s hold', () => {
     expect(await chain.sa.heldAt(listingId)).toBe(heldAt);
     await expect(page.getByTestId('listing-held')).toBeVisible({ timeout: 30_000 });
     await expect(renew.getByTestId('renew-held')).toHaveText(STRINGS.renew.held);
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false });
 
     // the site's record says it too, with the same time
     await chain.until(async () => (await api(stack, `/api/records/${artifactHash}`))?.labels.listings[String(listingId)]?.heldAt === Number(heldAt), { what: 'the record\'s heldAt' });
@@ -285,7 +291,8 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-held')).toHaveCount(0);
     await expect(page.getByTestId('listing-held-since')).toHaveCount(0);
     await expect(page.getByTestId('hold')).toHaveCount(0);
-    await expect(page.getByTestId('commit-offer')).not.toContainText(STRINGS.offer.held);
+    // node P47: Rolled, so it takes no commits, and the sentence is no longer the hold's
+    await expectCommitOffer(page, chain, first.listingId, { takes: false, text: O.notTaking, offered: false });
     await expect(page.getByTestId('listing-behind')).toHaveCount(0);
     // the roll's own line stays where the panel was
     await expect(page.getByTestId('rolled')).toContainText(`listing ${successor.listingId}`);
@@ -306,7 +313,8 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed, { timeout: 30_000 });
     await expect(page.getByTestId('listing-held')).toHaveCount(0);
     await expect(page.getByTestId('hold')).toHaveCount(0);
-    await expect(page.getByTestId('commit-offer')).not.toContainText(STRINGS.offer.held);
+    // node P47: Closed, so it takes no commits, and the sentence is no longer the hold's
+    await expectCommitOffer(page, chain, other.listingId, { takes: false, text: O.notTaking, offered: false });
     // the close's own line stays through that read
     await expect(close.getByTestId('closed')).toContainText(`${escrow} ETH of escrow went back to ${stack.accounts.maker}.`);
   });
@@ -1048,19 +1056,24 @@ test.describe('the maker\'s hold', () => {
 
   // ---------------------------------------------------------------- one read is one block
   test('a block replaced under the page\'s read: the listing of one chain is never shown with the hold of the other', async ({ page, stack, chain }) => {
-    const held = await chain.openListing({ recipient: key.recipient });
-    await holdOnChain(chain, stack, held.listingId);
-    // what the replacing chain has under that id: another of the maker's listings, open and not on hold
-    const other = await chain.openListing({ recipient: key.recipient });
-    const mine = await listingCall(chain, held.listingId);
-    const theirs = await listingCall(chain, other.listingId);
+    // what the chain has under the id: an open listing of the maker's, not on hold, taking commits
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    const shown = await chain.sa.getListing(listingId);
+    // The block the page reads first is one the node then replaces: there the listing under the id was on hold, and
+    // took no commits. The listing is the chain's from the first call (the node's own answer). Its hold, and what it
+    // takes (node P47), are still the replaced block's on the first try, and the chain's from then on.
     let moved = false;
+    const replaced = { hold: 0, takes: 0 };
     await installWallet(page, stack);
     await interceptRpc(page, stack, async (p) => {
-      // the listing under the id is the replacing chain's from the first call
-      if (isCallWith(mine.data)(p)) return { result: theirs.result };
-      // its hold is still the old block's on the first try (on hold), and the replacing chain's from then on
-      if (isHeldAtCall(p)) return moved ? { result: word(0) } : undefined;
+      if (isHeldAtCall(p) && !moved) {
+        replaced.hold += 1;
+        return { result: word(1_800_000_000) };
+      }
+      if (isAcceptsCommitsCall(p) && !moved) {
+        replaced.takes += 1;
+        return { result: word(0) };
+      }
       // the block at that height has another hash when the page asks again after the first try's calls
       if (p.method === 'eth_getBlockByNumber' && p.params?.[0] !== 'latest' && !moved) {
         moved = true;
@@ -1069,19 +1082,55 @@ test.describe('the maker\'s hold', () => {
       }
       return undefined;
     }, { from: 'reader' });
-    await page.goto(`/#/fund/${held.listingId}`);
-    // the page shows one block's answers: the replacing chain's listing, open, and nothing of the old block's hold
-    const shown = await chain.sa.getListing(other.listingId);
+    await page.goto(`/#/fund/${listingId}`);
+    // the page shows one block's answers: the chain's listing, open, and nothing of the replaced block's hold
     await expect(page.getByTestId('listing-summary')).toContainText(shown.listingCid);
     expect(moved).toBe(true);
+    // (it did read the replaced block's two answers, once each: the read was made again)
+    expect(replaced).toEqual({ hold: 1, takes: 1 });
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
     for (const id of ['listing-held', 'listing-held-since']) await expect(page.getByTestId(id)).toHaveCount(0);
     await expect(page.getByTestId('listing-open-until')).toBeVisible();
-    // (the site's list of the repository's other listings still names the held one, truly: it is another listing)
     await expect(page.getByTestId('hold').getByTestId('hold-since')).toHaveCount(0);
     await expect(page.getByTestId('hold').getByTestId('hold-warning')).toBeVisible();
-    await expect(page.getByTestId('commit-offer')).not.toContainText(STRINGS.offer.held);
+    // nor anything of what the replaced block said the listing takes (node P47): by the node's own answer for this
+    // id, and the site's record of this listing, the site offers it
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
     expect(await page.getByTestId('roll-forward').getByTestId('roll-hold-first').innerText()).toBe(RF.hold.first);
+  });
+
+  test('a block replaced under the page\'s read: a listing on hold is never shown as taking the commits the replaced block said it took (node P47)', async ({ page, stack, chain }) => {
+    // the case above, the other way. The chain as it stands: the listing is on hold, and takes no commits
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    const heldAt = await holdOnChain(chain, stack, listingId);
+    // in the block the page reads first, which the node then replaces, it was not on hold and took commits
+    let moved = false;
+    const replaced = { hold: 0, takes: 0 };
+    await installWallet(page, stack);
+    await interceptRpc(page, stack, async (p) => {
+      if (isHeldAtCall(p) && !moved) {
+        replaced.hold += 1;
+        return { result: word(0) };
+      }
+      if (isAcceptsCommitsCall(p) && !moved) {
+        replaced.takes += 1;
+        return { result: word(1) };
+      }
+      if (p.method === 'eth_getBlockByNumber' && p.params?.[0] !== 'latest' && !moved) {
+        moved = true;
+        const block = await ofNode(stack, p);
+        return { result: { ...block, hash: otherHash(block.hash) } };
+      }
+      return undefined;
+    }, { from: 'reader' });
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+    expect(moved).toBe(true);
+    expect(replaced).toEqual({ hold: 1, takes: 1 });
+    // by the node's own answer for this id: on hold, no commit, and nothing on the page says the site offers it
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false });
+    await expect(page.getByTestId('listing-open-until')).toHaveCount(0);
+    expect(await page.locator('main').innerText()).not.toMatch(/offers it to hunters/i);
   });
 
   test('a node that does not have the block the page named refuses the page\'s calls: a failed read, and nothing read by number in its place', async ({ page, stack, chain }) => {
@@ -1112,7 +1161,7 @@ test.describe('the maker\'s hold', () => {
     await installWallet(page, stack);
     // The site's read address has to take a block's hash on a call (deploy/client.env). One that does not is a
     // misconfiguration, and the page does not work around it: it never learns from the refusal to ask another way.
-    const ofTheListing = [isCallWith((await listingCall(chain, listingId)).data), isHeldAtCall];
+    const ofTheListing = [isCallWith((await listingCall(chain, listingId)).data), isHeldAtCall, isAcceptsCommitsCall];
     const asked = { byHash: 0, byNumber: 0 };
     const stop = await interceptRpc(page, stack, (p) => {
       if (p.method !== 'eth_call') return undefined;
@@ -1146,9 +1195,17 @@ test.describe('the maker\'s hold', () => {
   test('through a hold sent from the page: the listing and its hold are read from the read address by the block\'s hash, and from the wallet\'s node by its number alone', async ({ page, stack, chain }) => {
     const { listingId } = await chain.openListing({ recipient: key.recipient });
     await installWallet(page, stack);
-    const ofTheListing = [isCallWith((await listingCall(chain, listingId)).data), isHeldAtCall];
+    const isListingCall = isCallWith((await listingCall(chain, listingId)).data);
+    const ofTheListing = [isListingCall, isHeldAtCall, isAcceptsCommitsCall];
     const calls = { reader: [], wallet: [] };
-    await interceptRpc(page, stack, (p) => { if (ofTheListing.some((is) => is(p))) calls.reader.push(p.params[1]); return undefined; }, { from: 'reader' });
+    // node P47: the block each read of the listing named, and the block each read of what it takes named
+    const blocks = { listing: [], takes: [] };
+    await interceptRpc(page, stack, (p) => {
+      if (ofTheListing.some((is) => is(p))) calls.reader.push(p.params[1]);
+      if (isListingCall(p)) blocks.listing.push(p.params[1].blockHash);
+      if (isAcceptsCommitsCall(p)) blocks.takes.push(p.params[1].blockHash);
+      return undefined;
+    }, { from: 'reader' });
     await interceptRpc(page, stack, (p) => { if (p.method === 'eth_call') calls.wallet.push(p.params[1]); return undefined; }, { from: 'wallet' });
     await page.goto(`/#/fund/${listingId}`);
     await connect(page, stack.accounts.maker);
@@ -1161,6 +1218,10 @@ test.describe('the maker\'s hold', () => {
     // and every read of the listing and its hold from the read address, before the hold and after it, named its block by hash
     expect(calls.reader.length).toBeGreaterThanOrEqual(4);
     for (const block of calls.reader) expect(block, 'a read of the listing from the read address').toEqual({ blockHash: expect.stringMatching(/^0x[0-9a-f]{64}$/), requireCanonical: true });
+    // and whether the listing takes commits is asked once for each read of the listing, of that read's block (node P47)
+    expect(blocks.takes.length).toBeGreaterThanOrEqual(2);
+    expect([...blocks.takes].sort()).toEqual([...blocks.listing].sort());
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false });
   });
 
   test('the site\'s record does not have the listing yet: the panel reads it again when asked, and then finds the fixed version', async ({ page, stack, chain }) => {
@@ -1321,6 +1382,7 @@ test.describe('the maker\'s hold', () => {
     await page.goto(`/#/fund/${listingId}`);
     await expect(page.getByTestId('listing-summary')).toContainText(F.states.Depleted);
     await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false });
     const panel = page.getByTestId('top-up');
     // what the page says of a top-up here: the state goes back to open, and the hold stays
     await expect(panel.getByTestId('top-up-depleted')).toHaveText(fill(STRINGS.topUp.depletedHeld, { eth: formatEth(top) }));
@@ -1341,7 +1403,7 @@ test.describe('the maker\'s hold', () => {
     // the page's read says the rest: open, on hold, never "open until", and no commit offered
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open, { timeout: 30_000 });
     await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
-    await expect(page.getByTestId('commit-offer')).toHaveAttribute('data-offered', 'false');
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.held, offered: false });
     await expect(page.getByTestId('listing-summary').locator('.pill-ok')).toHaveCount(0);
     expect(await page.getByTestId('listing-held').innerText()).toBe(fill(F.held, { id: listingId, time: at(heldAt) }));
     await expect(page.getByText(fill(F.alreadyOpen, { id: listingId, until: at(after.fundedUntil) }))).toHaveCount(0);
@@ -1375,7 +1437,7 @@ test.describe('the maker\'s hold', () => {
     // and the rest of the page as it was: open until, the commit offer, the renewal, the close
     await expect(page.getByText(fill(F.alreadyOpen, { id: listingId, until: at(listing.fundedUntil) }))).toBeVisible();
     await expect(page.getByTestId('listing-summary').locator('.pill-ok')).toHaveCount(1);
-    await expect(page.getByTestId('commit-offer')).toContainText(STRINGS.offer.yes);
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
     await expect(page.getByTestId('renew').getByTestId('renew-period')).toHaveText(fill(STRINGS.renew.until, { time: at(listing.fundedUntil) }));
     await expect(page.getByTestId('renew').getByTestId('renew-held')).toHaveCount(0);
     await expect(page.getByTestId('close').getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) })).toBeVisible();
@@ -1384,6 +1446,15 @@ test.describe('the maker\'s hold', () => {
     expect(text).not.toMatch(/\bhold\b/i);
     expect(wordingProblems(text)).toEqual([]);
     expect(await chain.sa.heldAt(listingId)).toBe(0n);
+
+    // node P47: such a contract has acceptsCommits, and the page follows it there too. Closed from elsewhere and read
+    // again, the listing takes no commits, and the page says so, with no word of a hold
+    await (await (await chain.as(stack.accounts.maker)).close(listingId)).wait();
+    await page.reload();
+    await expect(page.getByTestId('listing-state')).toHaveText(F.states.Closed);
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.notTaking, offered: false });
+    await expect(page.getByTestId('hold')).toHaveCount(0);
+    expect(await page.locator('main').innerText()).not.toMatch(/\bhold\b/i);
   });
 
   test('a contract with no hold, and a reader behind the wallet: nothing is taken off the page, which says the block it has not read', async ({ page, stack, chain }) => {
@@ -1411,7 +1482,7 @@ test.describe('the maker\'s hold', () => {
     await expect(page.getByTestId('listing-behind')).toHaveText(fill(F.behind, { block: funded.blockNumber }), { timeout: 30_000 });
     await expect(page.getByTestId('listing-state')).toHaveText(F.states.Open);
     await expect(page.getByText(fill(F.alreadyOpen, { id: listingId, until: at(listing.fundedUntil) }))).toBeVisible();
-    await expect(page.getByTestId('commit-offer')).toContainText(STRINGS.offer.yes);
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
     await expect(page.getByTestId('renew').getByTestId('renew-period')).toBeVisible();
     await expect(page.getByTestId('roll-forward').getByTestId('roll-fix-keep')).toHaveText(RF.fix.keep);
     await expect(page.getByTestId('close').getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) })).toBeVisible();
@@ -1439,6 +1510,7 @@ test.describe('the maker\'s hold', () => {
     await expect(roll.getByTestId('roll-hold-first')).toHaveCount(0);
     await expect(page.getByTestId('hold')).toHaveCount(0);
     await expect(page.getByText(fill(F.alreadyOpen, { id: listingId, until: at(listing.fundedUntil) }))).toBeVisible();
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
     expect(await page.locator('main').innerText()).not.toMatch(/\bhold\b/i);
   });
 
@@ -1465,5 +1537,33 @@ test.describe('the maker\'s hold', () => {
     await page.unrouteAll({ behavior: 'wait' });
     await page.getByRole('button', { name: F.retry }).click();
     await expect(page.getByTestId('listing-held-since')).toHaveText(at(heldAt));
+  });
+
+  // Node P47: the page reads the contract's acceptsCommits with the listing, and no failure of that call says anything
+  // of the listing. The contract's own refusal (which, of heldAt, means "no hold here") and a node's failure are each a
+  // failed read of the page: the view is on every contract the site is used against, and nothing stands in for it.
+  for (const [what, error] of [
+    ['the contract refuses the call', REFUSED_CALL],
+    ['the node\'s own failure', { code: -32005, message: 'rate limit exceeded' }],
+  ]) test(`a read of acceptsCommits that fails is a failed read of the page, and nothing is offered: ${what}`, async ({ page, stack, chain }) => {
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    const failed = { calls: 0 };
+    await interceptRpc(page, stack, (p) => {
+      if (!isAcceptsCommitsCall(p)) return undefined;
+      failed.calls += 1;
+      return { error };
+    });
+    await installWallet(page, stack);
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByText(F.readFailed.replace('{reason}', ''), { exact: false })).toBeVisible();
+    expect(failed.calls).toBeGreaterThan(0);
+    // nothing of the listing is drawn from half a read, and least of all that the site offers it
+    for (const id of ['listing-summary', 'listing-open-until', 'commit-offer', 'roll-forward', 'hold']) await expect(page.getByTestId(id)).toHaveCount(0);
+    expect(await page.locator('[data-offered="true"]').count()).toBe(0);
+    expect(await page.locator('main').innerText()).not.toMatch(/offers it to hunters/i);
+    // once the call answers, reading again shows the listing as it is: open, and taking commits
+    await page.unrouteAll({ behavior: 'wait' });
+    await page.getByRole('button', { name: F.retry }).click();
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
   });
 });

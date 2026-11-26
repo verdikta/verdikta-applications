@@ -638,6 +638,9 @@ export const STRINGS = {
     held:
       'This listing counts, and its maker has it on hold: it takes no commit, so the site does not offer it to hunters. ' +
       'A finding can still be filed on it as a late claim, which carries no award.',
+    // node P47: any other listing that counts and takes no commit now, by the contract's acceptsCommits. Why it takes
+    // none is not said here: the page says the listing's state and its paid period elsewhere
+    notTaking: 'This listing counts, and it takes no commits now, so the site does not offer it to hunters.',
   },
   feed: {
     title: 'Feed',

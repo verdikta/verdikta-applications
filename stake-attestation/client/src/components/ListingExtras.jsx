@@ -270,19 +270,23 @@ export function RollForward({ listingId, listing, record, recordReading = false,
 }
 
 /**
- * Whether the site offers a commit on this listing: only one that counts, and never one its maker has on hold (node
- * P42), which takes no commit and is no entry of the feed. `held` is the page's read of the hold; while the page
- * knows that read is behind (`quiet`), the section says nothing.
+ * Whether the site offers a commit on this listing: only on one that counts and takes commits now (node P47).
+ * `takesCommits` is the contract's acceptsCommits as the page read it, in the snapshot it read the listing in: that
+ * one value decides both what the section says and `data-offered`. A listing that counts and takes none says so: in
+ * the hold's own text while its maker has it on hold (node P42; `held`, of the same read), and otherwise in one
+ * sentence, with no reason by state. While the page knows that read is behind (`quiet`), the section says nothing.
  */
-function CommitOffer({ data, held = false, quiet = false }) {
+function CommitOffer({ data, takesCommits = false, held = false, quiet = false }) {
   const id = useId();
   const O = STRINGS.offer;
   if (!data || quiet) return null;
-  let text = held ? O.held : O.yes;
+  const offered = Boolean(data.counted) && takesCommits === true;
+  let text = held ? O.held : O.notTaking;
   if (data.failed) text = fill(O.unknown, { reason: data.failed });
   else if (!data.counted) text = fill(O.no, { reason: data.why ?? STRINGS.notCounted.none });
+  else if (offered) text = O.yes;
   return (
-    <section className="claim" aria-labelledby={id} data-testid="commit-offer" data-offered={String(Boolean(data.counted) && !held)}>
+    <section className="claim" aria-labelledby={id} data-testid="commit-offer" data-offered={String(offered)}>
       <h3 id={id}>{O.title}</h3>
       <p>{text}</p>
     </section>
@@ -293,10 +297,11 @@ function CommitOffer({ data, held = false, quiet = false }) {
  * The parts of a listing's page that follow its opening: its claims, its record, the other listings
  * of its repository (node P35), the maker's hold (node P42) and, next to it, roll forward. A listing
  * that has not opened has no record yet. `hold`: the listing's hold as the page read it, in the
- * snapshot it read the listing in; `quiet`: the page knows that read is behind (lib/pageSays.js);
+ * snapshot it read the listing in; `takesCommits`: the contract's acceptsCommits, of that same
+ * snapshot (node P47); `quiet`: the page knows that read is behind (lib/pageSays.js);
  * `onChanged`: what a hold or a roll tells the page.
  */
-export function ListingMore({ listingId, listing, hold = NO_HOLD, quiet = false, onChanged = () => {} }) {
+export function ListingMore({ listingId, listing, hold = NO_HOLD, takesCommits = false, quiet = false, onChanged = () => {} }) {
   const state = LISTING_STATES[Number(listing.state)];
   const opened = state !== 'Listed';
   // how many times the record was asked for again (the roll forward panel's "look again"), and whether that read is out
@@ -306,7 +311,7 @@ export function ListingMore({ listingId, listing, hold = NO_HOLD, quiet = false,
   return (
     <>
       <div className="pair">
-        <CommitOffer data={data} held={hold.held} quiet={quiet} />
+        <CommitOffer data={data} takesCommits={takesCommits} held={hold.held} quiet={quiet} />
         <ListingClaims artifactHash={listing.artifactHash} data={data} listing={listing} />
       </div>
       <SameRepositorySection data={data} />

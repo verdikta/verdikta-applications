@@ -212,7 +212,7 @@ test('the page draws what it says from that function alone, and is told by every
     assert.ok(at > -1, line);
     assert.ok(page.slice(page.lastIndexOf('\n', at), at).includes('{!quiet && '), `${line} is drawn only while the page may say its read`);
   }
-  assert.match(page, /<ListingMore listingId=\{listingId\} listing=\{l\} hold=\{hold\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);
+  assert.match(page, /<ListingMore listingId=\{listingId\} listing=\{l\} hold=\{hold\} takesCommits=\{loaded\.takesCommits\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);
   assert.match(page, /<CloseListing listingId=\{listingId\} listing=\{l\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);
   assert.match(page, /<Withdraw version=\{version\} onChanged=\{onChanged\} \/>/);
   // what it says of the block it has not read
@@ -329,7 +329,7 @@ test('while the page knows its read is behind, a section draws its own transacti
     assert.doesNotMatch(text, /on hold|push the fix/i, at);
   }
   assert.match(extras, /if \(!data \|\| quiet\) return null;/);
-  assert.match(extras, /<CommitOffer data=\{data\} held=\{hold\.held\} quiet=\{quiet\} \/>/);
+  assert.match(extras, /<CommitOffer data=\{data\} takesCommits=\{takesCommits\} held=\{hold\.held\} quiet=\{quiet\} \/>/);
   assert.match(extras, /<HoldListing listingId=\{listingId\} listing=\{listing\} hold=\{hold\} quiet=\{quiet\} onChanged=\{onChanged\} \/>/);
 });
 

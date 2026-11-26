@@ -505,11 +505,17 @@ test('once on hold, the page says so with the time, from its read, and still off
   // the hold's own section says since when, and what is left
   const body = holdSection();
   assert.match(body, /if \(!off && hold\.held\) \{\s*body = \(\s*<>\s*<p data-testid="hold-since">\{fill\(H\.since, \{ time: formatTime\(hold\.heldAt\) \}\)\}<\/p>\s*<p className="hint">\{H\.next\}<\/p>/);
-  // the commit offer never says the site offers a listing on hold
+  // The commit offer never says the site offers a listing on hold. Since node P47 "offered" is the contract's
+  // acceptsCommits, as the page read it with the listing, and a hold turns that false; a counted listing that takes
+  // no commits says the hold's sentence while it is on hold, and otherwise only that it takes none
+  // (test/commitOffer.test.js has the rule whole).
   const extras = component('ListingExtras.jsx');
   const offer = extras.slice(extras.indexOf('function CommitOffer('), extras.indexOf('\n}\n', extras.indexOf('function CommitOffer(')));
-  assert.match(offer, /let text = held \? O\.held : O\.yes;/);
-  assert.match(offer, /data-offered=\{String\(Boolean\(data\.counted\) && !held\)\}/);
+  assert.match(fn(SOURCE, 'acceptsCommits'), /&& _heldAt\[listingId\] == 0;/);
+  assert.match(offer, /const offered = Boolean\(data\.counted\) && takesCommits === true;/);
+  assert.match(offer, /let text = held \? O\.held : O\.notTaking;/);
+  assert.match(offer, /else if \(offered\) text = O\.yes;/);
+  assert.match(offer, /data-offered=\{String\(offered\)\}/);
   assert.match(STRINGS.offer.yes, /the site offers it to hunters\.$/);
   assert.doesNotMatch(STRINGS.offer.held, /offers it to hunters\.$/);
   // roll forward and close are drawn from the listing's state and its pending claims, as before: a hold changes neither

@@ -6,13 +6,14 @@ import { JsonRpcProvider } from 'ethers';
 
 import { formatEth } from '../src/lib/format.js';
 import { STRINGS, fill } from '../src/strings.js';
-import { archiveBytes, disclosure, expect, installWallet, shot, test } from './support/fixtures.js';
+import { archiveBytes, disclosure, expect, expectCommitOffer, installWallet, shot, test } from './support/fixtures.js';
 import { wordingProblems } from './support/wording.js';
 
 const T = STRINGS.topUp;
 const R = STRINGS.renew;
 const C = STRINGS.close;
 const W = STRINGS.withdraw;
+const O = STRINGS.offer;
 const ETH = 10n ** 18n;
 const PERIOD = 30n * 86400n;
 const at = (seconds) => new Date(Number(seconds) * 1000).toISOString().replace('.000Z', 'Z');
@@ -125,6 +126,9 @@ test.describe('a listing\'s later life', () => {
     await expect(panel.getByTestId('top-up-effect')).toHaveText(`${fill(T.effect, { owed: formatEth(high), rest: formatEth(top), after: formatEth(top) })} ${T.reopens}`);
     // closing is refused while an award is owed
     await expect(page.getByTestId('close-blocked')).toHaveText(fill(C.owed, { eth: formatEth(high) }));
+    // node P47: Depleted, so it takes no commits, and the page does not say the site offers it
+    await expect(page.getByTestId('listing-state')).toHaveText(STRINGS.fund.states.Depleted);
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.notTaking, offered: false, shotAs: 'commit-offer-not-taking' });
 
     // 1 ETH: the award owed is paid to the hunter's balance in the contract, the rest is escrow, and it stays depleted
     await amount.fill('1');
@@ -142,6 +146,8 @@ test.describe('a listing\'s later life', () => {
     // the page follows: nothing is owed now, and what reopens it is what the escrow is short of the top award
     await expect(panel.getByTestId('top-up-owed')).toHaveCount(0);
     await expect(panel.getByTestId('top-up-depleted')).toHaveText(fill(T.depleted, { eth: formatEth(top - (ETH - high)) }));
+    // still Depleted, with escrow below the top award: still no commits
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.notTaking, offered: false });
 
     // the rest: the escrow is back at the top award, and the listing is open again
     await amount.fill(formatEth(top - (ETH - high)));
@@ -154,6 +160,8 @@ test.describe('a listing\'s later life', () => {
     expect(await sa.acceptsCommits(listingId)).toBe(true);
     await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Open);
     await expect(panel.getByTestId('top-up-depleted')).toHaveCount(0);
+    // open again and taking commits: the page's read of that block says the site offers it
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
     expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
   });
 
@@ -171,6 +179,8 @@ test.describe('a listing\'s later life', () => {
     await expect(panel.getByTestId('renew-period')).toHaveText(fill(R.until, { time: at(before.fundedUntil) }));
     await expect(panel.getByTestId('renew-fee')).toHaveText(fill(R.fee, { fee: formatEth(fee) }));
     const button = panel.getByRole('button', { name: fill(R.button, { fee: formatEth(fee) }) });
+    // node P47: open, its fee paid, its escrow at the top award: it takes commits, and the site offers it
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
 
     // another wallet is refused before anything is sent
     await button.click();
@@ -197,12 +207,17 @@ test.describe('a listing\'s later life', () => {
     await page.reload();
     await useAccount(page, stack.accounts.maker);
     await expect(panel.getByTestId('renew-period')).toHaveText(fill(R.lapsed, { time: at(paid) }));
+    // node P47: its paid period over, the listing is still Open and takes no commits: the page does not say the site offers it
+    await expect(page.getByTestId('listing-state')).toHaveText(STRINGS.fund.states.Open);
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.notTaking, offered: false });
     await button.click();
     await expect(panel.getByTestId('renewed')).toBeVisible({ timeout: 30_000 });
     const again = (await sa.getListing(listingId)).fundedUntil;
     expect(again >= paid + 3600n + PERIOD, `30 days from when it was sent: ${again}`).toBe(true);
     expect(again < paid + 2n * PERIOD, 'the lapsed gap is not bought').toBe(true);
     await expect(panel.getByTestId('renew-period')).toHaveText(fill(R.until, { time: at(again) }));
+    // renewed: it takes commits again, and the page's read of that block says the site offers it
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
   });
 
   test('close: refused while a claim is pending; otherwise two steps, and the escrow comes back to the maker', async ({ page, stack, chain }) => {
@@ -257,6 +272,8 @@ test.describe('a listing\'s later life', () => {
     await expect(page.getByTestId('renew')).toHaveCount(0);
     await expect(page.getByTestId('roll-forward')).toHaveCount(0);
     await expect(panel.getByRole('button')).toHaveCount(0);
+    // node P47: Closed, so it takes no commits, and the page does not say the site offers it
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.notTaking, offered: false });
     expect(wordingProblems(await page.locator('main').innerText())).toEqual([]);
 
     // the record and the badge say how the stake ended
@@ -275,6 +292,7 @@ test.describe('a listing\'s later life', () => {
     await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Closed);
     await expect(page.getByTestId('close')).toHaveCount(0);
     await expect(page.getByTestId('renew')).toHaveCount(0);
+    await expectCommitOffer(page, chain, listingId, { takes: false, text: O.notTaking, offered: false });
   });
 
   test('withdraw: a wallet the contract holds something for collects it; a wallet it holds nothing for is shown nothing', async ({ page, stack, chain }) => {

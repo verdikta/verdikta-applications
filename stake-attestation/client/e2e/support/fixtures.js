@@ -140,6 +140,26 @@ export const isCallOf = (signature) => {
 };
 /** Whether a JSON-RPC request is a call of the contract's heldAt view. */
 export const isHeldAtCall = isCallOf('heldAt(uint256)');
+/** Whether a JSON-RPC request is a call of the contract's acceptsCommits view. */
+export const isAcceptsCommitsCall = isCallOf('acceptsCommits(uint256)');
+
+/**
+ * Node P47: the "Commits" section of a listing's own page, held to the chain. The contract's acceptsCommits(listingId)
+ * answers `takes` now (asked of the node itself: ethers answers a call it made in the last 250 ms from memory); the
+ * section is one paragraph, whose visible text is `text`, whole; and its data-offered is `offered`. `shotAs` names a
+ * screenshot of the section for the PR.
+ */
+export async function expectCommitOffer(page, chain, listingId, { takes, text, offered, shotAs = null }) {
+  const data = chain.sa.interface.encodeFunctionData('acceptsCommits', [listingId]);
+  const answer = await chain.provider.send('eth_call', [{ to: await chain.sa.getAddress(), data }, 'latest']);
+  expect(chain.sa.interface.decodeFunctionResult('acceptsCommits', answer)[0], `acceptsCommits(${listingId}) on the chain`).toBe(takes);
+  const section = page.getByTestId('commit-offer');
+  await expect(section.locator('p')).toHaveText(text, { timeout: 30_000 });
+  await expect(section.locator('p')).toHaveCount(1);
+  expect(await section.locator('p').innerText()).toBe(text);
+  await expect(section).toHaveAttribute('data-offered', String(offered));
+  if (shotAs) await shot(page, shotAs, { target: section });
+}
 
 /**
  * Node P42: answers some of this page's JSON-RPC requests in the node's place. `answer(request)` returns { result } or

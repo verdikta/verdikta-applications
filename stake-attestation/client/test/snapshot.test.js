@@ -415,10 +415,11 @@ const codeOf = (name) => read(`../src/components/${name}`)
   .replace(/^\s*\/\/.*$/gm, '')
   .replace(/\s\/\/ .*$/gm, '');
 
-test('the page\'s read of the listing is one snapshot: the count, the listing and its hold are one block\'s', () => {
+test('the page\'s read of the listing is one snapshot: the count, the listing, its hold and whether it takes commits are one block\'s', () => {
   const page = codeOf('FundPage.jsx');
   const fn = page.slice(page.indexOf('async function readListing('), page.indexOf('\n}\n', page.indexOf('async function readListing(')));
-  assert.match(fn, /const \{ value, block \} = await snapshot\(await chainReader\(\), async \(at\) => \{\s*const view = stakeAttestation\(at\);\s*const listing = await listingAt\(view, listingId\);\s*return listing === null \? \{ missing: true \} : \{ listing, hold: await readHold\(view, listingId\) \};\s*\}\);\s*return \{ \.\.\.value, block \};/);
+  // node P47: the contract's acceptsCommits is asked in the same callback, on the same contract, as the listing and its hold
+  assert.match(fn, /const \{ value, block \} = await snapshot\(await chainReader\(\), async \(at\) => \{\s*const view = stakeAttestation\(at\);\s*const listing = await listingAt\(view, listingId\);\s*if \(listing === null\) return \{ missing: true \};\s*return \{ listing, hold: await readHold\(view, listingId\), takesCommits: await view\.acceptsCommits\(BigInt\(listingId\)\) \};\s*\}\);\s*return \{ \.\.\.value, block \};/);
   // it is the page's only read of the listing: the first load, and every read after a transaction or a disagreement
   assert.equal(page.split('readListing(').length - 1, 3, 'its definition, the load and the refresh');
   // and the page reads the chain no other way: no contract of its own, no block named, no call of a node

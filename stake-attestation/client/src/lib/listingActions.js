@@ -27,9 +27,11 @@ export function renewTerms(l, now) {
 /**
  * A listing's commit-order queue as its page states it (decision D5), from getListing's answer: the
  * earliest claim neither settled nor expired, how many such claims there are, and how many of those
- * are late claims. A late claim (taken only once the listing is Rolled or Closed) is in the queue and
- * never one of pendingClaims; every one of them leaves it through expire (lateExpired) or settle
- * (lateOutcomeCounts), so what is left of lateClaims is still open. Null when no claim is open.
+ * are late claims. A late claim (taken once the listing is Rolled or Closed, or while its maker has it on hold)
+ * is in the queue and never one of pendingClaims; every one of them leaves it through expire (lateExpired) or
+ * settle (lateOutcomeCounts), so what is left of lateClaims is still open. On a listing on hold the late claims
+ * wait behind the claims committed before the hold, in the same queue, as on a Rolled one behind the claims from
+ * before the roll: the count is the same sum whatever the listing's condition. Null when no claim is open.
  * @param {object} l - getListing's answer
  * @returns {null | { head: bigint, open: bigint, late: bigint }}
  */

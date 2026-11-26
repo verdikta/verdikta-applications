@@ -50,6 +50,8 @@ DUPLICATE holds at least as much as INVALID, else INVALID. What each pays when t
   your bond comes back, with no award.
 - The prepay pays for the evaluation in every outcome. What a round does not spend comes back to
   you when the round is finalized.
+- A late claim, on a listing that takes no commit any more (section 3, "Late claims"), pays no
+  award in any outcome: its bond comes back or not as above, and its prepay is spent the same way.
 
 A failed gate (the patch does not apply or touches a path it may not, the build fails, your test
 does not fail on every run, the observable is not seen, or a tamper flag) puts all the mass on
@@ -89,8 +91,9 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
 - GET https://verifiers.verdikta.org/api/status
     chainId, contract     the chain and the StakeAttestation address the site indexes
 - GET https://verifiers.verdikta.org/api/feed
-    listings              every listing that takes claims now: open, its paid period not ended,
-                          its escrow at least its CRITICAL award
+    listings              every listing that takes commits now: open, not held by its maker, its
+                          paid period not ended, its escrow at least its CRITICAL award. A listing
+                          that takes late claims only is not here (section 3, "Late claims")
     notCounted            listings the site does not offer, each with its reason: do not claim there
     fresh                 false when the site's index is behind the chain
   Each entry of `listings`:
@@ -111,7 +114,8 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
                           none is open
     escrowRemainingWei    what is left to pay awards from
     owedWei               awards already owed to earlier hunters
-    invited               true: only the wallets the maker listed may claim
+    invited               true: only the wallets the maker listed may commit (a late claim,
+                          section 3, is open to every wallet)
     valueAtRiskUsd        the value the maker says the code holds, in USD; 0 when none is declared
     labels                how the site labels the stake: `stake` (scanned, staked or under-staked,
                           by its top award and the declared value), `invited`, `lapsed`, and
@@ -128,6 +132,8 @@ Plain GET requests, JSON, no key. Read them again before each step: they change.
     record.listings       each listing's narrowInvalidFloor (a mass out of SCORE_SCALE: an INVALID
                           whose LOW to CRITICAL hold at least it is narrow) and confirmAboveWei
                           (section 3, step 7)
+    labels.listings       each counted listing's labels, by listingId, `heldAt` among them (below,
+                          "A listing on hold")
     sameRepository        the listings of the same repository on its other versions that opened
 - GET https://verifiers.verdikta.org/api/listings/<id> is a maker's listing request, by the id
   POST /api/listings gave it, while it is built. It is not the on-chain listing id, and a hunter
@@ -142,6 +148,9 @@ expired, however short its own fix window and whether or not the maker releases 
 before you choose a listing. `pendingClaims` is how many claims are open there now, every one of
 them ahead of a claim you commit, and `headClaim` is the first of them: 0 and null on a listing
 where yours would be first. `claimsSoFar` counts every claim ever committed there, open or not.
+No entry's queue holds a late claim: a listing that takes one (section 3, "Late claims") is not
+in the feed. That holds for a listing on hold too, whose state stays Open or Depleted: it is
+not a feed entry ("A listing on hold", below).
 In /api/feed/events, a claim of the listing with a Committed event and neither a Settled nor an
 Expired one is open. The first run of `verdikta-attest commit`, which sends nothing (section 4),
 says how many are open and which is the earliest, before you pay.
@@ -152,11 +161,41 @@ findings. The record is the version's: listings with the same artifactHash share
 the same kind, repository and commit and, for a deployed contract, the same chain and address.
 `sameRepository` names the others, each with its listingId, artifactHash, artifact
 (with its baseCommit), state (Open, Depleted, Rolled or Closed), lapsed (its paid period has
-ended), counted (false: this site does not offer it) and page (on this site,
+ended), heldAt (unix seconds while its maker holds it, else null: "A listing on hold", below),
+counted (false: this site does not offer it) and page (on this site,
 /#/fund/<listingId>). It matches `artifact.repo` exactly as listed, so another spelling of a URL
 is another repository, and it leaves out a listing that never opened, which takes no claims. A
 claim goes on one listing, and its proof must fail at that listing's baseCommit: read the feed
 entry of the listing you claim on, not another's.
+
+A listing on hold. A maker may put a listing on hold with `hold(listingId)`, the first step of
+replacing it with a fixed version. From that block on the listing takes no new commit, only late
+claims (section 3, "Late claims"). A hold has no resume: it ends when the maker rolls the stake
+forward to another listing or closes this one, and the listing takes no commit again. Claims
+committed before the hold are left alone: each is disclosed, revealed, judged, settled and paid
+from the escrow as on any listing. A hold is not a state, so a listing on hold still reads Open
+or Depleted. Where it shows:
+- The feed: a listing on hold is not an entry of `listings`, so `pendingClaims` and `headClaim`
+  are only ever a queue of the stake's own claims, as said above. Every entry's own
+  `labels.heldAt` is null.
+- `heldAt` in an entry of `sameRepository`, a feed entry's or a record's: the time of the hold,
+  in unix seconds, while the listing is on hold, and null otherwise.
+- The record (GET /api/records/<artifactHash>): the same `heldAt`, in `labels.listings[<listingId>]`
+  for a listing the site counts, and in its entry of `notCounted.listings` for one it does not.
+- The badge speaks of counted listings only: when none of the version's takes commits and one is
+  on hold, it reads "stake on hold since YYYY-MM-DD", the hold's day in UTC. A version with no
+  counted listing reads "no counted stake", on hold or not.
+- A `Held` event in /api/feed/events, with its listingId and, in `args.heldAt`, the time. It
+  stays there after the hold has ended.
+- On the chain, `heldAt(listingId)`: the time while the listing is on hold, 0 otherwise:
+      cast call "$VERDIKTA_CONTRACT" "heldAt(uint256)(uint64)" <listingId> --rpc-url https://sepolia.base.org
+  A contract deployed before the hold has no such view and no `hold`: there this call reverts
+  with "unknown function", and no listing is on hold.
+`verdikta-attest commit` refuses a new commit on a listing on hold with LISTING_ON_HOLD, before
+anything is pinned or sent, and says since when (section 3, step 1). A prepared claim folder
+whose two hashes already have a commit on the chain, sent some other way, gets that refusal from
+`commit` too: `commit --late` in that folder finds the claim first and discloses it, as the
+commit it is, for no second bond (section 3, "Late claims").
 
 The disclosure key. The archive's `stake.disclosureKey` names the maker's key as an age recipient
 or as the base64 of the same 32 bytes; the feed gives it as `disclosureKey` and
@@ -193,6 +232,12 @@ each deadline of your claim and what comes next.
 1. Commit: `commit(listingId, archiveHash, ciphertextSha256)`, paying the listing's bond plus
    the live prepay (section 4). Only two hashes go on-chain. The listing must take commits
    (`acceptsCommits(listingId)`) and allow your wallet (`isAllowed(listingId, hunter)`).
+   A listing that takes none may take a late claim instead ("Late claims", after step 8).
+   One its maker holds (section 2, "A listing on hold") is such a listing: `verdikta-attest commit`
+   refuses it with LISTING_ON_HOLD, before anything is pinned or sent, and says since when. It
+   takes no commit again. What is left there is a late claim, judged and recorded for no award
+   (`commit --late`); or claim on another listing: if the maker rolls the stake forward, the
+   fixed version is a listing of its own, and your proof must fail at that listing's baseCommit.
 2. Pin the encrypted proof only after the commit is mined. The tool waits for the commit's
    confirmations before it pins: pinned earlier, the maker could read it before your commit
    lands.
@@ -284,6 +329,53 @@ each deadline of your claim and what comes next.
    contract could not push to you waits in `withdrawable(address)`, and
    `verdikta-attest claim` withdraws it and prints the transaction and the amount.
 
+Late claims. A finding on a version whose listing takes no commit any more can still go on that
+version's record, as a late claim: `lateClaim(listingId, archiveHash, ciphertextSha256)` in place
+of `commit`. `verdikta-attest commit` files one with --late.
+
+- When a listing takes one: while `acceptsLateClaims(listingId)` is true: the listing rolled
+  forward (state Rolled), or closed after it opened (state Closed), or its maker holds it
+  (`hold(listingId)`: the state stays Open or Depleted, and no commit is taken from then on). A
+  listing that never opened takes neither a commit nor a late claim. A listing that takes late
+  claims is not in the feed (section 2). A feed entry's and a record's `sameRepository` give
+  each related listing's state, and `heldAt` while its maker holds it; read the answer itself
+  from the contract:
+      cast call "$VERDIKTA_CONTRACT" "acceptsLateClaims(uint256)(bool)" <listingId> --rpc-url https://sepolia.base.org
+- What it costs: what a commit costs, `commitPrice(listingId)`: the listing's `bondWei` plus the
+  live prepay (section 4).
+- What it pays. A late claim pays no award, whatever class the arbiters give it: it is judged and
+  recorded on the record, under "later". The bond is forfeited on INVALID, as on any claim: it
+  goes to the maker, unless the INVALID is narrow. On any other outcome it comes back, with no
+  award. The prepay is spent on the evaluation whatever the verdict: what a round does not spend
+  comes back when the round is finalized or, if the refund fails then, when anyone calls
+  recoverLeftoverEth(wallet) on the contract, with the wallet of that round.
+- Everything else is a claim's: steps 2 to 8 above, with the listing's own windows. It is open to
+  every wallet, invited listing or not. It reveals in commit order with the listing's other
+  claims: behind every claim still open there, the stake's own and earlier late claims, and
+  `pendingClaims` counts only the stake's own.
+- The command: `verdikta-attest commit ./claim --listing <listingId> --late` prints the terms,
+  the price and those three warnings, and sends nothing (exit 3); with --yes it sends
+  `lateClaim`, then pins and discloses as a commit does. `status`, `reveal`, `claim` and `appeal`
+  then work as on any claim, and `status` says it is a late claim with no award (with --json,
+  `late` is true).
+- The price it signs is the price its terms named: if the live price changed in between, it
+  signs nothing and says the new amount (LATE_PRICE_CHANGED), and the next run prints the terms
+  again.
+- The wrong kind is refused before anything is pinned or sent: `commit` without --late on a
+  listing on hold (LISTING_ON_HOLD, which says since when) or on one that rolled forward or
+  closed after it opened (LATE_CLAIMS_ONLY), --late on a listing that takes commits
+  (LISTING_TAKES_COMMITS), and --late on one that takes neither (NO_LATE_CLAIMS).
+- A stopped run goes on with what the folder holds, with --late or without it: a signed commit or
+  late claim is sent again as it was saved, and a folder prepared for a late claim stays a late
+  claim's. --late changes nothing in a folder whose commit is signed: that run goes on as a
+  commit's. A prepared late claim whose two hashes already have a claim on the chain, sent some
+  other way, is found first and disclosed, --yes or not; so is such a claim of a commit's
+  prepared folder that is run with --late.
+- --restart does not start a late claim over, signed or not (LATE_NEEDS_NEW_FOLDER). If its files
+  changed before it was signed, `commit` stops (LATE_INPUTS_CHANGED): restore them, or prepare the
+  changed claim in a new folder (copy finding.json, report.md and the patches there) and keep the
+  old folder as it is.
+
 ## 4. Costs, read live
 
 Never take an amount from this file or from an earlier read: the fees follow the aggregator's
@@ -294,6 +386,8 @@ live fee and the listing's terms.
   signs and sends exactly that. It is the whole amount the commit carries, not a fee on top of
   the bond. The bond comes back or not by the outcome (section 1); of the prepay, what the rounds
   do not spend comes back.
+- A late claim sends `commitPrice(listingId)` too, for no award (section 3, "Late claims"). The
+  tool reads it again just before it signs, and signs only the amount its terms named.
 - A reveal sends `revealTopUp(claimId)`: any rise in that fee since the commit.
 - A failed round spends its base fees, a part of its prepay; the rest comes back at finalize.
   `status` shows a failed round's own numbers in ETH, as the aggregator accounts for them.
@@ -316,7 +410,25 @@ Or let the tool say it: `commit` on a folder with no commit signed yet, `reveal`
 (exit 3). The amount printed is the amount sent; a reveal reads its top-up again as it signs.
 Once a commit is signed, `commit` resumes it on every run, --yes or not: it sends the saved
 commit and then the disclose. So read a price for a claim already under way with cast, not with
-`commit`.
+`commit`. `commit --late` is a dry run in the same way, in a folder where `commit` has saved
+nothing yet (no state.json: section 9). In a folder that holds a prepared or a signed claim, of
+either kind, it may not be: a signed late claim is resumed on every run, with --late or without
+it, and with --late a prepared folder whose two hashes already have a claim on the chain, a
+commit's or a late claim's, has that claim disclosed, --yes or not (section 3, "Late claims").
+Read the price for such a folder with cast too.
+On a listing on hold, in a folder where `commit` has saved nothing yet, `commit` prints no terms
+and no price: it is refused (LISTING_ON_HOLD), and `commit --late` prints a late claim's, as
+above. A commit this folder has signed is gone on with there as on any listing: `commit`, and
+`commit --late`, go on with it on every run, --yes or not. They send the saved transaction if it
+is not mined yet, and once the commit is on the chain they pin and send its disclose. A hold
+changes nothing for a commit mined before it. One first mined after the hold reverts
+(COMMIT_REVERTED), and no claim exists: like any signed commit that made no claim, it leaves the
+folder prepared again, with nothing signed. From then on `commit` is refused as above, and
+`commit --late` is a late claim's run in that folder: it prints a late claim's terms and its
+price, and with --yes files one, paying its bond and prepay. A prepared folder whose commit went
+out some other way is not resumed by `commit`: section 2, "A listing on hold", says what
+`commit --late` does there. So read the price of a claim under way with cast, never with either
+command.
 
 A dry run needs the wallet key (for your address, the balance and the allowlist: it signs
 nothing), the gateway and VERDIKTA_PIN_BACKEND, not VERDIKTA_PIN_TOKEN, which is read only when
@@ -380,9 +492,21 @@ the result as JSON on stdout. `status --wait` polls for up to 15 minutes; --max-
 it, so keep it under your shell's command timeout and run it again on exit 4. `commit` and
 `reveal` wait for their transactions too: if your shell stops one, run the same command again.
 
+A flag is the bare word: with a value (`--yes=false` too, or an empty one), or on a command that
+does not take it, it is a usage error (exit 2), and so is an option on a command that does not
+take it: nothing is read or sent. An option's value follows it or an = (`--listing <listingId>`
+or `--listing=<listingId>`). `verdikta-attest --help` shows what each command takes.
+
+A late claim (section 3, "Late claims") takes the same commands, with --late on `commit`:
+
+    verdikta-attest commit ./claim --listing <listingId> --late         # first run: its terms and the price; sends nothing
+    verdikta-attest commit ./claim --listing <listingId> --late --yes   # late claim, pin, disclose
+
 Exit codes:
   0  done
   1  refused or failed: stderr says why, as "verdikta-attest: <CODE>: <text>" (check: its forecast)
+     LISTING_ON_HOLD: `commit` on a listing its maker holds; nothing was sent, and section 3,
+     step 1, says what is left to do
   2  usage error (USAGE)
   3  it needs --yes (NEEDS_ACKNOWLEDGEMENT) or --waive-appeal (NEEDS_WAIVER): read what it
      printed, then run it again with that flag
@@ -581,7 +705,8 @@ each mode 0600, in a folder of mode 0700.
   commits again, for a second bond.
 - Once the commit is sent, the claim is the archive.zip saved there: editing the folder's files
   changes nothing that is revealed. Before that, a change stops `commit` with INPUTS_CHANGED
-  (--restart starts over with new keys).
+  (--restart starts over with new keys). A late claim stops with LATE_INPUTS_CHANGED instead,
+  and is not started over (section 3, "Late claims").
 - Do not run two copies of the tool on one folder (FOLDER_BUSY).
 
 ## 10. The full reference

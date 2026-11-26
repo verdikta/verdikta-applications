@@ -94,7 +94,8 @@ function Stake({ l }) {
       <div className="card-head">
         <h4 id={id}>{fill(R.listing, { id: l.id })} <a className="small" href={`#/fund/${l.id}`}>{R.listingPage}</a></h4>
         <Pills rows={[
-          { id: f('state'), label: R.state, value: <StatePill state={l.state} text={E.listingStates[l.state] ?? l.state} /> },
+          // the state is the chain's; a listing on hold (node P42) takes no claims, so its pill is never the green of one that does
+          { id: f('state'), label: R.state, value: <StatePill state={l.heldAt === null ? l.state : null} text={E.listingStates[l.state] ?? l.state} /> },
           { id: f('labels'), label: R.labels, value: <LabelPills labels={l.labels} /> },
         ]} />
       </div>
@@ -119,6 +120,7 @@ function Stake({ l }) {
         { id: f('listed'), label: R.listedAt, value: when(l.listedAt) },
         { id: f('opened'), label: R.openedAt, value: when(l.openedAt) },
         { id: f('funded-until'), label: R.fundedUntil, value: when(l.fundedUntil) },
+        l.heldAt !== null ? { id: f('held'), label: R.heldAt, value: when(l.heldAt) } : null,
         l.rolledAt !== null ? { id: f('rolled'), label: R.rolledAt, value: when(l.rolledAt) } : null,
         l.closedAt !== null ? { id: f('closed'), label: R.closedAt, value: when(l.closedAt) } : null,
         { id: f('predecessor'), label: R.predecessor, value: <Lineage to={l.predecessor} /> },
@@ -165,7 +167,8 @@ function NotCounted({ apart, hash, onChanged }) {
             rows={[
               { id: `not-counted-${l.id}-listing`, label: fill(N.listing, { id: l.id }), value: <a href={`#/fund/${l.id}`}>{R.listingPage}</a> },
               { id: `not-counted-${l.id}-maker`, label: N.maker, value: <Code value={l.maker} what={N.maker} /> },
-              { id: `not-counted-${l.id}-state`, label: N.state, value: <StatePill state={l.state} text={E.listingStates[l.state] ?? l.state} /> },
+              { id: `not-counted-${l.id}-state`, label: N.state, value: <StatePill state={l.heldAt === null ? l.state : null} text={E.listingStates[l.state] ?? l.state} /> },
+              l.heldAt !== null ? { id: `not-counted-${l.id}-held`, label: R.heldAt, value: when(l.heldAt) } : null,
               { id: `not-counted-${l.id}-why`, label: N.why, value: l.detail ?? l.reason },
             ]}
           />

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { LISTING_STATES } from '../chain/abi.js';
-import { chainReader, stakeAttestation } from '../chain/wallet.js';
+import { chainReader, minedReceipt, stakeAttestation } from '../chain/wallet.js';
 import { FormError, ethToWei } from '../lib/draft.js';
 import { formatEth, formatTime } from '../lib/format.js';
 import { STRINGS, fill } from '../strings.js';
@@ -19,12 +19,14 @@ const C = STRINGS.chain;
  * The state and feeDue() are read at one block and the fee is passed as expectedFeeWei, so an
  * opening fund from elsewhere that lands first makes this one revert ("fee changed") rather than
  * top up (with a listing fee of 0 the two cannot be told apart). Once the transaction is mined
- * the button is gone for good, whatever a later read says.
+ * the button is gone for good, whatever a later read says. `onMined(block)`: the block whatever
+ * was sent was mined in, also when the wallet sent it again at a higher fee (chain/wallet.js
+ * minedReceipt): a listing's own page reads the listing again from there (node P42).
  *
- * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string }} props - `top`
+ * @param {{ listingId: bigint, top: bigint, maker: string, artifactHash: string, listed?: boolean, quiet?: boolean }} props - `top`
  *        is the awards[CRITICAL] this page shows
  */
-export function FundListing({ listingId, top, maker, artifactHash, onOpened = () => {} }) {
+export function FundListing({ listingId, top, maker, artifactHash, listed = true, quiet = false, onMined = () => {}, onOpened = () => {} }) {
   const w = useWalletContext();
   const [escrow, setEscrow] = useState(formatEth(top));
   const [fee, setFee] = useState(null);
@@ -34,10 +36,11 @@ export function FundListing({ listingId, top, maker, artifactHash, onOpened = ()
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (!listed) return undefined;
     let live = true;
     chainReader().then((p) => stakeAttestation(p).feeDue(listingId)).then((f) => { if (live) setFee(f); }).catch(() => {});
     return () => { live = false; };
-  }, [listingId]);
+  }, [listingId, listed]);
 
   let escrowWei = null;
   let escrowError = null;
@@ -70,12 +73,12 @@ export function FundListing({ listingId, top, maker, artifactHash, onOpened = ()
         return;
       }
       const tx = await stakeAttestation(signer).fund(listingId, due, { value: due + escrowWei });
-      await tx.wait();
-      setOpened({ tx: tx.hash, until: null });
+      const receipt = await minedReceipt(tx, onMined);
+      setOpened({ tx: receipt.hash, until: null });
       onOpened();
       try {
         const l = await stakeAttestation(provider).getListing(listingId);
-        setOpened({ tx: tx.hash, until: l.fundedUntil });
+        setOpened({ tx: receipt.hash, until: l.fundedUntil });
       } catch {
         // the listing is open; only the end of its period is unknown here
       }
@@ -95,6 +98,10 @@ export function FundListing({ listingId, top, maker, artifactHash, onOpened = ()
       </p>
     );
   }
+  // the form is the read's: on a listing's own page it is drawn only while the listing on display is Listed (`listed`)
+  if (!listed) return null;
+  // while the page knows its read is behind (`quiet`), the form is off as the other forms are; its own error stays
+  if (quiet) return error ? <p className="error" role="alert">{error}</p> : null;
   return (
     <>
       {fee !== null && <p>{fill(C.fee, { fee: formatEth(fee) })}</p>}

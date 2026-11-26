@@ -39,3 +39,40 @@ export async function readPages(chromium, clientUrl, { artifactHash, listingId, 
     await browser.close();
   }
 }
+
+/**
+ * The client's pages while the round's listing is on hold (node P42): the listing's own page, which reads the hold from
+ * the chain; the record, which reads it from the server; and the feed, which then has no entry for the listing. Each
+ * value is the page's text as a reader has it, or null when the page does not show it, so that a check can say so.
+ */
+export async function readHoldPages(chromium, clientUrl, { artifactHash, listingId, onBrowser = () => {} }) {
+  const browser = await chromium.launch({ handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false });
+  onBrowser(browser);
+  try {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', (err) => errors.push(err.message));
+    const text = (testId) => page.getByTestId(testId).innerText({ timeout: 15000 }).catch(() => null);
+    await page.goto(`${clientUrl}/#/fund/${listingId}`);
+    await page.getByTestId('listing-summary').waitFor({ timeout: 60000 });
+    const listing = {
+      state: await text('listing-state'),
+      heldSince: await text('listing-held-since'),
+      held: await text('listing-held'),
+      holdSection: await text('hold'),
+    };
+    await page.goto(`${clientUrl}/#/record/${artifactHash}`);
+    await page.getByTestId('record-hash').waitFor({ timeout: 60000 });
+    const record = {
+      state: await text(`listing-${listingId}-state`),
+      labels: await text(`listing-${listingId}-labels`),
+      held: await text(`listing-${listingId}-held`),
+    };
+    await page.goto(`${clientUrl}/#/feed`);
+    await page.getByTestId('feed-as-of').waitFor({ timeout: 60000 });
+    const feed = { hasListing: (await page.getByTestId(`feed-${listingId}`).count()) > 0 };
+    return { listing, record, feed, errors };
+  } finally {
+    await browser.close();
+  }
+}

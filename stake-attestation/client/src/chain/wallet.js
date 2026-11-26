@@ -1,11 +1,12 @@
 // The maker's wallet (an injected EIP-1193 provider) and the chain reads. Transactions go through
-// the wallet only: list(), fund(), flagBadDisclosure(), release(), dispute(), rollForward(), renew(),
+// the wallet only: list(), fund(), flagBadDisclosure(), release(), dispute(), hold(), rollForward(), renew(),
 // close() and withdraw(). Reads use VITE_SA_RPC_URL when the
 // site has one, so the check page works before a wallet is connected.
 import { BrowserProvider, Contract, JsonRpcProvider } from 'ethers';
 
 import { CONFIG } from '../config.js';
 import { STAKE_ATTESTATION_ABI } from './abi.js';
+import { siteReader, walletSwitched } from './snapshot.js';
 
 const POLL_MS = 1000;
 
@@ -36,10 +37,19 @@ export async function stillConnected(wallet) {
   }
 }
 
+let heard = null;
+/** A wallet says when it changes network: one listener per wallet tells chain/snapshot.js, which takes no try of a read it changed during. */
+function hearWallet() {
+  if (heard === window.ethereum) return;
+  heard = window.ethereum;
+  heard.on?.('chainChanged', walletSwitched);
+}
+
 /** Asks the wallet for an account on the site's chain. Resolves { provider, signer, account }. */
 export async function connectWallet() {
   if (!CONFIG.contract || !CONFIG.chainId) throw new WalletError('notConfigured');
   if (!hasWallet()) throw new WalletError('none');
+  hearWallet();
   const provider = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
   await provider.send('eth_requestAccounts', []);
   let { chainId } = await provider.getNetwork();
@@ -75,8 +85,11 @@ let readerChecked = false;
 export async function chainReader() {
   if (!CONFIG.contract || !CONFIG.chainId) throw new WalletError('notConfigured');
   if (!reader) {
-    if (CONFIG.rpcUrl) reader = new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId, { staticNetwork: true, pollingInterval: POLL_MS });
+    // The site's read address: a snapshot asks it at a block's hash (chain/snapshot.js), and only a provider made
+    // here is asked that way. Without an address, reads go through the wallet's node, by the block's number.
+    if (CONFIG.rpcUrl) reader = siteReader(new JsonRpcProvider(CONFIG.rpcUrl, CONFIG.chainId, { staticNetwork: true, pollingInterval: POLL_MS }));
     else if (hasWallet()) {
+      hearWallet();
       reader = new BrowserProvider(window.ethereum, undefined, { pollingInterval: POLL_MS });
       // a provider is bound to its network: after a chain change, make a new one
       window.ethereum.on?.('chainChanged', () => { reader = null; });
@@ -89,7 +102,10 @@ export async function chainReader() {
   return reader;
 }
 
-/** StakeAttestation at the configured address, on `runner`: a chainReader() or a wallet's signer or provider. */
+/**
+ * StakeAttestation at the configured address, on `runner`: a chainReader() or a wallet's signer or provider, or a
+ * snapshot's runner (chain/snapshot.js), to read at that snapshot's block.
+ */
 export function stakeAttestation(runner) {
   if (!CONFIG.contract) throw new WalletError('notConfigured');
   return new Contract(CONFIG.contract, STAKE_ATTESTATION_ABI, runner);
@@ -103,6 +119,44 @@ export function stakeAttestation(runner) {
 export async function chainNow(provider) {
   const block = await provider.send('eth_getBlockByNumber', ['latest', false]);
   return BigInt(block.timestamp);
+}
+
+/**
+ * The receipt of a transaction once it is mined, also when the wallet sent it again at a higher fee (a "speed up"):
+ * the same call is then mined under another hash, and ethers rejects wait() with TRANSACTION_REPLACED and that
+ * transaction's receipt. That receipt is this call's when the replacement only repriced it and it did not revert.
+ * A replacement that cancelled the transaction or sent something else is not, and rejects as before.
+ *
+ * `onMined` is told the block of whatever was mined, before anything else is done with it: the receipt's, the
+ * replacement's, or that of a transaction that reverted. A listing's page then knows that the read it shows is from
+ * before that block (lib/pageSays.js), on every path that sends.
+ * @param {{ wait(): Promise<object> }} tx - a sent transaction
+ * @param {(block: number) => void} [onMined]
+ * @returns {Promise<object>} the receipt: its `hash` is the mined transaction's
+ */
+export async function minedReceipt(tx, onMined = () => {}) {
+  let receipt;
+  try {
+    receipt = await tx.wait();
+  } catch (err) {
+    if (Number.isSafeInteger(err?.receipt?.blockNumber)) onMined(err.receipt.blockNumber);
+    if (err?.code === 'TRANSACTION_REPLACED' && err.reason === 'repriced' && err.cancelled === false && err.receipt?.status === 1) return err.receipt;
+    throw err;
+  }
+  onMined(receipt.blockNumber);
+  return receipt;
+}
+
+/**
+ * The listing as one block has it, or null when the contract has no listing of that id there. getListing reverts for
+ * such an id, so the count is asked first, of the same block.
+ * @param {object} contract - StakeAttestation made on a snapshot's runner (chain/snapshot.js): its calls are that block's
+ * @returns {Promise<object|null>}
+ */
+export async function listingAt(contract, listingId) {
+  const id = BigInt(listingId);
+  if (id === 0n || id > BigInt(await contract.listingCount())) return null;
+  return contract.getListing(id);
 }
 
 /** The event `name` in a receipt, parsed with the client's ABI, or null. */

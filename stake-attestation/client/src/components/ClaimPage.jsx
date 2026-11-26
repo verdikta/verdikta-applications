@@ -82,7 +82,9 @@ const queueOf = (claimId, d) => queueView({
 });
 /** The claim an unrevealed claim waits for in this read, or null: none, or the claim has moved on. */
 const waitsForOf = (claimId, d) => queueOf(claimId, d)?.waitsFor ?? null;
-// StakeAttestation.rollForward takes an Open or Depleted listing only
+// StakeAttestation.rollForward takes an Open or Depleted listing only. A listing its maker has on hold (node P42)
+// is one of the two: a hold is not a state, and a roll forward from it ends the fix window of the claims disclosed
+// on it, late ones too, as from any other. So the reveal text that names the roll-forward is right there.
 const ROLLABLE = new Set(['Open', 'Depleted']);
 const disputeArgs = (d) => ({ state: d.state, outcome: OUTCOMES[Number(d.claim.outcome)], dispute: DISPUTE_RESULTS[Number(d.claim.dispute)], deadline: d.deadline, now: d.now });
 

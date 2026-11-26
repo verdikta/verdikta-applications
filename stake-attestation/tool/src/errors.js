@@ -2,6 +2,13 @@
 // caller. No error relays the text of an ethers error, an RPC, a pin service or a runner's credentials: ethers
 // puts a transaction's calldata in its messages, and at reveal that calldata holds the keys. So a ToolError has
 // no `cause`, and what is known of a failure from outside is a code or an allow-listed revert reason.
+/**
+ * What a refusal that sends a hunter to a late claim says of it (nodes P43 and P41): what one is, and in which folder
+ * `commit --late` is a dry run. One sentence for both refusals, so that the two cannot drift: a prepared folder whose
+ * two hashes already have a claim on the chain has that claim disclosed, --yes or not (commit.js, runCommit).
+ */
+const LATE_CLAIM_INSTEAD = 'A late claim is judged and recorded, and pays no award: in a folder where nothing is saved yet, commit --late prints its terms and its price, and with --yes files one. In a prepared folder, commit --late first looks for a claim of these files on the chain, and discloses one it finds, --yes or not. Nothing was pinned or sent.';
+
 export const ERROR_TEXTS = Object.freeze({
   APPEAL_REFUSED: 'The contract would refuse this appeal. Nothing was sent.',
   APPEAL_REVERTED: 'The appeal transaction reverted. Run appeal again to see where the claim stands.',
@@ -26,12 +33,19 @@ export const ERROR_TEXTS = Object.freeze({
   INPUTS_CHANGED: 'The claim files changed since this commit was prepared, and nothing has been signed. Restore them, or pass --restart to draw new keys for the new files.',
   INSUFFICIENT_FUNDS: 'This wallet cannot pay for this. Nothing was sent.',
   INTERNAL: 'The tool failed unexpectedly.',
+  LATE_INPUTS_CHANGED: 'The claim files changed since this late claim was prepared, and nothing has been signed. Restore them, or prepare the changed claim in a new folder: a late claim is not started over.',
+  LATE_CLAIMS_ONLY: `This listing takes no commits now, only late claims. ${LATE_CLAIM_INSTEAD}`,
+  LATE_NEEDS_NEW_FOLDER: 'A late claim is not started over: --restart is refused for one, and a changed late claim goes in a new folder. Copy finding.json, report.md and the patches to a new folder and run commit --late there. Keep this folder as it is: nothing in it was deleted, and nothing was pinned or sent.',
+  LATE_PRICE_CHANGED: 'The price of this late claim changed after its terms were printed, so nothing was signed or sent. Run the same command again: it prints the terms with the price as it is now.',
   LISTING_ARCHIVE_INVALID: 'That is no listing archive this tool can read.',
   LISTING_NOT_ACCEPTING: 'This listing takes no commits now.',
   LISTING_NOT_FOUND: 'No such listing on this contract.',
+  LISTING_ON_HOLD: `This listing is on hold: its maker stopped new commits on it, and a hold is not lifted, so it takes late claims only from now on. ${LATE_CLAIM_INSTEAD}`,
+  LISTING_TAKES_COMMITS: 'This listing takes commits, so it takes no late claim: --late is for a listing that takes none any more. Run commit without --late. Nothing was pinned or sent.',
   NEEDS_ACKNOWLEDGEMENT: 'Read the above, then run again with --yes. Nothing was sent.',
   NETWORK_NOT_ALLOWED: 'This tool is for Base Sepolia and local nodes for now. Refused.',
   NOTHING_TO_WITHDRAW: 'This wallet has nothing to withdraw.',
+  NO_LATE_CLAIMS: 'This listing takes no late claim now. A listing takes one once its stake has rolled forward, or closed after it opened, or while its maker holds it. Nothing was pinned or sent.',
   NOT_APPEALABLE: 'This claim cannot be appealed now. Nothing was sent.',
   NOT_YOUR_CLAIM: 'This wallet is not the claim\'s hunter, and only the hunter may appeal. Nothing was sent.',
   NEEDS_WAIVER: 'Settling your own INVALID now waives the appeal. Read the above, then run again with --waive-appeal. Nothing was sent.',
@@ -101,8 +115,9 @@ export const fail = (code, detail) => new ToolError(code, detail);
 
 // Every revert string in onchain/contracts (test/abi.test.js holds this list to them). Only these are ever
 // repeated from a failure: anything else stays unnamed, since a node's message can quote the calldata.
+// 'not accepting late claims' is lateClaim's own (node P43; test/late.test.js holds it to ClaimLogic.sol).
 export const KNOWN_REVERTS = Object.freeze([
-  'active listing exists', 'allowlist too long', 'already closed', 'already disclosed', 'already disputed', 'already flagged', 'already retriggered', 'already started', 'amount owed', 'appeal window open', 'appeal window over', 'awaiting confirmation', 'awards decrease', 'awards owed', 'bad allowlist', 'bad alpha', 'bad archiveHash', 'bad baseCommit', 'bad bcid', 'bad budget', 'bad ciphertextCid', 'bad ciphertextSha256', 'bad claimId', 'bad dispute oracle fee', 'bad disputeCid', 'bad fee recipient', 'bad fee scaling', 'bad knownIssueIds', 'bad listingCid', 'bad listingId', 'bad lowestClassCounted', 'bad oracle fee', 'bad repo', 'bad statementCid', 'base cost must be below dispute fee', 'base cost must be below fee', 'claims pending', 'confirmation deadline over', 'contract artifact needs a deployment', 'counted class pays nothing', 'disclose window over', 'dispute oracle fee above ceiling', 'dispute window open', 'dispute window over', 'dispute window too long', 'dispute window too short', 'earlier claim unresolved', 'escrow below fee', 'escrow below top award', 'evaluation not ready', 'fee changed', 'fee not paid', 'fix window open', 'fix window too long', 'floor out of bounds', 'gas below INLINE_REFUND_GAS_NEEDED', 'gas below SUBMISSION_GAS_NEEDED', 'grace exceeds fix window', 'grace over', 'no confirmation due', 'no disclosure key', 'no value', 'not INVALID', 'not a valid outcome', 'not accepting commits', 'not allowed', 'not committed', 'not disclosed', 'not failed', 'not fundable', 'not hunter', 'not in fix window', 'not judged', 'not maker', 'not renewable', 'not requester', 'not revealed', 'not rollable', 'nothing to recover', 'nothing to withdraw', 'oracle fee above ceiling', 'payment below bond + fee', 'plain ETH refused', 'prepay below fee', 'reentrant', 'repatriate failed', 'repo artifact has a deployment', 'retrigger window open', 'retrigger window over', 'reveal window open', 'reveal window over', 'reveal window too long', 'reveal window too short', 'self only', 'too many known issues', 'unknown function', 'unknown wallet', 'withdraw failed', 'wrong fee', 'zero aggregator',
+  'active listing exists', 'allowlist too long', 'already closed', 'already disclosed', 'already disputed', 'already flagged', 'already held', 'already retriggered', 'already started', 'amount owed', 'appeal window open', 'appeal window over', 'awaiting confirmation', 'awards decrease', 'awards owed', 'bad allowlist', 'bad alpha', 'bad archiveHash', 'bad baseCommit', 'bad bcid', 'bad budget', 'bad ciphertextCid', 'bad ciphertextSha256', 'bad claimId', 'bad dispute oracle fee', 'bad disputeCid', 'bad fee recipient', 'bad fee scaling', 'bad knownIssueIds', 'bad listingCid', 'bad listingId', 'bad lowestClassCounted', 'bad oracle fee', 'bad repo', 'bad statementCid', 'base cost must be below dispute fee', 'base cost must be below fee', 'claims pending', 'confirmation deadline over', 'contract artifact needs a deployment', 'counted class pays nothing', 'disclose window over', 'dispute oracle fee above ceiling', 'dispute window open', 'dispute window over', 'dispute window too long', 'dispute window too short', 'earlier claim unresolved', 'escrow below fee', 'escrow below top award', 'evaluation not ready', 'fee changed', 'fee not paid', 'fix window open', 'fix window too long', 'floor out of bounds', 'gas below INLINE_REFUND_GAS_NEEDED', 'gas below SUBMISSION_GAS_NEEDED', 'grace exceeds fix window', 'grace over', 'no confirmation due', 'no disclosure key', 'no value', 'not INVALID', 'not a valid outcome', 'not accepting commits', 'not accepting late claims', 'not allowed', 'not committed', 'not disclosed', 'not failed', 'not fundable', 'not hunter', 'not in fix window', 'not judged', 'not maker', 'not renewable', 'not requester', 'not revealed', 'not rollable', 'nothing to recover', 'nothing to withdraw', 'oracle fee above ceiling', 'payment below bond + fee', 'plain ETH refused', 'prepay below fee', 'reentrant', 'repatriate failed', 'repo artifact has a deployment', 'retrigger window open', 'retrigger window over', 'reveal window open', 'reveal window over', 'reveal window too long', 'reveal window too short', 'self only', 'too many known issues', 'unknown function', 'unknown wallet', 'withdraw failed', 'wrong fee', 'zero aggregator',
 ]);
 
 // Longest first, so 'not disclosed' cannot shadow something that contains it.

@@ -231,7 +231,7 @@ jobs:
   onchain:
     name: Contracts
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -270,7 +270,9 @@ jobs:
     # Playwright 1.59 (the version the bounty client uses) has no browser build for
     # ubuntu-latest's 26.04; move with the Playwright version.
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Two Playwright runs, after a browser install that takes about a minute and has taken eight: the job took
+    # 18 min 50 s of 25 at c1e47e4, and 35 minutes leaves room for the slow install.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

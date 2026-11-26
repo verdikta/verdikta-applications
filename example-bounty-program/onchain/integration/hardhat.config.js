@@ -4,7 +4,8 @@
 // Secret-free: no networks but the in-process one.
 require("@nomicfoundation/hardhat-toolbox");
 
-const dispatcher = { version: "0.8.30", settings: { optimizer: { enabled: true, runs: 200 }, viaIR: true } };
+// Mirrors verdikta-dispatcher/reputationBasedAggregator/hardhat.config.js (cancun: transient reentrancy guard)
+const dispatcher = { version: "0.8.30", settings: { optimizer: { enabled: true, runs: 20 }, viaIR: true, evmVersion: "cancun" } };
 const apps = require("../solidity.settings.cjs");
 
 module.exports = {

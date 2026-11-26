@@ -1818,7 +1818,15 @@ goes in a URL.
   transaction was mined in, so what was done stays said.
 - **Every listing page** (the feed, the record, a listing's own page) warns who reads a proof
   first and that the code may exist elsewhere (`shared/src/listingWarning.js`, which the hunter
-  tool repeats). A listing's own page says whether the site offers a commit on it.
+  tool repeats). A listing's own page says whether the site offers a commit on it, in its
+  "Commits" section (`CommitOffer` in `client/src/components/ListingExtras.jsx`): only on a
+  listing that counts and takes commits now (node P47). Whether it takes commits is the
+  contract's `acceptsCommits`, which the page reads in the same snapshot as the listing; a failure
+  of that call is a failed read of the page. A listing that counts and takes none says so in one
+  sentence, the hold's while it is on hold. That sentence gives no reason by state: the listing's
+  state, its hold and its paid period are said elsewhere on the page. The sentence is as of the
+  page's read: the page does not watch the clock, so a paid period that ends after a read changes
+  the sentence only at the next read.
 - **The record** (`#/record/<hash>`, design §4.1, §13.4): from `GET /api/records/:hash`, the
   artifact (hash, kind, repository and commit from the Listed event, whether the host says it
   is a fork, how many listings of it count and how many of those are not closed, each linked by its

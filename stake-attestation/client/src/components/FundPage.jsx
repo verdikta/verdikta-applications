@@ -22,18 +22,21 @@ const F = STRINGS.fund;
 const CLASSES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
 
 /**
- * The page's read of the listing: one snapshot of one block (chain/snapshot.js). The count, the listing and its hold
- * (node P42) are that one block's: a hold mined between two calls, or a block replaced under them, never pairs a
- * listing with the hold of another moment or of another chain. A contract deployed before the hold refuses the heldAt
- * call, which readHold answers as "no hold here"; a read that fails any other way rejects with the rest, and the page
- * says it could not be read. "No such listing" is an answer of a block too.
- * @returns {Promise<{ block: number } & ({ missing: true } | { listing: object, hold: { supported: boolean, heldAt: bigint, held: boolean } })>}
+ * The page's read of the listing: one snapshot of one block (chain/snapshot.js). The count, the listing, its hold
+ * (node P42) and whether it takes commits (the contract's acceptsCommits; node P47) are that one block's: a hold mined
+ * between two calls, or a block replaced under them, never pairs a listing with the hold of another moment or of
+ * another chain. A contract deployed before the hold refuses the heldAt call, which readHold answers as "no hold
+ * here"; a read that fails any other way rejects with the rest, and the page says it could not be read. Every contract
+ * has acceptsCommits, so that call has no such answer: when it fails, refused or not, the read failed. "No such
+ * listing" is an answer of a block too.
+ * @returns {Promise<{ block: number } & ({ missing: true } | { listing: object, hold: { supported: boolean, heldAt: bigint, held: boolean }, takesCommits: boolean })>}
  */
 async function readListing(listingId) {
   const { value, block } = await snapshot(await chainReader(), async (at) => {
     const view = stakeAttestation(at);
     const listing = await listingAt(view, listingId);
-    return listing === null ? { missing: true } : { listing, hold: await readHold(view, listingId) };
+    if (listing === null) return { missing: true };
+    return { listing, hold: await readHold(view, listingId), takesCommits: await view.acceptsCommits(BigInt(listingId)) };
   });
   return { ...value, block };
 }
@@ -62,7 +65,7 @@ export function FundPage({ listingId }) {
     record.current = pageAfter(record.current, event);
     redraw((n) => n + 1);
   }, []);
-  const loaded = record.current.read; // { listing, hold, block } | { missing, block } | { failed } | null
+  const loaded = record.current.read; // { listing, hold, takesCommits, block } | { missing, block } | { failed } | null
   const says = pageSays(record.current);
   // The listing on display, by maker and artifact: an action is drawn for it, and a wallet's read that refuses an
   // action disagrees with that listing. One that arrives once the page shows another listing under the id hides
@@ -190,7 +193,7 @@ export function FundPage({ listingId }) {
       {!quiet && state === 'Open' && !hold.held && <p className="ok" data-testid="listing-open-until">{fill(F.alreadyOpen, { id: listingId, until: formatTime(l.fundedUntil) })}</p>}
       {!quiet && hold.held && <p className="warning" data-testid="listing-held">{fill(F.held, { id: listingId, time: formatTime(hold.heldAt) })}</p>}
       {!quiet && state !== 'Listed' && state !== 'Open' && <p className="hint">{fill(F.notFundable, { id: listingId, state: F.states[state] ?? state })}</p>}
-      <ListingMore listingId={listingId} listing={l} hold={hold} quiet={quiet} onChanged={onChanged} />
+      <ListingMore listingId={listingId} listing={l} hold={hold} takesCommits={loaded.takesCommits} quiet={quiet} onChanged={onChanged} />
       <TopUpEscrow listingId={listingId} listing={l} held={hold.held} quiet={quiet} onChanged={onChanged} />
       <RenewListing listingId={listingId} listing={l} held={hold.held} quiet={quiet} onChanged={onChanged} />
       <CloseListing listingId={listingId} listing={l} quiet={quiet} onChanged={onChanged} />

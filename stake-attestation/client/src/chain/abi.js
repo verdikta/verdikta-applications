@@ -42,6 +42,8 @@ export const STAKE_ATTESTATION_ABI = Object.freeze([
   'function claimState(uint256 claimId) view returns (uint8)',
   'function claimTimes(uint256 claimId) view returns (uint256 discloseDeadline, uint256 revealableAt, uint256 revealDeadline)',
   'function disputeFee(uint256 listingId) view returns (uint256)',
+  // review 2026-11-26 #19: why the aggregator's live limits refuse the listing's jury ('' when they do not)
+  'function juryProblem(uint256 listingId) view returns (string)',
   'function disputeDeadline(uint256 claimId) view returns (uint256)',
   // the maker's ways to keep a stake open or end it, and any wallet's way to collect what the contract holds for
   // it (a payment it could not send, a listing fee, an award paid late from a top-up)

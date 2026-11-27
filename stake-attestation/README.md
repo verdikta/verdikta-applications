@@ -631,6 +631,15 @@ issues and document it as intended in the code (NatSpec) or in a listing documen
 about it then falls under INVALID: the behaviour its PoC asserts is not required of the code. The site's listing form says
 both at its known-issues fields.
 
+**A jury the aggregator refuses** (review 2026-11-26 #19, an accepted limitation). `setOracle` checks a listing's jury
+structure only; the aggregator's live, owner-set limits (K ≤ `maxJury` and the keeper's shortlist, T+ < timeout ≤
+`maxTimeout` and ≤ one day) are checked by each request, at reveal. A listing can therefore be listed with a jury every
+reveal will be refused for, or become one after an owner change, and a claim on it discloses its finding to the maker
+with no payout path (its bond and prepay come back). Checking that is the hunter's, before committing:
+`juryProblem(listingId)` (lens) names the reason (`""` when the jury can run); the tool refuses a commit with
+`JURY_NOT_RUNNABLE`, and the record page shows it on the listing. Before tightening a limit, the owner runs
+`example-bounty-program/server/scripts/limitImpact.js` to see which listings and bounties it would strand.
+
 **An exact copy of an earlier finding** (review 2026-11-26 #9). A request carries only the 8 most recent prior
 findings, so a jury may never see an older one. The contract therefore keeps, per listing, the `archiveHash` of every
 valid finding it publishes (`ClaimLogic.settle`, a namespaced storage slot). A later claim on the same listing with the

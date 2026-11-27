@@ -14,6 +14,7 @@ import { Diligence } from './Diligence.jsx';
 import { AsOf, Facts, Pills, Tiles, siteErrorText } from './Facts.jsx';
 import { TextField } from './Field.jsx';
 import { ListingWarning } from './ListingWarning.jsx';
+import { chainReader, stakeAttestation } from '../chain/wallet.js';
 
 const R = STRINGS.record;
 const E = STRINGS.enums;
@@ -86,11 +87,31 @@ function termRows(l, f) {
  * figures as tiles, the award table, what the project's proof rests on in a box of its own, then
  * every other fact. Each value is the text it was, under the same `data-testid`.
  */
+/**
+ * Review 2026-11-26 #19: the lens's juryProblem for an Open listing, read from the chain ('' when
+ * its jury can run, null while unread or when the chain cannot be read: then nothing is shown,
+ * and the hunter tool checks again before a commit).
+ */
+function useJuryProblem(listingId, open) {
+  const [problem, setProblem] = useState(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    let live = true;
+    chainReader().then((p) => stakeAttestation(p).juryProblem(BigInt(listingId)))
+      .then((r) => { if (live) setProblem(String(r)); })
+      .catch(() => { if (live) setProblem(null); });
+    return () => { live = false; };
+  }, [listingId, open]);
+  return problem;
+}
+
 function Stake({ l }) {
   const id = useId();
   const f = (name) => `listing-${l.id}-${name}`;
+  const juryProblem = useJuryProblem(l.id, l.state === 'Open');
   return (
     <section className="claim" aria-labelledby={id} data-testid={`listing-${l.id}`}>
+      {juryProblem && <p className="error" role="alert" data-testid={f('jury-problem')}>{fill(R.juryProblem, { reason: juryProblem })}</p>}
       <div className="card-head">
         <h4 id={id}>{fill(R.listing, { id: l.id })} <a className="small" href={`#/fund/${l.id}`}>{R.listingPage}</a></h4>
         <Pills rows={[

@@ -90,7 +90,7 @@ test('installed without verdikta-discover: a wager claim submits, a work-order s
       sendTx: async (signer, method, tx, opts) => { verifyTransaction(tx, { network: 'base', method, args: opts.args, value: opts.exactValueWei ?? 0n, maxValueWei: policy.maxValueWei }); await opts.onSigned?.({ hash }); sent.push(method);
         return { status: 1, hash, logs: [log('SubmissionPrepared', [7, 0, hunter, poster, 100n, cid])] }; } };
     const transaction = { to: d.address, chainId: d.chainId, value: '0', data: iface.encodeFunctionData('prepareSubmission', [7, cid, hunterCid]) };
-    const env = { baseUrl: 'https://mock.invalid', pause: async () => {}, contract: () => ({ getBounty: async () => ({ evaluationCid: cid, targetHunter: hunter }), isAcceptingSubmissions: async () => true, getSubmission: async () => ({ hunter, hunterCid }), nextAction: async () => 'AWAIT_ORACLE', startValue: async () => 123n, requiredPrepay: async () => 100n }),
+    const env = { baseUrl: 'https://mock.invalid', pause: async () => {}, contract: () => ({ getBounty: async () => ({ evaluationCid: cid, targetHunter: hunter }), isAcceptingSubmissions: async () => true, juryProblem: async () => '', getSubmission: async () => ({ hunter, hunterCid }), nextAction: async () => 'AWAIT_ORACLE', startValue: async () => 123n, requiredPrepay: async () => 100n }),
       fetchApi: async (url) => {
         if (url.endsWith('/7')) return json({ job: { jobId: 7, onChain: true, evaluationCid: cid, description } });
         if (url.endsWith('/validate')) return json({ valid: true });

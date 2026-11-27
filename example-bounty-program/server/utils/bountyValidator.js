@@ -39,7 +39,8 @@ const IssueType = {
   RUBRIC_FETCH_FAILED: 'RUBRIC_FETCH_FAILED', // Grading rubric could not be fetched (transient)
   MISSING_BCIDS: 'MISSING_BCIDS',             // manifest.json missing bCIDs
   NOT_ON_CHAIN: 'NOT_ON_CHAIN',               // Bounty does not exist on-chain
-  CHAIN_STATUS: 'CHAIN_STATUS'                // On-chain status issue (not open, expired, etc.)
+  CHAIN_STATUS: 'CHAIN_STATUS',               // On-chain status issue (not open, expired, etc.)
+  JURY_NOT_RUNNABLE: 'JURY_NOT_RUNNABLE'      // The aggregator's live limits refuse the bounty's jury (lens juryProblem)
 };
 
 /**
@@ -51,7 +52,8 @@ const IssueType = {
  *  - INVALID_CLASS / MODEL_UNAVAILABLE reflect the @verdikta/common class
  *    registry, not the package; classes are permissionless, so a registry entry
  *    does not decide whether arbiters can serve a bounty.
- *  - CHAIN_STATUS / NOT_ON_CHAIN are checked by the routes against the contract.
+ *  - CHAIN_STATUS / NOT_ON_CHAIN / JURY_NOT_RUNNABLE are checked by the routes against the contract
+ *    (the jury's against the aggregator's live limits, which the owner may change).
  */
 const GATING_ISSUE_TYPES = new Set([
   IssueType.INVALID_FORMAT,
@@ -518,7 +520,21 @@ function quickFormatCheck(content) {
   };
 }
 
+/**
+ * The validate-time issue for a bounty whose jury the aggregator refuses (review 2026-11-26 #19),
+ * or null when `problem` (the lens's juryProblem) is empty. An ERROR: no submission can run.
+ */
+function juryIssue(problem) {
+  if (!problem) return null;
+  return {
+    type: IssueType.JURY_NOT_RUNNABLE,
+    severity: IssueSeverity.ERROR,
+    message: `The aggregator refuses this bounty's jury under its current limits (${problem}): every start would revert, so no submission can be evaluated.`,
+  };
+}
+
 module.exports = {
+  juryIssue,
   validateBounty,
   quickFormatCheck,
   isZipFile,

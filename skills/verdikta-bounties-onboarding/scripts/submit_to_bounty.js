@@ -47,6 +47,12 @@ export async function runSubmit(lib, { contract = (address, abi, provider) => ne
     const validation = await api('/validate');
     if (validation.valid !== true) throw new Error('Evaluation package validation failed or unavailable; do not upload');
     if (arg('resume') == null && !await escrow.isAcceptingSubmissions(jobId)) throw new Error('Bounty is not accepting submissions');
+    // The aggregator's live, owner-set limits can refuse a bounty's jury; every start would revert, so do not do the work
+    // (review 2026-11-26 #19: hunters check a bounty's terms; the chain's own answer, not the API's).
+    if (arg('resume') == null) {
+      const juryProblem = await escrow.juryProblem(jobId);
+      if (juryProblem) throw new Error(`Bounty's jury cannot run under the aggregator's current limits (${juryProblem}); every start would revert. Do not work on it.`);
+    }
     let submissionId = arg('resume'), hunterCid = arg('hunterCid');
     const statePath = arg('state');
     let state;

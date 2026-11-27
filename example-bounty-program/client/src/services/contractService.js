@@ -937,6 +937,16 @@ class ContractService {
     return [...await c.pendingSubmissionIds(bountyId)].map(Number).sort((a, b) => a - b);
   }
 
+  /**
+   * Why the aggregator would refuse this bounty's jury under its live, owner-set limits, or '' if it
+   * would accept it (the lens's juryProblem; review 2026-11-26 #19). Every start reverts while it
+   * names a problem, so the page tells hunters before they do the work.
+   */
+  async getJuryProblem(bountyId) {
+    const c = new ethers.Contract(this.contractAddress, BOUNTY_ESCROW_ABI, this.getReadOnlyProvider());
+    return String(await c.juryProblem(bountyId));
+  }
+
   /** The contract's own verdict on what to do with a submission (BountyEscrow.nextAction). */
   async getNextAction(bountyId, submissionId) {
     const c = new ethers.Contract(this.contractAddress, BOUNTY_ESCROW_ABI, this.getReadOnlyProvider());

@@ -2075,6 +2075,25 @@
   },
   {
     "type": "function",
+    "name": "juryProblem",
+    "constant": true,
+    "stateMutability": "view",
+    "payable": false,
+    "inputs": [
+      {
+        "type": "uint256",
+        "name": "bountyId"
+      }
+    ],
+    "outputs": [
+      {
+        "type": "string",
+        "name": ""
+      }
+    ]
+  },
+  {
+    "type": "function",
     "name": "nextAction",
     "constant": true,
     "stateMutability": "view",

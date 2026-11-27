@@ -199,6 +199,15 @@ test('a listing that takes no commits, or does not allow this hunter, is refused
   await assert.rejects(w.hunter().commit({ claimDir: makeClaimDir(), listingId: 99999n, acknowledge: true }), (e) => e.code === 'LISTING_NOT_FOUND');
 });
 
+test('a listing whose jury the aggregator refuses is refused before anything is signed (review #19)', async () => {
+  const { ORACLE } = await import('./helpers/world.js');
+  const l = await w.listing({ oracle: { ...ORACLE, jury: { ...ORACLE.jury, timeout: 155n } } });   // at T+
+  const count = await w.claimCount();
+  await assert.rejects(w.hunter().commit({ claimDir: makeClaimDir(), listingId: l.listingId, acknowledge: true }),
+    (e) => e.code === 'JURY_NOT_RUNNABLE' && /timeout at or below tPlus/.test(e.message + (e.detail || '')));
+  assert.equal(await w.claimCount(), count);
+});
+
 test('keys and ciphertext are on disk at 0600 at the moment the commit is broadcast, and no pin has happened', async () => {
   const l = await w.listing();
   const dir = makeClaimDir();

@@ -262,6 +262,9 @@ async function revertedReason(ctx, hash, state) {
 async function commitPreflight(ctx, listingId, hunter) {
   const price = await ctx.read('commitPrice', [listingId]);
   if (!await ctx.read('acceptsCommits', [listingId])) throw fail('LISTING_NOT_ACCEPTING', `Listing ${listingId}.`);
+  // Review 2026-11-26 #19: the listing's jury against the aggregator's live limits (the lens's juryProblem).
+  const juryProblem = await ctx.read('juryProblem', [listingId]);
+  if (juryProblem) throw fail('JURY_NOT_RUNNABLE', `Listing ${listingId}: ${juryProblem}.`);
   if (!await ctx.read('isAllowed', [listingId, hunter])) throw fail('NOT_ALLOWED');
   const fee = await ctx.feeCap();
   const balance = await ctx.rpc(() => ctx.provider.getBalance(hunter));

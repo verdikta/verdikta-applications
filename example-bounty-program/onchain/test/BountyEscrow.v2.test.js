@@ -569,6 +569,47 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
     });
   });
 
+  // Review 2026-11-26 #19 (accepted limitation): the escrow stores a jury the aggregator's live,
+  // owner-set limits refuse; hunters check the terms first, through juryProblem, and nextAction
+  // never names a start or re-run the aggregator would refuse.
+  describe("a jury the aggregator refuses (juryProblem)", function () {
+    it("is empty for a jury within the live limits", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f);
+      expect(await f.escrow.juryProblem(bountyId)).to.equal("");
+    });
+
+    for (const [label, jury, reason] of [
+      ["timeout 0", { ...SMALL, timeout: 0 }, "timeout at or below tPlus"],
+      ["timeout at T+", { ...SMALL, timeout: 155 }, "timeout at or below tPlus"],
+      ["timeout above maxTimeout", { ...SMALL, timeout: 7200 }, "timeout above maxTimeout"],
+      ["K above maxJury", { K: 60, M: 40, N: 40, P: 3, timeout: 300 }, "K above maxJury"],
+    ]) {
+      it(`${label}: named, a prepared submission is DEAD, and its start is refused`, async function () {
+        const f = await loadFixture(fixture);
+        const { bountyId } = await createBounty(f, { jury, quota: 3, forfeitLine: 1 });
+        expect(await f.escrow.juryProblem(bountyId)).to.equal(reason);
+        const p = await prepare(f, bountyId);
+        expect(await f.escrow.nextAction(bountyId, p.submissionId)).to.equal("DEAD");
+        await expect(start(f, bountyId, p.submissionId)).to.be.reverted;
+      });
+    }
+
+    it("a limit tightened after a soft fail: the re-run is AWAIT_EXPIRY, then EXPIRE_RERUN", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f);
+      const s = await submit(f, bountyId);
+      await runRound(f, bountyId, s.submissionId, mix(4, 2));
+      await f.escrow.finalizeSubmission(bountyId, s.submissionId);
+      expect(await f.escrow.nextAction(bountyId, s.submissionId)).to.equal("RERUN");
+      await f.agg.setLimits(5, 3600);                                       // maxJury below K = 6
+      expect(await f.escrow.juryProblem(bountyId)).to.equal("K above maxJury");
+      expect(await f.escrow.nextAction(bountyId, s.submissionId)).to.equal("AWAIT_EXPIRY");
+      await time.increase(2 * HOUR + 1);
+      expect(await f.escrow.nextAction(bountyId, s.submissionId)).to.equal("EXPIRE_RERUN");
+    });
+  });
+
   describe("the round's phases, as nextAction sees them", function () {
     it("DRAW, CLOSE_COMMITS after T+ with M commits, PROMOTE from C+2, then FINALIZE", async function () {
       const f = await loadFixture(fixture);

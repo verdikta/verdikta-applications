@@ -437,6 +437,15 @@ class ContractService {
    * Status, isAcceptingSubmissions, canBeClosed are computed locally
    * from the struct fields instead of making 3 extra view calls.
    */
+  /**
+   * Why the aggregator would refuse a request with this bounty's jury right now, or '' if it
+   * would accept it: the lens's juryProblem (the aggregator's live, owner-set limits; review
+   * 2026-11-26 #19). 1 RPC call; throws when the chain cannot be read.
+   */
+  async getJuryProblem(bountyId) {
+    return String(await this.contract.juryProblem(bountyId));
+  }
+
   async getBounty(bountyId) {
     try {
       const bounty = await this.contract.getBounty(bountyId);

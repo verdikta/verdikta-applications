@@ -5,6 +5,17 @@ import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 import {StakeAttestation} from "./StakeAttestation.sol";
 import {ClaimRules} from "./libraries/ClaimRules.sol";
 
+/// @dev The aggregator's live jury limits beyond IVerdiktaAggregator (T+ and the keeper), and the
+///      keeper's shortlist. Read with try/catch: an aggregator without them (a test mock) skips
+///      that bound.
+interface IAggregatorLimits {
+    function tPlus() external view returns (uint40);
+    function keeper() external view returns (address);
+}
+interface IKeeperShortlist {
+    function shortlistSize() external view returns (uint16);
+}
+
 /// @title StakeAttestationLens
 /// @notice StakeAttestation's derived, read-only views, kept in a separate contract so the main
 ///         contract's runtime bytecode stays under the EIP-170 limit as later nodes add
@@ -245,6 +256,30 @@ contract StakeAttestationLens {
         uint256 held = c.requestId == bytes32(0) ? c.prepayWei : 0;
         uint256 live = _liveFee(l);
         return live > held ? live - held : 0;
+    }
+
+    /// @notice Why the aggregator would refuse a request with the listing's jury RIGHT NOW, or ""
+    ///         if it would accept it (review 2026-11-26 #19, an accepted limitation: setOracle checks
+    ///         only the jury's structure; the live limits are owner-set and checked by each request,
+    ///         so a hunter checks the listing's terms BEFORE committing, since disclosure follows the
+    ///         commit and a refused reveal pays nothing). Reasons: "timeout at or below tPlus",
+    ///         "timeout above maxTimeout", "timeout above one day", "K above maxJury", "K above the
+    ///         keeper's shortlist". The tool and the site refuse to commit while this is non-empty.
+    function juryProblem(uint256 listingId) external view returns (string memory) {
+        IVerdiktaAggregator.Jury memory j = host.getListing(listingId).oracle.jury;
+        uint256 t = j.timeout;
+        try IAggregatorLimits(address(verdikta)).tPlus() returns (uint40 tp) {
+            if (t <= tp) return "timeout at or below tPlus";
+        } catch {}
+        if (t > verdikta.maxTimeout()) return "timeout above maxTimeout";
+        if (t > 1 days) return "timeout above one day";
+        if (j.K > verdikta.maxJury()) return "K above maxJury";
+        try IAggregatorLimits(address(verdikta)).keeper() returns (address k) {
+            try IKeeperShortlist(k).shortlistSize() returns (uint16 sl) {
+                if (j.K > sl) return "K above the keeper's shortlist";
+            } catch {}
+        } catch {}
+        return "";
     }
 
     /// @notice Whether lateClaim (decision D6) takes a claim on the listing now: its stake ended,

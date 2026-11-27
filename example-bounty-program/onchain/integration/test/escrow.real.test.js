@@ -593,6 +593,38 @@ describe("BountyEscrow x real v2 aggregator", function () {
     }
   });
 
+  it("9. juryProblem reads the real limits: tPlus, maxJury and the keeper's shortlist (review #19)", async () => {
+    const ok = await createBounty();
+    expect(await escrow.juryProblem(ok.b)).to.equal("");
+    const atTPlus = await createBounty({ jury: { ...SMALL, timeout: Number(await agg.tPlus()) } });
+    expect(await escrow.juryProblem(atTPlus.b)).to.equal("timeout at or below tPlus");
+    const [sl, scan, live] = [await keeper.shortlistSize(), await keeper.maxScan(), await keeper.liveRandom()];
+    await keeper.connect(deployer).setSelection(5, scan, live);              // below K = 6
+    try {
+      expect(await escrow.juryProblem(ok.b)).to.equal("K above the keeper's shortlist");
+      const rc = await (await escrow.connect(hunter).prepareSubmission(ok.b, ok.evalCid, mkCid("hunter9"))).wait();
+      const s = rc.logs.map((l) => { try { return escrow.interface.parseLog(l); } catch { return null; } })
+        .find((x) => x && x.name === "SubmissionPrepared").args.submissionId;
+      expect(await escrow.nextAction(ok.b, s)).to.equal("DEAD");
+      await expect(escrow.connect(hunter).startPreparedSubmission(ok.b, s, { value: await escrow.startValue(ok.b) })).to.be.reverted;
+    } finally {
+      await keeper.connect(deployer).setSelection(sl, scan, live);
+    }
+    expect(await escrow.juryProblem(ok.b)).to.equal("");
+  });
+
+  it("10. the owner's limitImpact script reads the real limits and finds a bounty a higher T+ would strand", async () => {
+    const LI = require("../../../server/scripts/limitImpact.js");
+    const cur = await LI.currentLimits(ethers.provider, agg.target);
+    expect(cur).to.deep.equal({ maxJury: Number(await agg.maxJury()), maxTimeout: Number(await agg.maxTimeout()), tPlus: Number(await agg.tPlus()), shortlist: Number(await keeper.shortlistSize()) });
+    const { b } = await createBounty();                                     // SMALL: timeout 300
+    const live = await LI.liveBounties(ethers.provider, escrow.target, await time.latest());
+    const mine = live.find((x) => x.id === Number(b));
+    expect(mine.jury).to.deep.equal({ K: SMALL.K, timeout: SMALL.timeout });
+    expect(LI.impactOf(cur, { ...cur, tPlus: 300 }, [mine]).stranded.map((x) => x.reason)).to.deep.equal(["timeout at or below tPlus"]);
+    expect(LI.impactOf(cur, cur, live).stranded).to.deep.equal([]);
+  });
+
   after(() => {
     console.log("\n=== lens nextAction log ===");
     console.table(lensLog.map(([a, b2, c, d, e]) => ({ scenario: a, step: b2, nextAction: c, check: d, note: e })));

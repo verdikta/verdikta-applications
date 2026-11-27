@@ -139,6 +139,8 @@ function BountyDetails({ walletState }) {
 
   // Core state
   const [job, setJob] = useState(null);
+  // Review 2026-11-26 #19: the lens's juryProblem ('' = the jury can run; null = unread)
+  const [juryProblem, setJuryProblem] = useState(null);
   const [rubric, setRubric] = useState(null);
   // The rubric lives on IPFS (1–3 gateway round-trips server-side), so it's
   // loaded off the critical path — see loadRubric. This tracks that fetch so the
@@ -232,6 +234,14 @@ function BountyDetails({ walletState }) {
 
   // Track bounties that don't exist on-chain (can't accept submissions or pay out)
   const [notOnChain, setNotOnChain] = useState(false);
+  useEffect(() => {
+    if (bountyId == null) return undefined;
+    let live = true;
+    getContractService().getJuryProblem(bountyId)
+      .then((r) => { if (live) setJuryProblem(r); })
+      .catch(() => { if (live) setJuryProblem(null); });   // unread: the server and the start still check
+    return () => { live = false; };
+  }, [bountyId]);
   const [deleting, setDeleting] = useState(false);
 
   // NEW: Status override tracking (when on-chain differs from backend)
@@ -2609,7 +2619,13 @@ function BountyDetails({ walletState }) {
             );
           })()}
 
-          {isOpen && !deadlinePassed && !notOnChain && walletState.isConnected && (
+          {isOpen && !deadlinePassed && !notOnChain && juryProblem && (
+            <div className="alert alert-warning" role="alert" data-testid="jury-problem">
+              No submission to this bounty can be evaluated now: the aggregator refuses its jury under its current limits ({juryProblem}). Every start would revert, so do not work on it. The creator recovers the escrow at the deadline.
+            </div>
+          )}
+
+          {isOpen && !deadlinePassed && !notOnChain && !juryProblem && walletState.isConnected && (
             <Link to={`/bounty/${bountyId}/submit`} className="btn btn-primary btn-lg btn-with-icon">
               <Send size={20} /> Submit Work
             </Link>

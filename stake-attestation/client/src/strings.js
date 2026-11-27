@@ -756,6 +756,7 @@ export const STRINGS = {
     integrityOther: 'Other duplicates',
     integrityUnread: 'Duplicates with a justification not read, or read differently',
     integrityNote: INTEGRITY_NOTE,
+    juryProblem: 'No claim on this listing can be judged now: the aggregator refuses its jury under its current limits ({reason}). Do not commit a finding to it: the disclosure would reach the maker and nothing could pay it.',
     integrityUnreadNote:
       'A justification that could not be read, or arbiters whose justifications say different things, count as a plain duplicate, ' +
       'never as a failed check. A read that failed is tried again.',

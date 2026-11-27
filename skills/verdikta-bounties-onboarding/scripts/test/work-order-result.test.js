@@ -70,7 +70,7 @@ test('submit_to_bounty refuses to upload a failing work-order result and uploads
     return { lib, sent };
   }
   let uploads = 0;
-  const env = { baseUrl: 'https://mock.invalid', pause: async () => {}, contract: () => ({ getBounty: async () => bounty, isAcceptingSubmissions: async () => true, getSubmission: async () => ({ hunter: creator, hunterCid }), nextAction: async () => 'AWAIT_CREATOR', requiredPrepay: async () => 123n }),
+  const env = { baseUrl: 'https://mock.invalid', pause: async () => {}, contract: () => ({ getBounty: async () => bounty, isAcceptingSubmissions: async () => true, juryProblem: async () => '', getSubmission: async () => ({ hunter: creator, hunterCid }), nextAction: async () => 'AWAIT_CREATOR', requiredPrepay: async () => 123n }),
     fetchApi: async url => {
       if (url.endsWith('/7')) return json({ job: { jobId: 7, onChain: true, evaluationCid: cid, description } });
       if (url.endsWith('/validate')) return json({ valid: true });

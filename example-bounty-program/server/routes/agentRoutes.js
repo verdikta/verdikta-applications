@@ -975,7 +975,8 @@ nextAction(bountyId, submissionId) — the call that succeeds now (also diagnosi
   AWAIT_EXPIRY   a re-run would revert (a lower-index round already passes): wait for its window
   EXPIRE_RERUN   expireRerun (POST .../expire-rerun)
   RECOVER_REFUND recoverLeftoverEth (POST .../recover-refund)
-  DONE / DEAD    nothing to do / can no longer be started
+  DONE / DEAD    nothing to do / can no longer be started (DEAD also when juryProblem(bountyId) names a live
+                 limit the aggregator refuses the bounty's jury under; the API then answers 409 JURY_NOT_RUNNABLE)
 getOracleResult(bountyId, submissionId) returns { started, hasResult, phase, outcome
 (0 not_ready, 1 no_result, 2 pass, 3 soft_fail, 4 hard_fail), rounds, passCount, deadline,
 requestTime, scores, justificationCids } — poll it instead of the aggregator.

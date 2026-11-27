@@ -26,6 +26,7 @@ export const ERROR_TEXTS = Object.freeze({
   INPUTS_CHANGED: 'The claim files changed since this commit was prepared, and nothing has been signed. Restore them, or pass --restart to draw new keys for the new files.',
   INSUFFICIENT_FUNDS: 'This wallet cannot pay for this. Nothing was sent.',
   INTERNAL: 'The tool failed unexpectedly.',
+  JURY_NOT_RUNNABLE: 'The aggregator refuses this listing\'s jury under its current limits: no claim on it can be judged, and a commit would disclose your finding for nothing.',
   LISTING_ARCHIVE_INVALID: 'That is no listing archive this tool can read.',
   LISTING_NOT_ACCEPTING: 'This listing takes no commits now.',
   LISTING_NOT_FOUND: 'No such listing on this contract.',

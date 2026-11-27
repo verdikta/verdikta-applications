@@ -2317,6 +2317,25 @@
         "internalType": "uint256",
         "name": "bountyId",
         "type": "uint256"
+      }
+    ],
+    "name": "juryProblem",
+    "outputs": [
+      {
+        "internalType": "string",
+        "name": "",
+        "type": "string"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "bountyId",
+        "type": "uint256"
       },
       {
         "internalType": "uint256",

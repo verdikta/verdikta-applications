@@ -90,7 +90,7 @@ test('submit retries lagging confirmation; resume confirms without preparing aga
  const args={jobId:'7',file:[file],state:`${dir}/state.json`},f=harness(args);let confirms=0,uploads=0,prepares=0;const pauses=[];let action='AWAIT_CREATOR';
  const bounty={evaluationCid:cid,targetHunter:creator};
  const transaction={to:d.address,chainId:d.chainId,value:'0',data:iface.encodeFunctionData('prepareSubmission',[7,cid,hunterCid])};
- const env={baseUrl:'https://mock.invalid',pause:async ms=>pauses.push(ms),contract:()=>({getBounty:async()=>bounty,isAcceptingSubmissions:async()=>true,getSubmission:async()=>({hunter:creator,hunterCid}),nextAction:async()=> action,startValue:async()=>123n,requiredPrepay:async()=>100n}),fetchApi:async(url)=>{
+ const env={baseUrl:'https://mock.invalid',pause:async ms=>pauses.push(ms),contract:()=>({getBounty:async()=>bounty,isAcceptingSubmissions:async()=>true,juryProblem:async()=>'',getSubmission:async()=>({hunter:creator,hunterCid}),nextAction:async()=> action,startValue:async()=>123n,requiredPrepay:async()=>100n}),fetchApi:async(url)=>{
    if(url.endsWith('/7'))return json({job:{jobId:7,onChain:true,evaluationCid:cid}});
    if(url.endsWith('/validate'))return json({valid:true});
    if(url.endsWith('/submit')){uploads++;return json({submission:{hunterCid}});}
@@ -109,6 +109,20 @@ test('submit retries lagging confirmation; resume confirms without preparing aga
  action='START';await runSubmit(f.lib,env);assert.equal(f.sent.at(-1),'startPreparedSubmission');assert.equal(prepares,1);
  state.hunter=target;await writeFile(args.state,JSON.stringify(state));await assert.rejects(runSubmit(f.lib,env),/recovery state/);
 });
+test('submit refuses, before any upload, a bounty whose jury the aggregator refuses (review #19)',async t=>{
+ const dir=await mkdtemp(`${tmpdir()}/verdikta-submit-jury-`);t.after(()=>rm(dir,{recursive:true,force:true}));
+ const file=`${dir}/result.txt`;await writeFile(file,'test');
+ const args={jobId:'7',file:[file],state:`${dir}/state.json`},f=harness(args);const urls=[];
+ const bounty={evaluationCid:cid,targetHunter:creator};
+ const env={baseUrl:'https://mock.invalid',pause:async()=>{},contract:()=>({getBounty:async()=>bounty,isAcceptingSubmissions:async()=>true,juryProblem:async()=>'K above maxJury'}),fetchApi:async(url)=>{
+   urls.push(url);
+   if(url.endsWith('/7'))return json({job:{jobId:7,onChain:true,evaluationCid:cid}});
+   if(url.endsWith('/validate'))return json({valid:true});
+   throw Error(url);
+ }};
+ await assert.rejects(runSubmit(f.lib,env),/jury cannot run under the aggregator's current limits \(K above maxJury\)/);
+ assert.ok(!urls.some(u=>u.endsWith('/submit')||u.endsWith('/prepare')));assert.deepEqual(f.sent,[]);
+});
 test('submit retries a lagging getSubmission after prepare and never prepares again',async t=>{
  const dir=await mkdtemp(`${tmpdir()}/verdikta-submit-lag-`);t.after(()=>rm(dir,{recursive:true,force:true}));
  const file=`${dir}/result.txt`;await writeFile(file,'test');
@@ -117,7 +131,7 @@ test('submit retries a lagging getSubmission after prepare and never prepares ag
  const badId=()=>Object.assign(Error('execution reverted: "bad submissionId"'),{reason:'bad submissionId'});
  async function run(lagReads){
   const args={jobId:'7',file:[file],state:`${dir}/state-${lagReads}.json`},f=harness(args);let reads=0,prepares=0;const pauses=[];
-  const env={baseUrl:'https://mock.invalid',pause:async ms=>pauses.push(ms),contract:()=>({getBounty:async()=>bounty,isAcceptingSubmissions:async()=>true,
+  const env={baseUrl:'https://mock.invalid',pause:async ms=>pauses.push(ms),contract:()=>({getBounty:async()=>bounty,isAcceptingSubmissions:async()=>true,juryProblem:async()=>'',
     getSubmission:async()=>{if(++reads<=lagReads)throw badId();return {hunter:creator,hunterCid};},nextAction:async()=> 'AWAIT_CREATOR',startValue:async()=>123n,requiredPrepay:async()=>100n}),fetchApi:async(url)=>{
     if(url.endsWith('/7'))return json({job:{jobId:7,onChain:true,evaluationCid:cid}});
     if(url.endsWith('/validate'))return json({valid:true});

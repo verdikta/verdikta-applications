@@ -29,7 +29,7 @@ const { validateRubric, validateJuryNodes, normalizeBountyPayments, validateProc
         parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
 const { lookupClass, registryModelMatcher, checkJuryAgainstClass, checkClassCoverage } = require('../utils/classPolicy');
 const { getVerdiktaService, isVerdiktaServiceAvailable, LIKELY_MALFORMED_OUTCOME } = require('../utils/verdiktaService');
-const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, isGatingIssue, isTransientIssue, maxEvaluationQueryChars } = require('../utils/bountyValidator');
+const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, juryIssue, isGatingIssue, isTransientIssue, maxEvaluationQueryChars } = require('../utils/bountyValidator');
 const { DRAW_GAS_LIMIT_FALLBACK, START_GAS_LIMIT } = require('../utils/gasLimits');
 const { getContractService, normalizeOracleSettings, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
@@ -508,6 +508,31 @@ function buildCreateBountyTx(job) {
     },
     note: 'createBounty takes ONE struct argument (no overloads). msg.value must equal max(creatorDeterminationPayment, arbiterDeterminationPayment). jury is the bounty\'s own (K drawn, M promoted, N counted, P clustered, timeout in seconds), sent with every request to the escrow\'s one aggregator; quota/forfeitLine are item 12\'s pass quota Q and forfeit line R; bond is what each hunter posts at start (returned unless a hard fail forfeits it to you). Parse the BountyCreated event on the receipt for bountyId, then PATCH /api/jobs/:jobId/bountyId { bountyId, txHash }.'
   };
+}
+
+/**
+ * Guard (review 2026-11-26 #19): refuse hunter work on a bounty whose jury the aggregator would
+ * refuse under its live, owner-set limits (lens juryProblem): every start would revert, so the
+ * hunter should not upload, prepare or start. Sends 409 JURY_NOT_RUNNABLE and returns true when
+ * it refuses. A failed chain read does not refuse (the contract's own checks still apply).
+ */
+async function rejectIfJuryUnrunnable(res, job, jobId) {
+  let problem = '';
+  try {
+    problem = await getContractService().getJuryProblem(Number(job.jobId));
+  } catch (e) {
+    logger.warn('[juryProblem] chain read failed; not refusing', { jobId, msg: e.message });
+    return false;
+  }
+  if (!problem) return false;
+  sendError(res, 409, {
+    code: ErrorCodes.JURY_NOT_RUNNABLE,
+    message: 'This bounty\'s jury cannot run under the aggregator\'s current limits',
+    details: `The aggregator refuses a request with this bounty's jury (${problem}), so every start would revert and no submission can be evaluated. Do not work on it. The creator recovers the escrow at the deadline (closeExpiredBounty).`,
+    fix: 'Choose another bounty. The live check is the escrow\'s juryProblem(bountyId) view (empty when the jury can run).',
+    extra: { juryProblem: problem },
+  });
+  return true;
 }
 
 /**
@@ -2124,6 +2149,7 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
 
     const job = await jobStorage.getJob(jobId);
     if (rejectIfNotOnChain(res, job, jobId)) return;
+    if (await rejectIfJuryUnrunnable(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
 
     if (job.status !== 'OPEN') {
@@ -2343,6 +2369,7 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
 
     const job = await jobStorage.getJob(jobId);
     if (rejectIfNotOnChain(res, job, jobId)) return;
+    if (await rejectIfJuryUnrunnable(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
     // Local record, or — if the indexer has not caught up and /confirm was skipped — the
@@ -3241,6 +3268,12 @@ router.get('/:jobId/validate', async (req, res) => {
         if (chainCheck.invalidatesPackage) {
           result.valid = false;
         }
+      }
+      if (onChain.status === 'OPEN') {
+        try {
+          const jury = juryIssue(await contractService.getJuryProblem(job.jobId));
+          if (jury) { result.issues.push(jury); result.valid = false; }
+        } catch { /* best-effort: the start's own check still applies */ }
       }
     } catch (chainErr) {
       const msg = chainErr.message || '';
@@ -5319,6 +5352,7 @@ router.post('/:jobId/submit', limitPins, async (req, res) => {
 
     const job = await jobStorage.getJob(jobId);
     if (rejectIfNotOnChain(res, job, jobId)) return;
+    if (await rejectIfJuryUnrunnable(res, job, jobId)) return;
     if (job.status !== 'OPEN') {
       const codeMap = { EXPIRED: ErrorCodes.BOUNTY_EXPIRED, AWARDED: ErrorCodes.BOUNTY_CLOSED, CLOSED: ErrorCodes.BOUNTY_CLOSED };
       return sendError(res, 400, {
@@ -5808,6 +5842,7 @@ router.post('/:jobId/submit/bundle', limitPins, async (req, res) => {
 
     const job = await jobStorage.getJob(jobId);
     if (rejectIfNotOnChain(res, job, jobId)) return;
+    if (await rejectIfJuryUnrunnable(res, job, jobId)) return;
     if (job.status !== 'OPEN') {
       const codeMap = { EXPIRED: ErrorCodes.BOUNTY_EXPIRED, AWARDED: ErrorCodes.BOUNTY_CLOSED, CLOSED: ErrorCodes.BOUNTY_CLOSED };
       return sendError(res, 400, {
@@ -6105,6 +6140,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
 
     const job = await jobStorage.getJob(jobId);
     if (rejectIfNotOnChain(res, job, jobId)) return;
+    if (await rejectIfJuryUnrunnable(res, job, jobId)) return;
 
     // We need blockchain access to parse the receipt
     let cs;

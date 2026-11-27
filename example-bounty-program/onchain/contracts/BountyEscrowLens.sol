@@ -12,6 +12,17 @@ interface IJuryBeaconsView {
         external view returns (uint8 state, bytes32 mix, uint256 readyAt, address[] memory payees);
 }
 
+/// @dev The aggregator's live jury limits beyond IVerdiktaAggregator (T+ and the keeper), and the
+///      keeper's shortlist. Read with try/catch: an aggregator without them (a test mock) skips
+///      that bound.
+interface IAggregatorLimits {
+    function tPlus() external view returns (uint40);
+    function keeper() external view returns (address);
+}
+interface IKeeperShortlist {
+    function shortlistSize() external view returns (uint16);
+}
+
 /// @title BountyEscrowLens
 /// @notice The BountyEscrow's read-only convenience views, kept in a separate contract so the
 ///         escrow's runtime bytecode stays under the EIP-170 size limit. Pure reads: no state,
@@ -102,6 +113,36 @@ contract BountyEscrowLens {
         if (b.creatorAssessmentWindowSize > 0 &&
             escrow.submissionCount(bountyId) >= escrow.MAX_SUBMISSIONS_PER_BOUNTY()) return false;
         return true;
+    }
+
+    /// @notice Why the aggregator would refuse a request with this bounty's jury RIGHT NOW, or ""
+    ///         if it would accept it. The escrow checks only the jury's structure at create; the
+    ///         live limits are owner-set and checked by each request (review 2026-11-26 #19, an
+    ///         accepted limitation: a hunter checks a bounty's terms before working on it, and
+    ///         this view is how). Reasons: "timeout at or below tPlus", "timeout above
+    ///         maxTimeout", "timeout above one day", "K above maxJury", "K above the keeper's
+    ///         shortlist". nextAction answers DEAD (a start) or AWAIT_EXPIRY (a re-run) while
+    ///         this is non-empty.
+    function juryProblem(uint256 bountyId) external view returns (string memory) {
+        return _juryProblem(escrow.getBounty(bountyId), escrow.aggregator());
+    }
+
+    function _juryProblem(BountyEscrow.Bounty memory b, IVerdiktaAggregator agg)
+        internal view returns (string memory)
+    {
+        uint256 t = b.juryTimeout;
+        try IAggregatorLimits(address(agg)).tPlus() returns (uint40 tp) {
+            if (t <= tp) return "timeout at or below tPlus";
+        } catch {}
+        if (t > agg.maxTimeout()) return "timeout above maxTimeout";
+        if (t > 1 days) return "timeout above one day";
+        if (b.juryK > agg.maxJury()) return "K above maxJury";
+        try IAggregatorLimits(address(agg)).keeper() returns (address k) {
+            try IKeeperShortlist(k).shortlistSize() returns (uint16 sl) {
+                if (b.juryK > sl) return "K above the keeper's shortlist";
+            } catch {}
+        } catch {}
+        return "";
     }
 
     /// @notice Check if a bounty can be closed (deadline passed, no active evals)
@@ -231,12 +272,14 @@ contract BountyEscrowLens {
     ///                      deadline with no result, or can never be drawn
     ///   "RERUN"          — rerunSubmission (hunter or bond funder) with requiredPrepay()
     ///   "AWAIT_EXPIRY"   — awaiting a re-run that would revert (a LOWER-index round already
-    ///                      passes, so it will be paid first): wait for the window, then EXPIRE_RERUN
+    ///                      passes, so it will be paid first, or the aggregator now refuses the
+    ///                      bounty's jury, juryProblem): wait for the window, then EXPIRE_RERUN
     ///   "EXPIRE_RERUN"   — call expireRerun: the re-run window has closed (or can no longer re-run)
     ///   "RECOVER_REFUND" — resolved, but unspent prepay is still recoverable: recoverLeftoverEth
     ///   "DONE"           — resolved, nothing left to do
-    ///   "DEAD"           — cannot be started (any more): deadline passed, bounty not open, or an
-    ///                      in-flight round already passes (that one, or an earlier one, will be paid)
+    ///   "DEAD"           — cannot be started (any more): deadline passed, bounty not open, an
+    ///                      in-flight round already passes (that one, or an earlier one, will be paid),
+    ///                      or the aggregator refuses the bounty's jury under its live limits (juryProblem)
     function nextAction(uint256 bountyId, uint256 submissionId) external view returns (string memory) {
         BountyEscrow.Bounty memory b = escrow.getBounty(bountyId);
         BountyEscrow.Submission memory s = escrow.getSubmission(bountyId, submissionId);
@@ -252,6 +295,7 @@ contract BountyEscrowLens {
             }
             if (!open || block.timestamp >= b.submissionDeadline) return "DEAD";
             if (_anyPassing(bountyId, b, agg, type(uint256).max)) return "DEAD";
+            if (bytes(_juryProblem(b, agg)).length != 0) return "DEAD";   // the aggregator refuses the jury
             if (escrow.activeEvaluations(bountyId) >= escrow.MAX_ACTIVE_EVALUATIONS()) return "AWAIT_SLOT";
             return "START";
         }
@@ -272,6 +316,7 @@ contract BountyEscrowLens {
             }
             if (s.rounds >= escrow.MAX_ROUNDS()) return "EXPIRE_RERUN";   // unreachable: never awaits then
             if (_anyPassing(bountyId, b, agg, submissionId)) return "AWAIT_EXPIRY";
+            if (bytes(_juryProblem(b, agg)).length != 0) return "AWAIT_EXPIRY";   // a re-run would be refused
             if (escrow.activeEvaluations(bountyId) >= escrow.MAX_ACTIVE_EVALUATIONS()) return "AWAIT_SLOT";
             return "RERUN";
         }

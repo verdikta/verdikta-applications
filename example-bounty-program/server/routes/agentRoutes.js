@@ -972,7 +972,7 @@ nextAction(bountyId, submissionId) — the call that succeeds now (also diagnosi
   FINALIZE       finalizeSubmission (POST .../finalize)
   CLOSE_FAILED   closeFailedRound (POST .../close-failed; /timeout is an alias)
   RERUN          rerunSubmission with requiredPrepay (POST .../rerun)
-  AWAIT_EXPIRY   a re-run would revert (another round already passes): wait for its window
+  AWAIT_EXPIRY   a re-run would revert (a lower-index round already passes): wait for its window
   EXPIRE_RERUN   expireRerun (POST .../expire-rerun)
   RECOVER_REFUND recoverLeftoverEth (POST .../recover-refund)
   DONE / DEAD    nothing to do / can no longer be started
@@ -1064,7 +1064,7 @@ do NOT call contract functions directly unless you know the ABI.
    - nextAction RERUN: POST .../rerun (hunter or bond funder; attach requiredPrepay) within
      2 hours and before the deadline, up to 6 rounds in all. Then the new round is drawn.
    - nextAction EXPIRE_RERUN: POST .../expire-rerun (anyone): fails it, returns the bond.
-   - nextAction AWAIT_EXPIRY: another round already passes; expire it once its window closes.
+   - nextAction AWAIT_EXPIRY: a lower-index round already passes; expire it once its window closes.
 
 If finalizeSubmission reverts with "Verdikta not ready", the round has no result yet — wait.
 If it reverts with "no oracle result - use closeFailedRound", the round ended with no result —
@@ -1789,7 +1789,7 @@ router.get('/api/docs', (req, res) => {
         nextAction: {
           signature: 'nextAction(uint256 bountyId, uint256 submissionId) view returns (string)',
           notes: [
-            'The on-chain /diagnose — every label is the call that will SUCCEED now: START (startPreparedSubmission with startValue), AWAIT_SLOT (a start or re-run would revert "evaluation slots full": 64 rounds in flight — retry once any resolves), AWAIT_CREATOR (in its window; only the creator can act), DRAW (drawJury), CLOSE_COMMITS / PROMOTE (closeCommits / promote on the bounty\'s aggregator), AWAIT_ORACLE (round in progress: wait), AWAIT_EARLIER (a PASSING result exists but finalize would revert "earlier submission pending": a lower-index submission by another hunter still holds priority — retry once it resolves; anyone may resolve it), FINALIZE (the round has a result), CLOSE_FAILED (closeFailedRound: the round ended, or must end, with no result), RERUN (rerunSubmission with requiredPrepay; hunter or bond funder), AWAIT_EXPIRY (a re-run would revert because another round already passes: wait for the window to close), EXPIRE_RERUN (expireRerun), RECOVER_REFUND (resolved but unspent prepay still recoverable), DONE, DEAD (cannot be started any more: deadline passed, bounty not open, or an in-flight round already passes). DRAW / CLOSE_COMMITS / PROMOTE / CLOSE_FAILED / EXPIRE_RERUN are usually sent by the server\'s keeper; anyone may.',
+            'The on-chain /diagnose — every label is the call that will SUCCEED now: START (startPreparedSubmission with startValue), AWAIT_SLOT (a start or re-run would revert "evaluation slots full": 64 rounds in flight — retry once any resolves), AWAIT_CREATOR (in its window; only the creator can act), DRAW (drawJury), CLOSE_COMMITS / PROMOTE (closeCommits / promote on the bounty\'s aggregator), AWAIT_ORACLE (round in progress: wait), AWAIT_EARLIER (a PASSING result exists but finalize would revert "earlier submission pending": a lower-index submission by another hunter still holds priority — retry once it resolves; anyone may resolve it), FINALIZE (the round has a result), CLOSE_FAILED (closeFailedRound: the round ended, or must end, with no result), RERUN (rerunSubmission with requiredPrepay; hunter or bond funder), AWAIT_EXPIRY (a re-run would revert because a lower-index round already passes: wait for the window to close), EXPIRE_RERUN (expireRerun), RECOVER_REFUND (resolved but unspent prepay still recoverable), DONE, DEAD (cannot be started any more: deadline passed, bounty not open, or an in-flight round already passes). DRAW / CLOSE_COMMITS / PROMOTE / CLOSE_FAILED / EXPIRE_RERUN are usually sent by the server\'s keeper; anyone may.',
             'Also exposed as diagnosis.nextAction on GET /jobs/:id/submissions/:subId/diagnose.'
           ]
         },

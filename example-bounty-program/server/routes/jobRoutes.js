@@ -7561,7 +7561,7 @@ function wrongStep(res, ctx, wanted, extra = {}) {
     AWAIT_EARLIER: 'The round passes, but an earlier submission holds priority: see GET .../diagnose for blockedBy.',
     AWAIT_ORACLE: 'The round is in progress (beacons, commits or reveals): wait.',
     RERUN: `The submission awaits a re-run: POST /api/jobs/${jobId}/submissions/${submissionId}/rerun.`,
-    AWAIT_EXPIRY: 'A re-run would revert (another round already passes); wait for the re-run window to close, then expire it.',
+    AWAIT_EXPIRY: 'A re-run would revert (a lower-index round already passes); wait for the re-run window to close, then expire it.',
     START: 'The submission has not been started.',
     DONE: 'The submission is resolved.',
   };
@@ -7878,7 +7878,7 @@ router.get('/:jobId/submissions/:submissionId/diagnose', async (req, res) => {
           } else if (action === 'EXPIRE_RERUN') {
             diagnosis.recommendations.push(`The re-run window has closed: anyone may expire it — POST /api/jobs/${jobId}/submissions/${subId}/expire-rerun (returns the bond, frees the place).`);
           } else if (action === 'AWAIT_EXPIRY') {
-            diagnosis.recommendations.push('Another round of this bounty already passes, so a re-run would revert; once the re-run window closes, anyone may expire this submission.');
+            diagnosis.recommendations.push('An earlier submission of this bounty already passes, so a re-run would revert; once the re-run window closes, anyone may expire this submission.');
           } else {
             diagnosis.recommendations.push(`nextAction is ${action}.`);
           }

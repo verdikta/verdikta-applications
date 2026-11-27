@@ -95,7 +95,7 @@ const STEP_CALLS = {
 const WAITING = {
   AWAIT_ORACLE: 'round in progress (draw, beacons, commits or reveals) - wait',
   AWAIT_EARLIER: 'passes, but an earlier submission by another hunter still holds priority - retry once it resolves',
-  AWAIT_EXPIRY: 'awaiting a re-run that would revert (another round already passes) - expire it once its window closes',
+  AWAIT_EXPIRY: 'awaiting a re-run that would revert (a lower-index round already passes) - expire it once its window closes',
   AWAIT_SLOT: 'evaluation slots full (64 rounds in flight) - retry later',
   RERUN: 'soft fail / no result: may re-run within its 2 h window (--rerun, as the hunter or bond funder)',
   DRAW: 'jury not drawn yet - the server keeper usually draws it (or use --move-rounds)',

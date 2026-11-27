@@ -473,20 +473,85 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       expect([s.status, s.rounds]).to.deep.equal([2n, 6n]);
     });
 
-    it("a re-run is refused while a later round already passes; the waiting one keeps priority until its window closes", async function () {
+    // Review 2026-11-26 #4: a later passing round must not extinguish an earlier submission's
+    // re-run. The re-run keeps its index; only a LOWER-index pass can beat it.
+    const rerun = async (f, bountyId, submissionId) =>
+      f.escrow.connect(f.hunter).rerunSubmission(bountyId, submissionId, { value: await f.escrow.requiredPrepay(bountyId) });
+
+    for (const order of ["later first", "earlier first"]) {
+      it(`an earlier soft fail re-runs ahead of a later pass and, passing, is paid (finalize ${order})`, async function () {
+        const f = await loadFixture(fixture);
+        const { bountyId, submissionId } = await softFailed(f);
+        const later = await submit(f, bountyId, f.hunter2);
+        await runRound(f, bountyId, later.submissionId, mix(4, 4));
+        await expect(f.escrow.finalizeSubmission(bountyId, later.submissionId))
+          .to.be.revertedWith("earlier submission pending - retry after it resolves");
+        expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("RERUN");
+        await rerun(f, bountyId, submissionId);
+        // a NEW submission still cannot start: it could never beat the passing round
+        const third = await prepare(f, bountyId, f.other);
+        await expect(f.escrow.connect(f.other).startPreparedSubmission(bountyId, third.submissionId, { value: await f.escrow.startValue(bountyId) }))
+          .to.be.revertedWith("another submission already passed - finalize it first");
+        expect(await f.escrow.nextAction(bountyId, third.submissionId)).to.equal("DEAD");
+        await runRound(f, bountyId, submissionId, mix(4, 4));
+        if (order === "later first") {
+          await expect(f.escrow.finalizeSubmission(bountyId, later.submissionId))
+            .to.be.revertedWith("earlier submission pending - retry after it resolves");
+        }
+        await expect(f.escrow.finalizeSubmission(bountyId, submissionId)).to.emit(f.escrow, "PayoutSent");
+        await f.escrow.finalizeSubmission(bountyId, later.submissionId);
+        expect((await f.escrow.getSubmission(bountyId, submissionId)).status).to.equal(3n);        // PassedPaid
+        expect((await f.escrow.getSubmission(bountyId, later.submissionId)).status).to.equal(4n);  // PassedUnpaid
+        expect((await f.escrow.getBounty(bountyId)).winner).to.equal(f.hunter.address);
+      });
+    }
+
+    it("if the earlier re-run fails again and its window closes, the later pass is paid", async function () {
       const f = await loadFixture(fixture);
       const { bountyId, submissionId } = await softFailed(f);
       const later = await submit(f, bountyId, f.hunter2);
       await runRound(f, bountyId, later.submissionId, mix(4, 4));
-      // the earlier submission holds priority while it may re-run
+      await rerun(f, bountyId, submissionId);
+      await runRound(f, bountyId, submissionId, mix(4, 2));                  // soft fail again
+      await expect(f.escrow.finalizeSubmission(bountyId, submissionId)).to.emit(f.escrow, "RerunAwaited");
       await expect(f.escrow.finalizeSubmission(bountyId, later.submissionId))
         .to.be.revertedWith("earlier submission pending - retry after it resolves");
-      expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("AWAIT_EXPIRY");   // its re-run would revert
-      await expect(f.escrow.connect(f.hunter).rerunSubmission(bountyId, submissionId, { value: await f.escrow.requiredPrepay(bountyId) }))
-        .to.be.revertedWith("another submission already passed - finalize it first");
       await time.increase(2 * HOUR + 1);
       await f.escrow.expireRerun(bountyId, submissionId);
       await expect(f.escrow.finalizeSubmission(bountyId, later.submissionId)).to.emit(f.escrow, "PayoutSent");
+      expect((await f.escrow.getBounty(bountyId)).winner).to.equal(f.hunter2.address);
+    });
+
+    it("an earlier round with no result also re-runs ahead of a later pass", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f);
+      const { submissionId, aggId } = await submit(f, bountyId);
+      await mine(2);
+      await f.escrow.drawJury(bountyId, submissionId);
+      await f.agg.scriptCommits(aggId, 2);                                 // too few commits
+      await time.increase(301);
+      await f.escrow.connect(f.other).closeFailedRound(bountyId, submissionId);
+      const later = await submit(f, bountyId, f.hunter2);
+      await runRound(f, bountyId, later.submissionId, mix(4, 4));
+      expect(await f.escrow.nextAction(bountyId, submissionId)).to.equal("RERUN");
+      await rerun(f, bountyId, submissionId);
+      await runRound(f, bountyId, submissionId, mix(4, 4));
+      await expect(f.escrow.finalizeSubmission(bountyId, submissionId)).to.emit(f.escrow, "PayoutSent");
+      expect((await f.escrow.getBounty(bountyId)).winner).to.equal(f.hunter.address);
+    });
+
+    it("a LOWER-index passing round still refuses a re-run; the waiting one expires and the pass is paid", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f);
+      const earlier = await submit(f, bountyId, f.hunter2);
+      const s = await submit(f, bountyId);
+      await runRound(f, bountyId, s.submissionId, mix(4, 2));
+      await f.escrow.finalizeSubmission(bountyId, s.submissionId);           // soft fail: awaits a re-run
+      await runRound(f, bountyId, earlier.submissionId, mix(4, 4));          // the earlier one passes
+      expect(await f.escrow.nextAction(bountyId, s.submissionId)).to.equal("AWAIT_EXPIRY");
+      await expect(rerun(f, bountyId, s.submissionId))
+        .to.be.revertedWith("another submission already passed - finalize it first");
+      await expect(f.escrow.finalizeSubmission(bountyId, earlier.submissionId)).to.emit(f.escrow, "PayoutSent");
     });
 
     it("a round with no result (failed, closed by anyone) also re-runs, keeping the bond", async function () {

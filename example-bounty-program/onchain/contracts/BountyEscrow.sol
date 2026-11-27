@@ -977,8 +977,10 @@ contract BountyEscrow {
         // Bounded concurrency — see MAX_ACTIVE_EVALUATIONS. Slots free up as rounds resolve.
         require(_inFlight[bountyId] < MAX_ACTIVE_EVALUATIONS, "evaluation slots full - retry later");
         // If an in-flight round has already passed, it (or an earlier one) will be paid: a new
-        // round could never win and would only waste its prepay.
-        _requireNoPassingSubmission(bountyId, b);
+        // round could never win and would only waste its prepay. A RE-RUN keeps its index, so
+        // only a LOWER-index pass can beat it: a later passing round still waits for it at
+        // finalize (_hasEarlierPendingByOther), and the re-run is the remedy it was promised.
+        _requireNoPassingSubmission(bountyId, b, s.rounds > 0 ? submissionId : type(uint256).max);
         // Q <= N was checked at create against the bounty's own jury, which never changes.
 
         // The requirement is recomputed HERE from the bounty's fee policy: the aggregator's
@@ -1082,15 +1084,19 @@ contract BountyEscrow {
     ///      and would only waste its prepay. Scans the PENDING LIST and queries the aggregator for
     ///      each round in flight, since results aren't stored until finalization. AwaitingRerun
     ///      entries have no live round; never-started submissions are not on the list.
-    function _requireNoPassingSubmission(uint256 bountyId, Bounty storage b) internal view {
+    ///      Only passes at an index below `below` count: type(uint256).max for a first start (any
+    ///      pass beats a new, higher-index submission), the submission's own index for a re-run
+    ///      (a higher-index pass cannot beat it, since payout follows index).
+    function _requireNoPassingSubmission(uint256 bountyId, Bounty storage b, uint256 below) internal view {
         uint256[] storage pending = _pending[bountyId];
         Submission[] storage list = subs[bountyId];
         IVerdiktaAggregator agg = aggregator;
         uint256 n = pending.length;
 
         for (uint256 i = 0; i < n; ) {
-            Submission storage e = list[pending[i]];
-            if (e.status == SubmissionStatus.PendingVerdikta &&
+            uint256 pid = pending[i];
+            Submission storage e = list[pid];
+            if (pid < below && e.status == SubmissionStatus.PendingVerdikta &&
                 BountyRules.passes(agg, e.verdiktaAggId, b.threshold, b.quota, b.forfeitLine)) {
                 revert("another submission already passed - finalize it first");
             }
@@ -1111,9 +1117,10 @@ contract BountyEscrow {
     ///      else has resolved, and if one of those passes it takes the bounty first. The
     ///      wait is bounded: a dead round is closed by anyone (closeFailedRound), and a
     ///      submission awaiting a re-run (which keeps its priority, item 12) re-runs within
-    ///      RERUN_WINDOW or is expired by anyone (expireRerun), at most MAX_ROUNDS times. No NEW
-    ///      earlier round can appear once a round passes: _requireNoPassingSubmission refuses every
-    ///      start and re-run while one does. Before that, starts need not follow index order: an
+    ///      RERUN_WINDOW or is expired by anyone (expireRerun), at most MAX_ROUNDS times. Once a round
+    ///      passes, _requireNoPassingSubmission refuses every first start and every re-run of a
+    ///      HIGHER index; an earlier submission awaiting a re-run may still re-run (it never left
+    ///      the pending list, so the later pass was already waiting for it). Before that, starts need not follow index order: an
     ///      earlier prepared submission that starts late takes priority over a later one in flight
     ///      (its CID, and so its index, was public first).
     ///

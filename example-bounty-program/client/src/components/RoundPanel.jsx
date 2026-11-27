@@ -156,7 +156,7 @@ export default function RoundPanel({ submission, roundState, job, walletState, o
         {action === 'RERUN' && (mayRerun
           ? btn('RERUN', 'btn-success', <RefreshCw size={14} />, `Re-run (round ${rounds + 1} of ${MAX_ROUNDS})`)
           : <div style={{ color: '#777' }}>Only the hunter or the bond funder may re-run this submission.</div>)}
-        {action === 'AWAIT_EXPIRY' && <div style={{ color: '#777' }}>Another submission already passes, so a re-run would revert; once the window closes it can be expired.</div>}
+        {action === 'AWAIT_EXPIRY' && <div style={{ color: '#777' }}>An earlier submission already passes, so a re-run would revert; once the window closes it can be expired.</div>}
         {action === 'AWAIT_SLOT' && awaiting && <div style={{ color: '#777' }}>All evaluation slots of this bounty are in use; retry the re-run in a few minutes.</div>}
         {action === 'EXPIRE_RERUN' && btn('EXPIRE_RERUN', 'btn-secondary', <TimerOff size={14} />, 'Expire re-run (returns the bond)')}
         {['DRAW', 'CLOSE_COMMITS', 'PROMOTE', 'CLOSE_FAILED', 'EXPIRE_RERUN'].includes(action) && (

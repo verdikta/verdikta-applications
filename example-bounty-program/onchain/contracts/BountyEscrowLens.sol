@@ -230,8 +230,8 @@ contract BountyEscrowLens {
     ///   "CLOSE_FAILED"   — call closeFailedRound: the round failed, was cancelled, is past its
     ///                      deadline with no result, or can never be drawn
     ///   "RERUN"          — rerunSubmission (hunter or bond funder) with requiredPrepay()
-    ///   "AWAIT_EXPIRY"   — awaiting a re-run that would revert (another round already passes):
-    ///                      wait for its window to close, then EXPIRE_RERUN
+    ///   "AWAIT_EXPIRY"   — awaiting a re-run that would revert (a LOWER-index round already
+    ///                      passes, so it will be paid first): wait for the window, then EXPIRE_RERUN
     ///   "EXPIRE_RERUN"   — call expireRerun: the re-run window has closed (or can no longer re-run)
     ///   "RECOVER_REFUND" — resolved, but unspent prepay is still recoverable: recoverLeftoverEth
     ///   "DONE"           — resolved, nothing left to do
@@ -251,7 +251,7 @@ contract BountyEscrowLens {
                 return open ? "AWAIT_CREATOR" : "DEAD";
             }
             if (!open || block.timestamp >= b.submissionDeadline) return "DEAD";
-            if (_anyPassing(bountyId, b, agg)) return "DEAD";
+            if (_anyPassing(bountyId, b, agg, type(uint256).max)) return "DEAD";
             if (escrow.activeEvaluations(bountyId) >= escrow.MAX_ACTIVE_EVALUATIONS()) return "AWAIT_SLOT";
             return "START";
         }
@@ -271,7 +271,7 @@ contract BountyEscrowLens {
                 return "EXPIRE_RERUN";
             }
             if (s.rounds >= escrow.MAX_ROUNDS()) return "EXPIRE_RERUN";   // unreachable: never awaits then
-            if (_anyPassing(bountyId, b, agg)) return "AWAIT_EXPIRY";
+            if (_anyPassing(bountyId, b, agg, submissionId)) return "AWAIT_EXPIRY";
             if (escrow.activeEvaluations(bountyId) >= escrow.MAX_ACTIVE_EVALUATIONS()) return "AWAIT_SLOT";
             return "RERUN";
         }
@@ -320,13 +320,15 @@ contract BountyEscrowLens {
 
     // ------------- Internals (mirror the escrow's rules; views only) -------------
 
-    /// @dev Does any round in flight of the bounty already pass (BountyRules, Q-of-N)?
-    ///      (BountyEscrow._requireNoPassingSubmission's condition.)
-    function _anyPassing(uint256 bountyId, BountyEscrow.Bounty memory b, IVerdiktaAggregator agg)
+    /// @dev Does any round in flight of the bounty, at an index below `below`, already pass
+    ///      (BountyRules, Q-of-N)? (BountyEscrow._requireNoPassingSubmission's condition: `below`
+    ///      is type(uint256).max for a first start, the submission's own index for a re-run.)
+    function _anyPassing(uint256 bountyId, BountyEscrow.Bounty memory b, IVerdiktaAggregator agg, uint256 below)
         internal view returns (bool)
     {
         uint256[] memory pending = escrow.pendingSubmissionIds(bountyId);
         for (uint256 i = 0; i < pending.length; i++) {
+            if (pending[i] >= below) continue;
             BountyEscrow.Submission memory e = escrow.getSubmission(bountyId, pending[i]);
             if (e.status == BountyEscrow.SubmissionStatus.PendingVerdikta &&
                 BountyRules.passes(agg, e.verdiktaAggId, b.threshold, b.quota, b.forfeitLine)) return true;

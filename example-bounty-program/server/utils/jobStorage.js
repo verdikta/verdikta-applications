@@ -683,7 +683,8 @@ async function deleteJob(jobId) {
       const job = storage.jobs[index];
 
       // Safety check: don't delete jobs that are on-chain (they have real escrow)
-      if (job.onChain === true) {
+      // syncedFromBlockchain too: a bounty created on chain without the PATCH link has only that flag.
+      if (job.onChain === true || job.syncedFromBlockchain === true) {
         throw new Error(`Job ${jobId} exists on-chain and cannot be deleted. Use close instead.`);
       }
 

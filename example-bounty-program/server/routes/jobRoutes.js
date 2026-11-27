@@ -29,6 +29,7 @@ const { getVerdiktaService, isVerdiktaServiceAvailable, LIKELY_MALFORMED_OUTCOME
 const { validateBounty, IssueSeverity, IssueType, chainStatusIssue, isGatingIssue, isTransientIssue, maxEvaluationQueryChars } = require('../utils/bountyValidator');
 const { getContractService, normalizeOracleSettings, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
+const { requireAdmin } = require('../utils/adminAuth');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
 const { createTtlCache } = require('../utils/ttlCache');
 const { createRateLimiter, clientAddress } = require('../utils/rateLimiter');
@@ -1225,7 +1226,7 @@ router.get('/admin/template-usage', async (req, res) => {
   }
 });
 
-router.post('/admin/orphans/mark', async (req, res) => {
+router.post('/admin/orphans/mark', requireAdmin, async (req, res) => {
   try {
     const result = await jobStorage.markOrphanedJobs();
     return res.json({ 
@@ -1239,7 +1240,7 @@ router.post('/admin/orphans/mark', async (req, res) => {
   }
 });
 
-router.delete('/admin/orphans', async (req, res) => {
+router.delete('/admin/orphans', requireAdmin, async (req, res) => {
   try {
     // Require confirmation query param to prevent accidental deletion
     if (req.query.confirm !== 'yes') {
@@ -2518,8 +2519,39 @@ router.patch('/admin/:jobId/status', async (req, res) => {
       });
     }
     
-    const job = await jobStorage.updateJobStatus(jobId, status);
-    return res.json({ success: true, job });
+    // Security: any client can call this (the website key is public, bot keys are free),
+    // so the body is a hint, never the truth. A linked bounty takes the CHAIN's status
+    // (that is what the website pushes); an unlinked one may only be closed or cancelled,
+    // after the same 5-minute grace as DELETE. It used to set any status on any job:
+    // AWARDED/CLOSED/CANCELLED hid live, funded bounties from the listing.
+    const requested = String(status).toUpperCase();
+    let job;
+    try { job = await jobStorage.getJob(jobId); } catch { return res.status(404).json({ error: `Job ${jobId} not found` }); }
+    if (job.onChain || job.syncedFromBlockchain) {
+      let chainStatus;
+      try {
+        chainStatus = String((await getContractService().getBounty(Number(job.jobId))).status || '').toUpperCase();
+      } catch (e) {
+        return res.status(503).json({ error: 'Could not read the bounty status on chain', details: e.message, retryAfterSeconds: 10 });
+      }
+      if (!validStatuses.includes(chainStatus)) {
+        return res.status(503).json({ error: 'Unexpected on-chain status', details: chainStatus });
+      }
+      const updated = job.status === chainStatus ? job : await jobStorage.updateJobStatus(job.jobId, chainStatus);
+      if (requested !== chainStatus) {
+        return res.status(409).json({ error: 'Status differs from the chain', details: `On-chain status is ${chainStatus}; the stored status follows the chain.`, job: updated });
+      }
+      return res.json({ success: true, job: updated });
+    }
+    if (!['CLOSED', 'CANCELLED'].includes(requested)) {
+      return res.status(400).json({ error: 'Invalid status for an unlinked job', details: 'A job that never went on chain can only be set to CLOSED or CANCELLED.' });
+    }
+    const ageSeconds = Math.floor(Date.now() / 1000) - (job.createdAt || 0);
+    if (ageSeconds < 300) {
+      return res.status(400).json({ error: `Job ${jobId} was created ${ageSeconds}s ago. Wait 5 minutes (on-chain creation may still be in progress).` });
+    }
+    const updated = await jobStorage.updateJobStatus(job.jobId, requested);
+    return res.json({ success: true, job: updated });
   } catch (error) {
     logger.error('[admin/status] error', { msg: error.message });
     return res.status(500).json({ error: 'Failed to update job status', details: error.message });

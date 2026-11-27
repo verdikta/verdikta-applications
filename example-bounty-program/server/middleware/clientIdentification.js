@@ -21,6 +21,11 @@ const BOTS_FILE = path.join(__dirname, '..', 'data', 'bots.json');
 /**
  * Load bot registry from disk
  */
+
+function sameOrigin(a, b) {
+  try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
+}
+
 function loadBots() {
   try {
     if (fs.existsSync(BOTS_FILE)) {
@@ -141,9 +146,11 @@ function clientIdentification(req, res, next) {
 
   // Check for official frontend authentication
   // Requires both: valid client key AND allowed origin
+  // Exact origin match: a prefix test let https://bounties.verdikta.org.evil.com through.
+  // (Origin is only a browser hint, since the key is public, but it should mean what it says.)
   const isAllowedOrigin = allowedOrigins.length === 0 ||
     !origin ||
-    allowedOrigins.some(allowed => origin.startsWith(allowed));
+    allowedOrigins.some(allowed => sameOrigin(origin, allowed));
 
   if (clientKey && clientKey === process.env.FRONTEND_CLIENT_KEY && isAllowedOrigin) {
     req.clientType = 'frontend';

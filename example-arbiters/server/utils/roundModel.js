@@ -206,8 +206,11 @@ function slotOutcome({ settlePhase, commits, M, flags, qcode = 0, points }) {
   const failed = ph !== PHASE.FINAL;
   let code = CODE.NONE;
   if (ph === PHASE.COMMIT) {
-    // -nocommit only if the round failed for lack of commits (not for want of a closeCommits call)
-    if (!f.committed && Number(commits) < Number(M)) code = CODE.NOCOMMIT_FAILED;
+    // -nocommit only to a dispatched slot that did not commit, only if the round failed for lack of
+    // commits (not for want of a closeCommits call), and only if at least half of M committed
+    // (ReputationAggregator.settle; review 2026-11-26 #7)
+    const c = Number(commits);
+    if (f.dispatched && !f.committed && c < Number(M) && 2 * c >= Number(M)) code = CODE.NOCOMMIT_FAILED;
   } else if (ph === PHASE.CLOSING) {
     code = CODE.NONE;   // enough commits arrived; nobody promoted, so nobody failed to deliver
   } else if (f.promoted) {
@@ -226,7 +229,11 @@ function slotOutcome({ settlePhase, commits, M, flags, qcode = 0, points }) {
   if (!scored) {
     note = ph === PHASE.CLOSING || (ph === PHASE.COMMIT && Number(commits) >= Number(M))
       ? 'not scored: the round had enough commits but was never promoted'
-      : 'not scored';
+      : ph === PHASE.COMMIT && !f.dispatched
+        ? 'not scored: the job was never dispatched to this slot'
+        : ph === PHASE.COMMIT && !f.committed && 2 * Number(commits) < Number(M)
+          ? 'not scored: fewer than half of M committed (the request\'s or a shared failure)'
+          : 'not scored';
   } else if (frozenSkip) {
     note = 'skipped by the keeper if the arbiter was frozen at the round end';
   }

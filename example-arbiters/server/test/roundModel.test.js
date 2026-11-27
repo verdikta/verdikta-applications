@@ -137,12 +137,17 @@ test('slotOutcome: failed in the reveal phase', () => {
   assert.equal(miss.frozenSkip, false);
 });
 
-test('slotOutcome: commit phase charges every non-committer only below M commits', () => {
+test('slotOutcome: commit phase charges a dispatched non-committer only with M/2..M-1 commits', () => {
   const nc = so({ settlePhase: PHASE.COMMIT, commits: 3, flags: D });
   assert.equal(nc.code, CODE.NOCOMMIT_FAILED);
   assert.equal(nc.tDelta, -pts.nocommit);
   assert.equal(nc.frozenSkip, true);   // no commit: skipped if frozen at the round end
-  assert.equal(so({ settlePhase: PHASE.COMMIT, commits: 3, flags: 0 }).code, CODE.NOCOMMIT_FAILED);   // skipped slot
+  // a slot whose dispatch failed was never sent the job (review 2026-11-26 #7)
+  assert.equal(so({ settlePhase: PHASE.COMMIT, commits: 3, flags: 0 }).scored, false);
+  assert.match(so({ settlePhase: PHASE.COMMIT, commits: 3, flags: 0 }).note, /never dispatched/);
+  // fewer than half of M (5) committed: nobody is charged, a lone commit included
+  for (const commits of [0, 1, 2]) assert.equal(so({ settlePhase: PHASE.COMMIT, commits, flags: D }).scored, false);
+  assert.match(so({ settlePhase: PHASE.COMMIT, commits: 1, flags: D }).note, /fewer than half/);
   assert.equal(so({ settlePhase: PHASE.COMMIT, commits: 3, flags: D | C }).scored, false);
   // ≥ M commits but never closed, or never promoted: nobody is charged
   assert.equal(so({ settlePhase: PHASE.COMMIT, commits: 5, flags: D }).scored, false);

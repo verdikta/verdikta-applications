@@ -85,6 +85,17 @@ test('queueRows: which sentence the claim page says in each state, and that it n
   assert.match(read('onchain', 'contracts', 'StakeAttestation.sol'), /require\(l\.state == ListingState\.Open \|\| l\.state == ListingState\.Depleted, "not rollable"\);/);
   assert.match(component('ClaimPage.jsx'), /const ROLLABLE = new Set\(\['Open', 'Depleted'\]\);/);
   assert.match(component('ClaimPage.jsx'), /queueRows\(q, \{ rollable: ROLLABLE\.has\(LISTING_STATES\[Number\(d\.listing\.state\)\]\) \}\)/);
+  // Node P42: a listing on hold stays Open or Depleted (hold writes no state), and rollForward takes it as any other,
+  // so a claim on it gets the wording that names the roll-forward. A late claim taken there is disclosed before any
+  // roll, so the roll ends its fix window too; one disclosed after the roll keeps a window of its own.
+  const hold = fn(logic, 'hold');
+  assert.match(hold, /require\(s == StakeAttestation\.ListingState\.Open \|\| s == StakeAttestation\.ListingState\.Depleted, "not rollable"\);/);
+  assert.doesNotMatch(hold.replace(/\/\/.*$/gm, ''), /l\.state = /);
+  assert.doesNotMatch(fn(read('onchain', 'contracts', 'StakeAttestation.sol'), 'rollForward').replace(/\/\/.*$/gm, ''), /_heldAt/);
+  assert.match(fn(logic, 'disclose'), /if \(l\.rolledAt != 0\) c\.disclosedAfterRoll = true;/);
+  assert.doesNotMatch(fn(rules, 'revealableAt'), /late/, 'the roll ends a late claim\'s window as any other\'s');
+  // so the first claim on a listing on hold, late or not, with its fix window open: the wording that names the roll
+  assert.deepEqual(rows(first).reveal, { key: 'revealLatest', at: NOW + 7n * DAY });
 });
 
 test('a claim whose round ended with no verdict keeps its place until the re-trigger window ends, then anyone may expire it', () => {
@@ -188,6 +199,15 @@ test('the listing page counts every open claim, late ones among them, from the l
   assert.deepEqual(listingQueue(listing({ headClaim: 5n, pendingClaims: 1n, lateClaims: 2n })), { head: 5n, open: 3n, late: 2n });
   // late claims only (the one case a Closed listing can be in)
   assert.deepEqual(listingQueue(listing({ headClaim: 7n, lateClaims: 2n })), { head: 7n, open: 2n, late: 2n });
+  // Node P42: a listing on hold counts as a Rolled one does. Open on-chain, claim 5 pending from before the hold, late
+  // claims 7 and 9 taken since: three are open. The count never read the state, and a hold changes none of its fields.
+  assert.deepEqual(listingQueue(listing({ state: 1n, headClaim: 5n, pendingClaims: 1n, lateClaims: 2n })), { head: 5n, open: 3n, late: 2n });
+  assert.deepEqual(listingQueue(listing({ state: 2n, headClaim: 7n, lateClaims: 1n })), { head: 7n, open: 1n, late: 1n }, 'Depleted and on hold, a late claim alone');
+  assert.doesNotMatch(read('client', 'src', 'lib', 'listingActions.js').split('export function listingQueue')[1].split('\nexport ')[0], /state/);
+  // the contract: lateClaim takes a claim on a listing its maker holds, at the tail of the same queue
+  assert.match(fn(logic, 'commit'), /if \(late\) \{[\s\S]*?\|\| listingHeld,\s*"not accepting late claims"/);
+  assert.match(fn(read('onchain', 'contracts', 'StakeAttestation.sol'), 'lateClaim'), /msg\.value, true, _heldAt\[listingId\] != 0/);
+  assert.match(read('client', 'src', 'lib', 'listingActions.js'), /A late claim \(taken once the listing is Rolled or Closed, or while its maker has it on hold\)/);
   // a late claim that expired and one that settled DUPLICATE are no longer open
   assert.deepEqual(listingQueue(listing({ headClaim: 9n, lateClaims: 3n, lateExpired: 1n, lateOutcomeCounts: [0n, 1n, 0n, 0n, 0n, 0n] })), { head: 9n, open: 1n, late: 1n });
   // the contract: a late claim joins the queue and never pendingClaims, and leaves through exactly one of two counters

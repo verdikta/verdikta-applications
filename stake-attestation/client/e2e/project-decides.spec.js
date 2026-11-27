@@ -8,7 +8,7 @@ import { LISTING_WARNING } from '@verdikta/stake-attestation-shared/listing-warn
 import { Contract } from 'ethers';
 
 import { CONTROL_FILE_FORMAT, STRINGS, fill } from '../src/strings.js';
-import { disclosure, expect, fromServer, installWallet, shot, test } from './support/fixtures.js';
+import { disclosure, expect, expectCommitOffer, fromServer, installWallet, shot, test } from './support/fixtures.js';
 import { field, fillListing, generateAndSaveKey, listAndFund, repoTerms, signDeployment, validate } from './support/listingForm.js';
 import { wordingProblems } from './support/wording.js';
 
@@ -68,10 +68,12 @@ test('the project\'s own listing: named by the repository, with what proves it; 
 
   // each listing's page says whether the site offers a commit on it
   await page.goto(`/#/fund/${mine.listingId}`);
-  await expect(page.getByTestId('commit-offer')).toHaveText(new RegExp(O.yes));
+  await expectCommitOffer(page, chain, mine.listingId, { takes: true, text: O.yes, offered: true });
+  // node P47: the replay takes commits on the chain and does not count, so the page says what it said: no commit
+  // offered, with the record's reason for this listing
+  expect(apart.detail).toContain('names another address');
   await page.goto(`/#/fund/${theirs.listingId}`);
-  await expect(page.getByTestId('commit-offer')).toContainText('This site offers no commit on this listing');
-  await expect(page.getByTestId('commit-offer')).toContainText('names another address');
+  await expectCommitOffer(page, chain, theirs.listingId, { takes: true, text: fill(O.no, { reason: apart.detail }), offered: false });
   await shot(page, 'project-no-commit-offer', { target: page.getByTestId('commit-offer') });
 });
 

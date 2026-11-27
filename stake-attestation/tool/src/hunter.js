@@ -28,7 +28,15 @@ export function createHunter(options = {}) {
   return Object.freeze({
     /** @param {{ claimDir: string, listingId?: bigint, listingArchive?: Buffer }} o */
     check: (o) => runCheck(ctx, o),
-    /** @param {{ claimDir: string, listingId?: bigint, acknowledge?: boolean, restart?: boolean, acceptUnreadPin?: boolean }} o */
+    /**
+     * commit; with `late` a late claim (node P43): lateClaim in commit's place, on a listing that takes no commit any
+     * more, for no award. `acknowledge` is what a new commit or late claim is signed on, after its terms were said
+     * through onNotice. It is no dry-run switch for a folder that holds more: a commit or late claim already signed
+     * there is sent again and disclosed on any call. And on a late claim's run (one with `late`, or one in a folder
+     * prepared for a late claim) a prepared folder whose two hashes already have a claim on the chain, a commit's or
+     * a late claim's, has that claim disclosed, with no terms said.
+     * @param {{ claimDir: string, listingId?: bigint, late?: boolean, acknowledge?: boolean, restart?: boolean, acceptUnreadPin?: boolean }} o
+     */
     commit: (o) => runCommit(ctx, o),
     /**
      * reveal, or with `retrigger` a failed round's re-trigger: that pays the lens's retriggerTopUp, so it says the cost

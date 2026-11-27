@@ -1,0 +1,10 @@
+{
+  "query": "Evaluate this smart contract for security vulnerabilities.  ",
+  "references": [
+    "supportingFile1"
+  ],
+  "outcomes": [
+    "Vulnerabilities",
+    "Safe"
+  ]
+}

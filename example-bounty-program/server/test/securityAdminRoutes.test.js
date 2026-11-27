@@ -102,3 +102,21 @@ describe('bot registration', () => {
     expect(limited.status).toBe(429);
   });
 });
+
+describe('frontend origin check', () => {
+  const clientIdentification = require('../middleware/clientIdentification');
+  function run(origin) {
+    const req = { headers: { 'x-client-key': 'fk', ...(origin ? { origin } : {}) }, method: 'POST', path: '/api/jobs/create', originalUrl: '/api/jobs/create', ip: '127.0.0.1' };
+    let type = null;
+    const res = { status() { return this; }, json() { return this; }, set() { return this; }, setHeader() {} };
+    clientIdentification(req, res, () => { type = req.clientType; });
+    return type;
+  }
+  beforeAll(() => { process.env.FRONTEND_CLIENT_KEY = 'fk'; process.env.FRONTEND_ALLOWED_ORIGINS = 'https://bounties.verdikta.org,http://localhost:5173'; });
+  it('accepts the exact origin and refuses a look-alike prefix', () => {
+    expect(run('https://bounties.verdikta.org')).toBe('frontend');
+    expect(run('http://localhost:5173')).toBe('frontend');
+    expect(run('https://bounties.verdikta.org.evil.com')).not.toBe('frontend');
+    expect(run('https://bounties.verdikta.orgx')).not.toBe('frontend');
+  });
+});

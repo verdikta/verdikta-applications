@@ -42,10 +42,14 @@ import {RecordLogic} from "./libraries/RecordLogic.sol";
 ///         confirmation deadline before it pays. P16: E7, the hunter's appeal of a claim round's
 ///         INVALID, once, to the dispute panel, at the hunter's cost (appeal, and one retrigger of
 ///         an appeal round that settled no verdict); a claim round's INVALID waits out the appeal
-///         window before anyone but the hunter may settle it (decision D5 as amended).
+///         window before anyone but the hunter may settle it (decision D5 as amended). P39: the
+///         maker's hold (owner, 2026-11-23): hold stops new commits on a listing at once, before
+///         the fix it rolls forward to is public, and the listing takes late claims from then on
+///         (heldAt, Held), until the hold ends in a roll forward or a close. Nothing else reads
+///         it: a pending claim keeps every path.
 ///
-///         Size (EIP-170): the claim functions' bodies (and list's oracle check) are the linked
-///         library ClaimLogic, the record's reader the linked library RecordLogic, and derived
+///         Size (EIP-170): the claim functions' bodies (and list's oracle check, and hold's
+///         body) are the linked library ClaimLogic, the record's reader the linked library RecordLogic, and derived
 ///         views (claim state, deadlines, quotes, the record) live in StakeAttestationLens, served at this address
 ///         through the fallback as BountyEscrow's are. Deploy and link ClaimLogic, then
 ///         RecordLogic, before this contract (deploy/01_deploy_stake_attestation.js).
@@ -71,6 +75,8 @@ contract StakeAttestation is Ownable2Step {
     ///         Depleted when a payout leaves an Open listing's escrow below the top award (no new
     ///         commits; fund pays what is owed first and reopens it at the top award); Rolled
     ///         once a successor is named; Closed after close. Order is ABI: append only.
+    ///         A hold (hold, heldAt) is not a state: a held listing stays Open or Depleted, and
+    ///         is on hold until it is Rolled or Closed.
     enum ListingState { Listed, Open, Depleted, Rolled, Closed }
 
     /// @notice The six outcomes of a claim, in the order of the jury's vector (design §8.7).
@@ -316,7 +322,7 @@ contract StakeAttestation is Ownable2Step {
         uint64  disputedAt;
         uint64  disputeEndedAt;      // when the second finalize read the dispute round
         // late claims (P2e, decision D6)
-        bool    late;                // made by lateClaim on a Rolled or Closed listing: no award
+        bool    late;                // made by lateClaim on a Rolled, Closed or held listing: no award
         address disputeWallet;       // the dispute-panel round's EvaluationWallet clone
         bytes32 disputeRequestId;
         // the settlement safeguards (P17, erratum E9)
@@ -622,6 +628,13 @@ contract StakeAttestation is Ownable2Step {
     // Non-reentrancy guard (1 = unlocked, 2 = locked), as BountyEscrow's.
     uint256 private _lock = 1;
 
+    /// @dev listingId => when its maker held it (hold): 0 = never. Written once, by hold, and
+    ///      never cleared: a hold is one-way. Read through heldAt, which answers 0 once the hold
+    ///      has ended in a roll forward or a close. A mapping of its own, after every earlier
+    ///      variable: Listing, which getListing returns, keeps its shape, and so does the storage
+    ///      before it.
+    mapping(uint256 => uint64) internal _heldAt;
+
     // ------------------------------------------------------------------
     //                               events
     // ------------------------------------------------------------------
@@ -648,7 +661,8 @@ contract StakeAttestation is Ownable2Step {
     /// @notice The listing opened: escrow at least the top award and the first period paid. The feed announces it.
     event Opened(uint256 indexed listingId, bytes32 indexed artifactHash, uint256 escrowWei, uint64 fundedUntil);
 
-    /// @notice A Depleted listing is back at the top award with nothing owed, and accepts commits again.
+    /// @notice A Depleted listing is back at the top award with nothing owed, and accepts commits
+    ///         again (unless its maker held it: a hold is not undone by a top-up).
     event Reopened(uint256 indexed listingId, uint256 escrowWei);
 
     /// @notice A listing period was bought.
@@ -686,8 +700,8 @@ contract StakeAttestation is Ownable2Step {
         uint256 prepayWei
     );
 
-    /// @notice A late claim (decision D6) on a Rolled or Closed listing: the fields of Committed.
-    ///         Recorded under `later`; no award rides on it.
+    /// @notice A late claim (decision D6) on a Rolled, Closed or held listing: the fields of
+    ///         Committed. Recorded under `later`; no award rides on it.
     event LateClaim(
         uint256 indexed claimId,
         uint256 indexed listingId,
@@ -709,6 +723,10 @@ contract StakeAttestation is Ownable2Step {
 
     /// @notice The stake rolled to a fixed version: every disclosed pending claim is revealable.
     event RolledForward(uint256 indexed listingId, uint256 indexed successorListingId, bytes32 indexed successorArtifactHash);
+
+    /// @notice The maker held the listing at `heldAt` (the block's time): no commit from now on,
+    ///         late claims instead. Its pending claims are untouched.
+    event Held(uint256 indexed listingId, uint64 heldAt);
 
     /// @notice The hunter revealed: the plaintext archive and the two keys are public from here.
     event Revealed(uint256 indexed claimId, uint256 indexed listingId, string bcid, bytes16 contentKey, bytes32 ephemeralKey);
@@ -932,8 +950,8 @@ contract StakeAttestation is Ownable2Step {
     ///         with no fee that first pays what the listing owes, claim by claim in commit order
     ///         (credited to each hunter's pull balance; OwedPaid), and escrows the rest: a
     ///         Depleted listing reopens once its escrow is back at awards[CRITICAL] and nothing is
-    ///         owed; a Rolled one stays Rolled (no new commits) and the escrow pays the claims
-    ///         still settling against it.
+    ///         owed (a held one is Open again and still held); a Rolled one stays Rolled (no new
+    ///         commits) and the escrow pays the claims still settling against it.
     /// @param expectedFeeWei the fee the caller expects this call to charge: feeDue(listingId),
     ///        i.e. the listing fee for an opening fund and 0 for a top-up. A mismatch reverts,
     ///        so a fee change landing first can never take part of the escrow.
@@ -981,6 +999,24 @@ contract StakeAttestation is Ownable2Step {
         l.fundedUntil = until;
         _accrueFee(listingId, fee);
         emit Renewed(listingId, fee, until);
+    }
+
+    /// @notice Hold the listing: the maker's, once, on an Open or a Depleted listing. From this
+    ///         block on it takes no commit (acceptsCommits is false) and takes late claims as a
+    ///         Rolled listing does (lateClaim: judged, recorded under `later`, no award). The first
+    ///         half of a roll forward (design §7.1): a fix must be public before its listing can
+    ///         be validated, funded and named as the successor, and until rollForward the old
+    ///         listing would take a claim of the bug the fix shows. Hold first, then publish.
+    ///         Nothing else changes. Every pending claim keeps its fix window, its place in commit
+    ///         order, its rounds, its dispute and appeal, and its award from the escrow; the maker
+    ///         may still flag, release, dispute, top up and renew. No delay and no resume: a hold
+    ///         ends in rollForward or in close, whose conditions are what they were. The state
+    ///         stays Open or Depleted, and heldAt says since when.
+    /// @dev Refused with "not maker" for anyone else, "not rollable" on a listing that is neither
+    ///      Open nor Depleted (where rollForward is refused too), and "already held" on one its
+    ///      maker has held (ClaimLogic.hold).
+    function hold(uint256 listingId) external {
+        ClaimLogic.hold(_mustListing(listingId), _heldAt, listingId);
     }
 
     /// @notice End the listing and withdraw its escrow to the maker. Refused while any claim is
@@ -1040,26 +1076,31 @@ contract StakeAttestation is Ownable2Step {
         require(isAllowed(listingId, msg.sender), "not allowed");
         claimId = ++claimCount;
         ClaimLogic.commit(
-            _claims, _listings[listingId], verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg.value, false
+            _claims, _listings[listingId], verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg.value, false,
+            false
         );
     }
 
     /// @notice A late claim (design §13.2, decision D6): a finding on a version whose stake has
     ///         rolled forward or closed (a listing that opened: one closed unfunded never had a
-    ///         stake), judged and recorded under the record's `later`, with no award. Commit-shaped, so everything after this call is a claim's: disclose within
+    ///         stake), or whose maker has held it (hold: no award-bearing commit is taken there any
+    ///         more), judged and recorded under the record's `later`, with no award. Commit-shaped, so everything after this call is a claim's: disclose within
     ///         DISCLOSE_WINDOW (erratum E5; pin the ciphertext only once this is mined), the
     ///         listing's fix window from the disclosure (the maker may flag or release), reveal
     ///         with the E1 line once every earlier claim on the listing has resolved, finalize,
     ///         a dispute if the maker wants one, settle: the bond back unless INVALID. Open to
-    ///         every hunter (an ended stake's allowlist does not keep findings off its record);
-    ///         a late claim never holds close() and never touches the escrow.
+    ///         every hunter (an ended or held stake's allowlist does not keep findings off its
+    ///         record); a late claim never holds close() and never touches the escrow. On a held
+    ///         listing it waits, in commit order, behind the claims committed before the hold.
     /// @dev msg.value as commit's: at least bondWei plus the live maxTotalFee (commitPrice).
     function lateClaim(uint256 listingId, bytes32 archiveHash, bytes32 ciphertextSha256)
         external payable nonReentrant returns (uint256 claimId)
     {
         Listing storage l = _mustListing(listingId);
         claimId = ++claimCount;
-        ClaimLogic.commit(_claims, l, verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg.value, true);
+        ClaimLogic.commit(
+            _claims, l, verdikta, listingId, claimId, archiveHash, ciphertextSha256, msg.value, true, _heldAt[listingId] != 0
+        );
     }
 
     /// @notice Publish the encrypted archive's CID, within DISCLOSE_WINDOW of the commit
@@ -1095,7 +1136,8 @@ contract StakeAttestation is Ownable2Step {
     ///         the maker's own listing of it, already Open (listed and funded on its own). This
     ///         listing becomes Rolled: no new commits; every claim disclosed by now is revealable
     ///         at once (ClaimRules.revealableAt reads rolledAt, so no claim is touched here); an
-    ///         undisclosed claim keeps its disclose deadline. The lineage links both ways.
+    ///         undisclosed claim keeps its disclose deadline. The lineage links both ways. A held
+    ///         listing rolls forward as any other (hold is the first half of this call).
     function rollForward(uint256 listingId, uint256 successorListingId) external {
         Listing storage l = _mustListing(listingId);
         require(msg.sender == l.maker, "not maker");
@@ -1410,12 +1452,10 @@ contract StakeAttestation is Ownable2Step {
     }
 
     /// @notice Every listing of an artifact hash, in listing order. listingsByHashPage pages it.
+    /// @dev listingCountByHash, isLapsed and feeDue are the lens's (moved there for EIP-170 when the
+    ///      maker's hold came in; same answers, same ABI at this address).
     function listingsByHash(bytes32 artifactHash) external view returns (uint256[] memory) {
         return _listingsByHash[artifactHash];
-    }
-
-    function listingCountByHash(bytes32 artifactHash) external view returns (uint256) {
-        return _listingsByHash[artifactHash].length;
     }
 
     function listingsByHashPage(bytes32 artifactHash, uint256 offset, uint256 limit)
@@ -1433,25 +1473,25 @@ contract StakeAttestation is Ownable2Step {
     }
 
     /// @notice Whether a new claim may be committed now: Open (not Listed, Depleted, Rolled or
-    ///         Closed), escrow at least the top award, and the listing period not lapsed. A
-    ///         lapsed listing stays Open for its pending claims but takes no new ones.
+    ///         Closed), escrow at least the top award, the listing period not lapsed, and not
+    ///         held by its maker (hold). A lapsed or a held listing stays Open for its pending
+    ///         claims but takes no new ones.
     function acceptsCommits(uint256 listingId) public view returns (bool) {
         Listing storage l = _mustListing(listingId);
         return l.state == ListingState.Open
             && block.timestamp < l.fundedUntil
-            && l.escrowWei >= l.awards[3];
+            && l.escrowWei >= l.awards[3]
+            && _heldAt[listingId] == 0;
     }
 
-    /// @notice Whether the paid listing period has ended (false before the listing opens).
-    function isLapsed(uint256 listingId) external view returns (bool) {
-        uint64 until = _mustListing(listingId).fundedUntil;
-        return until != 0 && block.timestamp >= until;
-    }
-
-    /// @notice The fee the next fund() charges: the listing fee while Listed, else 0. Pass it
-    ///         as fund's expectedFeeWei.
-    function feeDue(uint256 listingId) external view returns (uint256) {
-        return _mustListing(listingId).state == ListingState.Listed ? listingFeeWei : 0;
+    /// @notice Since when the listing is on hold: the time its maker held it (hold), while it is
+    ///         Open or Depleted. 0 when it is not on hold: never held, or the hold has ended in a
+    ///         roll forward or a close (rolledAt or closedAt says when; Held, in the log, keeps
+    ///         the hold's time). So a listing is on hold exactly while this is non-zero: it takes
+    ///         no commit and takes late claims. 0 for an id that is no listing: it never reverts.
+    function heldAt(uint256 listingId) external view returns (uint64) {
+        ListingState s = _listings[listingId].state;
+        return s == ListingState.Open || s == ListingState.Depleted ? _heldAt[listingId] : 0;
     }
 
     /// @notice Whether `hunter` may commit to the listing: everyone when the allowlist is empty.

@@ -138,8 +138,9 @@ describe("StakeAttestation: final sweep (P2e)", function () {
       await time.increase(3600);
       await run("expire", sa.connect(other).expire(c), "Expired");
 
-      // Roll forward, a late claim, close.
+      // The maker's hold (P39), then roll forward, a late claim, close.
       const successor = await H.openListing(sa, maker, params({ artifact: atCommit(freshCommit()) }));
+      await run("hold", sa.connect(maker).hold(id), "Held");
       await run("rollForward", sa.connect(maker).rollForward(id, successor), "RolledForward");
       await run("lateClaim", sa.connect(hunters[3]).lateClaim(id, ARCHIVE, CT, { value: BOND + FEE }), "LateClaim");
       await run("close", sa.connect(maker).close(id), "Closed");

@@ -8,6 +8,7 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const { linkedFactory } = require("./helpers/linked");
+const { mergedAbi } = require("./helpers/claims");
 
 const { parseEther, ZeroAddress, ZeroHash, keccak256 } = ethers;
 const coder = ethers.AbiCoder.defaultAbiCoder();
@@ -100,8 +101,12 @@ async function deploy() {
   const [owner, maker, maker2, hunter, feeRecipient, other] = await ethers.getSigners();
   const aggregator = await (await ethers.getContractFactory("MockVerdiktaAggregator")).deploy();
   const args = [await aggregator.getAddress(), owner.address, feeRecipient.address, LISTING_FEE];
-  const sa = await (await linkedFactory("StakeAttestation")).deploy(...args);
-  const harness = await (await linkedFactory("StakeAttestationHarness")).deploy(...args);
+  // Both at their address with the merged ABI (contract + lens): isLapsed, feeDue and
+  // listingCountByHash are the lens's, served through the fallback.
+  const saDeployed = await (await linkedFactory("StakeAttestation")).deploy(...args);
+  const harnessDeployed = await (await linkedFactory("StakeAttestationHarness")).deploy(...args);
+  const sa = new ethers.Contract(saDeployed.target, mergedAbi("StakeAttestation"), owner);
+  const harness = new ethers.Contract(harnessDeployed.target, mergedAbi("StakeAttestationHarness"), owner);
   return { owner, maker, maker2, hunter, feeRecipient, other, aggregator, sa, harness };
 }
 
@@ -886,7 +891,8 @@ describe("StakeAttestation: listing lifecycle (P2a)", function () {
         "finalize", // anyone: reads the aggregator's round for a revealed or disputed claim (P2c, P2d)
         "flagBadDisclosure", // the listing's maker (P2b)
         "fund", // maker only
-        "lateClaim", // anyone, on a Rolled or Closed listing, for themselves: no award (P2e, decision D6)
+        "hold", // maker only, once, on its Open or Depleted listing: no new commits from then on (P39)
+        "lateClaim", // anyone, on a Rolled, Closed or held listing, for themselves: no award (P2e, decision D6; P39)
         "lensDelegate", // this contract only, inside a static frame (P2b)
         "list", // anyone, for themselves
         "recoverLeftoverEth", // anyone: pays a wallet's recovered prepay to its recorded funder (P2d)

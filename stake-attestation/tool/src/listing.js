@@ -170,3 +170,15 @@ export function termsForNotice(listing, priceWei) {
     disclosureRecipient: disclosureRecipientOf(l.disclosureKey),
   };
 }
+
+/**
+ * A late claim's terms (node P43): the commit's, with the listing's successor and the late claims on it that are
+ * neither settled nor expired: every one made, less those expired, less those settled, which the listing counts by
+ * outcome. They stand in the listing's commit-order queue with its pendingClaims, which never count them
+ * (ClaimLogic.commit, resolve).
+ */
+export function lateTermsForNotice(listing, priceWei) {
+  const l = listing.onChain;
+  const lateOpenClaims = l.lateClaims - l.lateExpired - [...l.lateOutcomeCounts].reduce((sum, n) => sum + n, 0n);
+  return { ...termsForNotice(listing, priceWei), successor: l.successor, lateOpenClaims };
+}

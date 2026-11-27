@@ -18,7 +18,7 @@ settlement: finalize by polling the aggregator, the six-outcome rule, payouts,
 depletion and owed awards; the environment builder; the server's listing
 flow, indexer, keeper, feed, record mirror and badge; and the client: the maker
 flows (listing, the disclosure key, decrypt-and-check, the baseline scan, release,
-roll forward, dispute, top-up, renew, close, withdraw), the record page with its badge, and the feed.
+hold, roll forward, dispute, top-up, renew, close, withdraw), the record page with its badge, and the feed.
 
 **The project decides who may stake on it.** Every listing needs the project's
 proof, with no allowlist and no exception, Verdikta included: a file in the
@@ -133,6 +133,56 @@ escrow once no claim is pending and nothing is owed.
   part of the escrow.
 - **Payments** go through a gas-capped send that falls back to the pull
   ledger, as in `BountyEscrow`.
+- **A maker holds a listing before publishing a fix** (`hold`; owner,
+  2026-11-23). A fix in the public repository tells its readers where the bug
+  was, and a hunter who reads it can claim the bug on the old listing for as
+  long as that listing takes commits (`acceptsCommits`: Open, its paid period
+  not over, its escrow at least the top award, and not held by its maker with
+  `hold`). A roll cannot come before the push: `rollForward` needs a successor
+  that is the same maker's own listing, already Open, so the fixed commit is
+  listed and funded before the roll; the site counts a listing only with a
+  builder's signature ("The environment builder"), and the builder fetches a
+  listed commit from the public repository, with no credentials, so the fix is
+  public before the roll. The known issues of a listing are fixed when it is
+  listed (design §8.4), so the bug cannot be added to the old listing's
+  instead. A hold is the first half of a roll forward, sent before the push:
+  - who and when: the listing's maker, once, on an Open or a Depleted listing
+    (`hold` is refused with "not maker", "not rollable" or "already held"). It
+    takes no payment and names no successor, and neither a pending claim nor
+    an owed award holds it back;
+  - what it stops: once the hold is mined the listing takes no commit
+    (`acceptsCommits` is false). It takes late claims from then on, as a
+    Rolled listing does (`lateClaim`): judged, recorded under the record's
+    `later`, with no award;
+  - what it leaves alone: everything else. The state stays Open or Depleted
+    (`heldAt(listingId)` says since when, and `Held` is in the log). Every
+    claim committed before the hold keeps its fix window, its place in commit
+    order, its rounds, its dispute or appeal, and its award from the escrow,
+    and the maker still flags, releases, disputes, tops up and renews. Neither
+    a top-up that brings a Depleted listing back to Open nor a renewal makes a
+    held listing take commits again;
+  - no resume: a hold ends in `rollForward` or in `close`, whose conditions
+    are what they were, and `heldAt` answers 0 from then on;
+  - the order, which the listing's page states ("The client"): `hold`; once
+    that is mined, push the fix; validate, list and fund the fixed commit;
+    `rollForward`. A roll ends the fix window of every claim disclosed on the
+    old listing, and those claims still settle against the old listing's
+    escrow. With no claim pending and no award owed, a maker can `close` the
+    held listing instead: `close` is refused while a claim is pending or an
+    award is owed (a top-up pays what is owed first), and only a roll sets
+    `successor` and `predecessor`, so after a close the record holds the two
+    versions without that link.
+
+  Against a deployment that has no hold (a contract from before it has neither
+  `hold` nor `heldAt`, and a reader takes the refused call as not held), a
+  maker keeps the fix private until the old listing is closed, when it can be
+  closed: with no claim pending, `close` the old listing first and, once that
+  is mined, push the fix and list the fixed commit; with a claim pending,
+  `close` is refused until every pending claim is settled or expired, and a
+  maker who rolls forward before then publishes first (push, validate, list,
+  fund and roll forward, all in one sitting), the old listing taking commits
+  as before until the roll is mined, for as long as it meets the conditions of
+  `acceptsCommits`.
 
 ## The contract: claims
 
@@ -294,9 +344,11 @@ made after it; `getListing` and the record show a listing's values.
 
 ## The contract: late claims and the record
 
-A finding on a version whose stake has rolled forward or closed is a **late
-claim** (decision D6): `lateClaim(listingId, archiveHash, ciphertextSha256)`
-on a `Rolled` or `Closed` listing, open to every hunter, with the bond plus the
+A finding on a version whose stake has rolled forward or closed, or whose maker
+has it on hold, is a **late claim** (decision D6): `lateClaim(listingId,
+archiveHash, ciphertextSha256)` on a `Rolled` or `Closed` listing, or on one
+its maker holds (`hold`, "The contract: listings"; the lens's
+`acceptsLateClaims` says which), open to every hunter, with the bond plus the
 live fee (`commitPrice`). It is commit-shaped: `disclose` within the hour
 (erratum E5), the listing's fix window from the disclosure (the maker may flag
 or release it), a reveal with the E1 line once every earlier claim on the
@@ -794,9 +846,9 @@ the indexed block are both within `SA_MAX_STALENESS_SECONDS` (600).
 
 | Route | |
 |---|---|
-| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none, `null` while an archive answer the site stored before it read documents is read again, which keeps that answer as it was if the gateway fails), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, the claims open now (`pendingClaims`, and `headClaim`, the earliest of them or `null`: claims reveal in commit order, so these are the ones a new claim waits behind), escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed and lapsed listings are not in it (design §15). Node P35 added two fields and changed none: `disclosureRecipient`, the age recipient (`age1…`) of the same 32 bytes as `disclosureKey` (`shared/src/disclosureKey.js`), and `sameRepository`, every other listing the site indexed whose `artifact.repo` is the entry's, exactly as listed, that opened (one that never opened takes no claims, and anyone can make one for the gas of `list()`), at any commit and in whatever state it is in now: each one's id, artifact hash, artifact, state and lapsed at the answer's block, whether it counts, and its page (`/#/fund/<id>`), oldest first |
+| `GET /api/feed` | every listing that counts and takes commits (a builder's signature and the project's proof, [`docs/control-proof.md`](docs/control-proof.md); Open, its paid period not over), and `notCounted`, the others apart: hash, artifact, image, scope and `documents`, the listing's document globs (from its listing archive, used only when the archive is the listing the chain stores; `[]` when it names none, `null` while an archive answer the site stored before it read documents is read again, which keeps that answer as it was if the gateway fails), award table, lowest class counted, bond, windows (seconds, the 1-hour disclose window included), opened-at, funded-until, days open, claims so far, the claims open now (`pendingClaims`, and `headClaim`, the earliest of them or `null`: claims reveal in commit order, so these are the ones a new claim waits behind), escrow remaining, owed, value at risk, invited, labels, both CIDs and the disclosure key. Unfunded, depleted, rolled, closed, lapsed and held listings are not in it (design §15; a held one: "A held listing", below). Node P35 added two fields and changed none: `disclosureRecipient`, the age recipient (`age1…`) of the same 32 bytes as `disclosureKey` (`shared/src/disclosureKey.js`), and `sameRepository`, every other listing the site indexed whose `artifact.repo` is the entry's, exactly as listed, that opened (one that never opened takes no claims, and anyone can make one for the gas of `list()`), at any commit and in whatever state it is in now: each one's id, artifact hash, artifact, state and lapsed at the answer's block, `heldAt` (below), whether it counts, and its page (`/#/fund/<id>`), oldest first |
 | `GET /api/feed/events?after=&limit=` | the contract's events of listings and claims, in chain order (design §13.4: the feed is those events), paged by `next` (`<block>:<logIndex>`) |
-| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart; `artifact` and `fork` say what the record is of; `documents` each counted listing's document globs, from its archive), read in `recordPage` pages when it is long; `labels`; `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below); `sameRepository` (node P35): the listings of the record's repository on its other versions that opened, each as in the feed. 404 for a hash with no opened listing |
+| `GET /api/records/:hash` | `record`: the lens's `recordByHash` for the hash at the indexed block, field for field (uint as decimal strings, enums by name), over the listings that count (`notCounted` holds the others, apart, each with its state, lapsed and `heldAt`; `artifact` and `fork` say what the record is of; `documents` each counted listing's document globs, from its archive), read in `recordPage` pages when it is long; `labels`, each counted listing's (`labels.listings[<id>]`, with `heldAt`, below); `badge`; `history`: the indexed events of the record's listings, the published claims and the days since the last valid finding; `integrity`: per listing, the claims that failed integrity, by check, apart from the other duplicates (below); `sameRepository` (node P35): the listings of the record's repository on its other versions that opened, each as in the feed. 404 for a hash with no opened listing |
 | `GET /api/records/:hash/badge.svg` | the badge; "record unavailable" when the record is not fresh or cannot be read |
 | `GET /api/status` | the indexer's cursor, the keeper's address, transaction in flight and last result, and refused listing attempts by reason (`listings.refused`: no address or repository name, kept beside the state) |
 
@@ -819,7 +871,8 @@ on the chain, drops the events after it and reads again from there, or from `SA_
 none is. A chunk whose blocks changed while it was read is not committed. Each `Listed` event is
 stored with `terms`, the listing's fixed windows, award table, narrow-INVALID floor and
 confirmation size, read once with `getListing` at that event's block by its hash, and dropped with
-it on a reorg; nothing else of a stored event is not the log's.
+it on a reorg; nothing else of a stored event is not the log's. A `Held` event (the maker's `hold`)
+is stored like any other, the listing and the time, with nothing read from the chain for it.
 
 **The projection** (`server/src/site/projection.js`, node P18) folds the settlement safeguards'
 events (`Appealed`, `ConfirmationRequested`, `ConfirmationRefunded`, `ConfirmationNoVerdict`,
@@ -871,13 +924,49 @@ the top award, priced by Chainlink's ETH/USD aggregator at `SA_ETH_USD_FEED` (no
 `SA_ETH_USD_MAX_AGE_SECONDS`), is below `SA_UNDER_STAKED_RATIO_BPS` of it (no usable price: no
 label, never a guess), and `invited` for an allowlist. The floor and the share default to
 **placeholders** (0.04 ETH and 10%, `server/src/record/labels.js`) until the owner sets the
-launch values at G1; `/api/status` and every record name the placeholders still in use.
+launch values at G1; `/api/status` and every record name the placeholders still in use. A listing's
+labels also carry three facts of it at the answer's block: `lapsed`, `heldAt` (next paragraph) and
+`live`, true only of a listing that takes commits: Open, not lapsed and not held.
+
+**A held listing** (node P40; owner, 2026-11-23; "The contract: listings"). A maker's `hold` stops
+new commits on a listing at once and leaves its state Open or Depleted, so the state alone does not
+say it. The site says it in one new field, `heldAt`: the time of the hold in unix seconds (a number,
+as the feed's `openedAt` and `fundedUntil`) while the listing is on hold, and `null` otherwise: never
+held, or the hold has ended in a roll forward or a close. That is what the contract's `heldAt` view
+answers, with `null` for its 0. The field stands beside every `lapsed` the site writes itself:
+
+- in a listing's labels: `labels.listings[<id>]` of a record, and `labels` of a feed entry;
+- in each entry of a record's `notCounted.listings`;
+- in each entry of `sameRepository`, a feed entry's and a record's.
+
+`record` stays the lens's answer field for field, so it has no such field. No existing field
+changes its name or its meaning: `state` is the chain's, so a held listing reads Open or Depleted
+wherever a state is given, and `labels.live`, true only of a listing that takes commits, is false
+while `heldAt` is set.
+
+A held listing is not in `/api/feed`, as a lapsed one is not, whether it counts or not, so
+`labels.heldAt` is `null` on every entry there. That keeps `pendingClaims` and `headClaim` to
+listings that take commits. A late claim is taken only on a Rolled, a Closed or a held listing,
+and none of the three is an entry again (Rolled and Closed are final, and a hold has no resume), so
+no entry's queue holds a late claim and every claim in it is one of `pendingClaims`. A held
+listing's late claims are the record's `lateClaims`, never its `pending`; the claims committed
+before the hold stay `pending` until they are settled or expired, and are paid as before.
+
+The time comes from the indexed `Held` event (`server/src/site/projection.js`), and `RolledForward`
+and `Closed` end it, so it is the answer's block's, like the rest of the answer. A reorg that drops
+the event drops the hold with it. The event stays in `/api/feed/events` and in a record's
+`history` after the hold has ended, with the time in its arguments (a decimal string there, as
+every uint of an event is). The server makes no call for the hold, so against a contract with no
+hold (no `Held` event, no `heldAt` view) every answer is as before, with `heldAt` `null`.
 
 **The badge** reads "no finding at or above *class* while staked" (*class*: the listing's
 lowest class counted, with "under-staked" or "invited" after it when they apply) while a
 listing of the hash takes commits, only "scanned" below the floor, and "*n* valid finding(s) at
 or above *class*" once the record holds one; when no listing of the hash takes commits it says
-how the stake ended (closed, rolled forward, depleted, lapsed). It is drawn on lines of the
+how the stake ended (closed, rolled forward, depleted, lapsed), or, when one of them is on hold,
+"stake on hold since *date*" (the hold's day, UTC, `YYYY-MM-DD`; `badge.state` is `ended`, as for
+the others), whatever else is true of that listing and before a listing that ended. A held listing
+is never the live listing of a badge. It is drawn on lines of the
 message's own parts, what it states and then the shown listing's proof under it (a contract's on
 two lines), so a repository's badge is about two thirds as wide as one line would be; a line break
 stands where a " · " was, and the SVG's title and aria-label hold the message whole. Every string
@@ -1370,7 +1459,24 @@ verdikta-attest claim  ./claim                     # finalize, settle, withdraw:
 verdikta-attest appeal ./claim --yes               # an INVALID to the dispute panel, for the live dispute fee
 ```
 
+On a listing that takes no commit any more, a late claim takes the place of the `commit` line. It has a folder and a
+listing of its own, so `check` before it and every command after it name that folder:
+
+```bash
+verdikta-attest check  ./late-claim --listing 7               # as for a commit
+verdikta-attest commit ./late-claim --listing 7 --late --yes  # a late claim: bond + prepay, no award; asks for --yes after its terms
+verdikta-attest status ./late-claim                           # then reveal, status --wait and claim as above, each on ./late-claim
+```
+
 The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), never from an argument.
+
+Each command takes the flags and options on its own usage line in `--help`, and `--json`, `--key-file`, `--rpc-url`,
+`--contract` and `--gateway` (node P46): one table says what each command takes (`TAKES`, `tool/src/cli.js`), the parser
+reads a command's arguments against its row, and a test holds the help's usage lines to it. A flag is the bare word:
+written with a value (`--yes=false` too, or an empty one) it is a usage error (exit 2), and so is a flag or an option on
+a command that does not take it, as the arguments are read: before the wallet key, the chain or the claim folder. An
+option's value follows it or an `=` (`--listing 12` or `--listing=12`). A usage error names the flag or the option, and
+never its value.
 
 - **`check`** runs the arbiters' code-runner minus the jury, on the request an arbiter would send, and prints the gate forecast
   and the context pack. The pack, build output and recorded messages quote the proof in the clear, on this terminal only
@@ -1405,6 +1511,74 @@ The wallet key comes from `VERDIKTA_WALLET_KEY` or `--key-file <path>` (0600), n
   Claims on a listing reveal in commit order, so the terms it prints before it pays say how many claims on the listing
   are open and which is the earliest (`queueNotice`, from the listing's `pendingClaims` and `headClaim`), and its result
   names the claim it is behind (`waitsFor`), with the reveal deadline said as the earliest it can be.
+- **`commit --late`** (node P43; design §13.2, decision D6) files a late claim: a finding on a listing that takes no
+  commit any more, judged and recorded under the record's `later`, with no award. It is `commit` with what `--late`
+  adds, and in everything else it does what a commit does:
+  - It sends `lateClaim` where a commit sends `commit`, with the same two hashes and `commitPrice`, then pins and
+    discloses as a commit does. The lens says which listing takes one (`acceptsLateClaims`: Rolled, Closed after it
+    opened, or held by its maker), so a late claim's run reads no hold and works against a contract that has none. A
+    late claim has no allowlist.
+  - Before it pays it prints the listing's warning, the terms, the price and three warnings (`LATE_CLAIM_WARNINGS`,
+    `src/notices.js`): no award at any class; the bond forfeited on INVALID, to the maker unless the INVALID is narrow;
+    the prepay spent on the evaluation, its unspent part back at `finalize` or, when that refund fails, by
+    `recoverLeftoverEth`. Without `--yes` it sends nothing. Its count of the claims open ahead adds the listing's open
+    late claims to `pendingClaims`, which never counts them.
+  - The wrong kind for the listing is refused before anything is drawn, pinned or signed: `LATE_CLAIMS_ONLY` for a
+    `commit` without `--late` on a listing that takes late claims only (its text names the flag; a listing that takes
+    neither is refused as before), `LISTING_TAKES_COMMITS` and `NO_LATE_CLAIMS` for `--late`.
+  - Of the listings that take late claims only, one on hold has a refusal of its own: `LISTING_ON_HOLD` (node P41)
+    for a `commit` without `--late` on a listing on hold: its text names the hold and its time, as `heldAt` gives it,
+    in unix seconds and in UTC, says what a late claim is and names `commit --late`. It comes where
+    `LATE_CLAIMS_ONLY` comes, so with `--yes` or without it nothing is drawn, pinned or signed, and no terms and no
+    price are printed for a commit there. A listing that rolled forward or closed keeps `LATE_CLAIMS_ONLY`.
+  - The hold is read only for that refusal, once `acceptsCommits` said no and `acceptsLateClaims` said yes, and
+    only of a listing whose state is Open or Depleted, the two a hold is made in and lasts in (`onHoldSince`,
+    `src/commit.js`): a commit that is accepted reads nothing new, and `commit --late` on a listing on hold prints
+    its terms and its price as before. The lens of a contract from before the hold says late claims of a Rolled or a
+    Closed listing only, so a contract with no hold is never asked for the view, and every answer there is what it
+    was; one that refuses the view all the same reads as not on hold. An RPC that does not answer is said as that
+    (`RPC_UNAVAILABLE`), never as a listing that is not on hold.
+  - Both refusals, `LATE_CLAIMS_ONLY` and `LISTING_ON_HOLD`, say of `commit --late` what is said below of its dry
+    run, in one sentence (`LATE_CLAIM_INSTEAD`, `src/errors.js`): in a folder where nothing is saved yet it prints
+    its terms and its price; in a prepared folder it first looks for a claim of these files on the chain, and
+    discloses one it finds, `--yes` or not.
+  - A commit this folder signed that is on the chain when the hold comes is a pending claim, which a hold leaves
+    alone: `commit` goes on with it, to disclose and everything after. One first mined after the hold reverts
+    (`COMMIT_REVERTED`) and leaves the folder prepared, with nothing signed: from then on `commit` is refused for
+    the hold, and `commit --late` is a late claim's run there, which prints its terms and with `--yes` files a late
+    claim. A prepared folder whose commit went out some other way is refused as any commit there is, on a listing
+    on hold as on every listing that takes no commit: an ordinary commit asks the listing before it looks for its
+    hashes on the chain, and where it looks is other work (verdikta-applications#238). `commit --late` in that
+    folder finds the claim, adopts it as the commit it is and discloses it, with no second bond.
+  - The price it signs is the price its terms named. The price is read again as it signs, before the wallet's
+    balance is asked, and one that changed in between ends the run with `LATE_PRICE_CHANGED` and the new amount,
+    nothing signed; the next run prints the terms again. A rise between that read and the gas estimate makes the
+    estimate refuse the quoted value, and is said the same way. One that comes after the estimate is not seen before
+    the transaction is sent: it reverts on the chain, as a commit's does (`COMMIT_REVERTED`), and the next run prices
+    it afresh. A commit signs the live price, as it always did.
+  - A folder a late run prepared, or took over from a commit that was never signed, says so in `state.json`
+    (`late: true`) before anything is signed, and a later run goes on with what the folder holds, with `--late` or
+    without it: a signed one is sent again as it was saved, and a prepared one still asks for `--yes`. `--late`
+    takes over only a folder that has nothing signed when the run starts: on a folder whose ordinary commit is
+    signed or on the chain it changes nothing, for the whole run, and says so. Should that signed commit's nonce
+    have gone to another transaction, the run goes on as a commit's does, never as a late claim's.
+  - A prepared late claim's two hashes are looked for on the chain, as a commit's or a late claim's, before the listing
+    is asked: a claim sent some other way is adopted and disclosed, `--yes` or not. A commit's prepared folder that
+    is run with `--late` is looked up the same way, before the run takes it over. So `--yes` (the library's
+    `acknowledge`) is what a new commit or late claim is signed on, not a dry-run switch for a folder that holds a
+    signed one or such a claim. For a price-only check, run `commit --late` without `--yes` in a folder where
+    nothing is saved yet: it prints its terms and sends nothing. In a prepared folder it first looks for a matching
+    claim on the chain, and prints the terms and sends nothing if it finds none.
+  - `--restart` never starts a late claim over, signed or not (`LATE_NEEDS_NEW_FOLDER`; owner, 2026-11-24): a
+    changed late claim goes in a new folder, and the old folder's files stay as they are. A prepared late claim
+    whose files changed says the same, with no word of `--restart` (`LATE_INPUTS_CHANGED`): its files are held to
+    the archive it was prepared from before any other check of them, so one that is spoiled, missing, over the size
+    the tool reads or no file at all is said as changed, never as a file to fix in place.
+  - `--late` is taken only as the bare flag and only by `commit`: with a value (`--late=false` too) or on another
+    command it is a usage error (exit 2) before anything is read or sent. That is the rule for every flag (above).
+  - `status`, `reveal`, `claim` and `appeal` then work as on any claim: `commit`, `status` and `claim` print "Late
+    claim" and that no award rides on it (`late` with `--json`), and `appeal`'s notice says an overturned INVALID
+    returns the bond and pays nothing more.
 - **Run it again.** A stopped `commit` or `reveal`, at any point, goes on from what was saved. It sends the saved transaction
   again rather than a second one: the contract takes the same hashes twice, for a second bond.
 - **`reveal`** refuses before the fix window ends or out of commit order, before the plaintext is pinned. Then, as `commit`,
@@ -1528,7 +1702,10 @@ goes in a URL.
   confirmations and the narrow INVALIDs by result, each listing's floor and size, and a finding's
   round kind (`client/e2e/safeguards.spec.js`). The hunter appeals with the tool, not the site.
 - **A listing's page** (`#/fund/<listingId>`): its stored terms and, while it is Listed, the
-  opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. Just
+  opening `fund()`, so a maker who leaves between `list()` and `fund()` can come back. The id in
+  the address is read once and has one form from there on, the decimal number with no leading
+  zeros: `#/fund/001` is the page of listing 1, and every part of the page is given `1`, the list
+  of the repository's other listings among them, which leaves this listing out by its id. Just
   before sending, the listing's state and fee are read at one block through the wallet: unless
   it is still Listed with the terms the page shows, nothing is sent, and the fee passed as
   `expectedFeeWei` makes an opening fund that lands first from elsewhere revert this one.
@@ -1541,7 +1718,178 @@ goes in a URL.
   `sameRepository`, and its own version's other listings, counted or apart); while it is
   Open or Depleted, **roll forward** offers the maker's own open listings of the same
   repository at another commit (from the feed, each confirmed on-chain: Open, the maker's, no
-  predecessor) and sends `rollForward` after reading both listings again at one block.
+  predecessor) and sends `rollForward` after reading both listings again at one block. Above
+  the picker, the panel says what a maker does before publishing a fix
+  (`STRINGS.roll.hold`; "The contract: listings"): hold this listing; once the hold is mined,
+  push the fix; validate the fixed commit, list it and fund it; roll forward to it; or, once on
+  hold, close, when no claim is pending and no award is owed. On a listing that is on hold the
+  panel says since when, and what is left of that order. Those lines depend on the chain alone
+  (the listing's state and its hold), so the panel does not wait for the site's record: it shows
+  for an Open or a Depleted listing also while the record is read and when it cannot be, and only
+  the picker waits for the record. It is off while the page knows its read is behind, and once a
+  roll sent from the page was mined it is that roll's own line.
+  Next to it, **hold** (node P42; `HoldListing` in `client/src/components/ListingActions.jsx`,
+  the rules in `client/src/lib/hold.js`): a warning in three statements (it stops new claims at
+  once, it does not touch pending claims, it cannot be undone), that a finding can still be filed
+  as a late claim with no award, and the action, drawn for the connected wallet when it is the
+  listing's maker's and for no other: two steps before the wallet's own, as close has; the wallet
+  asked again at the click; the listing and its hold read again at one block through the wallet
+  (another listing under the id or none, or a listing that can no longer be held, sends nothing);
+  then `hold`. The first step is taken for one listing, by its maker and artifact: the
+  confirmation is drawn, and taken, only while that listing is the one on display, and the
+  wallet's read is held to that same listing, so another listing that comes under the id gets no
+  hold without a first step of its own. The section reports that transaction as the page's other actions report theirs, by
+  the hash it was mined under, and that line says nothing of what the listing is. Once the page has
+  read the hold, it says the listing is on hold, with the time, beside its state (which stays Open
+  or Depleted, and is no longer drawn as taking claims), and in its own sentences about taking
+  claims: its "open until" line is gone, the commit offer says the site does not offer it, and a
+  renewal, and a top-up that brings a Depleted listing back to open, are said not to make it take
+  claims again. The line of an opening sent from
+  this page is that transaction's, and stays as it was drawn, "is open until" in it. Roll forward stays offered, and close by its own
+  terms. The queue line counts the late claims a listing on hold takes with the claims from before
+  the hold. A successor is never a listing that is itself on hold: it is Open, and the contract
+  would take it, but it takes no commits and a hold has no resume, so the picker leaves it out and
+  the read before sending refuses it. The fixed version is listed after the hold, often in another
+  tab, so the panel looks for successors again when asked; where the site's record did not have
+  this listing yet (its mirror trailed the opening) or could not be read, looking again reads the
+  record first.
+  **What the page says, and from what** (owner decision, 2026-11-24; `client/src/lib/pageSays.js`).
+  Three parts. *Only a read says what the listing is.* That it is on hold, since when, and what
+  its maker may do because of it (push the fix, the order of steps, roll forward, close) are shown
+  from a read that is one snapshot of one block, and from nothing else: no receipt of a transaction
+  the page sent stands in for a read, not the hold's and not the opening's. *Off the page at once,
+  back only from a read.* Each transaction the page sends and sees mined (every action, on every
+  path that sends: a call the wallet sent again at a higher fee, a replacement, a revert), and
+  each read through the wallet that refuses a top-up, a renewal, a hold, a close or a roll forward
+  because it has the listing otherwise than the page shows it, tells the page that the read it
+  shows is behind. That read asks the count first (`listingAt` in `client/src/chain/wallet.js`),
+  for all five, so a listing the wallet's node does not have at that block is an
+  answer, and a disagreement like any other. Where an action reads something besides the
+  listing (a roll its successor, a renewal its fee, a hold the hold's time), the listing is read
+  first and the other only when the listing alone does not rule the action out, so what the
+  wallet has of this listing is never lost to a failure of the other read. A read
+  that fails on the way (the node, the network) is the action's failure, and tells the page
+  nothing. From that instant, before
+  any new read answers, the page shows nothing that says the listing is on hold or what its maker
+  may do because of it, and nothing that shows it as taking claims: its state, "open until", the
+  commit offer, the hold's section, the roll-forward panel and the forms of the opening, top-up,
+  renew and close are off. Each action's line for its own transaction stays as it was drawn (a
+  top-up's "The listing is open again", from its receipt's `Reopened` event, among them). Its own error is shown where its
+  section is drawn, and no further. As before this node, the opening, top up, renewal and close
+  draw no section for a listing the page's read rules the action out on, and a withdrawal none for
+  a wallet that is held nothing, unless that action's own transaction line is there: an error of
+  theirs that arrives then is not shown (verdikta-applications issue 240). The hold and the roll
+  forward draw theirs while the listing is on the page and has opened (one refusal apart, the
+  roll's "that successor is on hold", which is drawn only with the panel). The page
+  then reads the listing again, a fixed number of times, until a read is of that block or a later
+  one (`readFrom` in `client/src/lib/poll.js`), and everything comes back from that read alone.
+  While it reads it says so; when its reads are over and none was taken, it names the block its
+  next read has to reach, with "Read again", and stays as it is. A re-read through a wallet that
+  is on another network is such a read: the page does not name the network there
+  (verdikta-applications issue 247). That block is the floor (the newest block the
+  page was told of or has shown a read of, whichever is later), never an earlier block it was
+  told of: a read between the two was not taken, and the page does not say it has not read that
+  far. A read that fails on load is the page's failed-read state
+  ("The listing could not be read", with Read again). *Never backward.* No read of an earlier
+  block is taken after a later one was shown, or after the page was told of a later one: a node
+  that trails the one that answered before cannot put an earlier state of the listing back. One
+  pure function, `pageSays`, decides all of it from one record the page keeps (the read on
+  display, the newest block it was told of, whether it knows that read is behind, whether it is
+  reading), and `pageAfter` moves that record on for each thing that happens; the components
+  decide none of it. `client/test/pageSays.test.js` holds the function to a table with a row for
+  each case, walks every sequence of up to four events drawn from twelve fixed ones, from one
+  start (a held listing read at one block), against the three parts, and holds the components to
+  it. The walk has no "no such listing" read and no contract without a hold; the table has rows
+  for both. A refusal by the wallet's read that arrives once the page shows another
+  listing under the id sets the floor and takes nothing of the listing now shown off the page;
+  the page still says it is reading, and offers Read again when no read was taken. So does the
+  "no such listing" page, when an action that was still out when that read was taken asks for
+  another.
+  Against a contract with no hold there is no line of a hold to take off, and nothing is: the
+  page reads again from the block and shows the listing it read meanwhile, as the site did before;
+  when its reads are over and none reached the block, it says which block it has not read.
+  **The page's own transactions** are shown as the site showed them before this node: the transaction,
+  and the values that go with it. A close's refund and a top-up's amounts are taken from the
+  receipt's events (each with a fallback only for a receipt without its event); an opening's and
+  a renewal's date are a read through the wallet after the receipt; a withdrawal's amount is the
+  one read through the wallet before it was sent. Such a line is kept while its listing is on the page,
+  through every re-read of it, and is not checked against a later read. A read that says the
+  listing is gone takes the page with its actions, and one that says it has not opened takes the
+  hold's and the roll's, whose panel is an opened listing's. The opening's form (the escrow
+  field and its button) is the read's all along: it is drawn only while the listing on display is
+  Listed, so a listing read again as open has none, whenever the opening's receipt arrived.
+  Whether a line should outlive
+  that, and how those lines hold up when the site's reader trails the wallet, a second tab acts
+  or a block is replaced, is separate work (verdikta-applications issue 240), with a design
+  first.
+  **One read is one block, and a block is its hash, never its number** (`snapshot` in
+  `client/src/chain/snapshot.js`). Every read of a hold goes through it, with the listing the
+  hold is of: the page's read (the count, the listing and `heldAt`), the hold's read through the
+  wallet just before sending, the roll panel's read of its successors, and the roll's read just
+  before sending. It takes the latest block and makes its calls at that block, on a contract made
+  for that snapshot and for nothing else. How the block is named is fixed by where the provider
+  was made, and never learned from what a node answers. The site's read address
+  (`VITE_SA_RPC_URL`) is asked at the block's hash (an EIP-1898 block parameter, `{blockHash,
+  requireCanonical: true}`): a node that does not have that block as the chain's refuses the
+  call, that refusal or a refusal of the form itself is a failed read, and nothing is read by
+  number in its place. A wallet's node
+  is asked at the block's number, and is never sent the hash form. Either way the answers are
+  taken only when the block at that number still has the hash it had before the calls; otherwise
+  the read is made again, three times in all at most, and then it is a failed read.
+  A wallet can change network at any moment, so a read through one is also held to the site's
+  chain (`VITE_SA_CHAIN_ID`): in every try, once the closing header has answered, the wallet is
+  asked its chain, and any other chain fails the read there, with no further try of it. The
+  page's first read and an action's read say that failure with the wallet's wrong-network
+  message; a re-read of the page does not name the network (above; verdikta-applications issue
+  247). A try during which the wallet reported a change of network (its `chainChanged` event) is
+  not taken either, since the wallet may have gone to another network and come back: the read is
+  made again, as for a replaced block. When the closing header request itself is rejected,
+  as the node of another network may reject it, the read fails with that node's error: the chain
+  is not asked, the reported change is not looked at, and no further try is made
+  (verdikta-applications issue 248). The site's read address is one chain's by how it is
+  made, and is asked neither.
+  `test/snapshot.test.js` runs it against nodes whose blocks are replaced under it, and fails
+  when a hold is read outside a snapshot.
+  **The page reads; it does not watch.** It reads on load, after each of its own transactions and
+  each such refusal by the wallet's read (until it has read that block, or its reads are over),
+  and when asked. A block replaced after its latest read is seen at its next read, not before;
+  what another tab or another sender did is left to the read before sending and to the contract's
+  own checks; a
+  node is taken to answer truly for the block it names; and the nodes behind one address are
+  taken to agree on the chain (owner decision, 2026-11-24). What the page holds all the same,
+  where a read address is configured (`VITE_SA_RPC_URL`): a hold's state and its next step, as the
+  page shows them, come from one read tied to one block's hash, and a node without that block
+  refuses the read. A wallet's node is asked by the block's number, so none of that is held for
+  it: the read just before something is sent, and every read of the page where no read address
+  is configured, are tied to their block only by its hash read before and after the calls, and
+  for the rest stand on the assumption alone, that the nodes behind the wallet's address agree on
+  the chain. Such a read is held to the site's chain all the same, where its closing header
+  answers: a wallet that is on another network when it is asked, after that header, fails the
+  read (a closing header request that is rejected: issue 248, above). A site that wants what it shows of a
+  hold tied to a block's hash configures the read address. The case that is left: a hold whose block is replaced after the page read it, and
+  after the maker acted on it. The design's order for the maker is "once the hold is mined, push
+  the fix", and a page cannot undo a push; it says what the chain has at its next read.
+  **How the page knows.** It reads `heldAt(listingId)` in the snapshot it reads the listing in. A
+  call the contract refuses means a contract from before the hold: the page then draws no hold
+  section, and the roll-forward panel says what it said before the hold existed, character for
+  character (`STRINGS.roll.fix`: keep the fix private until the listing is closed, when it can be
+  closed; with no claim pending, close first; with one pending, push, validate, list, fund and
+  roll forward in one sitting, the listing taking claims as before until it has rolled (none
+  while it is Depleted or its paid period is over)). A read that fails any other way is a failed
+  read of the page, never "not on hold": ethers reports every JSON-RPC error on a call as
+  `CALL_EXCEPTION`, so the reader goes by the contract's own refusal and not by that code: the
+  revert's data, or, with no data, the node's error of code 3 whose message is exactly
+  `execution reverted: unknown function`. That is the reason of the contract's own fallback
+  (its lens's `revert("unknown function")`), which a contract that has `heldAt` never reaches
+  for it, and which no failure of a node or a network says. One code and one whole message,
+  compared as they are: any other code, reason or wording, and that code and message nested in a
+  wallet's own error with no revert data, is a failed read.
+  `test/rollGuidance.test.js` checks both sets of lines against `hold`, `close` and `rollForward`
+  in the contract's source and refuses any wording that would call a roll harmless after a public
+  push; `test/hold.test.js` holds the warning's three statements to the source, one by one, and
+  the reader to that rule against the answers nodes give; `e2e/hold.spec.js` runs the page
+  through the wallet, with a reader that trails the wallet's node, and against a node that
+  refuses the call.
   The same page carries the rest of a listing's life, each read again through the wallet before it
   is sent (`client/src/components/ListingActions.jsx`; the rules, held to the contract's source,
   in `client/src/lib/listingActions.js`):
@@ -1552,10 +1900,13 @@ goes in a URL.
     hunter's balance in the contract, and escrows the rest; the page says how an amount would split
     before it is sent, and that a Depleted listing reopens once nothing is owed and its escrow is
     back at the top award (its amount field starts at what that takes). The receipt's `OwedPaid`,
-    `Funded` and `Reopened` events say what happened.
+    `Funded` and `Reopened` events say what happened. Of a Depleted listing on hold the page says
+    that its state goes back to open and that it stays on hold: the top-up is taken the same way,
+    and the listing takes no claims.
   - **Renew**, while it is Open or Depleted: until when the listing fee is paid (or that the period
     has lapsed, by the chain's time), the fee for 30 more days read from `listingFeeWei()`, and
-    `renew` with exactly that. A fee that moved since the page read it sends nothing.
+    `renew` with exactly that. A fee that moved since the page read it sends nothing. Of a listing
+    on hold the page says that it takes no new claims, renewed or not.
   - **Close**, until it is Closed: what closing does and how much escrow comes back. The contract
     refuses while a claim is pending or an award is owed, so the page says which and offers nothing.
     It cannot be undone, so it takes two steps before the wallet's own. The receipt's `Closed` and
@@ -1564,18 +1915,29 @@ goes in a URL.
     amount, and `withdraw`. Listing fees reach the fee recipient this way, as does any payment the
     contract could not send directly (`_payOrCredit` forwards 120,000 gas, which a contract wallet
     may exceed). A wallet that is held nothing is shown nothing.
-  The page reads the listing again after each without taking itself down, so what was done stays
-  said.
+  The page reads the listing again after each without taking itself down, from the block the
+  transaction was mined in, so what was done stays said.
 - **Every listing page** (the feed, the record, a listing's own page) warns who reads a proof
   first and that the code may exist elsewhere (`shared/src/listingWarning.js`, which the hunter
-  tool repeats). A listing's own page says whether the site offers a commit on it.
+  tool repeats). A listing's own page says whether the site offers a commit on it, in its
+  "Commits" section (`CommitOffer` in `client/src/components/ListingExtras.jsx`): only on a
+  listing that counts and takes commits now (node P47). Whether it takes commits is the
+  contract's `acceptsCommits`, which the page reads in the same snapshot as the listing; a failure
+  of that call is a failed read of the page. A listing that counts and takes none says so. While
+  it is on hold that is the hold's own text (node P42), which names the hold and says a finding
+  can still be filed as a late claim. Otherwise it is one sentence that gives no reason by state:
+  the listing's state and its paid period are said elsewhere on the page. What the section says is
+  as of the page's read: the page does not watch the clock, so a paid period that ends after a
+  read changes it only at the next read.
 - **The record** (`#/record/<hash>`, design §4.1, §13.4): from `GET /api/records/:hash`, the
   artifact (hash, kind, repository and commit from the Listed event, whether the host says it
   is a fork, how many listings of it count and how many of those are not closed, each linked by its
   page), each stake that counts (state, labels,
   award table, lowest class counted, bond, escrow, owed, declared value at risk and the top
   award's share of it, the times, days open, predecessor and successor, and the claims that failed
-  integrity with each check's name, apart from its other duplicates), the history (claims,
+  integrity with each check's name, apart from its other duplicates; for a listing its maker has on
+  hold, the label "on hold" and since when, from the API's `heldAt`, beside a state that stays the
+  chain's and is not drawn as taking claims; a listing shown apart says its hold the same way), the history (claims,
   claims judged, verdicts by outcome, claims that failed integrity, other duplicates, released,
   expired, disputes and their outcomes, days since the last valid finding), the valid findings, what was found later (late
   claims), the bad-disclosure flags with what became of each claim, and the badge with its
@@ -1589,7 +1951,9 @@ goes in a URL.
   them), escrow remaining, value at risk, image, scope and where its requirements are said to be
   written (its document globs), the disclosure key in both its forms, the age recipient and the bytes32, with the sentence
   that says they are one key (`shared/src/disclosureKey.js`), the other listings of its repository (their ids, commits and
-  states, each a link to its page), and links to its record and its page. The record page shows each stake's globs too.
+  states, each a link to its page; one that is on hold says so, with the time), and links to its record and its page.
+  A listing on hold is no entry of the feed (the server leaves it out, "A held listing"), so the feed page shows one
+  only there, among an entry's other listings of its repository. The record page shows each stake's globs too.
 - **A claim** (`#/claim/<claimId>`): its state and times from the chain (the lens's derived
   state and `claimTimes`), and the maker's actions through the wallet, each after reading the
   claim again: **release** inside the fix window of a disclosed claim, and **dispute** of a
@@ -1602,7 +1966,9 @@ goes in a URL.
   revealed shows its place in **commit order** (decision D5): first on its listing, or which claim it waits for
   (the listing's `headClaim`), with its reveal deadline as the lens has it: firm once the fix window is over, the
   latest it can be while the window is open, passed (anyone may expire it), or not set while an earlier claim is
-  open; an undisclosed claim past its disclose window is said to be expirable by anyone, whatever its place
+  open (on a listing its maker has on hold the state is still Open or Depleted, so the wording that names the
+  roll-forward is the one shown: a roll from the hold ends the window as from any other); an undisclosed claim past its
+  disclose window is said to be expirable by anyone, whatever its place
   (erratum E5), and a claim whose round ended with no verdict shows until when it can be sent again, after which
   anyone may expire it. For a claim that waits, the release panel says that a release ends the fix window and not
   that wait, and names the claim that comes first, before and after the release; if the claim it waits for was
@@ -1657,6 +2023,19 @@ goes in a URL.
 **Config** is Vite's build environment: `VITE_SA_CHAIN_ID`, `VITE_SA_CONTRACT`,
 `VITE_SA_RPC_URL` (reads; without it, reads go through the wallet) and `VITE_IPFS_GATEWAY` (one
 gateway origin or several, comma-separated; the record page links to the first).
+The read address has to take a block's hash on `eth_call` (EIP-1898, `{blockHash,
+requireCanonical: true}`), as Base's public endpoints do: a listing's page reads the listing and
+its hold at one block's hash, and a refusal is a failed read of the page, with no fallback to
+the block's number. Against a contract from before the hold, the page knows there is no hold
+from the contract's own refusal of `heldAt`: the revert's data where the node hands it over, and
+where it does not, the node's error of code 3 whose message is exactly `execution reverted:
+unknown function`, the reason of the contract's own fallback. Any other failure of that call is
+a failed read of the page, never a listing on hold shown as one that is not. The nodes behind
+the address are taken to agree on the chain; what the page
+holds all the same, and the case that is left, are under "The page reads; it does not watch"
+above. Without a read address the page's reads go through the visitor's wallet, by block number,
+and what they show of a hold is not tied to a block's hash: it stands on the nodes behind the
+wallet's address agreeing on the chain.
 The API is same-origin under `/api`; `vite` and `vite preview` proxy it to `SA_API_URL`
 (default `http://127.0.0.1:5009`).
 
@@ -1668,8 +2047,9 @@ record, feed and claim pages render, the server's labels and badge included.
 
 **Tests.** `npm test` covers the form model, the known-issue ids against common's, the key
 file, decrypt-and-check with common's real encryption, the record's view, the 15-minute watch,
-the release and dispute rules, roll-forward successors, the dispute statement and its CID, the
-enum names against the contract and the wording. `npx playwright test` starts
+the release and dispute rules, roll-forward successors, the hold (its reader against what nodes
+answer, and each statement of its warning against the contract's source), the dispute statement
+and its CID, the enum names against the contract and the wording. `npx playwright test` starts
 `e2e/support/stack.mjs`: StakeAttestation deployed on the in-process Hardhat network as the
 server's chain tests deploy it, behind Hardhat's JSON-RPC server; the real API server with
 mock pinning, dev trust and the server's own fake builder CLI as its builder, and its chain side
@@ -1733,7 +2113,7 @@ pin unless `SA_E2E_ARBITER_UNPINNED=1`. `e2e/test/failure.test.js` breaks it on 
 cannot be reached, a crash, a service whose leader dies, a live process group after every check passed; SIGTERM while running, mid-build, mid-scan, with EA requests out, twice during the startup, with a step that creates
 something after the signal, and with one that outlasts the bound) and reads the exit code.
 
-One listing of the builder's fixture takes four claims, in commit order: **a valid one** (every gate passes, the jury decides, HIGH,
+One listing of the builder's fixture takes its claims in commit order, four to begin with: **a valid one** (every gate passes, the jury decides, HIGH,
 the award and bond after the dispute window), **a gate-failing one** (a PoC that edits source: the runner's `testPathsOnly`, INVALID at
 once, the bond to the maker, no model asked, the first claim among its prior findings), **one that fails an integrity check** (a PoC that fails as the valid
 one does and writes `.gitignore`, a path the listing protects, on real forge: `protectedPathsUnchanged`, no tamper flag, DUPLICATE at once, the bond back, no model asked; its check
@@ -1754,6 +2134,52 @@ runner at the pin builds, with the documents tier right after the source holding
 documents, and its packs have no documents tier. The round fails on the first check that fails, and
 every check is a pure function with a test that hands it a tampered observation (`e2e/test/checks.test.js`).
 
+**The maker's hold** (node P42; "The contract: listings"), in the maker's own order. Before the documents listing:
+**a claim is committed** on the first listing (the valid claim's proof again), and the tool takes a second folder as far
+as its acknowledgement; **the maker holds the listing** (`hold`, from the plain wallet): the `Held` event is the
+maker's and its time the block's and the view's, the state is what it was, `acceptsCommits` is false and the lens's
+`acceptsLateClaims` true, and the pending claim, the queue, the counts, the escrow and the paid period are field for
+field what they were. The site then says it (`labels.heldAt`, `live` false, the state still the chain's, the claim still
+pending, the badge "stake on hold since", and no entry in the feed), and so do the pages in Chromium: the listing's own,
+which reads the chain, the record and the feed. **A commit is refused**: the tool, given `--yes` for the folder it priced
+before the hold, exits as it does for a refusal (exit 1 with one of the tool's own error codes on its error line; the
+line is read only to tell a refusal from `INTERNAL` and `RPC_UNAVAILABLE`, and neither which refusal code it names nor
+any prose is gone by), and what that leaves is checked: nothing
+pinned, the hunter's nonce and the contract's claim count unmoved, the listing's counts and queue as they were. An
+unrelated failure would leave the same, so that one invocation reaches the chain through a recording proxy, and what it
+asked is read back, in order: whether this listing takes a commit, the chain's answer no, no transaction sent, and
+after that answer none of what only a commit that goes ahead asks (the allowlist, the wallet's balance and nonce, the
+gas): a tool that read the refusal, went on and failed on something else did not stop at the chain's answer. **The
+claim from before the hold is judged and paid as before**: the maker releases it, the hunter reveals it, the jury gives
+the first claim's HIGH (the second juror's script answers it so, and the round first checks that juror has answered
+exactly the two claims before), the keeper starts the confirmation after the dispute window and the held listing's
+escrow pays it, the panel holds it, and the award and the bond reach the hunter, to the wei, with the listing on hold
+throughout (Open or Depleted by what the escrow then holds). After the documents listing, **the fix is published**:
+a commit in which `deposit` credits exactly the amount, which exists nowhere until then, is pushed to the repository's
+main, whose head had not moved since before the hold. The site validates it (the real builder fetches it), and the
+hunter's `check` of the proof that was paid on the old version, against the new listing's archive, now fails at
+`reproduces`: its test passes there. The fixed version is listed and funded, and **the listing rolls forward from the
+hold** to it: the old listing is Rolled with the lineage both ways, `heldAt` answers 0, the successor takes commits,
+the site's two records and its feed say the same, and the record of the successor is the fixed commit's.
+
+**A late claim on the listing on hold** (decision D6; the tool's `commit --late`, node P43), in two stages of the same
+round. *Taken*, right after the refused commit, while the claim from before the hold is still pending: the valid
+claim's proof in a folder of its own. Without `--yes` the tool exits 3 and sends nothing (the hunter's nonce, the
+contract's claim count and the listing's late claims as they were). With it the claim is on the chain by `LateClaim`
+and not `Committed`, `late` is set, it is disclosed, it is at the tail of the queue behind the claim from before the
+hold, the listing's `pendingClaims` and `claimsCommitted` are what they were and `lateClaims` is one more, the escrow
+is untouched and the listing is on hold as it was; and the tool's answer says `late`. *Judged and recorded as found
+later*, once the earlier claim is settled and the late claim is first: the maker releases it, the hunter reveals it,
+the request carries the listing's archive, the claim's and the two valid findings before it, oldest first, the runner
+and the jury give the first claim's HIGH (the second juror's script answers it so, and the round first checks that
+juror has answered exactly the three claims before), and after the dispute window the keeper settles it. No award
+rides on a late claim: no confirmation is asked of the dispute panel, the claim is paid and owed nothing, not a wei of
+the escrow moves, and the bond and the unspent prepay come back to the hunter, to the wei, with the maker's balance
+untouched and the listing still on hold. The site's record then has one late claim, a HIGH, none expired; its stake's
+own claims and verdicts are what they were before it; and the finding is published as found later, with nothing paid
+or owed.
+
+
 | Piece | Here |
 |---|---|
 | EVM, `StakeAttestation` and its libraries | Real: `hardhat node`, onchain's artifacts, blocks every second so confirmations are waited for |
@@ -1764,8 +2190,8 @@ every check is a pure function with a test that hands it a tampered observation 
 | Registry | Real `registry:2`, local: A6a's, plus a sidecar over its storage for this machine's reads |
 | IPFS | **A stand-in**: A6a's local IPFS, real CIDv0s |
 | Builder, baseline scan, server, indexer, keeper, tool | Real, as a deployment starts them, with a per-run dev builder key |
-| Client | The production build; Chromium reads the record and the feed. Its wallet flows are its own Playwright tests |
-| Maker | A plain wallet: signs the request, `list`, `fund`, `release` |
+| Client | The production build; Chromium reads the record and the feed, and, while the listing is on hold, its own page. Its wallet flows are its own Playwright tests |
+| Maker | A plain wallet: signs the request, `list`, `fund`, `release`, `hold`, `rollForward` |
 | Clock | **Forced** with `evm_increaseTime`: windows are moved past, never slept through |
 
 **What each platform covers.** A report exists only on `linux/amd64`, so on arm64 the runner answers `reportUnavailable` and the EA

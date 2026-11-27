@@ -7,7 +7,9 @@
 // Two things are added: the proof file (docs/control-proof.md), and a gas limit no test reaches, so a
 // looping proof runs into the runner's clock and not into forge's gas limit. Node P20: a second commit on top
 // adds the maker's documents, for the round's second listing, which names them (stake.documents); the first
-// listing is the first commit, as before.
+// listing is the first commit, as before. Node P42: a third commit fixes the bug. It does not exist, here or in
+// the mirror, until the round publishes it (publishFix), which it does only once the maker has held the first
+// listing: a fix in the public repository tells its readers where the bug was.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -46,10 +48,16 @@ const DOCUMENT_FILES = Object.freeze({
 });
 export const DOCUMENTS_EXPECTED = Object.freeze({ read: ['README.md', 'docs/spec.md'], skipped: [['docs/diagram.bin', 'notText']], unmatched: ['SPEC/**'], omitted: { notText: 1 } });
 
+/** The line of the fixture's Vault.deposit that over-credits, and the line of the fix. */
+const BUG_LINE = 'balanceOf[msg.sender] += amount + 1;';
+const FIX_LINE = 'balanceOf[msg.sender] += amount;';
+
 /**
  * The repository as a bare mirror, at <mirrorsDir>/<host>/<path>.git: where the server's control
  * check looks (SA_CONTROL_GIT_MIRROR_DIR) and the builder's config points (repoMirrors).
- * @returns {{ url: string, mirror: string, mirrorsDir: string, baseCommit: string, documentsCommit: string }}
+ * @returns {{ url: string, mirror: string, mirrorsDir: string, baseCommit: string, documentsCommit: string, mirrorHead: () => string, publishFix: () => string }}
+ *          `mirrorHead`: the commit the public repository's main is at now; `publishFix`: makes the commit in which
+ *          deposit credits exactly what it receives, pushes it to the mirror's main, and answers its id
  */
 export function makeRepository({ workDir, maker, proofMaker = maker }) {
   const work = path.join(workDir, 'repository');
@@ -74,7 +82,20 @@ export function makeRepository({ workDir, maker, proofMaker = maker }) {
   fs.mkdirSync(path.dirname(mirror), { recursive: true });
   git(path.dirname(mirror), 'clone', '-q', '--bare', work, mirror);
   git(mirror, 'config', 'uploadpack.allowFilter', 'true');
-  return { url: REPO_URL, mirror, mirrorsDir, baseCommit, documentsCommit };
+  const mirrorHead = () => git(mirror, 'rev-parse', 'refs/heads/main');
+  const publishFix = () => {
+    const file = path.join(work, 'src', 'Vault.sol');
+    const source = fs.readFileSync(file, 'utf8');
+    const fixed = source.replace(BUG_LINE, FIX_LINE).replace('deposits credit one wei too many', 'deposits credit what they receive');
+    if (!source.includes(BUG_LINE) || fixed.includes(BUG_LINE)) throw new Error('the fixture\'s Vault.sol no longer has the line the fix changes');
+    fs.writeFileSync(file, fixed);
+    git(work, 'add', '-A');
+    git(work, 'commit', '-q', '-m', 'deposit credits exactly the amount it receives');
+    const commit = git(work, 'rev-parse', 'HEAD');
+    git(work, 'push', '-q', mirror, 'HEAD:refs/heads/main');
+    return commit;
+  };
+  return { url: REPO_URL, mirror, mirrorsDir, baseCommit, documentsCommit, mirrorHead, publishFix };
 }
 
 /** The maker's draft: design §7.1's default windows, and limits a loaded machine's slow step fits in. */
@@ -162,6 +183,32 @@ const CLAIMS = Object.freeze({
     finding: { ...FINDING, title: 'Vault.deposit over-credits, a second report of the same proof' },
     poc: null, // the valid claim's (claimFolder)
   },
+  // Node P42: the valid claim's proof once more, committed just before the maker holds the listing. A hold leaves a
+  // pending claim every path, so this one is revealed, judged by the jury and paid from the held listing's escrow as
+  // the first was: the second juror answers for it as for the first (JUROR_SCORES, below).
+  held: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, committed before the hold' },
+    poc: null, // the valid claim's (claimFolder)
+  },
+  // Node P42: a proof a hunter brings to the listing once it is on hold. The tool takes the folder as far as its
+  // acknowledgement before the hold, and refuses to commit it on the listing on hold.
+  onHold: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, a proof that edits the source, brought to the listing on hold' },
+    poc: 'diff --git a/src/Vault.sol b/src/Vault.sol\n--- a/src/Vault.sol\n+++ b/src/Vault.sol\n@@ -11,5 +11,5 @@\n \n     function deposit(uint256 amount) external {\n-        balanceOf[msg.sender] += amount + 1;\n+        balanceOf[msg.sender] += amount + 4;\n     }\n }\n',
+  },
+  // Node P42: the valid claim's proof, filed on the listing on hold as a late claim, in a folder of its own (the
+  // tool's commit --late). It waits behind the claim from before the hold, is judged by the jury as that one was, and
+  // is recorded as found later: no award, the bond back.
+  late: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, filed as a late claim on the listing on hold' },
+    poc: null, // the valid claim's (claimFolder)
+  },
+  // Node P42: the valid claim's proof, checked by the hunter against the fixed version the old listing rolls forward
+  // to: deposit credits exactly the amount there, so the proof's test passes and the proof reproduces nothing.
+  fixed: {
+    finding: { ...FINDING, title: 'Vault.deposit over-credits, checked against the fixed version' },
+    poc: null, // the valid claim's (claimFolder)
+  },
   // Node P20: the valid claim's proof, checked by the hunter on the listing that names its documents.
   documents: {
     finding: { ...FINDING, title: 'Vault.deposit over-credits, on the listing that names its documents' },
@@ -190,10 +237,14 @@ export const JUROR_SCORES = Object.freeze([[0, 0, 0, 0, 800000, 200000], [0, 0, 
 export const JURY_AVERAGE = Object.freeze([0n, 0n, 0n, 0n, 700000n, 300000n]);
 /**
  * Node P18, erratum E8. The claim panel's second juror answers JUROR_SCORES[1] for the valid claim's K jobs, and
- * then NARROW_SCORES: with the first juror's [0, 0, 0, 0, 800000, 200000] the narrow claim's average is
- * NARROW_AVERAGE, an INVALID (no class reaches THRESHOLD, and INVALID outweighs DUPLICATE) with 500,000 of valid
- * mass, inside the band of the round's floor (NARROW_FLOOR, 25 points) up to THRESHOLD - 1: its bond comes back.
- * No other claim of the round reaches the claim panel's jury: the gates settle the others, or they abstain.
+ * then NARROW_SCORES for the narrow claim's K: with the first juror's [0, 0, 0, 0, 800000, 200000] the narrow claim's
+ * average is NARROW_AVERAGE, an INVALID (no class reaches THRESHOLD, and INVALID outweighs DUPLICATE) with 500,000 of
+ * valid mass, inside the band of the round's floor (NARROW_FLOOR, 25 points) up to THRESHOLD - 1: its bond comes back.
+ * Node P42: after those it answers JUROR_SCORES[1] again, for the claim committed before the maker's hold and then for
+ * the late claim filed on the listing on hold, whose averages are JURY_AVERAGE as the first claim's was. The script is
+ * a sequence by call, so the round checks, before each of the two is revealed, that the second juror has answered
+ * exactly the claims before it. No other claim of the round reaches the claim panel's jury: the gates settle the
+ * others, or they abstain.
  */
 export const NARROW_SCORES = Object.freeze([1000000, 0, 0, 0, 0, 0]);
 export const NARROW_AVERAGE = Object.freeze([500000n, 0n, 0n, 0n, 400000n, 100000n]);

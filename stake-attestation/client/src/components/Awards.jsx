@@ -38,7 +38,7 @@ export function AwardLine({ text, lowest = null }) {
 }
 
 // noPrice is a sentence, not a word: its pill may wrap
-const TONES = { staked: 'pill pill-tint', 'under-staked': 'pill pill-warn', noPrice: 'pill pill-long' };
+const TONES = { staked: 'pill pill-tint', 'under-staked': 'pill pill-warn', held: 'pill pill-warn', noPrice: 'pill pill-long' };
 
 /** The site's labels of a listing, each as a pill. The text is the labels joined by ", ", as before, on one line. */
 export function LabelPills({ labels }) {
@@ -51,7 +51,7 @@ export function LabelPills({ labels }) {
   ));
 }
 
-/** A listing's state as a pill: green while it takes claims. */
+/** A listing's state as a pill: green while it takes claims. `state` null: drawn plain (a listing on hold, a lapsed one). */
 export function StatePill({ state, text }) {
   return <span className={state === 'Open' ? 'pill pill-dot pill-ok' : 'pill pill-dot'}>{text}</span>;
 }

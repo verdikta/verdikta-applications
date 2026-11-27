@@ -100,6 +100,43 @@ test('node P18: a narrow INVALID, read from the contract, waits out its appeal w
   assert.match(detail('narrow.judged.narrow'), /narrow/);
 });
 
+test('node P42: the maker holds the listing: a commit is then refused and a late claim taken, the claim from before the hold is judged and paid from the held listing\'s escrow, the late claim is judged and recorded as found later, and only then is the fix published and the listing rolled forward to it', () => {
+  // the maker's order: a claim is pending; hold; the fix is published, validated, listed and funded; roll forward.
+  // A hunter's, on the listing on hold: a commit refused, then a late claim, which waits behind the pending claim.
+  const order = ['narrow: the appeal window, then the bond back', 'hold: a claim committed before it', 'hold: the maker holds the listing', 'hold: a commit is refused', 'hold: a late claim is taken', 'hold: the earlier claim is judged and paid as before', 'hold: the late claim is judged and recorded as found later', 'documents: a listing that names them', 'hold: the fix is published, validated, listed and funded', 'hold: roll forward to the fixed version', 'nothing live'];
+  const at = order.map((name) => report.stages.findIndex((s) => s.name === name));
+  assert.ok(at.every((i) => i >= 0), JSON.stringify(at));
+  assert.deepEqual([...at].sort((a, b) => a - b), at);
+  // the hold itself, from the chain: the maker's, its time the block's, the state as it was, no commit from then on, nothing else moved
+  has('held.commit.pending', 'held.commit.takenBeforeTheHold', 'held.hold.byTheMaker', 'held.hold.time', 'held.hold.stateAsItWas', 'held.hold.noCommitFromNow', 'held.hold.lateClaimsFromNow', 'held.hold.pendingUntouched', 'held.hold.claimUntouched');
+  // the site and the pages while it is on hold
+  has('held.site.fresh', 'held.site.heldAt', 'held.site.notLive', 'held.site.stateIsTheChains', 'held.site.pendingStays', 'held.site.badge', 'held.site.feedWithoutIt');
+  has('held.page.listingOnHold', 'held.page.listingState', 'held.page.recordOnHold', 'held.page.feedWithoutIt', 'held.page.noErrors');
+  assert.match(detail('held.site.badge'), /stake on hold since \d{4}-\d{2}-\d{2}/);
+  // a commit refused, by what it leaves, and by what that invocation asked the chain: not by which error code it names
+  has('held.commit.toolWasWatched', 'held.commit.refused', 'held.commit.nothingPinned', 'held.commit.nothingSent', 'held.commit.claimCountAsItWas', 'held.commit.chainRefuses', 'held.commit.stoppedAtTheChainsAnswer');
+  // a late claim, through the tool's commit --late: nothing sent without --yes; then taken by LateClaim and not
+  // Committed, disclosed, behind the claim from before the hold, never one of the pending claims, the escrow untouched
+  has('held.late.asksYes', 'held.late.taken', 'held.late.isALateClaim', 'held.late.neverPending', 'held.late.behindTheEarlierClaim', 'held.late.disclosed', 'held.late.escrowUntouched', 'held.late.stillOnHold', 'held.late.toolSaysLate');
+  // that late claim, once the earlier one is settled: released, revealed, judged by the jury, and settled by the
+  // keeper with no confirmation and no award; the record counts it under its late claims and publishes it as found later
+  has('held.late.waitedItsTurn', 'held.late.jury.scriptInStep', 'held.late.released', 'late.request.cids', 'late.request.disclosureLine', 'late.round.vector', 'late.round.everyRevealSame', 'held.late.jury.reached', 'held.late.judged.outcome', 'held.late.judged.escrowUntouched');
+  has('late.settled.state', 'late.settled.outcome', 'late.keeper.finalized', 'late.keeper.settled', 'held.late.noConfirmation', 'held.late.noAward', 'late.money.bondBack', 'late.money.makerUntouched', 'held.late.settled.stillOnHold');
+  has('held.record.lateClaims', 'held.record.lateOutcomes', 'held.record.notAmongTheClaims', 'held.record.lateFindings', 'held.record.noAward', 'held.late.record.stillOnHold');
+  assert.match(detail('held.late.judged.outcome'), /HIGH/);
+  assert.match(detail('held.late.isALateClaim'), /1 LateClaim, 0 Committed/);
+  assert.match(detail('held.record.lateFindings'), /"outcome":"HIGH"/);
+  // the claim from before the hold: released, revealed, judged by the jury, confirmed from the escrow and paid, on hold throughout
+  has('held.jury.scriptInStep', 'held.release.released', 'held.request.cids', 'held.round.vector', 'held.round.everyRevealSame', 'held.jury.reached', 'held.judged.outcome', 'held.judged.escrowUntouched', 'held.confirm.byKeeper', 'held.confirm.held');
+  has('held.settled.outcome', 'held.keeper.finalized', 'held.keeper.settled', 'held.money.hunter', 'held.money.makerUntouched', 'held.paid.fromTheEscrow', 'held.paid.stillOnHold', 'held.record.finding', 'held.record.stillOnHold');
+  assert.match(detail('held.judged.outcome'), /HIGH/);
+  // the fix: published only with the listing on hold, validated by the real builder, and a fix (the old proof reproduces nothing there)
+  has('held.fix.publishedAfterTheHold', 'held.fix.accepted', 'held.fix.validated', 'held.fix.proofNoLongerFails', 'held.fix.listed');
+  assert.match(detail('held.fix.proofNoLongerFails'), /reproduces fail/);
+  // the roll forward from the hold, to that commit, on the chain and in the site's two records and its feed
+  has('held.roll.fromOnHold', 'held.roll.byTheMaker', 'held.roll.rolled', 'held.roll.holdEnded', 'held.roll.successorTakesCommits', 'held.roll.record', 'held.roll.successorRecord', 'held.roll.feed', 'held.roll.toTheFix');
+});
+
 test('node P12: the runner at the pin had the Semgrep image before it started, and the fixture settled as it did', () => {
   has('semgrep.warmed', 'listing.officialCompiler', 'listing.commandsAskedFirst', 'listing.shellPrefixRefused', 'valid.report.everyGatePassed');
   assert.match(detail('semgrep.warmed'), /sha256:/);

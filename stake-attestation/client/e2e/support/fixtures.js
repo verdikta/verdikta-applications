@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { test as base, expect } from '@playwright/test';
-import { Contract, JsonRpcProvider } from 'ethers';
+import { Contract, Interface, JsonRpcProvider } from 'ethers';
 import disclosure from '@verdikta/common/src/codeReview/disclosure.js';
 import codec from '@verdikta/common/src/codeReview/disclosureCodec.js';
 
@@ -51,7 +51,8 @@ export async function shot(page, name, { target = null } = {}) {
  * A browser wallet for tests: an EIP-1193 provider on window.ethereum that forwards every call to
  * the local Hardhat node, whose accounts are unlocked. No extension and no key in the page.
  * window.__testWallet lets a test switch the account (emitting accountsChanged, as a wallet
- * does) and make the eth_calls that follow the next transaction fail, as a flaky RPC would.
+ * does, or silently, as one that does not announce it) and make the eth_calls that follow the
+ * next transaction fail, as a flaky RPC would.
  */
 export async function installWallet(page, stack, account = stack.accounts.maker) {
   await page.addInitScript(({ rpcUrl, chainId: configured, account: first }) => {
@@ -64,9 +65,10 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
     const listeners = new Map();
     const emit = (event, value) => { for (const fn of listeners.get(event) ?? []) fn(value); };
     window.__testWallet = {
-      setAccount(a) {
+      // `announce: false`: the account changes and the wallet says nothing, as one that does not announce changes
+      setAccount(a, { announce = true } = {}) {
         from = a;
-        emit('accountsChanged', [a]);
+        if (announce) emit('accountsChanged', [a]);
       },
       failCallsAfterNextSend(n) {
         failCallsAfterSend = n;
@@ -94,7 +96,9 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
           failing -= 1;
           throw Object.assign(new Error('test wallet: RPC unavailable'), { code: -32603 });
         }
-        const res = await fetch(rpcUrl, {
+        // the same node as the site's reader, at a URL of its own (the node ignores the query), so a test can answer
+        // one of the two and not the other: a reader that trails the wallet's node (interceptRpc)
+        const res = await fetch(`${rpcUrl}/?from=wallet`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }),
@@ -120,6 +124,95 @@ export async function installWallet(page, stack, account = stack.accounts.maker)
       },
     };
   }, { rpcUrl: stack.rpcUrl, chainId: stack.chainId, account });
+}
+
+// What the local node answers for a call to a function StakeAttestation does not have (measured on the stack's node, with
+// a selector the contract lacks): the contract hands it to its lens, whose fallback reverts with Error("unknown function").
+// A StakeAttestation deployed before the hold answers heldAt this way.
+const UNKNOWN_FUNCTION = "Error: VM Exception while processing transaction: reverted with reason string 'unknown function'";
+const UNKNOWN_FUNCTION_DATA = new Interface(['error Error(string)']).encodeErrorResult('Error', ['unknown function']);
+export const REFUSED_CALL = Object.freeze({ code: -32603, message: UNKNOWN_FUNCTION, data: { message: UNKNOWN_FUNCTION, data: UNKNOWN_FUNCTION_DATA } });
+
+/** Whether a JSON-RPC request is an eth_call of the function with this signature ("heldAt(uint256)"). */
+export const isCallOf = (signature) => {
+  const selector = new Interface([`function ${signature}`]).getFunction(signature.slice(0, signature.indexOf('('))).selector;
+  return (p) => p?.method === 'eth_call' && String(p.params?.[0]?.data ?? p.params?.[0]?.input ?? '').startsWith(selector);
+};
+/** Whether a JSON-RPC request is a call of the contract's heldAt view. */
+export const isHeldAtCall = isCallOf('heldAt(uint256)');
+/** Whether a JSON-RPC request is a call of the contract's acceptsCommits view. */
+export const isAcceptsCommitsCall = isCallOf('acceptsCommits(uint256)');
+
+/**
+ * Node P47: the "Commits" section of a listing's own page, held to the chain. The page is that listing's, by its
+ * address; the contract's acceptsCommits(listingId) answers `takes` now (asked of the node itself: ethers answers a
+ * call it made in the last 250 ms from memory); the section is one paragraph, whose visible text is `text`, whole; and
+ * its data-offered is `offered`. `shotAs` names a screenshot of the section for the PR.
+ */
+export async function expectCommitOffer(page, chain, listingId, { takes, text, offered, shotAs = null }) {
+  expect(new URL(page.url()).hash, 'the page is the listing\'s own, and the chain is asked of that listing').toBe(`#/fund/${listingId}`);
+  const data = chain.sa.interface.encodeFunctionData('acceptsCommits', [listingId]);
+  const answer = await chain.provider.send('eth_call', [{ to: await chain.sa.getAddress(), data }, 'latest']);
+  expect(chain.sa.interface.decodeFunctionResult('acceptsCommits', answer)[0], `acceptsCommits(${listingId}) on the chain`).toBe(takes);
+  const section = page.getByTestId('commit-offer');
+  await expect(section.locator('p')).toHaveText(text, { timeout: 30_000 });
+  await expect(section.locator('p')).toHaveCount(1);
+  expect(await section.locator('p').innerText()).toBe(text);
+  await expect(section).toHaveAttribute('data-offered', String(offered));
+  if (shotAs) await shot(page, shotAs, { target: section });
+}
+
+/**
+ * Node P42: answers some of this page's JSON-RPC requests in the node's place. `answer(request)` returns { result } or
+ * { error } for a request it answers (or a promise of one, for an answer made from the node's own), and nothing for one
+ * that goes to the node as it is, alone or in the same batch.
+ * The page reaches the node two ways, both a fetch of its URL: the site's reader (`from: 'reader'`) and the test
+ * wallet (`from: 'wallet'`), which marks its requests in the URL. So a test can give the reader a view of the chain
+ * the wallet's node does not share: a reader a block behind, or a chain on which a hold was dropped.
+ * @returns {Promise<() => Promise<void>>} ends it
+ */
+export async function interceptRpc(page, stack, answer, { from = 'any' } = {}) {
+  const node = new URL(stack.rpcUrl).origin;
+  const matches = (url) => url.origin === node && (from === 'any' || (from === 'wallet') === (url.searchParams.get('from') === 'wallet'));
+  const handler = async (route) => {
+    const request = route.request();
+    let body = null;
+    try {
+      body = request.method() === 'POST' ? JSON.parse(request.postData() ?? '') : null;
+    } catch {
+      // not JSON-RPC
+    }
+    const list = Array.isArray(body) ? body : [body];
+    const answered = await Promise.all(list.map((p) => (p ? answer(p) : undefined)));
+    if (!answered.some(Boolean)) return route.continue();
+    const answers = [];
+    for (const [i, p] of list.entries()) {
+      if (answered[i]) answers.push({ jsonrpc: '2.0', id: p.id, ...answered[i] });
+      else {
+        const res = await fetch(stack.rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p) });
+        answers.push(await res.json());
+      }
+    }
+    return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(Array.isArray(body) ? answers : answers[0]) });
+  };
+  await page.route(matches, handler);
+  return () => page.unroute(matches, handler);
+}
+
+/**
+ * This page's calls of the contract's heldAt view, by the reader and by the wallet, answered with `error` and never
+ * sent to the node. With the default, the page talks to a contract deployed before the hold: the node answers with
+ * the revert of a function the contract does not have. With another JSON-RPC error, the read fails as a node's own
+ * failure would. Returns { calls }: how many heldAt calls were answered here.
+ */
+export async function answerHeldAt(page, stack, error = REFUSED_CALL) {
+  const seen = { calls: 0 };
+  await interceptRpc(page, stack, (p) => {
+    if (!isHeldAtCall(p)) return undefined;
+    seen.calls += 1;
+    return { error };
+  });
+  return seen;
 }
 
 /** Every request the browser context makes (URL, headers, body) and every WebSocket frame. */
@@ -198,12 +291,12 @@ export function chainOf(stack) {
     },
 
     /**
-     * An Open listing made the way the site makes one: the repository names the maker at the commit,
+     * An Open listing (with `fund: false`, a Listed one) made the way the site makes one: the repository names the maker at the commit,
      * the maker's wallet signs the request, the server validates and pins it (the request from the
      * server's own test fixtures), the maker sends list() with the server's arguments and fund() with
      * the fee and the CRITICAL award; and it waits for the site to count it.
      */
-    async openListing({ recipient, spec = {}, stake = {}, allowlist = [], maker: makerAddress = stack.accounts.maker, baseCommit = null, escrow = null, deploymentProof = null }) {
+    async openListing({ recipient, spec = {}, stake = {}, allowlist = [], maker: makerAddress = stack.accounts.maker, baseCommit = null, escrow = null, deploymentProof = null, fund = true }) {
       const { draftSpec, knownIssues } = await fromServer('test/helpers/fixtures.js');
       // a fresh commit by default, on the repository's main, whose file names the maker: a maker has
       // one listing per version that is not closed
@@ -229,9 +322,11 @@ export function chainOf(stack) {
       const maker = await as(makerAddress);
       const rc = await (await maker.list(params, listingCid, disputeCid, knownIssueIds)).wait();
       const listingId = events(rc, 'Listed')[0].args.listingId;
+      const artifactHash = (await sa.getListing(listingId)).artifactHash;
+      // `fund: false`: listed and left there, as a maker who has not funded it yet
+      if (!fund) return { listingId, view, artifactHash };
       const fee = await sa.feeDue(listingId);
       await (await maker.fund(listingId, fee, { value: fee + (escrow ?? BigInt(params.awards[3])) })).wait();
-      const artifactHash = (await sa.getListing(listingId)).artifactHash;
       await this.counted(artifactHash, listingId);
       return { listingId, view, artifactHash };
     },

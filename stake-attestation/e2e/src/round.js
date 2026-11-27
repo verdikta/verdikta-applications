@@ -5,7 +5,11 @@
 // safeguards (errata E7-E9): the valid HIGH is above the listing's confirmation size, so the keeper starts
 // the dispute panel's confirmation after the dispute window; a second gate-failing claim is appealed through
 // the tool and settles by the panel's result; and a claim the jury scores just short of valid is a narrow
-// INVALID whose bond comes back. The first failed check, a service that will not start, or any
+// INVALID whose bond comes back. Node P42 adds the maker's hold (StakeAttestation.hold): a claim is committed, the
+// maker holds the listing, a commit is then refused, the claim from before the hold is judged and paid from the held
+// listing's escrow as the first was, and only then is the fix published, validated, listed and funded, and the
+// listing rolled forward to it from the hold.
+// The first failed check, a service that will not start, or any
 // error ends the round: exit 1, with everything it started stopped and removed.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -16,11 +20,11 @@ import { formatEther } from 'ethers';
 import { codeReview } from './common.js';
 import { AggregatorRound, REAL_CONFIG } from './aggregatorRound.js';
 import { createBridge, evaluateOver } from './bridge.js';
-import { readPages } from './browser.js';
+import { readHoldPages, readPages } from './browser.js';
 import { startChain } from './chain.js';
 import {
-  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, moneyChecks, pageChecks,
-  noDocumentsTierChecks, recordChecks, requestChecks, servedRoundChecks, settlementChecks,
+  abstainEndChecks, abstainRunChecks, abstainedRoundChecks, cleanupVerdict, documentsListingChecks, documentsPackChecks, evidenceChecks, gateSettledChecks, heldSiteChecks, holdChecks, holdPageChecks, judgedEscrowChecks, lateNoAwardChecks, integrityPageChecks, integrityRecordChecks, integrityRunChecks, juryPathChecks, lateClaimChecks, laterRecordChecks, moneyChecks, pageChecks,
+  noDocumentsTierChecks, recordChecks, refusedCommitChecks, requestChecks, rolledFromHoldChecks, servedRoundChecks, settlementChecks,
 } from './checks.js';
 import {
   AWARDS_WEI, BOND_WEI, DOCUMENT_GLOBS, DOCUMENTS_EXPECTED, ESCROW_WEI, GIT_HOST, JURY_AVERAGE, JUROR_SCORES, JUSTIFIER, NARROW_AVERAGE, NARROW_SCORES, POC_MARKER, REPORT_MARKER, WINDOWS, claimFolder, draftSpec, makeRepository,
@@ -49,6 +53,9 @@ const DUPLICATE_VECTOR = Object.freeze([0n, 1000000n, 0n, 0n, 0n, 0n]);
 /** What the integrity claim's proof changes: it writes .gitignore, which the round's draft protects. */
 const INTEGRITY_CHECK = 'protectedPathsUnchanged';
 const CLAIM_STATES = ['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired', 'RoundFailed'];
+const LISTING_STATES = ['Listed', 'Open', 'Depleted', 'Rolled', 'Closed'];
+/** A listing's state as the client's pages word it (client/src/strings.js). */
+const STATE_WORDS = Object.freeze({ Open: 'open', Depleted: 'depleted' });
 const DISPUTE_RESULTS = ['None', 'Pending', 'Held', 'Overturned', 'NoVerdict'];
 const DISPUTE_KINDS = ['None', 'Maker', 'Confirmation', 'Appeal'];
 const EXPIRIES = ['None', 'Undisclosed', 'Unrevealed', 'RoundsFailed', 'SubmissionsRefused', 'RoundsUnanswered'];
@@ -297,8 +304,14 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const juror = (model, scores) => ({ scores: [...scores], justification: `Mock juror ${model}: the deposit over-credits.` });
     const script = {
       [panel[0].model]: juror(panel[0].model, JUROR_SCORES[0]),
-      // the valid claim's K jobs, one call each, then the narrow claim's (the last entry repeats): fixtures.js
-      [panel[1].model]: [...Array.from({ length: LISTING_JURY.K }, () => juror(panel[1].model, JUROR_SCORES[1])), juror(panel[1].model, NARROW_SCORES)],
+      // the valid claim's K jobs, one call each, then the narrow claim's K, then the claim committed before the maker's
+      // hold and the late claim filed on the listing on hold, which it answers as the first (the last entry repeats):
+      // fixtures.js
+      [panel[1].model]: [
+        ...Array.from({ length: LISTING_JURY.K }, () => juror(panel[1].model, JUROR_SCORES[1])),
+        ...Array.from({ length: LISTING_JURY.K }, () => juror(panel[1].model, NARROW_SCORES)),
+        juror(panel[1].model, JUROR_SCORES[1]),
+      ],
       [JUSTIFIER.model]: { reply: 'Mock justification: the panel finds the over-credit a HIGH.' },
     };
     // the dispute panel's other jurors answer as the claim panel's second: the confirmation's average is the claim's
@@ -986,6 +999,290 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     const narrowHistory = recordAfterNarrow.record.history;
     one('narrow.record.narrowInvalid', narrowHistory.narrowInvalid === '1' && narrowHistory.outcomes[0] === '3' && recordAfterNarrow.record.listings[0]?.narrowInvalidFloor === listingNow2.narrowInvalidFloor.toString() && !recordAfterNarrow.record.findings.some((f) => f.claimId === String(narrowId)), `narrow ${narrowHistory.narrowInvalid} within INVALID ${narrowHistory.outcomes[0]}, floor ${recordAfterNarrow.record.listings[0]?.narrowInvalidFloor}, not published`);
 
+    // ---------------------------------------------------------------- the maker's hold (node P42; StakeAttestation.hold)
+    // A hold is the first half of a roll forward: it stops new commits at once, before the fix is public, and leaves
+    // every pending claim alone. The maker's order is the round's: a claim is pending; hold; and only then the fix is
+    // published, validated, listed and funded, and the listing rolled forward to it (after the documents listing,
+    // below). Each step is read back from the chain and from the site.
+    /** A listing at one block: its state by name, its hold, whether it takes a commit or a late claim, and what a hold must leave as it was. */
+    const listingOnChain = async (id) => {
+      const at = { blockTag: await provider.getBlockNumber() };
+      const [l, heldAt, acceptsCommits, acceptsLateClaims] = await Promise.all([sa.getListing(id, at), sa.heldAt(id, at), sa.acceptsCommits(id, at), sa.acceptsLateClaims(id, at)]);
+      return {
+        state: LISTING_STATES[Number(l.state)], heldAt, acceptsCommits, acceptsLateClaims, pendingClaims: l.pendingClaims, headClaim: l.headClaim, tailClaim: l.tailClaim,
+        claimsCommitted: l.claimsCommitted, lateClaims: l.lateClaims, escrowWei: l.escrowWei, fundedUntil: l.fundedUntil, successor: l.successor, predecessor: l.predecessor,
+      };
+    };
+    const bigToString = (_k, v) => (typeof v === 'bigint' ? v.toString() : v);
+    /** Every field of a claim, its times and its state as the lens derives it, as one comparable value. */
+    const claimFields = async (id) => JSON.stringify([(await sa.getClaim(id)).toArray(true), (await sa.claimTimes(id)).toArray(), await claimStateOf(id)], bigToString);
+
+    stage('hold: a claim committed before it');
+    const heldDir = claimFolder(workDir, 'held');
+    const heldCommit = await tool('commit', heldDir, '--listing', String(listingId), '--yes');
+    toolDone('commit', heldCommit);
+    const heldId = BigInt(heldCommit.json.claimId);
+    const pendingAtHold = await listingOnChain(listingId);
+    one('held.commit.pending', pendingAtHold.pendingClaims === 1n && pendingAtHold.headClaim === heldId && (await claimStateOf(heldId)) === 'Committed' && (await sa.getClaim(heldId)).disclosedAt !== 0n, `claim ${heldId}: ${await claimStateOf(heldId)}, first of ${pendingAtHold.pendingClaims} pending, its fix window open`);
+    // A second claim the tool would take here: it goes as far as the acknowledgement, and nothing is sent without --yes.
+    // The same folder is what the tool refuses once the listing is on hold.
+    const onHoldDir = claimFolder(workDir, 'onHold');
+    const takenBeforeHold = await tool('commit', onHoldDir, '--listing', String(listingId));
+    one('held.commit.takenBeforeTheHold', takenBeforeHold.code === 3 && /--yes/.test(takenBeforeHold.stderr) && (await sa.getListing(listingId)).tailClaim === heldId, `exit ${takenBeforeHold.code}: before the hold the tool prices this claim and asks for --yes: ${takenBeforeHold.stderr.slice(-200)}`);
+    const heldClaimBeforeHold = await claimFields(heldId);
+
+    stage('hold: the maker holds the listing');
+    const beforeHold = await listingOnChain(listingId);
+    const holdReceipt = await mined(makerSa.hold(listingId));
+    const heldEvent = parsedLogs(holdReceipt).find((e) => e.name === 'Held');
+    const afterHold = await listingOnChain(listingId);
+    const heldAt = afterHold.heldAt;
+    expect(holdChecks('held', {
+      event: heldEvent ? { listingId: heldEvent.args.listingId, heldAt: heldEvent.args.heldAt, from: holdReceipt.from, blockTimestamp: (await provider.getBlock(holdReceipt.blockNumber)).timestamp } : null,
+      maker: maker.address,
+      before: beforeHold,
+      after: afterHold,
+    }));
+    one('held.hold.claimUntouched', (await claimFields(heldId)) === heldClaimBeforeHold, 'the claim committed before the hold is field for field what it was: its fix window, its place in commit order, its times');
+    // the site: on hold since that time, not live, no feed entry, the claim still pending, and the badge says the hold
+    const siteOnHold = await settleOutcome(async () => {
+      const record = await recordView();
+      const feed = (await server.get('/api/feed')).json;
+      const said = record.labels?.listings?.[String(listingId)]?.heldAt === Number(heldAt);
+      const left = Array.isArray(feed.listings) && !feed.listings.some((l) => l.listingId === String(listingId));
+      return said && left ? { record, feed } : null;
+    }, 'waiting for the site to say the listing is on hold');
+    expect(heldSiteChecks('held', { ...siteOnHold, listingId, heldAt, state: afterHold.state, pending: 1 }));
+    // the pages: the listing's own reads the chain, the record and the feed read the site
+    const holdPages = await readHoldPages(chromium, client.url, { artifactHash, listingId, onBrowser: (b) => closers.push(() => b.close()) });
+    expect(holdPageChecks('held', holdPages, { heldAt, state: STATE_WORDS[afterHold.state] }));
+
+    stage('hold: a commit is refused');
+    // By what a refusal leaves, and not by which error code it names or by any prose: no claim, nothing pinned, nothing
+    // sent, the listing's counts and queue as they were.
+    const commitCounts = async () => {
+      const l = await sa.getListing(listingId);
+      return {
+        pins: ipfs.pins.length, nonce: await provider.getTransactionCount(hunter.address, 'pending'), claimCount: await sa.claimCount(),
+        claimsCommitted: l.claimsCommitted, pendingClaims: l.pendingClaims, lateClaims: l.lateClaims, tailClaim: l.tailClaim, acceptsCommits: await sa.acceptsCommits(listingId),
+      };
+    };
+    // An unrelated failure would leave the same things untouched. So this one invocation reaches the chain through a
+    // recording proxy, and what it asked is read back, in order: whether this listing takes a commit (the
+    // acceptsCommits view, or the hold's own), the chain's answer, that it sent no transaction, and that after the
+    // refusing answer it asked nothing only a commit that goes ahead needs (checks.js refusedCommitChecks).
+    const hunterRpc = await owned(h.startRecordingProxy(chain.rpcUrl), (p) => p.close());
+    const watchedTool = createTool({ chain: { ...chain, rpcUrl: hunterRpc.url }, ipfs, runnerUrl: hunterRunner.url, runnerToken, devKey, log });
+    const beforeRefusal = await commitCounts();
+    const refusedCommit = await watchedTool('commit', onHoldDir, '--listing', String(listingId), '--yes');
+    const toolRpc = hunterRpc.post('/');
+    // this listing's eligibility, by the exact call: the view asked, and what the chain said
+    const eligibility = new Map(['acceptsCommits', 'heldAt'].map((name) => [sa.interface.encodeFunctionData(name, [listingId]), name]));
+    const answerOf = (name, response) => (typeof response?.result === 'string' && response.result !== '0x' ? sa.interface.decodeFunctionResult(name, response.result)[0] : null);
+    // each JSON-RPC call of the invocation, in the order the node answered; a batch's calls share its number
+    const toolCalls = toolRpc.flatMap((c, batch) => {
+      const requests = Array.isArray(c.request) ? c.request : [c.request];
+      const responses = Array.isArray(c.response) ? c.response : [c.response];
+      return requests.filter(Boolean).map((request) => {
+        const call = { method: request.method, batch };
+        const to = request.params?.[0];
+        if (request.method !== 'eth_call' || String(to?.to).toLowerCase() !== chain.contract.toLowerCase()) return call;
+        const data = String(to.data ?? to.input ?? '');
+        call.view = sa.interface.getFunction(data.slice(0, 10))?.name ?? data.slice(0, 10);
+        const asks = eligibility.get(data);
+        if (asks) Object.assign(call, { asks, answer: answerOf(asks, responses.find((r) => r?.id === request.id)) });
+        return call;
+      });
+    });
+    const asked = { calls: toolCalls };
+    one('held.commit.toolWasWatched', toolRpc.length > 0 && toolRpc.every((c) => c.status === 200) && toolCalls.every((c) => typeof c.method === 'string'), `${toolCalls.length} JSON-RPC calls of this invocation recorded: ${toolCalls.map((c) => c.asks ?? c.view ?? c.method).join(', ')}`);
+    expect(refusedCommitChecks('held', { run: refusedCommit, before: beforeRefusal, after: await commitCounts(), asked }));
+
+    stage('hold: a late claim is taken');
+    // A finding can still be filed on a listing on hold, as a late claim (decision D6): through the tool's
+    // commit --late (node P43), in a folder of its own. Without --yes the tool prints its terms and sends nothing.
+    // With it the claim is taken by lateClaim: behind the claim from before the hold in the same queue, never one of
+    // the listing's pending claims, with the escrow untouched and the listing on hold as it was.
+    const lateDir = claimFolder(workDir, 'late');
+    const beforeLateTerms = await commitCounts();
+    const lateTerms = await tool('commit', lateDir, '--listing', String(listingId), '--late');
+    const afterLateTerms = await commitCounts();
+    one('held.late.asksYes', lateTerms.code === 3 && !lateTerms.json?.claimId && afterLateTerms.nonce === beforeLateTerms.nonce && afterLateTerms.claimCount === beforeLateTerms.claimCount && afterLateTerms.lateClaims === beforeLateTerms.lateClaims,
+      `exit ${lateTerms.code} without --yes; the hunter's nonce ${beforeLateTerms.nonce} then ${afterLateTerms.nonce}, claims on the contract ${beforeLateTerms.claimCount} then ${afterLateTerms.claimCount}, late claims ${beforeLateTerms.lateClaims} then ${afterLateTerms.lateClaims}`);
+    const beforeLate = await listingOnChain(listingId);
+    const lateCommit = await tool('commit', lateDir, '--listing', String(listingId), '--late', '--yes');
+    const lateId = /^[1-9]\d*$/.test(String(lateCommit.json?.claimId ?? '')) ? BigInt(lateCommit.json.claimId) : 0n;
+    const afterLate = await listingOnChain(listingId);
+    expect(lateClaimChecks('held', {
+      run: lateCommit,
+      claimId: lateId,
+      claim: lateId > 0n ? await sa.getClaim(lateId) : null,
+      events: { late: (await eventOf('LateClaim', lateId)).length, committed: (await eventOf('Committed', lateId)).length },
+      before: beforeLate,
+      after: afterLate,
+      earlier: heldId,
+      listingId,
+    }));
+    // the tool says which kind it filed, by the chain's word
+    one('held.late.toolSaysLate', lateCommit.json?.late === true, `the tool's answer: late ${lateCommit.json?.late}`);
+
+    stage('hold: the earlier claim is judged and paid as before');
+    // The jury's script is a sequence by call (fixtures.js): the second juror answers this claim as it answered the
+    // first only if it has answered the two claims before it and nothing else.
+    const secondJurorCalls = providerCalls().filter((c) => c.model === panel[1].model).length;
+    one('held.jury.scriptInStep', secondJurorCalls === 2 * REAL_CONFIG.k, `${panel[1].model} has answered ${secondJurorCalls} calls, ${2 * REAL_CONFIG.k} expected: the valid claim's K and the narrow claim's K`);
+    // the maker's own moves on a claim are open on a listing on hold: the release
+    await makerRelease(heldId);
+    one('held.release.released', (await eventOf('Released', heldId)).length === 1, 'Released on the chain, with the listing on hold');
+    const beforeHeld = counts();
+    const heldReveal = await tool('reveal', heldDir, '--yes');
+    toolDone('reveal', heldReveal);
+    const hunterAfterHeldReveal = await balanceAfterTx(hunter, heldReveal.json.tx);
+    const makerBeforeHeldJudge = await balanceAfterTx(maker, heldReveal.json.tx);
+    const heldRound = await roundOf(heldId);
+    const heldClaim = await sa.getClaim(heldId);
+    expect(requestChecks('held', heldRound, {
+      listingCid: view.list.listingCid,
+      bcid: heldClaim.bcid,
+      priorBcids: [validFinal.bcid],
+      requestedClass: codeReview.CODE_CLASSES['code-standard'].classId,
+      oracle: view.list.params.oracle,
+      disclosure: { parsed: parsedLine(heldRound.addendum), archiveSha256: heldClaim.archiveHash, ciphertextSha256: heldClaim.ciphertextSha256, ciphertextCid: heldClaim.ciphertextCid },
+    }));
+    expect(servedRoundChecks('held', heldRound, { vector: JURY_AVERAGE }));
+    const heldPath = since(beforeHeld);
+    one('held.jury.reached', heldPath.runnerCalls.length === 1 && heldPath.runnerCalls[0].response?.outcome === 'definitive' && heldPath.aiCalls.length === REAL_CONFIG.k && heldPath.aiCalls.every((c) => c.status === 200), `${heldPath.runnerCalls.length} run(s), ${heldPath.aiCalls.length} AI Node calls for K = ${REAL_CONFIG.k} jobs`);
+    await stateIs(heldId, 'Judged');
+    const heldJudged = (await eventOf('Judged', heldId))[0];
+    one('held.judged.outcome', OUTCOMES[Number(heldJudged.args.outcome)] === 'HIGH', OUTCOMES[Number(heldJudged.args.outcome)]);
+    // The award is above the listing's confirmation size, as the first HIGH was: after the dispute window the keeper
+    // starts the dispute panel's round, the held listing's escrow pays it, the panel holds it, and it settles.
+    const escrowBeforeHeldConfirm = (await sa.getListing(listingId)).escrowWei;
+    // and that balance is the one from before this claim's release (held to the hold's by held.late.escrowUntouched):
+    // a debit while the claim was released, revealed or judged would be on both sides of the payout's check below
+    expect(judgedEscrowChecks('held', { baseline: afterLate.escrowWei, judged: escrowBeforeHeldConfirm }));
+    await chain.advance(WINDOWS.dispute + 1);
+    const heldConfirm = await settleOutcome(async () => (await eventOf('ConfirmationRequested', heldId))[0] ?? null, 'waiting for the keeper to call confirm on the listing on hold');
+    one('held.confirm.byKeeper', (await senderOf(heldConfirm)) === chain.accounts.keeper.address, `confirm from ${await senderOf(heldConfirm)}`);
+    await stateIs(heldId, 'Settled');
+    const heldPanel = (await eventOf('DisputeJudged', heldId))[0];
+    one('held.confirm.held', DISPUTE_RESULTS[Number(heldPanel?.args.result)] === 'Held' && OUTCOMES[Number(heldPanel?.args.outcome)] === 'HIGH', `${DISPUTE_RESULTS[Number(heldPanel?.args.result)]}: ${OUTCOMES[Number(heldPanel?.args.outcome)]}`);
+    const heldSettled = (await eventOf('Settled', heldId))[0];
+    const heldRefund = (await eventOf('ConfirmationRefunded', heldId))[0];
+    const heldConfirmSpent = heldConfirm.args.prepayWei - (heldRefund ? heldRefund.args.toOwedWei + heldRefund.args.toEscrowWei + heldRefund.args.toMakerWei : 0n);
+    const heldFinal = await sa.getClaim(heldId);
+    expect(settlementChecks('held', {
+      state: await claimStateOf(heldId),
+      outcome: OUTCOMES[Number(heldFinal.outcome)],
+      expectedOutcome: 'HIGH',
+      finalizeFrom: await senderOf(heldJudged),
+      settleFrom: await senderOf(heldSettled),
+      keeper: chain.accounts.keeper.address,
+      vector: heldFinal.vector.map((v) => BigInt(v)),
+      expectedVector: [...JURY_AVERAGE],
+    }));
+    expect(moneyChecks('held', [
+      { name: 'hunter', before: hunterAfterHeldReveal, after: await balance(hunter), expected: AWARDS_WEI.HIGH + BOND_WEI + (heldRound.required - heldRound.spent) },
+      { name: 'makerUntouched', before: makerBeforeHeldJudge, after: await balance(maker), expected: 0n },
+    ]));
+    // paid in full from the held listing's escrow, which also paid the confirmation; and the listing is on hold as it was
+    const afterHeldPaid = await listingOnChain(listingId);
+    one('held.paid.fromTheEscrow', heldFinal.paidWei === AWARDS_WEI.HIGH && heldFinal.owedWei === 0n && afterHeldPaid.escrowWei === escrowBeforeHeldConfirm - heldConfirmSpent - AWARDS_WEI.HIGH, `paid ${heldFinal.paidWei}, owed ${heldFinal.owedWei}; escrow ${escrowBeforeHeldConfirm} -> ${afterHeldPaid.escrowWei}, the confirmation cost ${heldConfirmSpent}`);
+    // an award can leave the escrow below the top award: the state is then Depleted, and it is a hold all the same
+    const stateAfterHeld = afterHeldPaid.escrowWei >= AWARDS_WEI.CRITICAL ? 'Open' : 'Depleted';
+    one('held.paid.stillOnHold', afterHeldPaid.heldAt === heldAt && afterHeldPaid.acceptsCommits === false && afterHeldPaid.pendingClaims === 0n && afterHeldPaid.state === stateAfterHeld, `heldAt ${afterHeldPaid.heldAt}, ${afterHeldPaid.state} with ${afterHeldPaid.escrowWei} wei of escrow, ${afterHeldPaid.pendingClaims} pending`);
+    const recordAfterHeld = await settleOutcome(async () => {
+      const r = await recordView();
+      return r.record?.history?.outcomes?.[4] === '2' ? r : null;
+    }, 'waiting for the record to show the finding paid on the listing on hold');
+    const heldFinding = recordAfterHeld.record.findings.find((f) => f.claimId === String(heldId));
+    const heldLabels = recordAfterHeld.labels?.listings?.[String(listingId)];
+    one('held.record.finding', heldFinding?.outcome === 'HIGH' && heldFinding.paidWei === AWARDS_WEI.HIGH.toString() && heldFinding.owedWei === '0' && recordAfterHeld.record.history.pending === '0', `claim ${heldId}: ${heldFinding?.outcome}, paid ${heldFinding?.paidWei}, owed ${heldFinding?.owedWei}; pending ${recordAfterHeld.record.history.pending}`);
+    one('held.record.stillOnHold', heldLabels?.heldAt === Number(heldAt) && heldLabels.live === false && recordAfterHeld.record.listings.find((l) => l.listingId === String(listingId))?.state === stateAfterHeld, `labels.heldAt ${heldLabels?.heldAt}, live ${heldLabels?.live}`);
+
+    stage('hold: the late claim is judged and recorded as found later');
+    // The late claim waited behind the claim from before the hold: with that one settled it is first, and from here
+    // it takes a claim's own path (the maker's release, the reveal, the runner and the jury, the dispute window, the
+    // keeper's settle), with the listing on hold throughout. What differs is what the contract says of a late claim:
+    // no award at any class, so no confirmation is asked, the escrow is untouched and the bond comes back; and it is
+    // counted under the record's late claims and published as found later, never among the stake's own claims.
+    one('held.late.waitedItsTurn', (await listingOnChain(listingId)).headClaim === lateId && (await claimStateOf(lateId)) === 'Committed', `claim ${lateId} is ${await claimStateOf(lateId)} and first in the queue once claim ${heldId} is settled`);
+    // the second juror's script is a sequence by call: it answers this claim as the first only after the three before it
+    const jurorCallsBeforeLate = providerCalls().filter((c) => c.model === panel[1].model).length;
+    one('held.late.jury.scriptInStep', jurorCallsBeforeLate === 3 * REAL_CONFIG.k, `${panel[1].model} has answered ${jurorCallsBeforeLate} calls, ${3 * REAL_CONFIG.k} expected: the valid claim's K, the narrow claim's K and the K of the claim from before the hold`);
+    // The stake's own claims as the site counted them before the late claim was filed (a server that counted a late
+    // claim among them at filing would show here), and its verdicts as they are after the earlier claim settled.
+    const claimsBeforeLate = siteOnHold.record.record.history.claims;
+    const outcomesBeforeLate = recordAfterHeld.record.history.outcomes;
+    await makerRelease(lateId);
+    one('held.late.released', (await eventOf('Released', lateId)).length === 1, 'Released on the chain: the maker\'s own move on a late claim, with the listing on hold');
+    const beforeLateRun = counts();
+    const lateReveal = await tool('reveal', lateDir, '--yes');
+    toolDone('reveal', lateReveal);
+    const hunterAfterLateReveal = await balanceAfterTx(hunter, lateReveal.json.tx);
+    const makerBeforeLateJudge = await balanceAfterTx(maker, lateReveal.json.tx);
+    const lateRound = await roundOf(lateId);
+    const lateRevealed = await sa.getClaim(lateId);
+    // the request is a claim's: the listing's archive, this claim's, and the two valid findings before it, oldest first
+    expect(requestChecks('late', lateRound, {
+      listingCid: view.list.listingCid,
+      bcid: lateRevealed.bcid,
+      priorBcids: [validFinal.bcid, heldFinal.bcid],
+      requestedClass: codeReview.CODE_CLASSES['code-standard'].classId,
+      oracle: view.list.params.oracle,
+      disclosure: { parsed: parsedLine(lateRound.addendum), archiveSha256: lateRevealed.archiveHash, ciphertextSha256: lateRevealed.ciphertextSha256, ciphertextCid: lateRevealed.ciphertextCid },
+    }));
+    expect(servedRoundChecks('late', lateRound, { vector: JURY_AVERAGE }));
+    const latePath = since(beforeLateRun);
+    one('held.late.jury.reached', latePath.runnerCalls.length === 1 && latePath.runnerCalls[0].response?.outcome === 'definitive' && latePath.aiCalls.length === REAL_CONFIG.k && latePath.aiCalls.every((c) => c.status === 200), `${latePath.runnerCalls.length} run(s), ${latePath.aiCalls.length} AI Node calls for K = ${REAL_CONFIG.k} jobs`);
+    await stateIs(lateId, 'Judged');
+    const lateJudged = (await eventOf('Judged', lateId))[0];
+    one('held.late.judged.outcome', OUTCOMES[Number(lateJudged.args.outcome)] === 'HIGH', OUTCOMES[Number(lateJudged.args.outcome)]);
+    const lateJudgedListing = await listingOnChain(listingId);
+    await chain.advance(WINDOWS.dispute + 1);
+    await stateIs(lateId, 'Settled');
+    const lateSettled = (await eventOf('Settled', lateId))[0];
+    const lateFinal = await sa.getClaim(lateId);
+    expect(settlementChecks('late', {
+      state: await claimStateOf(lateId),
+      outcome: OUTCOMES[Number(lateFinal.outcome)],
+      expectedOutcome: 'HIGH',
+      finalizeFrom: await senderOf(lateJudged),
+      settleFrom: await senderOf(lateSettled),
+      keeper: chain.accounts.keeper.address,
+      vector: lateFinal.vector.map((v) => BigInt(v)),
+      expectedVector: [...JURY_AVERAGE],
+    }));
+    // No award rides on a late claim. The same HIGH that waited for the dispute panel's confirmation and was paid from
+    // the escrow, twice, asks no confirmation here and moves no wei of the escrow: the bond and the unspent prepay
+    // come back to the hunter, and nothing else moves.
+    const afterLateSettle = await listingOnChain(listingId);
+    one('held.late.noConfirmation', (await eventOf('ConfirmationRequested', lateId)).length === 0 && (await eventOf('DisputeJudged', lateId)).length === 0, `${(await eventOf('ConfirmationRequested', lateId)).length} confirmation(s) asked for claim ${lateId}`);
+    // the baseline is the escrow once the earlier claim was paid, before this claim's release: a debit while it was
+    // revealed or judged shows at Judged, and one at the settle shows at Settled
+    expect(lateNoAwardChecks('held', { paidWei: lateFinal.paidWei, owedWei: lateFinal.owedWei, baseline: afterHeldPaid.escrowWei, judged: lateJudgedListing.escrowWei, settled: afterLateSettle.escrowWei }));
+    expect(moneyChecks('late', [
+      { name: 'bondBack', before: hunterAfterLateReveal, after: await balance(hunter), expected: BOND_WEI + (lateRound.required - lateRound.spent) },
+      { name: 'makerUntouched', before: makerBeforeLateJudge, after: await balance(maker), expected: 0n },
+    ]));
+    one('held.late.settled.stillOnHold', afterLateSettle.heldAt === heldAt && afterLateSettle.acceptsCommits === false && afterLateSettle.state === stateAfterHeld && afterLateSettle.pendingClaims === 0n && afterLateSettle.headClaim === 0n, `heldAt ${afterLateSettle.heldAt}, ${afterLateSettle.state}, ${afterLateSettle.pendingClaims} pending, first in the queue ${afterLateSettle.headClaim}`);
+    // the site's record: one late claim, a HIGH, none expired; the stake's own claims and verdicts as they were before
+    // it; and the finding published as found later, with no wei paid or owed
+    const recordAfterLate = await settleOutcome(async () => {
+      const r = await recordView();
+      return r.record?.history?.lateOutcomes?.[4] === '1' ? r : null;
+    }, 'waiting for the record to count the late claim');
+    expect(laterRecordChecks('held', {
+      record: recordAfterLate,
+      lateClaims: 1,
+      lateOutcomes: [0, 0, 0, 0, 1, 0],
+      claims: claimsBeforeLate,
+      outcomes: outcomesBeforeLate,
+      findings: [{ claimId: String(lateId), outcome: 'HIGH' }],
+    }));
+    const lateLabels = recordAfterLate.labels?.listings?.[String(listingId)];
+    one('held.late.record.stillOnHold', lateLabels?.heldAt === Number(heldAt) && lateLabels.live === false, `labels.heldAt ${lateLabels?.heldAt}, live ${lateLabels?.live}`);
+
     // ---------------------------------------------------------------- a listing that names its documents (node P20)
     // The same repository at a commit that adds the maker's documents, listed through the site with stake.documents:
     // the real builder chooses them as the runner does and reports it, and the hunter's check on that listing gets
@@ -1009,6 +1306,73 @@ export async function runRound({ log = (s) => process.stderr.write(`${s}\n`), br
     expect(documentsPackChecks('documents', { check: docsCheck, runnerAnswer: docsRun?.response, sent: docsRun?.request, globs: [...DOCUMENT_GLOBS], files: DOCUMENTS_EXPECTED.read, omitted: DOCUMENTS_EXPECTED.omitted }));
     // as after the first listing: the image lives in the registry only
     await removeRunImages(h, docker, instance);
+
+    // ---------------------------------------------------------------- the fix, and the roll forward from the hold (node P42)
+    // Only now, with the old listing on hold, is the fix published: until this line the commit exists nowhere, and the
+    // public repository's main is the commit it was at when the listing went on hold. Then the maker's order: the
+    // fixed commit is validated through the site (the real builder fetches it from the repository), listed and funded,
+    // and the old listing rolls forward to it.
+    stage('hold: the fix is published, validated, listed and funded');
+    const mainBeforeFix = repository.mirrorHead();
+    const fixCommit = repository.publishFix();
+    one('held.fix.publishedAfterTheHold', mainBeforeFix === repository.documentsCommit && repository.mirrorHead() === fixCommit && ![repository.baseCommit, repository.documentsCommit].includes(fixCommit) && (await sa.heldAt(listingId)) === heldAt,
+      `the repository's main was ${mainBeforeFix} from before the hold until now, and is ${repository.mirrorHead()} with the fix; the listing has been on hold since ${heldAt}`);
+    const fixRes = await submit(maker, { spec: draftSpec({ repo: repository.url, baseCommit: fixCommit, disclosureKey: disclosure.recipient }), allowlist: [], maker: maker.address });
+    one('held.fix.accepted', fixRes.status === 202, `HTTP ${fixRes.status}`);
+    const fixView = await follow((await fixRes.json()).id);
+    const fixSteps = (fixView.validationReport?.steps ?? []).filter((x) => x.status === 'ok').map((x) => x.name);
+    one('held.fix.validated', fixView.status === 'ready' && ['control', 'fetch', 'build', 'listingCheck'].every((x) => fixSteps.includes(x)) && fixView.list?.params?.artifact?.baseCommit === fixCommit,
+      JSON.stringify({ status: fixView.status, steps: fixSteps, commit: fixView.list?.params?.artifact?.baseCommit, refusals: fixView.validationReport?.refusals, error: fixView.error }).slice(0, 500));
+    // It is the fix: the proof that was paid twice on the old version, checked against this listing's archive by the
+    // real runner, no longer fails where it did. Its test passes at the fixed commit, so it reproduces nothing.
+    const fixArchive = path.join(workDir, 'fixed-listing.zip');
+    fs.writeFileSync(fixArchive, archive(fixView.list.listingCid));
+    const fixKey = fixView.devTrust?.keys?.[0]?.publicKey;
+    const fixTool = fixKey === devKey ? tool : createTool({ chain, ipfs, runnerUrl: hunterRunner.url, runnerToken, devKey: fixKey, log });
+    const fixedCheck = await fixTool('check', claimFolder(workDir, 'fixed'), '--listing-archive', fixArchive);
+    const fixedGates = fixedCheck.json?.forecast?.gates ?? [];
+    const gateOf = (name) => fixedGates.find((g) => g.name === name)?.status;
+    one('held.fix.proofNoLongerFails', fixedCheck.code === 1 && fixedCheck.json?.forecast?.verdict === 'fail' && gateOf('reproduces') === 'fail' && gateOf('testPathsOnly') === 'pass' && gateOf('build') === 'pass',
+      `the old proof against the fixed version: ${fixedCheck.json?.forecast?.verdict}; ${fixedGates.map((g) => `${g.name} ${g.status}`).join(', ') || fixedCheck.stderr.slice(0, 300)}`);
+    // as after the other listings: the image lives in the registry only
+    await removeRunImages(h, docker, instance);
+    const successorListed = parsedLogs(await mined(makerSa.list(fixView.list.params, fixView.list.listingCid, fixView.list.disputeCid, fixView.list.knownIssueIds))).find((e) => e.name === 'Listed');
+    const successorId = successorListed.args.listingId;
+    const successorHash = successorListed.args.artifactHash;
+    const successorFee = await sa.feeDue(successorId);
+    await mined(makerSa.fund(successorId, successorFee, { value: successorFee + ESCROW_WEI }));
+    await settleOutcome(async () => {
+      const { json } = await server.get('/api/feed');
+      return json.listings?.some((l) => l.listingId === String(successorId)) ? json : null;
+    }, 'waiting for the feed to count the fixed version');
+    one('held.fix.listed', successorListed.args.baseCommit === fixCommit && successorHash === fixView.artifactHash && successorHash !== artifactHash, `listing ${successorId} is of ${successorListed.args.baseCommit}, artifact hash ${successorHash}`);
+
+    stage('hold: roll forward to the fixed version');
+    const beforeRoll = await listingOnChain(listingId);
+    one('held.roll.fromOnHold', beforeRoll.heldAt === heldAt && beforeRoll.state === stateAfterHeld && beforeRoll.pendingClaims === 0n, `the old listing is ${beforeRoll.state} and on hold since ${beforeRoll.heldAt} when it rolls`);
+    const rollReceipt = await mined(makerSa.rollForward(listingId, successorId));
+    const rolledEvent = parsedLogs(rollReceipt).find((e) => e.name === 'RolledForward');
+    const rolledOnChain = { old: await listingOnChain(listingId), successor: await listingOnChain(successorId) };
+    const rolledSite = await settleOutcome(async () => {
+      const record = await recordView();
+      const { json: successorRecord } = await server.get(`/api/records/${successorHash}`);
+      const { json: feed } = await server.get('/api/feed');
+      const rolled = record.record?.listings?.find((l) => l.listingId === String(listingId))?.state === 'Rolled';
+      const linked = successorRecord?.record?.listings?.find((l) => l.listingId === String(successorId))?.predecessor === String(listingId);
+      return rolled && linked ? { record, successorRecord, feed } : null;
+    }, 'waiting for the site to say the roll forward');
+    expect(rolledFromHoldChecks('held', {
+      event: rolledEvent ? { from: rollReceipt.from, successorListingId: rolledEvent.args.successorListingId } : null,
+      maker: maker.address,
+      listingId,
+      successorId,
+      artifactHash,
+      successorHash,
+      ...rolledOnChain,
+      ...rolledSite,
+    }));
+    // the version the record now names as the one that fixed this one is the commit published after the hold
+    one('held.roll.toTheFix', rolledEvent?.args.successorArtifactHash === successorHash && rolledSite.successorRecord.artifact?.baseCommit === fixCommit, `rolled to artifact hash ${rolledEvent?.args.successorArtifactHash}, the record of commit ${rolledSite.successorRecord.artifact?.baseCommit}`);
 
     // ---------------------------------------------------------------- nothing live
     stage('nothing live');

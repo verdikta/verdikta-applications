@@ -283,11 +283,13 @@ contract StakeAttestationLens {
     }
 
     /// @notice Whether lateClaim (decision D6) takes a claim on the listing now: its stake ended,
-    ///         Rolled, or Closed after it opened. commitPrice quotes what it takes, as for a commit.
+    ///         Rolled, or Closed after it opened; or it is on hold (P39: host.heldAt is not 0).
+    ///         ClaimLogic.commit's rule. commitPrice quotes what it takes, as for a commit.
     function acceptsLateClaims(uint256 listingId) external view returns (bool) {
         StakeAttestation.Listing memory l = host.getListing(listingId);
         return l.state == StakeAttestation.ListingState.Rolled
-            || (l.state == StakeAttestation.ListingState.Closed && l.openedAt != 0);
+            || (l.state == StakeAttestation.ListingState.Closed && l.openedAt != 0)
+            || host.heldAt(listingId) != 0;
     }
 
     // ------------------------------------------------------------------
@@ -375,4 +377,26 @@ contract StakeAttestationLens {
     function _liveFee(StakeAttestation.Listing memory l) private view returns (uint256) {
         return ClaimRules.roundFee(verdikta, l.oracle.maxOracleFee, l.oracle.minOracleFee, l.oracle.withBeacons, l.oracle.jury.K, l.oracle.jury.P);
     }
+
+    // ---------------------------------------------------------------- listing views moved from the host
+    // (EIP-170, when the maker's hold came in: P39 merged into the v2 contracts). Same answers as
+    // before, through the host's getters: getListing reverts "bad listingId" for an unknown id.
+
+    /// @notice How many listings an artifact hash has (listingsByHash's length).
+    function listingCountByHash(bytes32 artifactHash) external view returns (uint256) {
+        return host.listingsByHash(artifactHash).length;
+    }
+
+    /// @notice Whether the paid listing period has ended (false before the listing opens).
+    function isLapsed(uint256 listingId) external view returns (bool) {
+        uint64 until = host.getListing(listingId).fundedUntil;
+        return until != 0 && block.timestamp >= until;
+    }
+
+    /// @notice The fee the next fund() charges: the listing fee while Listed, else 0. Pass it
+    ///         as fund's expectedFeeWei.
+    function feeDue(uint256 listingId) external view returns (uint256) {
+        return host.getListing(listingId).state == StakeAttestation.ListingState.Listed ? host.listingFeeWei() : 0;
+    }
+
 }

@@ -108,3 +108,40 @@ export function withTimeout(promise, ms, what = 'the read') {
   const late = new Promise((_, reject) => { t = setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms); });
   return Promise.race([promise, late]).finally(() => clearTimeout(t));
 }
+
+/** After a page was told of a block: how many reads of the listing it makes to reach it, and how far apart. */
+export const AFTER_TX_READS = 4;
+export const AFTER_TX_WAIT_MS = 2000;
+
+/**
+ * Reads until a read is of `minBlock` or a later block: the floor of a listing's page (lib/pageSays.js). The site's
+ * reader may trail the node a wallet sent through, and a read from before `minBlock` says nothing of what happened
+ * there, so it is never the one returned as reaching it. A read that fails, or takes longer than `readTimeoutMs`, is
+ * tried again; one that timed out goes on in the background, and whatever it answers later is taken by nothing. After
+ * `tries` reads the caller is told that none reached the block, and says so on the page.
+ * @template {{ block: number }} T
+ * @param {() => Promise<T|null>} read - one read, with the block it is of; "nothing is there" is an answer with its
+ *        block like any other, since null says nothing of any block and is tried again
+ * @param {number} minBlock
+ * @param {object} [o]
+ * @param {() => boolean} [o.live] - false once the answer is no longer wanted: no further read starts
+ * @returns {Promise<{ read: T|null, reached: boolean }>} `read`: the first read of the block or a later one;
+ *          otherwise, with `reached` false, the newest that answered, or null
+ */
+export async function readFrom(read, minBlock, {
+  tries = AFTER_TX_READS, waitMs = AFTER_TX_WAIT_MS, readTimeoutMs = READ_TIMEOUT_MS, sleep = (ms) => abortableSleep(ms), live = () => true,
+} = {}) {
+  let newest = null;
+  for (let i = 0; i < tries; i += 1) {
+    if (i) await sleep(waitMs);
+    if (!live()) break;
+    try {
+      const got = await withTimeout(Promise.resolve().then(read), readTimeoutMs);
+      if (got && got.block >= minBlock) return { read: got, reached: true };
+      if (got && (!newest || got.block >= newest.block)) newest = got;
+    } catch {
+      // a read that failed is tried again
+    }
+  }
+  return { read: newest, reached: false };
+}

@@ -38,7 +38,8 @@ const RECORD_BEFORE = [
   'artifactHash', 'block', 'record', 'labels', 'history', 'integrity', 'fresh', 'staleReason', 'artifact', 'fork', 'control', 'documents',
   'notCounted', 'badge',
 ];
-const RELATED_KEYS = ['listingId', 'artifactHash', 'artifact', 'state', 'lapsed', 'counted', 'page'].sort();
+// heldAt came with the maker's hold (node P40; test/hold.test.js), added the same way: every field before it as it was
+const RELATED_KEYS = ['listingId', 'artifactHash', 'artifact', 'state', 'lapsed', 'heldAt', 'counted', 'page'].sort();
 
 const byId = (a, b) => (BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0);
 const hex = (bytes) => `0x${Buffer.from(bytes).toString('hex')}`;

@@ -24,7 +24,12 @@ import { DEFAULT_JURY_PRESET_KEY, juryPresetByKey, formatJury } from '../utils/j
 // The jury a request asks for when App passes none: Small, 6/5/4/3, 300 s.
 const DEFAULT_JURY = juryPresetByKey(DEFAULT_JURY_PRESET_KEY).jury;
 
-// Default query package CID for example/testing
+// Default query package CID for example/testing.
+// TODO: this archive's jury is gpt-4o + claude-3-5-sonnet-20241022, which class 128
+// no longer lists (the Anthropic model is retired), so upgraded arbiters do not
+// answer it. The corrected package is in example-frontend/default-query-package/;
+// it is not pinned yet. Pin it with `node scripts/default-query-package.js pin`
+// (in example-frontend/server) and put the CID it prints here.
 const DEFAULT_QUERY_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
 
 // Helper function to get the first CID from a comma-separated list

@@ -6,11 +6,12 @@
 // page says so plainly and offers a re-check.
 import { formatEth } from '../src/lib/format.js';
 import { STRINGS, fill } from '../src/strings.js';
-import { archiveBytes, disclosure, expect, installWallet, shot, test } from './support/fixtures.js';
+import { archiveBytes, disclosure, expect, expectCommitOffer, installWallet, shot, test } from './support/fixtures.js';
 import { field } from './support/listingForm.js';
 import { wordingProblems } from './support/wording.js';
 
 const C = STRINGS.claim;
+const O = STRINGS.offer;
 const at = (seconds) => new Date(Number(seconds) * 1000).toISOString().replace('.000Z', 'Z');
 
 async function openClaim(page, stack, claimId, account = stack.accounts.maker) {
@@ -161,7 +162,16 @@ test.describe('maker actions', () => {
     expect(options).not.toContain(String(elsewhere.listingId));
     expect(options).not.toContain(String(first.listingId));
     await pick.selectOption(String(successor.listingId));
-    await shot(page, 'roll-forward', { target: page.getByTestId('roll-forward') });
+    // nodes P38 and P42: what a maker does before publishing a fix, above the picker; each line is one line of the
+    // page's text. This contract has the hold, so the lines are the hold's order; e2e/hold.spec.js has the page against a
+    // contract without one, where P38's three lines stand. A listing that is not on hold rolls forward as before.
+    const panel = page.getByTestId('roll-forward');
+    expect(await panel.getByTestId('roll-hold-first').innerText()).toBe(STRINGS.roll.hold.first);
+    expect((await panel.getByTestId('roll-hold-order').innerText()).split('\n')).toEqual([STRINGS.roll.hold.order, STRINGS.roll.hold.close]);
+    await expect(panel.getByTestId('roll-fix-keep')).toHaveCount(0);
+    await expect(panel.getByTestId('roll-fix-order')).toHaveCount(0);
+    expect(wordingProblems(await panel.innerText())).toEqual([]);
+    await shot(page, 'roll-forward', { target: panel });
     await page.getByRole('button', { name: fill(STRINGS.roll.button, { id: successor.listingId }) }).click();
     await expect(page.getByTestId('rolled')).toBeVisible({ timeout: 30_000 });
 
@@ -172,6 +182,57 @@ test.describe('maker actions', () => {
     // every claim disclosed on it is revealable at once
     expect(Number(await chain.sa.claimState(claimId))).toBe(1);
     await expect(page.getByRole('button', { name: fill(STRINGS.roll.button, { id: successor.listingId }) })).toHaveCount(0);
+    // node P47: Rolled, so it takes no commits, and its page does not say the site offers it; the successor's does
+    await expect(page.getByTestId('listing-state')).toHaveText(STRINGS.fund.states.Rolled, { timeout: 30_000 });
+    await expectCommitOffer(page, chain, first.listingId, { takes: false, text: O.notTaking, offered: false });
+    await page.goto(`/#/fund/${successor.listingId}`);
+    await expect(page.getByTestId('listing-state')).toHaveText(STRINGS.fund.states.Open);
+    await expectCommitOffer(page, chain, successor.listingId, { takes: true, text: O.yes, offered: true });
+  });
+
+  test('roll forward: the lines about a fix stay on the page when the site\'s record cannot be read', async ({ page, stack, chain }) => {
+    // an open listing the chain answers for, and a record mirror that does not answer: the listing still takes commits
+    // and can still be held or closed from this page, so what a maker does before publishing a fix is still said
+    const { listingId } = await chain.openListing({ recipient: key.recipient });
+    await installWallet(page, stack);
+    await page.route('**/api/records/**', (route) => route.abort());
+    await page.goto(`/#/fund/${listingId}`);
+    await expect(page.getByTestId('listing-summary')).toContainText(STRINGS.fund.states.Open);
+    const panel = page.getByTestId('roll-forward');
+    await expect(panel.getByTestId('roll-record-failed')).toContainText(STRINGS.roll.recordFailed.replace('{reason}', ''));
+    // node P47: whether the listing counts is the record's to say, so the site could not read it: the Commits section
+    // says so as it did, with the same reason the panel gives, though the listing takes commits on the chain
+    const [before, after] = STRINGS.roll.recordFailed.split('{reason}');
+    const said = await panel.getByTestId('roll-record-failed').innerText();
+    const reason = said.slice(before.length, said.length - after.length);
+    expect(reason.startsWith(STRINGS.site.unavailable.replace('{reason}', ''))).toBe(true);
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: fill(O.unknown, { reason }), offered: false, shotAs: 'commit-offer-unknown' });
+    // the lines are the chain's: with the hold this contract has, the hold's order (node P42)
+    expect(await panel.getByTestId('roll-hold-first').innerText()).toBe(STRINGS.roll.hold.first);
+    expect((await panel.getByTestId('roll-hold-order').innerText()).split('\n')).toEqual([STRINGS.roll.hold.order, STRINGS.roll.hold.close]);
+    // nothing to pick and nothing to send: the picker is the record's. The one thing offered is to read it again.
+    await expect(panel.getByRole('combobox')).toHaveCount(0);
+    await expect(panel.getByRole('button')).toHaveCount(1);
+    const again = panel.getByRole('button', { name: STRINGS.roll.again });
+    await expect(again).toBeVisible();
+    // and the hold and the close those lines send the maker to are on the same page: both are read from the chain
+    await expect(page.getByTestId('hold').getByTestId('hold-warning')).toBeVisible();
+    await page.getByRole('button', { name: STRINGS.wallet.connect }).click();
+    await expect(page.getByTestId('hold').getByRole('button', { name: fill(STRINGS.hold.ask, { id: listingId }) })).toBeVisible();
+    await expect(page.getByTestId('close').getByRole('button', { name: fill(STRINGS.close.ask, { id: listingId }) })).toBeVisible();
+    expect(wordingProblems(await panel.innerText())).toEqual([]);
+    // while the record still does not answer, looking again says so again and leaves the lines where they are
+    await again.click();
+    await expect(panel.getByTestId('roll-record-failed')).toBeVisible();
+    expect(await panel.getByTestId('roll-hold-first').innerText()).toBe(STRINGS.roll.hold.first);
+    // once it answers, looking again reads it, and the panel is the picker's: the maker's open listings of the
+    // repository, or that there is none
+    await page.unroute('**/api/records/**');
+    await again.click();
+    await expect(panel.getByTestId('roll-record-failed')).toHaveCount(0);
+    await expect(panel.getByRole('combobox').or(panel.getByText(STRINGS.roll.none))).toBeVisible();
+    // and the Commits section is the record's again: the listing counts and takes commits, so the site offers it
+    await expectCommitOffer(page, chain, listingId, { takes: true, text: O.yes, offered: true });
   });
 
   test('dispute: the escalation prepay is shown, the statement pinned and named by CID in the request', async ({ page, stack, chain }) => {

@@ -27,6 +27,13 @@
 // Claims that failed integrity (node P10, owner decision Q35): on-chain they are DUPLICATE, so the record
 // says apart how many and which checks, from each settled DUPLICATE's justification (src/site/evidence.js
 // reads them beside the indexer; src/record/integrity.js folds the answers per listing).
+//
+// The maker's hold (node P40; owner, 2026-11-23): a held listing stays Open or Depleted on-chain and takes no commit,
+// so wherever an answer says of a listing whether it lapsed, it says heldAt beside it, the time of the hold while the
+// listing is on hold and null otherwise: in a listing's labels, in a record's listings shown apart, and in every list
+// of a repository's other listings. It is the projection's (projection.js), of the events up to the answer's block, so
+// it is that block's like the rest of the answer, and no call is made for it. `record` stays the lens's answer, field
+// for field. A held listing is no feed entry (feed.js), its labels never say live, and the badge says it is on hold.
 import { JsonRpcProvider, Network } from 'ethers';
 
 import { stakeAttestation } from '../chain/abi.js';
@@ -364,15 +371,17 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       if (rec.listingCount === '0') return records.set(key, null);
       const { price, priceError } = await priceAt(block);
       const ctx = labelContext(price);
+      const proj = blockTag === undefined ? projectionOf(state) : project(events);
+      // node P40: each listing's hold, beside what the lens says of it, from the events up to this block
+      const heldAtOf = (l) => proj.listings.get(String(l.listingId))?.heldAt ?? null;
       const labels = {
-        listings: Object.fromEntries(rec.listings.map((l) => [l.listingId, listingLabels(l, ctx)])),
+        listings: Object.fromEntries(rec.listings.map((l) => [l.listingId, listingLabels({ ...l, heldAt: heldAtOf(l) }, ctx)])),
         price,
         priceError,
         placeholders: config.labels.placeholders,
       };
       // node P35: the listings of this version's repository that the record does not list (its other versions), at this
       // block
-      const proj = blockTag === undefined ? projectionOf(state) : project(events);
       const mine = proj.listings.get(String(rec.listings[0]?.listingId));
       const onRecord = new Set(rec.listings.map((l) => String(l.listingId)));
       const others = mine
@@ -430,7 +439,8 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       notCounted: {
         listings: apart.map((l) => {
           const id = String(l.listingId);
-          return { listingId: id, maker: l.maker, state: l.state, lapsed: l.lapsed, reason: reasons.get(id), detail: CONTROL_REASONS[reasons.get(id)] ?? null };
+          // heldAt: from the view's labels, which hold every listing of the hash at its block (the answer's keep the counted)
+          return { listingId: id, maker: l.maker, state: l.state, lapsed: l.lapsed, heldAt: view.labels.listings[id]?.heldAt ?? null, reason: reasons.get(id), detail: CONTROL_REASONS[reasons.get(id)] ?? null };
         }),
         findings,
         flags,

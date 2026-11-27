@@ -135,9 +135,13 @@ function App() {
 
   // Jury Selection state
   const [iterations, setIterations] = useState(1);
+  // Starting juror, shown until the selected class's model list loads. The list
+  // then replaces any model the class does not offer (see the model-loading
+  // effect below), so this must name a model class 128 lists: a retired model
+  // here would be preselected whenever the class map cannot be loaded.
   const [juryNodes, setJuryNodes] = useState([{
     provider: 'OpenAI',
-    model: 'gpt-4o',
+    model: 'gpt-5.2-2025-12-11',
     runs: 1,
     weight: 1.0,
     id: Date.now()

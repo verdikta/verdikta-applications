@@ -48,23 +48,28 @@ An iteration is a complete evaluation cycle where all jury members assess your q
 Each jury member represents an AI model that will independently evaluate your query.
 
 #### Provider Selection
-Choose from available AI providers:
+The providers and models offered are not fixed: they are the model pool of the
+selected contract's class, read from the class map in `@verdikta/common`. A
+model that is not in the class's pool is not offered, and a juror naming one is
+switched to the first model the class lists for its provider.
 
-- **OpenAI**: GPT models known for strong reasoning capabilities
-  - `gpt-3.5-turbo`: Fast, cost-effective for simpler queries
-  - `gpt-4`: More advanced reasoning for complex evaluations
-  - `gpt-4o`: Latest model with optimized performance
+The pool changes between `@verdikta/common` releases, so the page is the
+reference, not this document. For class 128 ("OpenAI & Anthropic Core"),
+release 1.8.0 lists:
 
-- **Anthropic**: Claude models with strong analytical capabilities
-  - `claude-2.1`: Balanced performance for general use
-  - `claude-3-sonnet-20240229`: Enhanced reasoning capabilities
-  - `claude-3-5-sonnet-20241022`: Latest with improved analysis
+- **OpenAI**: `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna`,
+  `gpt-5.4-2026-03-05`, `gpt-5.2-2025-12-11`
+- **Anthropic**: `claude-sonnet-5`, `claude-sonnet-4-6`,
+  `claude-haiku-4-5-20251001`
 
-- **Open-source**: Community models for specialized use cases
-  - `llava`: Vision-language model for image analysis
-  - `llama-3.1`: Strong general-purpose reasoning
-  - `llama-3.2`: Improved efficiency and capability
-  - `phi3`: Efficient model for lightweight evaluations
+`gpt-5.2-2025-12-11` and `claude-haiku-4-5-20251001` are in class 128 in every
+release from 1.6.0 to 1.8.0.
+
+Other classes offer other pools (class 129, for example, lists open-source
+models served by Ollama). Use only models the class lists: an arbiter answers a
+request only when every juror of the jury answered, so one retired or unlisted
+model leaves the whole request without a verdict. Older models such as `gpt-4o`
+and `claude-3-5-sonnet-20241022` are no longer in any pool.
 
 #### Model Configuration
 
@@ -101,7 +106,7 @@ Choose from available AI providers:
 ### Jury Composition Strategies
 
 #### Single Model (Simple Queries)
-- Use one high-quality model (e.g., GPT-4o)
+- Use one high-quality model (e.g., `gpt-5.2-2025-12-11`)
 - Appropriate for straightforward factual questions
 - Lowest cost, fastest execution
 
@@ -137,28 +142,27 @@ Each jury member incurs evaluation costs based on:
 **Cost Optimization Tips:**
 - Start with single models for testing
 - Use iterations sparingly until you understand your needs
-- Consider open-source models for cost-sensitive applications
+- Consider smaller models for cost-sensitive applications
 
 ## Example Configurations
 
 ### Financial Analysis Query
 ```
-Model 1: OpenAI GPT-4 (Weight: 0.6, Runs: 2)
-Model 2: Anthropic Claude-3-Sonnet (Weight: 0.4, Runs: 1)
+Model 1: OpenAI gpt-5.2-2025-12-11 (Weight: 0.6, Runs: 2)
+Model 2: Anthropic claude-haiku-4-5-20251001 (Weight: 0.4, Runs: 1)
 Iterations: 2
 ```
 
 ### Creative Content Evaluation
 ```
-Model 1: OpenAI GPT-4o (Weight: 0.4, Runs: 1)
-Model 2: Anthropic Claude-3.5-Sonnet (Weight: 0.4, Runs: 1)
-Model 3: Open-source Llama-3.1 (Weight: 0.2, Runs: 1)
+Model 1: OpenAI gpt-5.2-2025-12-11 (Weight: 0.4, Runs: 1)
+Model 2: Anthropic claude-haiku-4-5-20251001 (Weight: 0.6, Runs: 1)
 Iterations: 1
 ```
 
 ### Quick Fact Check
 ```
-Model 1: OpenAI GPT-4o (Weight: 1.0, Runs: 1)
+Model 1: OpenAI gpt-5.2-2025-12-11 (Weight: 1.0, Runs: 1)
 Iterations: 1
 ```
 
@@ -180,7 +184,7 @@ Hover over the **ⓘ** icons next to each field for detailed explanations:
 
 ### For Beginners
 Start with the default configuration:
-- Single OpenAI GPT-4o model
+- Single OpenAI `gpt-5.2-2025-12-11` model
 - 1 run, weight 1.0
 - 1 iteration
 

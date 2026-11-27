@@ -13,6 +13,16 @@
 // shows the one with the highest top award (then the lowest class counted, then the oldest). Every
 // string it writes passes the shared wording check.
 //
+// The maker's hold (node P40; owner, 2026-11-23). A held listing takes no commit, so it is never the live listing here
+// (its labels' `live` is false, labels.js), and no statement is made of it. When no listing of the hash takes commits
+// and one is on hold, the badge reads
+//
+//   "stake on hold since <day>"                      <day>: the hold's day, UTC, as YYYY-MM-DD
+//
+// whatever else is true of that listing (Depleted, or its paid period over), and before a listing that ended: the
+// stake is still there, and its maker has stopped new claims on it. Of several on hold, the latest listing's. "On
+// hold", not "held": a stake that is "held" could be read as one that is in place.
+//
 // How it is drawn: the site's indigo and its scales on the left, the state's colour on the right, and
 // the message on lines of its own parts: what it states, then the shown listing's proof under it (two
 // lines for a contract: the repository's, then the deployment's). A line break stands where a " · "
@@ -39,6 +49,9 @@ const LABEL_COLOR = '#4c51bf';
 const MARK = '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>';
 const ENDED = Object.freeze({ Closed: 'stake closed', Rolled: 'stake rolled forward', Depleted: 'stake depleted', Listed: 'stake not open' });
 
+/** A time in unix seconds as its UTC day, YYYY-MM-DD. */
+const utcDay = (seconds) => new Date(seconds * 1000).toISOString().slice(0, 10);
+
 const byStrength = (a, b) => {
   const top = BigInt(b.awards[3]) - BigInt(a.awards[3]);
   if (top !== 0n) return top > 0n ? 1 : -1;
@@ -59,7 +72,11 @@ export function badgeDrawn(view) {
   if (!record.listings.length) return plain('none', 'no counted stake');
   const live = record.listings.filter((l) => labels.listings[l.listingId]?.live).sort(byStrength);
   if (!live.length) {
-    const latest = [...record.listings].sort((a, b) => Number(BigInt(b.listingId) - BigInt(a.listingId)))[0];
+    const newestFirst = [...record.listings].sort((a, b) => Number(BigInt(b.listingId) - BigInt(a.listingId)));
+    const heldAtOf = (l) => labels.listings[l.listingId]?.heldAt ?? null;
+    const held = newestFirst.find((l) => heldAtOf(l) !== null);
+    if (held) return plain('ended', `stake on hold since ${utcDay(heldAtOf(held))}`, held.listingId);
+    const latest = newestFirst[0];
     const message = latest.lapsed && latest.state === 'Open' ? 'stake lapsed' : ENDED[latest.state] ?? 'stake ended';
     return plain('ended', message, latest.listingId);
   }

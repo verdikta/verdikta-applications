@@ -1,0 +1,32 @@
+{
+  "version": "1.0",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      {
+        "AI_MODEL": "gpt-5.2-2025-12-11",
+        "AI_PROVIDER": "OpenAI",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      },
+      {
+        "AI_MODEL": "claude-haiku-4-5-20251001",
+        "AI_PROVIDER": "Anthropic",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      }
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [
+    {
+      "name": "supportingFile1",
+      "type": "text/plain",
+      "filename": "contractTestCode.sol",
+      "description": "Smart contract to test for vulnerabilities."
+    }
+  ]
+}

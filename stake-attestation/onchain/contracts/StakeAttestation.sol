@@ -735,6 +735,11 @@ contract StakeAttestation is Ownable2Step {
     ///         which has the same name: tell them apart by the emitting address.
     event EvaluationFailed(uint256 indexed claimId, uint256 indexed listingId, bytes32 requestId, bool malformed);
 
+    /// @notice Review 2026-11-26 #9: the claim's archive is byte for byte that of `priorClaimId`,
+    ///         an earlier valid finding on the listing, so it settles DUPLICATE (bond back, no
+    ///         award, not published) whatever its verdict. Settled follows with DUPLICATE.
+    event ExactDuplicate(uint256 indexed claimId, uint256 indexed listingId, uint256 priorClaimId);
+
     /// @notice The claim settled: `paidWei` of its award paid now, `owedWei` still owed.
     event Settled(uint256 indexed claimId, uint256 indexed listingId, address indexed hunter, Outcome outcome, uint256 paidWei, uint256 owedWei);
 

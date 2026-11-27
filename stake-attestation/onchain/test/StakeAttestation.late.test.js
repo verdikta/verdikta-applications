@@ -215,7 +215,7 @@ describe("StakeAttestation: late claims (P2e, decision D6)", function () {
       await sa.settle(prior.claimId);
       await sa.connect(maker).close(id);
 
-      const { claimId, requestId } = await revealedLate(sa, hunters[1], id, { bcid: cidOf(2) });
+      const { claimId, requestId } = await revealedLate(sa, hunters[1], id, { bcid: cidOf(2), archive: ARCHIVE });
       expect([...(await aggregator.getRequestCids(requestId))]).to.deep.equal([LISTING_CID, cidOf(2), cidOf(1)]);
       const line = (await aggregator.requestParams(requestId)).addendum;
       expect(line).to.equal(codeReview.formatDisclosureLine({

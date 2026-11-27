@@ -36,6 +36,18 @@ contract StakeAttestationLens {
         revert("unknown function");
     }
 
+    /// @notice The claimId of the listing's earlier valid finding with this archive hash, or 0
+    ///         (review 2026-11-26 #9): a claim of the same archive settles DUPLICATE. A hunter's
+    ///         tool can check it before committing. The one lens read of raw host storage (the
+    ///         namespaced slot ClaimRules.validArchiveSlot names, not the contract's layout), so it
+    ///         answers only AT THE StakeAttestation ADDRESS (way 1), where this code runs on the
+    ///         host's storage; called directly it reverts rather than answer 0.
+    function validFindingOf(uint256 listingId, bytes32 archiveHash) external view returns (uint256 claimId) {
+        require(address(this) == address(host), "call at the StakeAttestation address");
+        bytes32 slot = ClaimRules.validArchiveSlot(listingId, archiveHash);
+        assembly ("memory-safe") { claimId := sload(slot) }
+    }
+
     /// @notice A claim's state as of now. The stored state, except that a Committed claim whose
     ///         fix window has ended (by time, release or roll-forward) is Revealable. Revealable
     ///         says nothing about commit order: a revealable claim still waits for every earlier

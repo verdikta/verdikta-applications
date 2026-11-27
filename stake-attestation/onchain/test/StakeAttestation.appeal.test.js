@@ -248,7 +248,7 @@ describe("StakeAttestation: the hunter's appeal of an INVALID outcome, erratum E
       const prior = await judged(sa, aggregator, hunters[0], id, V.LOW, { bcid: cidOf(1) });
       await time.setNextBlockTimestamp(prior.judgedAt + DISPUTE);
       await sa.settle(prior.claimId);
-      const { claimId, requestId: roundId } = await judged(sa, aggregator, hunters[1], id, V.INVALID, { bcid: cidOf(2) });
+      const { claimId, requestId: roundId } = await judged(sa, aggregator, hunters[1], id, V.INVALID, { bcid: cidOf(2), archive: ARCHIVE });
       const { requestId } = await appealAs(sa, hunters[1], claimId);
       expect([...(await aggregator.getRequestCids(requestId))]).to.deep.equal([DISPUTE_CID, cidOf(2), cidOf(1)]);
       expect([...(await aggregator.getRequestCids(roundId))]).to.deep.equal([LISTING_CID, cidOf(2), cidOf(1)]);

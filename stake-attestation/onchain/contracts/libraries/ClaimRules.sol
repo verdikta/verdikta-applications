@@ -19,6 +19,16 @@ library ClaimRules {
     ///         must hold before sending it.
     uint256 internal constant DISCLOSE_WINDOW = 1 hours;
     uint256 internal constant MAX_PRIOR_FINDINGS = 8;
+
+    /// @notice Review 2026-11-26 #9: the storage slot that holds the claimId of the listing's
+    ///         first valid (published) finding with this archive hash, or 0. A namespaced slot
+    ///         (ERC-7201 style) of StakeAttestation's storage, written only by ClaimLogic.settle
+    ///         and read by the lens (validFindingOf): no change to StakeAttestation's layout.
+    ///         Only MAX_PRIOR_FINDINGS priors reach the jury, so an exact copy of an older finding
+    ///         could otherwise be judged new and paid again.
+    function validArchiveSlot(uint256 listingId, bytes32 archiveHash) internal pure returns (bytes32) {
+        return keccak256(abi.encode(keccak256("verdikta.stakeAttestation.validArchive"), listingId, archiveHash));
+    }
     uint256 internal constant SUBMISSION_GAS = 10_000_000;
     /// @dev SUBMISSION_GAS reaches the callee only if the CALL has SUBMISSION_GAS * 64 / 63
     ///      available (EIP-150); the extra 100k pays for encoding the arguments, the CALL itself

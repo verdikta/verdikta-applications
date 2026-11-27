@@ -695,6 +695,24 @@ library ClaimLogic {
             l.confirmationsNoVerdict += 1;
             emit StakeAttestation.ConfirmationNoVerdict(claimId, listingId);
         }
+        if (outcome >= ClaimRules.LOW) {
+            // Review 2026-11-26 #9: the archive of an earlier valid finding on this listing,
+            // byte for byte (the disclosure gate holds archiveHash to the disclosed bytes), is a
+            // DUPLICATE whatever the jury said: priors beyond MAX_PRIOR_FINDINGS never reach it.
+            // Checked here, at settle, so only a finding that was proven and judged valid holds
+            // the hash: a bare commit cannot reserve someone else's. Claims settle in commit
+            // order, so the original holds it before a later copy is judged.
+            bytes32 slot = ClaimRules.validArchiveSlot(listingId, c.archiveHash);
+            uint256 prior;
+            assembly ("memory-safe") { prior := sload(slot) }
+            if (prior != 0) {
+                outcome = ClaimRules.DUPLICATE;
+                c.outcome = StakeAttestation.Outcome.DUPLICATE;
+                emit StakeAttestation.ExactDuplicate(claimId, listingId, prior);
+            } else {
+                assembly ("memory-safe") { sstore(slot, claimId) }
+            }
+        }
         c.state = StakeAttestation.ClaimState.Settled;
         c.settledAt = uint64(block.timestamp);
         resolve(claims, c, l);

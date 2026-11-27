@@ -256,7 +256,7 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
         await sa.harnessAddValidFinding(id, claimId); // P2c: valid
         priors.push(cidOf(i));
       }
-      const { claimId, requestId: claimRequest } = await judgedClaim(sa, aggregator, hunter, id, V.HIGH);
+      const { claimId, requestId: claimRequest } = await judgedClaim(sa, aggregator, hunter, id, V.HIGH, { archive: ARCHIVE });
       const { requestId } = await disputeAs(sa, maker, claimId);
 
       const cids = [...(await aggregator.getRequestCids(requestId))];

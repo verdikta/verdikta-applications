@@ -45,6 +45,10 @@ const REPO = "https://github.com/acme/vault";
 const COMMIT = "9c1e4f0a3b7d2e5c8f1a4b6d9e0c3f5a7b2d4e6f";
 
 const ARCHIVE = sha256(toUtf8Bytes("claim archive"));
+// A distinct archive per claim the helpers make (pass `archive` to choose one): two valid claims
+// of one archive on a listing settle the second as DUPLICATE (review 2026-11-26 #9).
+let archiveCounter = 0;
+const freshArchive = () => sha256(toUtf8Bytes(`claim archive ${++archiveCounter}`));
 const CT = sha256(toUtf8Bytes("claim archive, encrypted to the disclosure key"));
 const CK = "0x" + "11".repeat(16);
 const EK = "0x" + "22".repeat(32);
@@ -179,7 +183,7 @@ async function openListing(sa, maker, p = params(), opts = {}) {
   return id;
 }
 
-async function commitAs(sa, hunter, listingId, { archive = ARCHIVE, ct = CT, value } = {}) {
+async function commitAs(sa, hunter, listingId, { archive = freshArchive(), ct = CT, value } = {}) {
   const v = value === undefined ? await sa.commitPrice(listingId) : value;
   const rc = await (await sa.connect(hunter).commit(listingId, archive, ct, { value: v })).wait();
   return { claimId: eventsOf(sa, rc, "Committed")[0].args.claimId, at: await blockTime(rc) };
@@ -304,7 +308,7 @@ async function afterDisputeWindow(sa, claimId) {
 }
 
 // a late claim (decision D6) on a Rolled or Closed listing: the commit-shaped first step
-async function lateAs(sa, hunter, listingId, { archive = ARCHIVE, ct = CT, value } = {}) {
+async function lateAs(sa, hunter, listingId, { archive = freshArchive(), ct = CT, value } = {}) {
   const v = value === undefined ? await sa.commitPrice(listingId) : value;
   const rc = await (await sa.connect(hunter).lateClaim(listingId, archive, ct, { value: v })).wait();
   return { claimId: eventsOf(sa, rc, "LateClaim")[0].args.claimId, at: await blockTime(rc), rc };
@@ -336,7 +340,7 @@ module.exports = {
   openRequestId, roundInfo, leftover, drawAs, expireRound,
   HOUR, DAY, FIX, DISPUTE, GRACE, REVEAL, SCALE, T,
   LISTING_CID, DISPUTE_CID, CT_CID, BCID, JUSTIFICATION, STATEMENT_CID, REPO, COMMIT,
-  ARCHIVE, CT, CK, EK, LISTING_FEE, AWARDS, TOP, BOND, ORACLE, FEE, DISPUTE_FEE, V, oneHot,
+  ARCHIVE, freshArchive, CT, CK, EK, LISTING_FEE, AWARDS, TOP, BOND, ORACLE, FEE, DISPUTE_FEE, V, oneHot,
   atCommit, freshCommit, params, mergedAbi, deploy, deployDefaults, LEGACY_CONFIRM_ABOVE_WEI, eventsOf, blockTime,
   listAs, openListing, commitAs, claimAs, revealAs, revealedClaim, judgeAs, afterDisputeWindow,
   disputeAs, judgeDisputeAs, confirmAs, appealAs, lateAs, lateClaimAs,

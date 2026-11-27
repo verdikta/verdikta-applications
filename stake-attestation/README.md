@@ -631,6 +631,16 @@ issues and document it as intended in the code (NatSpec) or in a listing documen
 about it then falls under INVALID: the behaviour its PoC asserts is not required of the code. The site's listing form says
 both at its known-issues fields.
 
+**An exact copy of an earlier finding** (review 2026-11-26 #9). A request carries only the 8 most recent prior
+findings, so a jury may never see an older one. The contract therefore keeps, per listing, the `archiveHash` of every
+valid finding it publishes (`ClaimLogic.settle`, a namespaced storage slot). A later claim on the same listing with the
+same `archiveHash` settles DUPLICATE, bond back and no award, whatever its verdict, and emits `ExactDuplicate(claimId,
+listingId, priorClaimId)` before `Settled`. The hash binds the disclosed bytes, so this catches byte-identical copies
+only; a reworded copy is still for the jury (and the maker's dispute) to catch. It is checked at settle, so a commit
+reserves nothing: only a finding proven and judged valid holds its archive, and claims settle in commit order. Ask
+`validFindingOf(listingId, archiveHash)` at the StakeAttestation address before committing (0 when none). On the record
+such a claim is a plain DUPLICATE (`otherDuplicates`).
+
 **Documents** (owner decision Q61 (a); node P20). A draft may name, in `stake.documents`, up to 16 globs for the
 files where its code's requirements are written: the README, specs, interface docs, such as `README.md` or `docs/**`.
 The jurors' first question is whether the behaviour a PoC asserts is required of the code at all, and these are the

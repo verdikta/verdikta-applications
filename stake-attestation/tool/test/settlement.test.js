@@ -12,7 +12,7 @@ const { test, before, after, beforeEach } = await import('node:test');
 const { default: assert } = await import('node:assert/strict');
 const { ethers } = await import('ethers');
 const { closeRpc, rpcOf, runCli } = await import('./helpers/cli.js');
-const { JUSTIFICATION_CID, makeClaimDir, makeWorld, vectorOf } = await import('./helpers/world.js');
+const { JUSTIFICATION_CID, REPORT, makeClaimDir, makeWorld, vectorOf } = await import('./helpers/world.js');
 
 let w;
 let keeper;
@@ -173,7 +173,8 @@ test('settled by this run: claim reports it from its own receipt, and later runs
 test('settled with an amount owed: the event\'s paid and owed, not the claim\'s record once the maker has paid the rest', async () => {
   const l = await w.listing();
   const first = makeClaimDir();
-  const second = makeClaimDir();
+  // a different finding: a second valid claim of the SAME archive would settle DUPLICATE (review #9)
+  const second = makeClaimDir({ report: `${REPORT}\nA second, distinct finding.\n` });
   const a = await w.hunter().commit({ claimDir: first, listingId: l.listingId, acknowledge: true });
   const b = await w.hunter().commit({ claimDir: second, listingId: l.listingId, acknowledge: true });
   // the first award (HIGH) leaves the escrow short of the second's (CRITICAL)

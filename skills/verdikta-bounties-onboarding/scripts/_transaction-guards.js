@@ -76,8 +76,8 @@ export function creationTerms(config) {
     if (!Number.isSafeInteger(hours) || hours <= 0 || !Number.isSafeInteger(hours * 3600) || BigInt(hours * 3600) <= window + 2n) throw new Error('Submission window must be whole hours');
   }
   if (window % 3600n !== 0n) throw new Error('Creator assessment window must be whole hours');
-  const { jury, quota, forfeitLine, bond } = decision;
-  return { params: { requestedClass, threshold, targetHunter, creatorDeterminationPayment: creator, arbiterDeterminationPayment: arbiter, creatorAssessmentWindowSize: window, oracle, jury, quota, forfeitLine, bond }, value, submissionDeadline, decision };
+  const { jury, quota, forfeitLine, bond, outcomes } = decision;
+  return { params: { requestedClass, threshold, targetHunter, creatorDeterminationPayment: creator, arbiterDeterminationPayment: arbiter, creatorAssessmentWindowSize: window, oracle, jury, quota, forfeitLine, bond, outcomes }, value, submissionDeadline, decision };
 }
 const UINT96 = (1n << 96n) - 1n;
 export const JURY_FIELDS = Object.freeze(['K', 'M', 'N', 'P', 'timeout']);
@@ -127,11 +127,15 @@ export function decisionTerms(config) {
   if (quota > N) throw new Error(`quota ${quota} exceeds the jury's N (${N}) (contract: "bad quota")`);
   const withBeacons = o.withBeacons ?? preset.withBeacons;
   if (typeof withBeacons !== 'boolean') throw new Error('oracle.withBeacons must be true or false');
-  return { bountyClass: preset.key, className: preset.name, jury, quota, forfeitLine, bond: priced(config.bond, preset.bondUsd, 'bond'), minOracleFee: priced(o.minOracleFee, preset.feeFloorUsd, 'fee floor'), withBeacons };
+  // Values per juror answer: the preset's (Jumbo 1, the others 2) unless the config names it. The server
+  // builds the evaluation package to ask for that many, and the escrow reads any other length as no result.
+  const outcomes = uint(config.outcomes ?? merged.outcomes ?? 2, 'outcomes', 2n);
+  if (outcomes !== 1n && outcomes !== 2n) throw new Error('outcomes must be 1 (one number, the FUND score) or 2 ([DONT_FUND, FUND]) (contract: "bad outcomes")');
+  return { bountyClass: preset.key, className: preset.name, outcomes, jury, quota, forfeitLine, bond: priced(config.bond, preset.bondUsd, 'bond'), minOracleFee: priced(o.minOracleFee, preset.feeFloorUsd, 'fee floor'), withBeacons };
 }
 /** The /jobs/create fields for decisionTerms: every one explicit (wei as decimal strings). */
 export function decisionBody(decision) {
-  return { bountyClass: decision.bountyClass, jury: Object.fromEntries(JURY_FIELDS.map((f) => [f, Number(decision.jury[f])])), quota: Number(decision.quota), forfeitLine: Number(decision.forfeitLine), bond: decision.bond.toString(), oracleMinOracleFee: decision.minOracleFee.toString(), oracleWithBeacons: decision.withBeacons };
+  return { bountyClass: decision.bountyClass, jury: Object.fromEntries(JURY_FIELDS.map((f) => [f, Number(decision.jury[f])])), quota: Number(decision.quota), forfeitLine: Number(decision.forfeitLine), bond: decision.bond.toString(), oracleMinOracleFee: decision.minOracleFee.toString(), oracleWithBeacons: decision.withBeacons, outcomes: Number(decision.outcomes) };
 }
 // Unix seconds, or ISO-8601 UTC ending in Z ("2026-10-22T00:00:00Z"). The server encodes this second exactly.
 export function exactDeadline(value) {

@@ -80,7 +80,7 @@ describe("BountyEscrow x real v2 aggregator", function () {
       submissionDeadline: (await time.latest()) + 7 * 24 * HOUR, targetHunter: ethers.ZeroAddress,
       creatorDeterminationPayment: BOUNTY, arbiterDeterminationPayment: BOUNTY, creatorAssessmentWindowSize: 0,
       oracle: { maxOracleFee: FEE, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1, minOracleFee: 0n, withBeacons: o.withBeacons ?? false },
-      jury: o.jury ?? SMALL, quota: o.quota ?? 3, forfeitLine: o.forfeitLine ?? 2, bond: BOND,
+      jury: o.jury ?? SMALL, quota: o.quota ?? 3, forfeitLine: o.forfeitLine ?? 2, bond: BOND, outcomes: o.outcomes ?? 2,
     };
     const rc = await (await escrow.connect(creator).createBounty(p, { value: BOUNTY })).wait();
     const ev = rc.logs.map((l) => { try { return escrow.interface.parseLog(l); } catch { return null; } }).find((x) => x && x.name === "BountyCreated");
@@ -433,6 +433,22 @@ describe("BountyEscrow x real v2 aggregator", function () {
     expect(sub.bondHeld).to.equal(BOND);
   });
 
+  it("6d. a one-number BOUNTY (outcomes = 1): the one-number result is its result: pass 3 of 4, paid", async () => {
+    const scn = "6d one-number bounty";
+    const { b, evalCid } = await createBounty({ outcomes: 1 });
+    const { s, aggId } = await prepareStart(b, evalCid);
+    const round = { aggId, slots: {}, drv: drvFor() };
+    await mine(1);
+    await draw(round, b, s, "drawJury (small K=6)");
+    await runRound(scn, b, s, round, { pw: 3, oneNumber: true });
+    expect((await agg.getResult(aggId))[0].length).to.equal(1);
+    await lens(scn, "result", b, s, "FINALIZE");
+    await expect(escrow.connect(other).finalizeSubmission(b, s)).to.emit(escrow, "PayoutSent");
+    const sub = await escrow.getSubmission(b, s);
+    results[scn] = { status: sub.status, passCount: sub.passCount, acceptance: sub.acceptance, rejection: sub.rejection };
+    expect([sub.status, sub.passCount, sub.rejection]).to.deep.equal([3n, 3n, 0n]);
+  });
+
   it("6b. mixed lengths (one juror reveals one number among two-outcome reveals)", async () => {
     const scn = "6b mixed lengths";
     const { b, evalCid } = await createBounty();
@@ -562,6 +578,31 @@ describe("BountyEscrow x real v2 aggregator", function () {
     results[scn] = { status: sub.status, passCount: sub.passCount, acceptance: sub.acceptance };
     expect(sub.status).to.equal(3n);
     expect(sub.passCount).to.equal(20n);
+  });
+
+  it("8c. jumbo K=50/38/27/17 with beacons as a ONE-NUMBER bounty (the Jumbo preset's shape): pass 20 of 27", async () => {
+    const scn = "8c jumbo50 one-number";
+    const { b, evalCid } = await createBounty({ jury: JUMBO, cls: CLS + 1, withBeacons: true, quota: 18, forfeitLine: 12, outcomes: 1 });
+    const { s, aggId } = await prepareStart(b, evalCid, "jumbo50 one-number");
+    const drv = drvFor();
+    const round = { aggId, slots: {}, drv };
+    await mine(2);
+    const rc1 = await sendExact("drawJury (beacon start, K=50 one-number)", escrow.connect(other), "drawJury", [b, s]);
+    const topic = beacons.interface.getEvent("BeaconCalled").topicHash;
+    round.beacons = rc1.logs.filter((l) => l.topics[0] === topic).map((l) => beacons.interface.parseLog(l).args)
+      .map((a) => ({ index: Number(a.index), key: a.key, arb: drv.byKey.get(a.key) }));
+    for (const bc of round.beacons) await drv.answerBeacon(round, bc.index);
+    await mine(1);
+    await draw(round, b, s, "drawJury (K=50 after beacons, one-number)");
+    await runRound(scn, b, s, round, { pw: 20, oneNumber: true });
+    await lens(scn, "result", b, s, "FINALIZE");
+    await sendExact("finalizeSubmission (pass, K=50 N=27, one number)", escrow.connect(other), "finalizeSubmission", [b, s]);
+    const sub = await escrow.getSubmission(b, s);
+    results[scn] = { status: sub.status, passCount: sub.passCount, acceptance: sub.acceptance };
+    expect([sub.status, sub.passCount]).to.deep.equal([3n, 20n]);
+    // the finalizing reveal of the one-number Jumbo round (the 27th), from the round driver's records
+    const fin = drv.gas["reveal"] || [];
+    if (fin.length) console.log(`    [8c] largest reveal of the one-number Jumbo round: ${Math.max(...fin).toLocaleString()} gas`);
   });
 
   it("8b. jumbo K=50: a start that settles 2 due K=50 rounds; closeFailedRound settle path at K=50", async () => {

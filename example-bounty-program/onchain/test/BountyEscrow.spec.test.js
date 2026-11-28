@@ -72,7 +72,7 @@ describe("BountyEscrow: documented promises as properties (seeded random walk)",
       arbiterDeterminationPayment: BOUNTY,
       creatorAssessmentWindowSize: windowed ? 600 : 0,
       oracle: { maxOracleFee: FEE, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1, minOracleFee: 0, withBeacons: r.next() < 0.2 },
-      jury, quota, forfeitLine: r.int(quota + 1), bond: r.next() < 0.7 ? ethers.parseEther("0.003") : 0n,
+      jury, quota, forfeitLine: r.int(quota + 1), bond: r.next() < 0.7 ? ethers.parseEther("0.003") : 0n, outcomes: 2,
     };
     await f.escrow.connect(f.creator).createBounty(p, { value: BOUNTY });
     return { id: BigInt(i), p };
@@ -231,7 +231,7 @@ describe("BountyEscrow: documented promises as properties (seeded random walk)",
       targetHunter: ethers.ZeroAddress, creatorDeterminationPayment: BOUNTY, arbiterDeterminationPayment: BOUNTY,
       creatorAssessmentWindowSize: 0,
       oracle: { maxOracleFee: FEE, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1, minOracleFee: 0, withBeacons: false },
-      jury, quota: 3, forfeitLine: 1, bond: 0,
+      jury, quota: 3, forfeitLine: 1, bond: 0, outcomes: 2,
     }, { value: BOUNTY });
     const [h] = f.hunters;
     await f.escrow.connect(h).prepareSubmission(0, EVAL_CID, mkCid("promote-late"));
@@ -261,7 +261,7 @@ describe("BountyEscrow: documented promises as properties (seeded random walk)",
       targetHunter: ethers.ZeroAddress, creatorDeterminationPayment: BOUNTY, arbiterDeterminationPayment: BOUNTY,
       creatorAssessmentWindowSize: 0,
       oracle: { maxOracleFee: FEE, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1, minOracleFee: 0, withBeacons: false },
-      jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: 0,
+      jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: 0, outcomes: 2,
     }, { value: BOUNTY });
     const [h] = f.hunters;
     for (let i = 0; i < 4; i++) {   // four rounds nobody drew: each prepay (18 fees) goes to the pool

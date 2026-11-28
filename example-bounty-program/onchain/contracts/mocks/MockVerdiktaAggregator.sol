@@ -439,6 +439,11 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         return (r.aggregated, r.justifications, r.phase == PH_FINAL || r.phase == PH_SETTLED);
     }
 
+    function getResult(bytes32 aggId) external view override returns (uint256[] memory aggregated, bool valid) {
+        Round storage r = _rounds[uint256(aggId)];
+        return (r.aggregated, r.phase == PH_FINAL || r.phase == PH_SETTLED);
+    }
+
     function getOutcomeScores(bytes32 aggId, uint256 outcome)
         external
         view

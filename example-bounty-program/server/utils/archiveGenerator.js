@@ -43,7 +43,41 @@ const WEIGHTED_FUND_RULE = [
  * @param {Array}  [params.forbiddenContent] - Forbidden content list from the rubric
  * @returns {string} The query text
  */
-function buildEvaluationQuery({ workProductType, jobTitle, jobDescription, rubricCriteria, forbiddenContent }) {
+function buildEvaluationQuery({ workProductType, jobTitle, jobDescription, rubricCriteria, forbiddenContent, outcomes = 2 }) {
+  const text = buildTwoOutcomeQuery({ workProductType, jobTitle, jobDescription, rubricCriteria, forbiddenContent });
+  return Number(outcomes) === 1 ? toOneOutcomeQuery(text) : text;
+}
+
+/**
+ * The one-number form of an evaluation query (a bounty with outcomes = 1, the Jumbo class): the same
+ * protocol, asking for the FUND score alone. Every mention of DONT_FUND in the fixed protocol text
+ * is rewritten or removed; it throws if one is left in that text, so the two forms cannot drift apart
+ * unnoticed (the creator's own title, description and criteria may say what they like).
+ */
+function toOneOutcomeQuery(text) {
+  const out = text
+    .replace(/Provide scores for two outcomes:\n- DONT_FUND: The work product should NOT receive payment\n- FUND: The work product SHOULD receive payment/g,
+      'Provide ONE score, FUND, on a 0-100 scale: how fully the work product SHOULD receive payment (0 = it should not, 100 = it fully should). Give no other outcome.')
+    .replace(/DONT_FUND\s*=\s*100,\s*FUND\s*=\s*0/g, 'FUND = 0')
+    .replace(/FUND\s*=\s*100,\s*DONT_FUND\s*=\s*0/g, 'FUND = 100')
+    .replace(/^[ \t]*Set DONT_FUND = 100 - FUND\.\n/gm, '')
+    .replace(/FINAL SCORES: DONT_FUND=XX(\.X)?, FUND=(XX(?:\.X)?)/g, 'FINAL SCORE: FUND=$2');
+  return out;
+}
+
+/** Whether the fixed protocol text of a one-number query still names DONT_FUND (a builder bug). */
+function oneOutcomeTemplateIsClean() {
+  const probe = { workProductType: 'W', jobTitle: 'T', jobDescription: 'D', outcomes: 1 };
+  const variants = [
+    undefined,
+    [{ id: 'a', must: true, instructions: 'x' }],
+    [{ id: 'b', must: false, weight: 1, instructions: 'y' }],
+    [{ id: 'a', must: true, instructions: 'x' }, { id: 'b', must: false, weight: 1, instructions: 'y' }],
+  ];
+  return variants.every((rubricCriteria) => !/DONT_FUND/.test(buildEvaluationQuery({ ...probe, rubricCriteria, forbiddenContent: ['z'] })));
+}
+
+function buildTwoOutcomeQuery({ workProductType, jobTitle, jobDescription, rubricCriteria, forbiddenContent }) {
   const mustPass = (rubricCriteria || []).filter(c => c.must === true);
   const weighted = (rubricCriteria || []).filter(c => !c.must);
   const hasMustPass = mustPass.length > 0;
@@ -220,7 +254,9 @@ The submitted work product will be provided in the next section.`;
  * createEvaluationCIDArchive writes them; utils/wagerPackage.js rebuilds them to verify a wager
  * bounty's package, so the builder and the verifier cannot drift apart.
  */
-function evaluationPackageFiles({ rubricCid, jobTitle, jobDescription, workProductType = 'Work Product', juryNodes = [], iterations = 1, rubricCriteria, forbiddenContent }) {
+function evaluationPackageFiles({ rubricCid, jobTitle, jobDescription, workProductType = 'Work Product', juryNodes = [], iterations = 1, rubricCriteria, forbiddenContent, outcomes = 2 }) {
+  if (Number(outcomes) !== 1 && Number(outcomes) !== 2) throw new Error('outcomes must be 1 or 2');
+  const one = Number(outcomes) === 1;
   // Create manifest.json
   // NOTE: bCIDs contains DESCRIPTIONS of what each bCID represents.
   // The actual bCID values (e.g., hunter's work archive CID) are passed 
@@ -232,7 +268,7 @@ function evaluationPackageFiles({ rubricCid, jobTitle, jobDescription, workProdu
       filename: 'primary_query.json'
     },
     juryParameters: {
-      NUMBER_OF_OUTCOMES: 2,
+      NUMBER_OF_OUTCOMES: one ? 1 : 2,
       AI_NODES: juryNodes.map(node => ({
         AI_MODEL: node.model,
         AI_PROVIDER: node.provider,
@@ -260,13 +296,16 @@ function evaluationPackageFiles({ rubricCid, jobTitle, jobDescription, workProdu
     jobTitle,
     jobDescription,
     rubricCriteria,
-    forbiddenContent
+    forbiddenContent,
+    outcomes
   });
 
+  // What the bounty's `outcomes` (BountyEscrow.createBounty) must equal: the escrow reads a result of
+  // any other length as no result.
   const primaryQuery = {
     query: queryText,
     references: ['gradingRubric'],
-    outcomes: ['DONT_FUND', 'FUND']
+    outcomes: one ? ['FUND'] : ['DONT_FUND', 'FUND']
   };
 
   return { manifest, primaryQuery };
@@ -305,7 +344,8 @@ async function createEvaluationCIDArchive(options) {
     juryNodes = [],
     iterations = 1,
     rubricCriteria,
-    forbiddenContent
+    forbiddenContent,
+    outcomes = 2
   } = options;
 
   try {
@@ -326,7 +366,7 @@ async function createEvaluationCIDArchive(options) {
     await fs.mkdir(archiveDir, { recursive: true });
 
     const { manifest, primaryQuery } = evaluationPackageFiles({
-      rubricCid, jobTitle, jobDescription, workProductType, juryNodes, iterations, rubricCriteria, forbiddenContent
+      rubricCid, jobTitle, jobDescription, workProductType, juryNodes, iterations, rubricCriteria, forbiddenContent, outcomes
     });
 
     // Write files to archive directory
@@ -538,8 +578,8 @@ async function updatePrimaryArchiveWithHunterCID(primaryArchivePath, hunterSubmi
  * of where the characters come from, so an over-cap creator knows what to cut.
  * `template` is the fixed protocol text: everything the creator did not write.
  */
-function measureEvaluationQuery({ workProductType = 'Work Product', jobTitle, jobDescription, rubricCriteria, forbiddenContent }) {
-  const query = buildEvaluationQuery({ workProductType, jobTitle, jobDescription, rubricCriteria, forbiddenContent });
+function measureEvaluationQuery({ workProductType = 'Work Product', jobTitle, jobDescription, rubricCriteria, forbiddenContent, outcomes = 2 }) {
+  const query = buildEvaluationQuery({ workProductType, jobTitle, jobDescription, rubricCriteria, forbiddenContent, outcomes });
   const len = (v) => (typeof v === 'string' ? v.length : 0);
   const usesCriteria = Array.isArray(rubricCriteria) && rubricCriteria.length > 0;
   const criteria = usesCriteria
@@ -568,6 +608,8 @@ function measureEvaluationQuery({ workProductType = 'Work Product', jobTitle, jo
 }
 
 module.exports = {
+  toOneOutcomeQuery,
+  oneOutcomeTemplateIsClean,
   createEvaluationCIDArchive,
   createPrimaryCIDArchive,  // Backward compatibility alias
   createHunterSubmissionCIDArchive,

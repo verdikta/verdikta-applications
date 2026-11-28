@@ -46,7 +46,8 @@ contract MockGasHungryRecipient {
             jury: IVerdiktaAggregator.Jury(6, 5, 4, 3, 300),   // the Small preset
             quota: 1,
             forfeitLine: 0,
-            bond: 0
+            bond: 0,
+            outcomes: 2
         });
         return BountyEscrow(payable(escrow)).createBounty{value: msg.value}(p);
     }

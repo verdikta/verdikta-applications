@@ -239,12 +239,11 @@ contract BountyEscrowLens {
         if (s.verdiktaAggId == bytes32(0)) return r;
         IVerdiktaAggregator agg = escrow.aggregator();
         r.started = true;
-        BountyRules.Verdict memory v = BountyRules.judge(agg, s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine);
+        BountyRules.Verdict memory v = BountyRules.judge(agg, s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine, b.outcomes);
         r.hasResult = v.hasResult;
         r.outcome = uint8(v.outcome);
         r.passCount = v.passCount;
-        r.justificationCids = v.justificationCids;
-        (r.scores, , ) = agg.getEvaluation(s.verdiktaAggId);
+        (r.scores, r.justificationCids, ) = agg.getEvaluation(s.verdiktaAggId);
         (r.phase, , , , , , , , r.deadline, , , r.requestTime) = agg.getRoundInfo(s.verdiktaAggId);
     }
 
@@ -300,7 +299,7 @@ contract BountyEscrowLens {
             return "START";
         }
         if (st == BountyEscrow.SubmissionStatus.PendingVerdikta) {
-            BountyRules.Verdict memory v = BountyRules.judge(agg, s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine);
+            BountyRules.Verdict memory v = BountyRules.judge(agg, s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine, b.outcomes);
             if (v.hasResult) {
                 if (open && v.outcome == BountyRules.Outcome.Pass &&
                     _earlierPendingByOther(bountyId, submissionId, s.hunter)) {
@@ -376,7 +375,7 @@ contract BountyEscrowLens {
             if (pending[i] >= below) continue;
             BountyEscrow.Submission memory e = escrow.getSubmission(bountyId, pending[i]);
             if (e.status == BountyEscrow.SubmissionStatus.PendingVerdikta &&
-                BountyRules.passes(agg, e.verdiktaAggId, b.threshold, b.quota, b.forfeitLine)) return true;
+                BountyRules.passes(agg, e.verdiktaAggId, b.threshold, b.quota, b.forfeitLine, b.outcomes)) return true;
         }
         return false;
     }

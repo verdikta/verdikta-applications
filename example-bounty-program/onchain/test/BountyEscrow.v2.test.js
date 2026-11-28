@@ -69,6 +69,7 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       quota: o.quota ?? 3,
       forfeitLine: o.forfeitLine ?? 2,
       bond: o.bond ?? BOND,
+      outcomes: o.outcomes ?? 2,
     };
     if (o.windowSize) p.creatorDeterminationPayment = p.arbiterDeterminationPayment = BOUNTY;
     const rc = await (await f.escrow.connect(f.creator).createBounty(p, { value: BOUNTY })).wait();
@@ -712,6 +713,73 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       await runRound(f, large.bountyId, b.submissionId, mix(7, 5));          // 5 of 7 = Q
       await expect(f.escrow.finalizeSubmission(small.bountyId, a.submissionId)).to.emit(f.escrow, "PayoutSent");
       await expect(f.escrow.finalizeSubmission(large.bountyId, b.submissionId)).to.emit(f.escrow, "PayoutSent");
+    });
+  });
+
+  // Review 2026-11-28, blocker 4: the largest juries answer with one number (the aggregator keeps one
+  // value per answer above N = 27, and a one-number round finalizes far cheaper). A bounty says which
+  // shape its package asks for (`outcomes`, 2 or 1), and only a result of that shape is a result.
+  describe("one-number bounties (outcomes = 1)", function () {
+    const one = (...scores) => scores.map((x) => [BigInt(x)]);
+
+    it("createBounty refuses outcomes other than 1 or 2, and stores the bounty's", async function () {
+      const f = await loadFixture(fixture);
+      for (const outcomes of [0, 3, 6]) {
+        const p = { ...(await createBounty(f)).params, outcomes };
+        await expect(f.escrow.connect(f.creator).createBounty(p, { value: BOUNTY })).to.be.revertedWith("bad outcomes");
+      }
+      expect((await f.escrow.getBounty((await createBounty(f, { outcomes: 1 })).bountyId)).outcomes).to.equal(1n);
+      expect((await f.escrow.getBounty((await createBounty(f)).bountyId)).outcomes).to.equal(2n);
+    });
+
+    it("the Q-of-N rule reads each juror's one number as its FUND score: pass pays, and the bond comes back", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f, { outcomes: 1 });
+      const a = await submit(f, bountyId);
+      await runRound(f, bountyId, a.submissionId, one(900_000, 850_000, 800_000, 100_000));   // 3 of 4 at the threshold
+      const r = await f.escrow.getOracleResult(bountyId, a.submissionId);
+      expect([r.outcome, r.passCount, r.scores.length]).to.deep.equal([2n, 3n, 1n]);   // pass
+      await expect(f.escrow.finalizeSubmission(bountyId, a.submissionId)).to.emit(f.escrow, "PayoutSent");
+      const s = await f.escrow.getSubmission(bountyId, a.submissionId);
+      expect(s.rejection).to.equal(0n);            // no DONT_FUND score in a one-number answer
+      expect(s.acceptance).to.be.greaterThan(0n);
+    });
+
+    it("soft and hard fails follow the same counts", async function () {
+      const f = await loadFixture(fixture);
+      const soft = await createBounty(f, { outcomes: 1 });
+      const a = await submit(f, soft.bountyId);
+      await runRound(f, soft.bountyId, a.submissionId, one(900_000, 850_000, 100_000, 100_000));   // 2 of 4: R = 2
+      expect((await f.escrow.getOracleResult(soft.bountyId, a.submissionId)).outcome).to.equal(3n);
+      const hard = await createBounty(f, { outcomes: 1 });
+      const b = await submit(f, hard.bountyId);
+      await runRound(f, hard.bountyId, b.submissionId, one(900_000, 100_000, 100_000, 100_000));   // 1 of 4
+      expect((await f.escrow.getOracleResult(hard.bountyId, b.submissionId)).outcome).to.equal(4n);
+      await expect(f.escrow.finalizeSubmission(hard.bountyId, b.submissionId)).to.emit(f.escrow, "BondForfeited");
+    });
+
+    it("a two-value result on a one-number bounty is no result; a one-number result on a two-outcome bounty is none either", async function () {
+      const f = await loadFixture(fixture);
+      const yes2 = [[0n, 1_000_000n], [0n, 1_000_000n], [0n, 1_000_000n], [0n, 1_000_000n]];
+      const oneB = await createBounty(f, { outcomes: 1 });
+      const a = await submit(f, oneB.bountyId);
+      await runRound(f, oneB.bountyId, a.submissionId, yes2);
+      expect((await f.escrow.getOracleResult(oneB.bountyId, a.submissionId)).outcome).to.equal(1n);   // no result
+      await expect(f.escrow.finalizeSubmission(oneB.bountyId, a.submissionId)).to.emit(f.escrow, "RerunAwaited");
+      // the other way: jurors' DONT_FUND scores (outcome 0) must never be read as FUND
+      const twoB = await createBounty(f);
+      const b = await submit(f, twoB.bountyId);
+      await runRound(f, twoB.bountyId, b.submissionId, one(1_000_000, 1_000_000, 1_000_000, 1_000_000));
+      expect((await f.escrow.getOracleResult(twoB.bountyId, b.submissionId)).outcome).to.equal(1n);
+    });
+
+    it("a one-number score above the scale never counts", async function () {
+      const f = await loadFixture(fixture);
+      const { bountyId } = await createBounty(f, { outcomes: 1 });
+      const a = await submit(f, bountyId);
+      await runRound(f, bountyId, a.submissionId, one(900_000, 900_000, 900_001, 1_000_001));
+      const r = await f.escrow.getOracleResult(bountyId, a.submissionId);
+      expect(r.passCount).to.equal(3n);            // 1,000,001 is not counted
     });
   });
 });

@@ -173,6 +173,14 @@ describe('buildReport', () => {
     const rep = ss.buildReport(state, jobs, { days: 14, now: NOW });
     expect(rep.samples).toHaveLength(0);
     expect(rep.coverage.badShape).toBe(1);
+    // ...unless the bounty asks for one number (outcomes: 1, the Jumbo class): then it is the result,
+    // and a two-value result is the wrong shape
+    const one = [{ ...jobs[0], decisionSettings: { quota: 1, forfeitLine: 1, outcomes: 1 } }];
+    const rep1 = ss.buildReport(state, one, { days: 14, now: NOW });
+    expect(rep1.samples).toHaveLength(1);
+    expect(rep1.coverage.badShape).toBe(0);
+    const two = { rounds: { ['1:' + id(1)]: fin({ aggId: id(1), startTs: NOW - DAY, outcomes: 2, cluster: null, reveals: [reveal(0, 60), reveal(1, 70)] }) } };
+    expect(ss.buildReport(two, one, { days: 14, now: NOW }).coverage.badShape).toBe(1);
   });
 
   test('per-arbiter gap from the other arbiters in the same round', () => {
@@ -319,10 +327,13 @@ describe('fetchRound (v2)', () => {
     expect(rec.late).toEqual([{ slot: 3, qcode: 2, block: 1102 }]);
   });
 
-  test('a one-number result has no FUND score (the escrow re-runs it)', async () => {
+  test('a one-number result is kept with its FUND score; whether it is the bounty\'s shape is the report\'s to say', async () => {
     const rec = await ss.fetchRound(ctx(provider({ aggregated: [700000], bonuses: [] })), AGG, id(5));
-    expect(rec).toMatchObject({ outcomes: 1, badShape: true, finalAccept: null, cluster: null });
-    expect(rec.reveals).toHaveLength(0);
+    expect(rec).toMatchObject({ outcomes: 1, badShape: false, finalAccept: 70, cluster: null });
+    // any other length has no FUND score at all
+    const three = await ss.fetchRound(ctx(provider({ aggregated: [1, 2, 3], bonuses: [] })), AGG, id(5));
+    expect(three).toMatchObject({ outcomes: 3, badShape: true, finalAccept: null });
+    expect(three.reveals).toHaveLength(0);
   });
 
   test('no BonusPayment leaves the cluster unknown', async () => {

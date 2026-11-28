@@ -182,8 +182,10 @@ function juryOf(j) {
 function decisionOf(job) {
   const d = job?.decisionSettings;
   const jury = juryOf(d?.jury);
-  if (!d || d.quota == null) return { quota: null, forfeitLine: null, jury };
-  return { quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? d.quota), jury };
+  // outcomes: the answer shape the bounty asks for (BountyEscrow.createBounty): 2, or 1 for a one-number bounty
+  const outcomes = Number(d?.outcomes) === 1 ? 1 : 2;
+  if (!d || d.quota == null) return { quota: null, forfeitLine: null, jury, outcomes };
+  return { quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? d.quota), jury, outcomes };
 }
 
 // ------------------------------------------------------------
@@ -217,8 +219,8 @@ function buildReport(state, jobs, { days = 14, now = Math.floor(Date.now() / 100
         if (rec.notFound) { coverage.notFound++; return; }
         coverage.lateReveals += (rec.late || []).length;
         if (!rec.finalized) { if (rec.settled) coverage.noResult++; return; }
-        // outcomes !== 2 too: a record cached before one-number results stopped counting
-        if (rec.badShape || (rec.outcomes != null && rec.outcomes !== 2)) { coverage.badShape++; return; }
+        // a result is the escrow's only in the bounty's own shape (2 values, or 1 on a one-number bounty)
+        if (rec.badShape || (rec.outcomes != null && rec.outcomes !== decisionOf(job).outcomes)) { coverage.badShape++; return; }
         const reveals = rec.reveals || [];
         const sp = roundSpread(reveals.map((r) => fundScore(r.fund)));
         if (!sp) { coverage.tooFewReveals++; return; }
@@ -480,12 +482,13 @@ async function fetchRound(ctx, aggregator, aggId, hintTs = 0) {
     return { ...base, finalized: false, finalAccept: null, settled: true, reveals: [], ...(await roundMoney(ctx, aggAddr, aggId, info, phase)) };
   }
 
-  // BountyRules.judge counts only a two-outcome [DONT_FUND, FUND] result; any other shape
-  // (a one-number result too) is "no result" to the escrow, so it has no FUND score here.
+  // BountyRules.judge counts a [DONT_FUND, FUND] result, or the FUND score alone on a one-number
+  // bounty; any other shape has no FUND score. Whether the shape is the BOUNTY's is the report's to
+  // check (buildReport, against the job's decision settings): this record only keeps what was there.
   const ev = await aggCall(ctx, aggAddr, 'getEvaluation', [aggId]);
   const len = ev.aggregated.length;
-  const badShape = len !== 2;
-  const fundIdx = 1;
+  const badShape = len !== 1 && len !== 2;
+  const fundIdx = len - 1;
   if (badShape) {
     return { ...base, finalized: true, finalAccept: null, outcomes: len, badShape, settled: true, arbitersKnown: false,
       cluster: null, late: [], reveals: [], ...(await roundMoney(ctx, aggAddr, aggId, info, phase)) };

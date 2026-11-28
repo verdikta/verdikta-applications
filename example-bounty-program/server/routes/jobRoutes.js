@@ -203,7 +203,7 @@ const ORACLE_FEE_CEILING_WEI = ethers.parseEther('0.0004');
 // timeout in seconds; item 15: one aggregator serves every jury size), item 12's pass quota Q and
 // forfeit line R, and the hunter bond.
 const CREATE_BOUNTY_ABI =
-  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)';
+  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond, uint8 outcomes) p) payable returns (uint256 bountyId)';
 const createBountyIface = new ethers.Interface([CREATE_BOUNTY_ABI]);
 const UINT96_MAX = (1n << 96n) - 1n;
 
@@ -334,7 +334,11 @@ function juryRuleError(j) {
  * convert at `ethUsd`; with no price, a preset that needs one throws (pass bond and
  * oracleMinOracleFee explicitly).
  *
- * @returns {{ bountyClass, jury: {K, M, N, P, timeout}, quota, forfeitLine, bond (wei string), minOracleFeeWei, withBeacons }}
+ * `outcomes` (1 or 2) is how many values each juror answers with: the preset's (Jumbo 1, the others
+ * 2) unless the creator passes it. The evaluation package is built to ask for that many, and
+ * createBounty stores it: the escrow reads a result of any other length as no result.
+ *
+ * @returns {{ bountyClass, jury: {K, M, N, P, timeout}, quota, forfeitLine, bond (wei string), minOracleFeeWei, withBeacons, outcomes }}
  */
 function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null } = {}) {
   const key = body.bountyClass || presetForBounty(bountyUsd)?.key || 'small';
@@ -360,6 +364,8 @@ function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null } 
     forfeitLine: int(body.forfeitLine, undefined, 'forfeitLine'),
   });
   const { jury, quota, forfeitLine } = fromPreset;
+  const outcomes = body.outcomes === undefined || body.outcomes === null || body.outcomes === '' ? preset.outcomes : Number(body.outcomes);
+  if (outcomes !== 1 && outcomes !== 2) throw new Error('outcomes must be 1 (one number, the FUND score) or 2 ([DONT_FUND, FUND]) (contract: "bad outcomes")');
   const juryErr = juryRuleError(jury);
   if (juryErr) throw new Error(juryErr);
   if (quota < 1 || forfeitLine > quota) throw new Error('quota must be at least 1 and forfeitLine at most quota (contract: "bad quota")');
@@ -371,7 +377,7 @@ function resolveDecisionSettings(body = {}, { bountyUsd = null, ethUsd = null } 
     : priced(preset.feeFloorUsd, 'fee floor').toString();
   // The same flag resolveOracleSettings encodes: the creator's override, else the preset's.
   const withBeacons = parseBool(body.oracleWithBeacons, preset.withBeacons);
-  return { bountyClass: preset.key, jury, quota, forfeitLine, bond: bond.toString(), minOracleFeeWei, withBeacons };
+  return { bountyClass: preset.key, jury, quota, forfeitLine, bond: bond.toString(), minOracleFeeWei, withBeacons, outcomes };
 }
 
 // A bond is an amount, not a per-juror fee: allow far more than the fee parser's 0.01 ETH, but still
@@ -405,9 +411,10 @@ function jobJury(job) {
 function jobDecisionSettings(job) {
   const d = job?.decisionSettings;
   if (d && d.quota != null) {
-    return { bountyClass: d.bountyClass || null, jury: jobJury(job), quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? 0), bond: String(d.bond ?? '0') };
+    return { bountyClass: d.bountyClass || null, jury: jobJury(job), quota: Number(d.quota), forfeitLine: Number(d.forfeitLine ?? 0), bond: String(d.bond ?? '0'),
+      outcomes: Number(d.outcomes) === 1 ? 1 : 2 };
   }
-  return { bountyClass: null, jury: jobJury(job), quota: 1, forfeitLine: 1, bond: '0' };
+  return { bountyClass: null, jury: jobJury(job), quota: 1, forfeitLine: 1, bond: '0', outcomes: 2 };
 }
 
 /**
@@ -471,7 +478,8 @@ function buildCreateBountyTx(job) {
     jury: Object.fromEntries(JURY_FIELDS.map((f) => [f, String(decision.jury[f])])),
     quota: String(decision.quota),
     forfeitLine: String(decision.forfeitLine),
-    bond: decision.bond
+    bond: decision.bond,
+    outcomes: String(decision.outcomes)
   };
 
   let data = null;
@@ -490,7 +498,8 @@ function buildCreateBountyTx(job) {
       JURY_FIELDS.map((f) => BigInt(decision.jury[f])),
       BigInt(decision.quota),
       BigInt(decision.forfeitLine),
-      BigInt(decision.bond)
+      BigInt(decision.bond),
+      BigInt(decision.outcomes)
     ]]);
   } catch (e) {
     logger.warn('[buildCreateBountyTx] encode failed', { jobId: job.jobId, msg: e.message });
@@ -969,7 +978,8 @@ router.post('/create', limitPins, async (req, res) => {
       jobTitle: title,
       jobDescription: description,
       rubricCriteria,
-      forbiddenContent
+      forbiddenContent,
+      outcomes: decisionSettings.outcomes
     });
     const queryCap = maxEvaluationQueryChars();
     if (measured.composedLength > queryCap) {
@@ -1036,7 +1046,8 @@ router.post('/create', limitPins, async (req, res) => {
         juryNodes,
         iterations,
         rubricCriteria,
-        forbiddenContent
+        forbiddenContent,
+        outcomes: decisionSettings.outcomes     // the package asks for what createBounty will store
       });
     } catch (e) {
       logger.error('[jobs/create] primary archive creation failed', { msg: e.message });

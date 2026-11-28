@@ -308,11 +308,11 @@ async function validateBounty({ evaluationCid, classId, ipfsClient, classMap }) 
             }
 
             // Check for required "outcomes" field
-            if (!primaryQuery.outcomes || !Array.isArray(primaryQuery.outcomes) || primaryQuery.outcomes.length < 2) {
+            if (!primaryQuery.outcomes || !Array.isArray(primaryQuery.outcomes) || primaryQuery.outcomes.length < 1) {
               issues.push({
                 type: IssueType.INVALID_PRIMARY_QUERY,
                 severity: IssueSeverity.ERROR,
-                message: 'primary_query.json missing or invalid "outcomes" field (must be an array, e.g. ["DONT_FUND", "FUND"]).'
+                message: 'primary_query.json missing or invalid "outcomes" field (must be an array: ["DONT_FUND", "FUND"], or ["FUND"] for a one-number bounty).'
               });
             }
 

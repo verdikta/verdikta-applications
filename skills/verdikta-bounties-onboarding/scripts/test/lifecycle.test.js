@@ -207,7 +207,7 @@ test('create sends every v2 setting explicitly and checks the aggregator\'s live
  f.env.fetchApi=async(url,init)=>{if(url.endsWith('/jobs/create'))bodies.push(JSON.parse(init.body));return fetchApi(url,init);};
  await runCreate(f.lib,f.env);
  assert.deepEqual(['bountyClass','jury','quota','forfeitLine','bond','oracleMinOracleFee','oracleWithBeacons'].map(k=>bodies[0][k]),['small',{K:6,M:5,N:4,P:3,timeout:300},3,1,'5000','0',false]);
- assert.ok(f.reviews.flat().some(x=>x?.includes('Decision: Small preset; jury K 6 drawn, M 5 promoted, N 4 counted, P 3 clustered, round timeout 300 s; a round passes with 3 juror score(s)')&&x.includes('hunter bond 0.000000000000005 ETH (5000 wei)')));
+ assert.ok(f.reviews.flat().some(x=>x?.includes('Decision: Small preset; jury K 6 drawn, M 5 promoted, N 4 counted, P 3 clustered, round timeout 300 s; each juror answers with two scores, [DONT_FUND, FUND]; a round passes with 3 juror score(s)')&&x.includes('hunter bond 0.000000000000005 ETH (5000 wei)')));
  await assert.rejects(creationFixture(t,{quota:5,forfeitLine:1}),/quota 5 exceeds the jury's N \(4\)/);
  const g=await creationFixture(t,{jury:{timeout:5000}});
  await assert.rejects(runCreate(g.lib,g.env),/jury.timeout 5000 s must be above T\+ \(155 s\) and at most the aggregator's maxTimeout \(3600 s\)/);assert.equal(g.counts().creates,0);

@@ -778,6 +778,10 @@
       {
         "type": "uint128",
         "name": "bond"
+      },
+      {
+        "type": "uint8",
+        "name": "outcomes"
       }
     ]
   },
@@ -935,6 +939,10 @@
           {
             "type": "uint256",
             "name": "bond"
+          },
+          {
+            "type": "uint8",
+            "name": "outcomes"
           }
         ]
       }
@@ -1193,6 +1201,10 @@
           {
             "type": "uint128",
             "name": "bond"
+          },
+          {
+            "type": "uint8",
+            "name": "outcomes"
           }
         ]
       }
@@ -1779,6 +1791,10 @@
           {
             "type": "uint128",
             "name": "bond"
+          },
+          {
+            "type": "uint8",
+            "name": "outcomes"
           }
         ]
       }

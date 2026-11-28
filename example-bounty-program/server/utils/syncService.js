@@ -2009,7 +2009,8 @@ class SyncService {
       // v2: jury { K, M, N, P, timeout } (getBounty's juryK..juryTimeout), quota Q, forfeit line R and bond (analytics' Q-of-N rule)
       decisionSettings: bounty.decisionSettings
         ? { jury: bounty.decisionSettings.jury, quota: bounty.decisionSettings.quota,
-            forfeitLine: bounty.decisionSettings.forfeitLine, bond: bounty.decisionSettings.bondWei }
+            forfeitLine: bounty.decisionSettings.forfeitLine, bond: bounty.decisionSettings.bondWei,
+            outcomes: bounty.decisionSettings.outcomes }
         : null,
       onChain: true,
       syncedFromBlockchain: true,

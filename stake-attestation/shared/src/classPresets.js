@@ -15,6 +15,9 @@
  * bounty's (a listing's hunter bond is the maker's, in the signed spec), and feeFloorUsd is a USD
  * figure that the site's fee floor (SA_ORACLE_MIN_FEE_WEI, in wei) does not convert.
  *
+ * `outcomes` (values per juror answer: 2, or 1 for Jumbo) is a bounty's too: a listing's answer always has
+ * six values (INVALID, DUPLICATE, LOW..CRITICAL), whatever its class.
+ *
  * ESM, like the rest of this package; the class data is the bounty file's, value for value.
  */
 
@@ -22,31 +25,31 @@ export const CLASS_PRESETS = Object.freeze([
   Object.freeze({
     key: 'bondless-small', name: 'Bondless Small',
     jury: Object.freeze({ K: 6, M: 5, N: 4, P: 3, timeout: 300 }),
-    quota: 3, forfeitLine: 1, withBeacons: false,
+    quota: 3, forfeitLine: 1, withBeacons: false, outcomes: 2,
     feeFloorUsd: 0, bondUsd: 0, costPerRoundUsd: 0.83, offeredUpToUsd: 25, maxBountyUsd: 29,
   }),
   Object.freeze({
     key: 'small', name: 'Small',
     jury: Object.freeze({ K: 6, M: 5, N: 4, P: 3, timeout: 300 }),
-    quota: 3, forfeitLine: 1, withBeacons: false,
+    quota: 3, forfeitLine: 1, withBeacons: false, outcomes: 2,
     feeFloorUsd: 0, bondUsd: 5, costPerRoundUsd: 0.83, offeredUpToUsd: 100, maxBountyUsd: 101,
   }),
   Object.freeze({
     key: 'medium', name: 'Medium',
     jury: Object.freeze({ K: 8, M: 5, N: 4, P: 3, timeout: 300 }),
-    quota: 3, forfeitLine: 2, withBeacons: false,
+    quota: 3, forfeitLine: 2, withBeacons: false, outcomes: 2,
     feeFloorUsd: 0.25, bondUsd: 50, costPerRoundUsd: 4.6, offeredUpToUsd: 1000, maxBountyUsd: 1005,
   }),
   Object.freeze({
     key: 'large', name: 'Large',
     jury: Object.freeze({ K: 21, M: 16, N: 13, P: 10, timeout: 300 }),
-    quota: 10, forfeitLine: 8, withBeacons: false,
+    quota: 10, forfeitLine: 8, withBeacons: false, outcomes: 2,
     feeFloorUsd: 0.25, bondUsd: 100, costPerRoundUsd: 13.19, offeredUpToUsd: 10000, maxBountyUsd: 18600,
   }),
   Object.freeze({
     key: 'jumbo', name: 'Jumbo',
     jury: Object.freeze({ K: 50, M: 38, N: 27, P: 17, timeout: 600 }),
-    quota: 17, forfeitLine: 12, withBeacons: true,
+    quota: 17, forfeitLine: 12, withBeacons: true, outcomes: 1,
     feeFloorUsd: 0.25, bondUsd: 200, costPerRoundUsd: 26.39, offeredUpToUsd: 100000, maxBountyUsd: 165000,
   }),
 ]);

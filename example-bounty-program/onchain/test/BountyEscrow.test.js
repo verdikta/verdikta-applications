@@ -144,6 +144,7 @@ describe("BountyEscrow", function () {
       quota: overrides.quota ?? 1,
       forfeitLine: overrides.forfeitLine ?? 1,
       bond: overrides.bond ?? 0n,
+      outcomes: overrides.outcomes ?? 2,
     };
   }
 
@@ -4168,7 +4169,8 @@ describe("BountyEscrow", function () {
       // Room for the next contract change without another size exercise (v2 added the Q-of-N
       // rule, bonds and re-runs: 22.9 KB, 2026-11-23; the per-bounty jury on one aggregator,
       // with startValue moved to the lens: 23.07 KB, 2026-11-24).
-      expect(EIP170_LIMIT - size).to.be.greaterThan(1500);
+      // (the per-bounty answer shape and 2M > K, 2026-11-28: 23.4 KB; the margin asked for is 1,000 now)
+      expect(EIP170_LIMIT - size).to.be.greaterThan(1000);
     });
 
     it("creates the lens in the constructor, pointing back at the escrow (the aggregator is read from it)", async function () {

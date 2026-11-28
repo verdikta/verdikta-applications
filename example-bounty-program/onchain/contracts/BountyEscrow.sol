@@ -71,6 +71,7 @@ contract BountyEscrow {
         uint8   quota;                       // Q: a round passes with at least Q of its N scores >= threshold
         uint8   forfeitLine;                 // R <= Q: fewer than R scores >= threshold forfeits the bond
         uint256 bond;                        // wei the hunter (funder) posts at start; 0 = bondless
+        uint8   outcomes;                    // values in each juror's answer: 2 = [DONT_FUND, FUND], 1 = [FUND] alone
     }
 
     /// @dev Storage layout: fields are declared in ABI order but typed as narrowly as their
@@ -104,6 +105,7 @@ contract BountyEscrow {
         uint8   quota;                        // slot 14: Q
         uint8   forfeitLine;                  // slot 14: R
         uint128 bond;                         // slot 14: hunter bond (wei)
+        uint8   outcomes;                     // slot 14: values per answer the package asks for: 2 or 1 (see BountyRules)
     }
 
     /// @dev Same packing approach as Bounty: ABI order kept, types narrowed (6 slots instead
@@ -454,6 +456,10 @@ contract BountyEscrow {
         // Item 12's decision rule: R <= Q <= N (the bounty's own N, fixed with it).
         require(p.quota >= 1 && p.forfeitLine <= p.quota && p.quota <= j.N, "bad quota");
         require(p.bond <= type(uint96).max, "bad bond");
+        // The answer's shape is the bounty's, fixed here: [DONT_FUND, FUND] (2) or one number, the FUND
+        // score (1; the aggregator keeps one value only on its largest juries). A round's result of any
+        // other length is no result (BountyRules).
+        require(p.outcomes == 1 || p.outcomes == 2, "bad outcomes");
 
         // The uint128 casts are safe: msg.value == max(payments), so both payments and the
         // escrowed amount are bounded by the ETH actually sent (far below 2^128 wei).
@@ -480,7 +486,8 @@ contract BountyEscrow {
             juryTimeout: j.timeout,
             quota: p.quota,
             forfeitLine: p.forfeitLine,
-            bond: uint128(p.bond)
+            bond: uint128(p.bond),
+            outcomes: p.outcomes
         }));
 
         bountyId = bounties.length - 1;
@@ -733,7 +740,7 @@ contract BountyEscrow {
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
 
         BountyRules.Verdict memory v = BountyRules.judge(
-            aggregator, s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine
+            aggregator, s.verdiktaAggId, b.threshold, b.quota, b.forfeitLine, b.outcomes
         );
         if (!v.hasResult) {
             // A round that ended with no result at all is closed by closeFailedRound (which also
@@ -741,6 +748,9 @@ contract BountyEscrow {
             require(v.outcome == BountyRules.Outcome.NotReady, "no oracle result - use closeFailedRound");
             revert("Verdikta not ready");
         }
+
+        // The justification CIDs, for the events below (the aggregator joins them on request).
+        (, string memory cids, ) = aggregator.getEvaluation(s.verdiktaAggId);
 
         // Leaving evaluation (every branch below changes the status).
         _inFlight[bountyId] -= 1;
@@ -769,7 +779,7 @@ contract BountyEscrow {
                 b.winner = s.hunter;
                 s.status = SubmissionStatus.PassedPaid;
                 paid = true;
-                emit SubmissionFinalized(bountyId, submissionId, true, true, v.acceptance, v.rejection, v.justificationCids);
+                emit SubmissionFinalized(bountyId, submissionId, true, true, v.acceptance, v.rejection, cids);
                 emit PayoutSent(bountyId, s.hunter, pay);
                 _payOrCredit(s.hunter, pay);
                 if (refund > 0) {
@@ -778,13 +788,13 @@ contract BountyEscrow {
                 }
             } else {
                 s.status = SubmissionStatus.PassedUnpaid;      // bounty already awarded or closed
-                emit SubmissionFinalized(bountyId, submissionId, true, false, v.acceptance, v.rejection, v.justificationCids);
+                emit SubmissionFinalized(bountyId, submissionId, true, false, v.acceptance, v.rejection, cids);
             }
             _returnBond(bountyId, submissionId);
         } else if (v.outcome == BountyRules.Outcome.HardFail) {
             _removePending(bountyId, submissionId);
             s.status = SubmissionStatus.Failed;
-            emit SubmissionFinalized(bountyId, submissionId, false, false, v.acceptance, v.rejection, v.justificationCids);
+            emit SubmissionFinalized(bountyId, submissionId, false, false, v.acceptance, v.rejection, cids);
             uint256 bond = s.bondHeld;
             if (bond > 0) {
                 s.bondHeld = 0;
@@ -793,7 +803,7 @@ contract BountyEscrow {
             }
         } else {
             // SoftFail, or a result of an unexpected shape (NoResult)
-            _awaitRerun(b, s, bountyId, submissionId, v.outcome == BountyRules.Outcome.NoResult, v.justificationCids);
+            _awaitRerun(b, s, bountyId, submissionId, v.outcome == BountyRules.Outcome.NoResult, cids);
         }
         _refundLeftoverEth(bountyId, submissionId);
     }
@@ -822,7 +832,7 @@ contract BountyEscrow {
         try agg.settle(aggId) {} catch { /* ignore */ }
         try agg.cancelUnsealed(aggId) {} catch { /* ignore */ }
 
-        (, , bool ok) = agg.getEvaluation(aggId);
+        (, bool ok) = agg.getResult(aggId);
         require(!ok, "result available - use finalizeSubmission");
         (uint8 phase, , , , , , , , , , , ) = agg.getRoundInfo(aggId);
         require(phase == BountyRules.PH_FAILED || phase == BountyRules.PH_CANCELLED, "round still open");
@@ -1099,7 +1109,7 @@ contract BountyEscrow {
             uint256 pid = pending[i];
             Submission storage e = list[pid];
             if (pid < below && e.status == SubmissionStatus.PendingVerdikta &&
-                BountyRules.passes(agg, e.verdiktaAggId, b.threshold, b.quota, b.forfeitLine)) {
+                BountyRules.passes(agg, e.verdiktaAggId, b.threshold, b.quota, b.forfeitLine, b.outcomes)) {
                 revert("another submission already passed - finalize it first");
             }
             unchecked { ++i; }

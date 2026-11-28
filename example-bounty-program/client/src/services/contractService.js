@@ -444,7 +444,12 @@ class ContractService {
     if (!Number.isInteger(forfeitLine) || forfeitLine < 0 || forfeitLine > quota) throw new Error('Forfeit line (R) must be an integer between 0 and Q');
     if (quota > jury.N) throw new Error(`Quota (Q = ${quota}) is above this jury's size N = ${jury.N}`);
     if (bond < 0n || bond > UINT96_MAX) throw new Error('Bond must be between 0 and 2^96-1 wei');
-    return { jury, quota, forfeitLine, bond };
+    // How many values each juror answers with: 2 = [DONT_FUND, FUND] (the default), 1 = the FUND score
+    // alone (the Jumbo class). It must be what the evaluation package asks for: the escrow reads a
+    // result of any other length as no result.
+    const outcomes = decision.outcomes === undefined || decision.outcomes === null || decision.outcomes === '' ? 2 : Number(decision.outcomes);
+    if (outcomes !== 1 && outcomes !== 2) throw new Error('Outcomes must be 1 (one number) or 2 ([DONT_FUND, FUND])');
+    return { jury, quota, forfeitLine, bond, outcomes };
   }
 
   /**
@@ -548,7 +553,8 @@ class ContractService {
         jury: decisionParams.jury,   // { K, M, N, P, timeout }: the CreateParams.jury tuple
         quota: decisionParams.quota,
         forfeitLine: decisionParams.forfeitLine,
-        bond: decisionParams.bond
+        bond: decisionParams.bond,
+        outcomes: decisionParams.outcomes
       };
 
       console.log(`🔍 createBounty${hasApprovalWindow ? ' (windowed)' : ''} params`, {

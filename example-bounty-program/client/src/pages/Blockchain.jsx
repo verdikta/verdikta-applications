@@ -116,7 +116,7 @@ function Blockchain() {
   // Write Functions
   "function closeExpiredBounty(uint256 bountyId)",
   "function closeFailedRound(uint256 bountyId, uint256 submissionId)",  // anyone: a round with no result that can get none (replaces failTimedOutSubmission)
-  "function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)",
+  "function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond, uint8 outcomes) p) payable returns (uint256 bountyId)",
   "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   "function drawJury(uint256 bountyId, uint256 submissionId)",  // anyone, from 2 blocks after a start or re-run; twice for a beacon bounty
   "function expireRerun(uint256 bountyId, uint256 submissionId)",  // anyone, once the re-run window closed (or the bounty/deadline ended); bond back to its funder
@@ -145,7 +145,7 @@ function Blockchain() {
   "function aggregator() view returns (address)",  // the one aggregator every bounty's rounds run on (closeCommits / promote go there)
   "function bountyCount() view returns (uint256)",
   "function effectiveOracleParams(uint256 bountyId) view returns ((uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons))",  // settings as clamped to the aggregator's live ceiling
-  "function getBounty(uint256 bountyId) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 juryK, uint8 juryM, uint8 juryN, uint8 juryP, uint40 juryTimeout, uint8 quota, uint8 forfeitLine, uint128 bond))",
+  "function getBounty(uint256 bountyId) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 juryK, uint8 juryM, uint8 juryN, uint8 juryP, uint40 juryTimeout, uint8 quota, uint8 forfeitLine, uint128 bond, uint8 outcomes))",
   "function getSubmission(uint256 bountyId, uint256 submissionId) view returns ((address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint8 acceptance, uint8 rejection, uint64 submittedAt, uint64 finalizedAt, uint96 ethMaxBudget, uint64 creatorWindowEnd, address funder, address bondFunder, uint96 bondHeld, uint64 rerunDeadline, uint8 rounds, uint8 passCount))",
   "function lens() view returns (address)",  // the BountyEscrowLens serving the read views (informational)
   "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])",  // ids holding payout priority (in evaluation or awaiting a re-run)
@@ -156,7 +156,7 @@ function Blockchain() {
   "function withdrawable(address) view returns (uint256)",
   "function MAX_BATCH() view returns (uint256)",  // 100 — page size cap of getBounties / getSubmissionsPage (lens)
   "function canBeClosed(uint256 bountyId) view returns (bool)",
-  "function getBounties(uint256 start, uint256 count) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 juryK, uint8 juryM, uint8 juryN, uint8 juryP, uint40 juryTimeout, uint8 quota, uint8 forfeitLine, uint128 bond)[] out)",  // count capped at MAX_BATCH = 100
+  "function getBounties(uint256 start, uint256 count) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint128 payoutWei, uint64 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint64 submissions, address targetHunter, uint128 creatorDeterminationPayment, uint128 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, uint8 juryK, uint8 juryM, uint8 juryN, uint8 juryP, uint40 juryTimeout, uint8 quota, uint8 forfeitLine, uint128 bond, uint8 outcomes)[] out)",  // count capped at MAX_BATCH = 100
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns ((bool started, bool hasResult, uint8 phase, uint8 outcome, uint8 rounds, uint256 passCount, uint256 deadline, uint256 requestTime, uint256[] scores, string justificationCids) r)",  // phase 1 draw..9 cancelled; outcome 0 not_ready / 1 no_result / 2 pass / 3 soft_fail / 4 hard_fail
   "function getSubmissions(uint256 bountyId) view returns ((address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint8 acceptance, uint8 rejection, uint64 submittedAt, uint64 finalizedAt, uint96 ethMaxBudget, uint64 creatorWindowEnd, address funder, address bondFunder, uint96 bondHeld, uint64 rerunDeadline, uint8 rounds, uint8 passCount)[] out)",
@@ -210,6 +210,7 @@ async function createBounty() {
     quota: 3,                                      // Q: arbiter scores at/above the threshold needed to pass (<= the jury's N)
     forfeitLine: 1,                                // R (<= Q): fewer than R passing scores is a hard fail (bond to the creator)
     bond: ethers.parseEther('0.002'),              // hunter bond, attached at start with the prepay (0 = bondless)
+    outcomes: 2,                                   // values per juror answer: 2 = [DONT_FUND, FUND]; 1 = the FUND score alone (the Jumbo class). Must match the evaluation package.
   }, { value: payout });
 
   const receipt = await tx.wait();
@@ -335,7 +336,7 @@ async function createWindowedBounty() {
     creatorAssessmentWindowSize: windowSize,
     oracle: { maxOracleFee: ethers.parseEther('0.00002'), alpha: 500n, estimatedBaseCost: ethers.parseEther('0.00001'), maxFeeBasedScaling: 3n,
               minOracleFee: 0n, withBeacons: false },
-    jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: 0n,
+    jury: { K: 6, M: 5, N: 4, P: 3, timeout: 300 }, quota: 3, forfeitLine: 1, bond: 0n, outcomes: 2,
   }, { value: arbiterPay }  // escrow = max(creatorPay, arbiterPay)
   );
   await tx.wait();
@@ -398,6 +399,7 @@ def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth)
         3,                                                # quota Q: passing scores needed (<= the jury's N)
         1,                                                # forfeitLine R (<= Q): below it the bond goes to the creator
         w3.to_wei(0.002, 'ether'),                        # bond: hunter bond attached at start (0 = bondless)
+        2,                                                # outcomes: 2 = [DONT_FUND, FUND]; 1 = the FUND score alone (Jumbo)
     )
     tx = escrow.functions.createBounty(params).build_transaction({
         'from': account.address,
@@ -439,6 +441,7 @@ def get_bounty(bounty_id):
         'quota': result[20],           # Q
         'forfeitLine': result[21],     # R
         'bond': result[22],            # wei
+        'outcomes': result[23],        # 2 = [DONT_FUND, FUND]; 1 = one number
     }
 
 def is_windowed(bounty_id):

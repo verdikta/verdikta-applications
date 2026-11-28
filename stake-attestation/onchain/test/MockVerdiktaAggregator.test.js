@@ -125,7 +125,7 @@ describe("MockVerdiktaAggregator (v2)", function () {
       const fns = iface.fragments.filter((f) => f.type === "function");
       expect(fns.map((f) => f.name).sort()).to.deep.equal([
         "beacons", "cancelUnsealed", "closeCommits", "drawJury", "ethOwed", "getEvaluation", "getJury",
-        "getOutcomeScores", "getRoundInfo", "isFailed", "maxJury", "maxOracleFee", "maxTimeout", "maxTotalFee", "promote",
+        "getOutcomeScores", "getResult", "getRoundInfo", "isFailed", "maxJury", "maxOracleFee", "maxTimeout", "maxTotalFee", "promote",
         "requestAIEvaluationWithApproval", "sealSeed", "settle", "withdrawEth",
       ]);
       for (const f of fns) expect(shape(mock.getFunction(f.format("sighash"))), f.name).to.deep.equal(shape(f));

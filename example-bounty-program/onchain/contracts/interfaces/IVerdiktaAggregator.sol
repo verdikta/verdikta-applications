@@ -103,6 +103,10 @@ interface IVerdiktaAggregator {
         view
         returns (uint256[] memory aggregated, string memory justifications, bool valid);
 
+    /// @notice The aggregated scores alone (no justifications: the aggregator joins those when asked,
+    ///         which costs far more gas). `valid` from phase 6.
+    function getResult(bytes32 aggId) external view returns (uint256[] memory aggregated, bool valid);
+
     /// @notice Every counted reveal's score for `outcome`, in reveal order (a short reveal gives 0).
     ///         `valid` is false before phase 6, for a failed round, and for an outcome past the result.
     function getOutcomeScores(bytes32 aggId, uint256 outcome)

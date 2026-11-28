@@ -1156,7 +1156,7 @@ function CreateBounty({ walletState }) {
         // Likewise the v2 decision settings (bond in wei as the server resolved it).
         decision: job.decisionSettings && job.decisionSettings.quota != null
           ? job.decisionSettings
-          : { jury: decision.jury, quota: decision.quota, forfeitLine: decision.forfeitLine, bond: decision.bond },
+          : { jury: decision.jury, quota: decision.quota, forfeitLine: decision.forfeitLine, bond: decision.bond, outcomes: bountyClass?.outcomes },
         onStep: (next, data) => {
           step = next;
           if (next === 'send') report('sign_requested', { step: next });

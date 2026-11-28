@@ -72,7 +72,8 @@ function normalizeDecisionSettings(bounty) {
       jury: normalizeJury(bounty),
       quota: Number(bounty.quota),
       forfeitLine: Number(bounty.forfeitLine),
-      bondWei: (bounty.bond ?? 0n).toString()
+      bondWei: (bounty.bond ?? 0n).toString(),
+      outcomes: Number(bounty.outcomes ?? 2) === 1 ? 1 : 2
     };
   } catch {
     return null;
@@ -80,13 +81,15 @@ function normalizeDecisionSettings(bounty) {
 }
 
 /**
- * The aggregated scores as percentages. Only a two-outcome [DONT_FUND, FUND] result counts
- * (BountyRules.judge); any other shape, a one-number result included, is "no result" (null).
+ * The aggregated scores as percentages: [DONT_FUND, FUND], or the FUND score alone on a one-number
+ * bounty (rejection 0). Whether the shape is the bounty's own, and so whether it is a result at
+ * all, is the contract's to say (BountyRules.judge, the lens's outcome); any other length is null.
  * Returns { acceptance, rejection } on 0..100.
  */
 function scoresToPercent(aggregated) {
   const v = (aggregated || []).map((x) => Number(x));
   if (v.length === 2) return { acceptance: v[1] / 10000, rejection: v[0] / 10000 };
+  if (v.length === 1) return { acceptance: v[0] / 10000, rejection: 0 };
   return null;
 }
 

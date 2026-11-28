@@ -851,6 +851,11 @@
         "internalType": "uint128",
         "name": "bond",
         "type": "uint128"
+      },
+      {
+        "internalType": "uint8",
+        "name": "outcomes",
+        "type": "uint8"
       }
     ],
     "stateMutability": "view",
@@ -1027,6 +1032,11 @@
             "internalType": "uint256",
             "name": "bond",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint8",
+            "name": "outcomes",
+            "type": "uint8"
           }
         ],
         "internalType": "struct BountyEscrow.CreateParams",
@@ -1326,6 +1336,11 @@
             "internalType": "uint128",
             "name": "bond",
             "type": "uint128"
+          },
+          {
+            "internalType": "uint8",
+            "name": "outcomes",
+            "type": "uint8"
           }
         ],
         "internalType": "struct BountyEscrow.Bounty",
@@ -1965,6 +1980,11 @@
             "internalType": "uint128",
             "name": "bond",
             "type": "uint128"
+          },
+          {
+            "internalType": "uint8",
+            "name": "outcomes",
+            "type": "uint8"
           }
         ],
         "internalType": "struct BountyEscrow.Bounty[]",

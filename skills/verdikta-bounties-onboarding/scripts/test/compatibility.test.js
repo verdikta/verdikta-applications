@@ -16,7 +16,7 @@ function fixture(c=config) {
 test('current generated create struct and three-argument prepare',()=>{
   assert.equal(iface.getFunction('createBounty').inputs.length,1);
   const create=iface.getFunction('createBounty').inputs[0].components;
-  assert.deepEqual(create.map(c=>c.name),['evaluationCid','requestedClass','threshold','submissionDeadline','targetHunter','creatorDeterminationPayment','arbiterDeterminationPayment','creatorAssessmentWindowSize','oracle','jury','quota','forfeitLine','bond']);
+  assert.deepEqual(create.map(c=>c.name),['evaluationCid','requestedClass','threshold','submissionDeadline','targetHunter','creatorDeterminationPayment','arbiterDeterminationPayment','creatorAssessmentWindowSize','oracle','jury','quota','forfeitLine','bond','outcomes']);
   assert.deepEqual(create[8].components.map(c=>c.name),['maxOracleFee','alpha','estimatedBaseCost','maxFeeBasedScaling','minOracleFee','withBeacons']);
   assert.deepEqual(create[9].components.map(c=>c.name+':'+c.type),['K:uint8','M:uint8','N:uint8','P:uint8','timeout:uint40']);
   const bounty=iface.getFunction('getBounty').outputs[0].components.map(c=>c.name);
@@ -69,7 +69,7 @@ test('SubmissionPrepared budget precedes CID; finalization includes paid bool; t
 test('decision settings: a size-class preset (Bondless Small by default), overrides, and USD only at a reviewed price',()=>{
   const d=decisionTerms(config);
   const small={K:6n,M:5n,N:4n,P:3n,timeout:300n};
-  assert.deepEqual({...d},{bountyClass:'bondless-small',className:'Bondless Small',jury:small,quota:3n,forfeitLine:1n,bond:0n,minOracleFee:0n,withBeacons:false});
+  assert.deepEqual({...d},{bountyClass:'bondless-small',className:'Bondless Small',outcomes:2n,jury:small,quota:3n,forfeitLine:1n,bond:0n,minOracleFee:0n,withBeacons:false});
   const p=creationTerms(config).params;
   assert.deepEqual([p.jury,p.quota,p.forfeitLine,p.bond,p.oracle.minOracleFee,p.oracle.withBeacons],[small,3n,1n,0n,0n,false]);
   // A preset with a USD bond or fee floor needs the wei amount, or an owner-reviewed ethUsd to convert it.
@@ -79,6 +79,9 @@ test('decision settings: a size-class preset (Bondless Small by default), overri
   assert.deepEqual([medium.jury,medium.quota,medium.forfeitLine,medium.bond,medium.minOracleFee,medium.withBeacons],[{K:8n,M:5n,N:4n,P:3n,timeout:300n},3n,2n,20000000000000000n,100000000000000n,false]);
   const jumbo=decisionTerms({...config,bountyClass:'jumbo',bond:'5',oracle:{...config.oracle,minOracleFee:'7'}});
   assert.equal(jumbo.withBeacons,true);assert.deepEqual(jumbo.jury,{K:50n,M:38n,N:27n,P:17n,timeout:600n});
+  // values per juror answer: Jumbo asks for one number, the others two; the config may name it
+  assert.equal(jumbo.outcomes,1n);assert.equal(creationTerms({...config,outcomes:1}).params.outcomes,1n);
+  assert.throws(()=>decisionTerms({...config,outcomes:3}),/outcomes/);
   // No class named: the smallest class offered for the reward at ethUsd (0.001 ETH x $2500 = $2.50: Bondless Small; 0.2 ETH = $500: Medium).
   assert.equal(decisionTerms({...config,ethUsd:2500}).bountyClass,'bondless-small');
   assert.equal(decisionTerms({...config,bountyAmount:'0.2',ethUsd:2500}).bountyClass,'medium');
@@ -93,7 +96,7 @@ test('decision settings: a size-class preset (Bondless Small by default), overri
   assert.throws(()=>decisionTerms({...config,jury:{Q:3}}),/unknown field/);
   for(const bad of [{bountyClass:'huge'},{quota:0},{quota:2,forfeitLine:3},{jury:{K:256}},{jury:{timeout:0}},{bond:'-1'},{bond:(1n<<96n).toString()},{oracle:{...config.oracle,withBeacons:'yes'}}]) assert.throws(()=>decisionTerms({...config,...bad}));
   // Every setting goes to the API explicitly, so the server picks no class and converts no price.
-  assert.deepEqual(decisionBody(medium),{bountyClass:'medium',jury:{K:8,M:5,N:4,P:3,timeout:300},quota:3,forfeitLine:2,bond:'20000000000000000',oracleMinOracleFee:'100000000000000',oracleWithBeacons:false});
+  assert.deepEqual(decisionBody(medium),{bountyClass:'medium',jury:{K:8,M:5,N:4,P:3,timeout:300},quota:3,forfeitLine:2,bond:'20000000000000000',oracleMinOracleFee:'100000000000000',oracleWithBeacons:false,outcomes:2});
 });
 test('the created bounty is read back field by field, the v2 settings included',()=>{
   const {params}=bindCreation(config,response),creator='0x3333333333333333333333333333333333333333';

@@ -32,7 +32,7 @@ export async function runCreate(lib, { contract = (address, abi, provider) => ne
   const network = getNetwork(), escrowAt = escrowAddress(network), provider = providerFor(network);
   const d = terms.decision;
   // What a hunter faces on this bounty (item 12's rule): shown in every review.
-  const decisionText = `Decision: ${d.className} preset${config.bountyClass == null ? ' (default)' : ''}; jury K ${d.jury.K} drawn, M ${d.jury.M} promoted, N ${d.jury.N} counted, P ${d.jury.P} clustered, round timeout ${d.jury.timeout} s; a round passes with ${d.quota} juror score(s) at or above the threshold, fewer than ${d.forfeitLine} forfeits the bond to you; hunter bond ${formatEther(d.bond)} ETH (${d.bond} wei); fee floor ${d.minOracleFee} wei; beacons ${d.withBeacons ? 'on' : 'off'}`;
+  const decisionText = `Decision: ${d.className} preset${config.bountyClass == null ? ' (default)' : ''}; jury K ${d.jury.K} drawn, M ${d.jury.M} promoted, N ${d.jury.N} counted, P ${d.jury.P} clustered, round timeout ${d.jury.timeout} s; each juror answers with ${d.outcomes === 1n ? 'one number, the FUND score' : 'two scores, [DONT_FUND, FUND]'}; a round passes with ${d.quota} juror score(s) at or above the threshold, fewer than ${d.forfeitLine} forfeits the bond to you; hunter bond ${formatEther(d.bond)} ETH (${d.bond} wei); fee floor ${d.minOracleFee} wei; beacons ${d.withBeacons ? 'on' : 'off'}`;
   try {
     const baseUrl = configuredBaseUrl ? configuredBaseUrl.replace(/\/+$/, '') : reviewedApiOrigin(network);
     await preflightDeployment(network, provider, baseUrl);

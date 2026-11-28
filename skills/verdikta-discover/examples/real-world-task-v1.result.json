@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "task_id": "fixture-real-world-001",
   "fixture_only": true,
-  "input_sha256": "29ca7e173e9c1e7d6337b28ad07402aa695e3068da05627b55ae5905d8f077af",
+  "input_sha256": "2846832eda019791ffad93cc9bef6033b4c050719c235c6bb3a4dd03b3c9940c",
   "performed": {
     "start": "2026-10-09T10:05:00Z",
     "end": "2026-10-09T10:25:00Z",
@@ -31,7 +31,7 @@
       "filename": "board-overview.jpg",
       "type": "PHOTO",
       "captured_at": "2026-10-09T10:08:00Z",
-      "description": "The whole board; the token VB-FIXTURE-7Q2K handwritten on paper, held at lower left.",
+      "description": "The whole board; the token FAKE-7QKM-4W9P handwritten on paper, held at lower left.",
       "shows_token": true
     },
     {

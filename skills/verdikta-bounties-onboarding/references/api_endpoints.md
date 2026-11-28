@@ -240,6 +240,25 @@ calldata, with `archiveShape: "unknown"` and a `warnings[]` entry with code
 the shape above before broadcasting. `POST /api/jobs/:jobId/submit/bundle` runs
 the same check when you pass `hunterCid` instead of files.
 
+For a real-world-task work order (`Service: real-world-task-v1` in the description),
+`/submit`, `/submit/bundle` and `/submit/prepare` also return
+`400 WORK_ORDER_CHECK_FAILED`, with no calldata and nothing pinned, when the
+archive or upload has no file named `result.json`
+(`WORK_ORDER_RESULT_MISSING`, `WORK_ORDER_RESULT_MISNAMED`,
+`WORK_ORDER_RESULT_NOT_JSON`), when `result.json` lists an evidence `filename`
+that is not an attached file, compared exactly (`WORK_ORDER_FILES_UNMATCHED`), or
+when its `input_sha256` is not the bounty's request digest
+(`WORK_ORDER_DIGEST_MISMATCH`). The body's `workOrderCheck.errors[]` carries each
+finding with its `fix`. These do not block and arrive in `warnings[]`:
+`WORK_ORDER_RESULT_INVALID` (result-schema or coverage findings),
+`WORK_ORDER_PDF_EVIDENCE` (a PDF reaches the jury as text, or not at all: attach
+images), `WORK_ORDER_LARGE_SUBMISSION` (over about 5 MB) and
+`WORK_ORDER_SCHEMA_UNCHECKED`. `/submit/dry-run` reports the same as its
+`work_order` check. Archives built by `/submit` end their query text with an index
+of the attachments (reference name, file name, type and the `fileDescriptions`
+entry), which is what lets a juror match files to `result.json`; describe each
+file in `fileDescriptions`.
+
 Params: hunter and hunterCid only. Oracle settings are chosen by the creator; hunters supply no addendum or fee parameters.
 
 ### Step 2: Start evaluation when nextAction says START

@@ -125,6 +125,37 @@ function reviewRequestErrors(request) {
   if (JSON.stringify(request).length > MAX_REQUEST_CHARS) errors.push('Request too large for the evaluation description: shorten the artifact text or the questions');
   return errors;
 }
+// Challenge tokens are read back from handwriting by people and by vision models, so a new token uses only characters
+// with no look-alike: no 0/O, 1/I/L, 5/S, 2/Z, 6/G or 8/B. (Bounty 398's token VD-MOBILE-9P6R-2026 was read as 9PGR by one juror.)
+export const CHALLENGE_TOKEN_ALPHABET = 'ACDEFHJKMNPQRTUVWXY3479';
+const TOKEN_LOOKALIKES = /[0O1IL5S2Z6G8B]/g;
+/** The look-alike characters in a token, each once, in order of appearance; empty when the token is unambiguous. */
+export const challengeTokenLookalikes = token => [...new Set(String(token ?? '').match(TOKEN_LOOKALIKES) || [])];
+/**
+ * A request as it is drafted: validateRequest plus the rules that apply to new work orders only. A bounty already created
+ * keeps its token, so validateResult (the hunter's check) does not apply them.
+ */
+export function validateDraftRequest(kind, request) {
+  const errors = validateRequest(kind, request);
+  if (errors.length || kind !== 'real-world-task-v1') return errors;
+  const bad = challengeTokenLookalikes(request.evidence_spec.challenge_token);
+  if (bad.length) errors.push(`The challenge token uses look-alike characters (${bad.join(' ')}): build it from ${CHALLENGE_TOKEN_ALPHABET} and hyphens only, or run scripts/challenge-token.mjs`);
+  return errors;
+}
+/**
+ * The evidence file names a real-world-task result lists, checked against the names of the files actually attached.
+ * Returns the errors a submission would fail on: the jury's first gate wants every item "listed in result.json with its filename".
+ */
+export function evidenceFileErrors(result, attachedNames) {
+  const attached = new Set(attachedNames), errors = [];
+  if (!attached.has('result.json')) errors.push('No attached file is named result.json');
+  for (const name of new Set((Array.isArray(result?.evidence) ? result.evidence : []).map(e => e?.filename).filter(n => typeof n === 'string'))) {
+    if (attached.has(name)) continue;
+    const near = attachedNames.find(n => n.toLowerCase() === name.toLowerCase());
+    errors.push(`result.json lists ${name}, which is not among the attached files${near ? ` (${near} differs only in case)` : ''}`);
+  }
+  return errors;
+}
 function taskRequestErrors(request) {
   const errors = [], start = Date.parse(request.time_window.start), end = Date.parse(request.time_window.end);
   if (!(end > start)) errors.push('The time window must end after it starts');

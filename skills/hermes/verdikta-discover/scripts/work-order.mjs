@@ -4,7 +4,7 @@
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { preview, previewText, templates } from './preview-core.mjs';
-import { validateRequest } from './validation.mjs';
+import { validateDraftRequest } from './validation.mjs';
 
 export { previewText };
 
@@ -42,7 +42,7 @@ export function checkWorkOrderDraft(assessment) {
   const checked = preview({ request: draft.request, template_id: draft.template_id, sharing_authorized: draft.sharing_authorized, procurement_mode: draft.procurement?.mode, targetHunter: draft.procurement?.targetHunter });
   if (!checked.draft || !sameJson(checked.draft, draft) || !sameJson(assessment.procurement, draft.procurement)) return fail('Stored draft does not match a fresh scoped preview');
   if (draft.request.fixture_only) return fail('Synthetic requests cannot be commissioned');
-  const errors = validateRequest(draft.template_id, draft.request);
+  const errors = validateDraftRequest(draft.template_id, draft.request);
   return errors.length ? fail(...errors) : { ok: true, errors: [], draft };
 }
 

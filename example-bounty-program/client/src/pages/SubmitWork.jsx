@@ -30,6 +30,7 @@ import {
   getBountyBadgeProps,
   isBountyOpen,
 } from '../utils/statusDisplay';
+import { isRealWorldTaskOrder, evidenceFileProblems } from '../utils/evidencePackSubmission';
 import './SubmitWork.css';
 
 // Upload limits. The server enforces the same ones (multer: 20 MB, 10 files),
@@ -84,6 +85,8 @@ function SubmitWork({ walletState }) {
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
   const [error, setError] = useState(null);
+  // Real-world-task work orders: file-name problems in the chosen files, shown before upload.
+  const [evidenceProblems, setEvidenceProblems] = useState([]);
   const [submissionResult, setSubmissionResult] = useState(null);
   const [showCIDDialog, setShowCIDDialog] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -115,6 +118,21 @@ function SubmitWork({ walletState }) {
       window.removeEventListener('drop', onDrop);
     };
   }, []);
+
+  // Real-world-task work orders: check the chosen file names against result.json as files are added or removed.
+  useEffect(() => {
+    let current = true;
+    if (!isRealWorldTaskOrder(job?.description) || files.length === 0) {
+      setEvidenceProblems([]);
+      return undefined;
+    }
+    const names = files.map((item) => item.file.name);
+    const resultFile = files.find((item) => item.file.name === 'result.json')?.file;
+    Promise.resolve(resultFile ? resultFile.text() : null)
+      .then((text) => { if (current) setEvidenceProblems(evidenceFileProblems(text, names)); })
+      .catch(() => { if (current) setEvidenceProblems([]); });
+    return () => { current = false; };
+  }, [files, job?.description]);
 
   // Load job details to check if submission is allowed
   useEffect(() => {
@@ -804,6 +822,19 @@ function SubmitWork({ walletState }) {
               Allowed formats: Code files (.py, .sol, .cpp, .js, .ts, .java, .c, .h, .go, .rs, etc.), documents (.txt, .md, .pdf, .docx), images (.jpg, .png, .bmp), and data files (.json, .xml, .yaml, .csv)<br />
               Do <strong>not</strong> zip or archive your deliverable — the AI oracle skips archive/binary files and scores the submission 0. Attach the individual files instead.
             </small>
+            {isRealWorldTaskOrder(job?.description) && (
+              <div className="evidence-pack-note" data-testid="evidence-pack-note">
+                <strong>Evidence pack:</strong> attach <code>result.json</code>, <code>evidence.md</code> and every evidence file under the exact
+                name <code>result.json</code> lists for it. Attach anything the jury must look at (photos, recording frames, screenshots) as
+                separate image files, not inside a PDF: a PDF reaches the jury as text only, or not at all. Keep each image near 1 MB and
+                the whole submission under about 5 MB. Links are archival; the jury grades from the attached files.
+                {evidenceProblems.length > 0 && (
+                  <ul className="evidence-pack-problems" data-testid="evidence-pack-problems">
+                    {evidenceProblems.map((problem) => <li key={problem}>{problem}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
           </div>
 
           {files.length > 0 && (

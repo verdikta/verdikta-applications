@@ -204,6 +204,10 @@
         {
           "version": "real-world-task-v1@1.0.0",
           "fingerprint": "600538b62c7ea382"
+        },
+        {
+          "version": "real-world-task-v1@1.1.0",
+          "fingerprint": "3d411ff35b87a06d"
         }
       ]
     },

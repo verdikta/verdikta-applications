@@ -1,0 +1,480 @@
+{
+  "_readme": "The three submissions to mainnet bounty 398 (real-world-task-v1@1.0.0, rejected at 43, 0 and 0 in November 2026), reduced to what the submission check reads: the bounty description, each archive's attached file names, types and sizes (from its manifest.json) and its result file with every free-text field replaced. Submissions 1 and 2 list evidence file names that match no attached file and have no file named result.json; submission 3 is consistent. Source archives: the hunterCid of each entry, on IPFS.",
+  "jobId": 398,
+  "description": "Human real-phone Verdikta onboarding test with original evidence\n\nOwner-approved human real-device onboarding test, open competition, 14-day performance window; original walkthrough recording, challenge-token photo and five usability findings. One of two tasks within approximately $25 combined budget.\n\nApproved work-order draft SHA-256: fab7fad606672545baa1f8238c67c28e9c55e87f80598fb73941a0474ad62b04\nService: real-world-task-v1\nRequest bytes SHA-256 (result.input_sha256): 446544f526173969331299a969fc0dab988d4e2dc3c8fd1b2f86014e059e39eb\nRequest (exact UTF-8 JSON bytes, no trailing newline):\n{\"schema_version\":\"1.0.0\",\"task_id\":\"verdikta-mobile-test-20261113\",\"fixture_only\":false,\"data_classification\":\"PUBLIC_NON_SENSITIVE\",\"task\":{\"summary\":\"A human unfamiliar with Verdikta performs a real-phone, read-only onboarding test and delivers a walkthrough recording plus five actionable usability findings. Agents may subcontract via Fiverr or comparable marketplaces; a listing alone is not completion.\",\"steps\":[\"On a real smartphone, begin a fresh visit to https://bounties.verdikta.org without signing in or connecting a wallet. Record the screen walkthrough.\",\"Find one public bounty. If none is open, use an awarded bounty and label it historical. Explain in your own words its deliverable, evidence requirements, payout, deadline and how work is judged.\",\"Attempt to locate the submission instructions without paying or sending anything. Record confusing or blocked points honestly; successful onboarding is not required.\",\"Deliver the original walkthrough recording through a stable public no-login download link, three original recording frames attached for jury inspection, a timestamped transcript and five concrete usability findings with proposed fixes.\"],\"constraints\":[\"Remote from anywhere; show only a neutral tabletop and the public website. No identifying private location, face, personal account, notifications, wallet address or bystanders.\",\"Read-only: no wallet connection, registration, purchase, payment, funded transaction or actual submission.\",\"An agent may commission a consenting human; fixed payout includes contractor costs, agent margin and submission fees. No extra reimbursement or paid marketplace listing required.\",\"Use a pseudonym. Explain unfamiliarity honestly; do not fabricate a novice test, bugs, quotes or successful actions.\",\"Record a 2-5 minute walkthrough with notifications disabled. Silent screen capture plus a timestamped written narration is acceptable; no voice or face required.\",\"Attach original unretouched evidence. No generated or composited evidence or digital challenge-token overlays.\",\"Evidence is assessed, not guaranteed proof. Findings and grading must be evaluable from the submitted text and attached frames alone (no external URLs need to be opened by the jury). Recording link is an archival deliverable; jury uses attached frames and transcript.\"]},\"location\":{\"description\":\"Remote from anywhere on a real smartphone; evidence shows only the device, a neutral tabletop and public Verdikta pages.\",\"remote_ok\":true},\"time_window\":{\"start\":\"2026-11-13T17:00:00Z\",\"end\":\"2026-11-27T17:00:00Z\",\"timezone\":\"UTC\"},\"evidence_spec\":{\"challenge_token\":\"VD-MOBILE-9P6R-2026\",\"items\":[{\"evidence_id\":\"E1\",\"type\":\"PHOTO\",\"requirement\":\"Original photo of the physical test phone showing a Verdikta page beside VD-MOBILE-9P6R-2026 handwritten on paper. No faces, accounts, private location clues or bystanders.\",\"count_min\":1,\"token_required\":true},{\"evidence_id\":\"E2\",\"type\":\"VIDEO_FRAME\",\"requirement\":\"Three original frames exported without alteration from the walkthrough: starting page, chosen bounty detail and submission-instruction attempt. Supply each recording timestamp; record obstacles rather than manufacturing success.\",\"count_min\":3,\"token_required\":false},{\"evidence_id\":\"E3\",\"type\":\"DOCUMENT\",\"requirement\":\"Report: original 2-5 minute recording public no-login download URL; timestamped transcript; bounty ID/URL; deliverable, evidence, payout, deadline and grading interpretation; five distinct findings each with observed behavior, recording timestamp, user impact and specific fix.\",\"count_min\":1,\"token_required\":false},{\"evidence_id\":\"E4\",\"type\":\"ATTESTATION\",\"requirement\":\"Pseudonymous dated statement: human performer previously unfamiliar with Verdikta, actual test on physical phone, UTC capture times, phone/OS/browser, whether subcontracted, consent to public release, no wallet/payment and all limitations.\",\"count_min\":1,\"token_required\":false}]},\"performer_requirements\":[\"A consenting adult human previously unfamiliar with Verdikta performs the test personally; no private identity evidence requested.\",\"An agent may commission and document the test but must not substitute an invented persona or simulated phone.\"]}\nHow to deliver: https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/references/fulfilment.md ; result.json must validate against https://raw.githubusercontent.com/verdikta/verdikta-applications/refs/heads/main/skills/verdikta-discover/schemas/real-world-task-v1.result.schema.json and carry the request bytes SHA-256 above as input_sha256.\nDeliver result.json, a readable evidence.md and every evidence file it names, attached to the submission. Photos the specification marks token_required must show the challenge token physically in the scene. Declare partial or undone steps; never fabricate or edit evidence.",
+  "submissions": [
+    {
+      "submissionId": 1,
+      "hunterCid": "QmTSHZF9rLwpD1Tu2wp1WTfCZf5vq1ZxHuDq6qE8Bf5znu",
+      "files": [
+        {
+          "reference": "submitted-work-1",
+          "name": "R2.md",
+          "type": "text/markdown",
+          "size": 17583
+        },
+        {
+          "reference": "submitted-work-2",
+          "name": "r1.json",
+          "type": "application/json",
+          "size": 6841
+        },
+        {
+          "reference": "submitted-work-3",
+          "name": "R3.md",
+          "type": "text/markdown",
+          "size": 3359
+        },
+        {
+          "reference": "submitted-work-4",
+          "name": "IMG_1094.jpeg",
+          "type": "image/jpeg",
+          "size": 136552
+        },
+        {
+          "reference": "submitted-work-5",
+          "name": "IMG_1099.png",
+          "type": "image/png",
+          "size": 1090184
+        },
+        {
+          "reference": "submitted-work-6",
+          "name": "IMG_1100.png",
+          "type": "image/png",
+          "size": 1111272
+        },
+        {
+          "reference": "submitted-work-7",
+          "name": "IMG_1101.png",
+          "type": "image/png",
+          "size": 987921
+        }
+      ],
+      "resultFile": "r1.json",
+      "result": {
+        "schema_version": "1.0.0",
+        "task_id": "verdikta-mobile-test-20261113",
+        "fixture_only": false,
+        "input_sha256": "446544f526173969331299a969fc0dab988d4e2dc3c8fd1b2f86014e059e39eb",
+        "performed": {
+          "start": "2026-11-15T01:30:45Z",
+          "end": "2026-11-15T06:55:00Z",
+          "location_note": "Free text removed from this fixture."
+        },
+        "steps": [
+          {
+            "step_index": 1,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 2,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 3,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 4,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          }
+        ],
+        "evidence": [
+          {
+            "evidence_id": "E1",
+            "filename": "E1_token_photo.jpg",
+            "type": "PHOTO",
+            "captured_at": "2026-11-15T06:54:00Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": true,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_t005.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-15T01:30:50Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_t018.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-15T01:31:03Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_t134.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-15T01:32:59Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E3",
+            "filename": "evidence.md",
+            "type": "DOCUMENT",
+            "captured_at": "2026-11-15T07:05:00Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false
+          },
+          {
+            "evidence_id": "E4",
+            "filename": "attestation.md",
+            "type": "ATTESTATION",
+            "captured_at": "2026-11-15T07:05:00Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false
+          }
+        ],
+        "attestation": {
+          "statement": "Free text removed from this fixture.",
+          "performer": "performer",
+          "signed_at": "2026-11-15T07:05:00Z"
+        },
+        "limitations": [
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture."
+        ]
+      }
+    },
+    {
+      "submissionId": 2,
+      "hunterCid": "QmPC62xSc4TfWK2WS6iQtEKqTa3P55S14KDfxwP96iASxm",
+      "files": [
+        {
+          "reference": "submitted-work-1",
+          "name": "IMG_1106.jpeg",
+          "type": "image/jpeg",
+          "size": 169312
+        },
+        {
+          "reference": "submitted-work-2",
+          "name": "IMG_1099.png",
+          "type": "image/png",
+          "size": 1090184
+        },
+        {
+          "reference": "submitted-work-3",
+          "name": "IMG_1100.png",
+          "type": "image/png",
+          "size": 1111272
+        },
+        {
+          "reference": "submitted-work-4",
+          "name": "IMG_1101.png",
+          "type": "image/png",
+          "size": 987921
+        },
+        {
+          "reference": "submitted-work-5",
+          "name": "R3.md",
+          "type": "text/markdown",
+          "size": 3695
+        },
+        {
+          "reference": "submitted-work-6",
+          "name": "R2.md",
+          "type": "text/markdown",
+          "size": 13774
+        },
+        {
+          "reference": "submitted-work-7",
+          "name": "R1.json",
+          "type": "application/json",
+          "size": 8366
+        },
+        {
+          "reference": "submitted-work-8",
+          "name": "R4.pdf",
+          "type": "application/pdf",
+          "size": 16694725
+        }
+      ],
+      "resultFile": "R1.json",
+      "result": {
+        "schema_version": "1.0.0",
+        "task_id": "verdikta-mobile-test-20261113",
+        "fixture_only": false,
+        "input_sha256": "446544f526173969331299a969fc0dab988d4e2dc3c8fd1b2f86014e059e39eb",
+        "performed": {
+          "start": "2026-11-15T01:30:45Z",
+          "end": "2026-11-15T06:55:00Z",
+          "location_note": "Free text removed from this fixture."
+        },
+        "steps": [
+          {
+            "step_index": 1,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 2,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 3,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 4,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          }
+        ],
+        "evidence": [
+          {
+            "evidence_id": "E1",
+            "filename": "E1_token_photo.jpg",
+            "type": "PHOTO",
+            "captured_at": "2026-11-15T06:54:00Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": true,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_t005.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-15T01:30:50Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_t018.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-15T01:31:03Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_t134.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-15T01:32:59Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E3",
+            "filename": "E3_recording_frames.pdf",
+            "type": "DOCUMENT",
+            "captured_at": "2026-11-15T01:30:45Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E3",
+            "filename": "evidence.md",
+            "type": "DOCUMENT",
+            "captured_at": "2026-11-15T07:40:00Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false
+          },
+          {
+            "evidence_id": "E4",
+            "filename": "attestation.md",
+            "type": "ATTESTATION",
+            "captured_at": "2026-11-15T07:40:00Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false
+          }
+        ],
+        "attestation": {
+          "statement": "Free text removed from this fixture.",
+          "performer": "performer",
+          "signed_at": "2026-11-15T07:40:00Z"
+        },
+        "limitations": [
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture."
+        ]
+      }
+    },
+    {
+      "submissionId": 3,
+      "hunterCid": "QmdW2eSkqUnPb6QGVG5MnvRq8GRNRTnym8CG79ykroh5Kv",
+      "files": [
+        {
+          "reference": "submitted-work-1",
+          "name": "result.json",
+          "type": "application/octet-stream",
+          "size": 8077
+        },
+        {
+          "reference": "submitted-work-2",
+          "name": "evidence.md",
+          "type": "application/octet-stream",
+          "size": 5167
+        },
+        {
+          "reference": "submitted-work-3",
+          "name": "E1_token_photo.jpg",
+          "type": "image/jpeg",
+          "size": 2512180
+        },
+        {
+          "reference": "submitted-work-4",
+          "name": "E2_frame_start.png",
+          "type": "image/png",
+          "size": 430466
+        },
+        {
+          "reference": "submitted-work-5",
+          "name": "E2_frame_bounty.png",
+          "type": "image/png",
+          "size": 551385
+        },
+        {
+          "reference": "submitted-work-6",
+          "name": "E2_frame_submit.png",
+          "type": "image/png",
+          "size": 216430
+        },
+        {
+          "reference": "submitted-work-7",
+          "name": "E3_report.txt",
+          "type": "text/plain",
+          "size": 8578
+        },
+        {
+          "reference": "submitted-work-8",
+          "name": "E4_attestation.txt",
+          "type": "text/plain",
+          "size": 1945
+        }
+      ],
+      "resultFile": "result.json",
+      "result": {
+        "schema_version": "1.0.0",
+        "task_id": "verdikta-mobile-test-20261113",
+        "fixture_only": false,
+        "input_sha256": "446544f526173969331299a969fc0dab988d4e2dc3c8fd1b2f86014e059e39eb",
+        "performed": {
+          "start": "2026-11-20T05:14:19Z",
+          "end": "2026-11-20T05:18:28Z",
+          "location_note": "Free text removed from this fixture."
+        },
+        "steps": [
+          {
+            "step_index": 1,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 2,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 3,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          },
+          {
+            "step_index": 4,
+            "status": "DONE",
+            "note": "Free text removed from this fixture."
+          }
+        ],
+        "evidence": [
+          {
+            "evidence_id": "E1",
+            "filename": "E1_token_photo.jpg",
+            "type": "PHOTO",
+            "captured_at": "2026-11-20T05:14:19Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": true,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_start.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-20T05:15:32Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_bounty.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-20T05:16:44Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E2",
+            "filename": "E2_frame_submit.png",
+            "type": "VIDEO_FRAME",
+            "captured_at": "2026-11-20T05:18:24Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E3",
+            "filename": "E3_report.txt",
+            "type": "DOCUMENT",
+            "captured_at": "2026-11-20T06:21:06Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          },
+          {
+            "evidence_id": "E4",
+            "filename": "E4_attestation.txt",
+            "type": "ATTESTATION",
+            "captured_at": "2026-11-20T06:21:06Z",
+            "description": "Free text removed from this fixture.",
+            "shows_token": false,
+            "notes": "Free text removed from this fixture."
+          }
+        ],
+        "attestation": {
+          "statement": "Free text removed from this fixture.",
+          "performer": "performer",
+          "signed_at": "2026-11-20T06:21:06Z"
+        },
+        "limitations": [
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture.",
+          "Free text removed from this fixture."
+        ]
+      }
+    }
+  ]
+}

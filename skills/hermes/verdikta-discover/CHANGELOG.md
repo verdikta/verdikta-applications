@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+`real-world-task-v1` 1.1.0, after mainnet bounty 398 rejected three evidence-pack submissions for reasons the wording allowed. A draft made with the 1.0.0 rubric does not re-derive: regenerate it from the assessment input. Bounties already created keep the rubric they pinned.
+
+- Rubric `real-world-task-v1` 1.1.0. The authenticity gate and the forbidden-content line fail fabricated or content-altered evidence (stock, reused, generated, composited or retouched), and say that disclosed format conversion, resizing or recompression, removal of location or other private metadata, privacy redaction, and reports or attestations written with tools or AI assistance do not fail it when they truthfully describe what was done. The evidence gate says a link is an archival deliverable the jury neither opens nor grades for opening. The token gate compares the photograph with the expected token and passes a handwritten character consistent with it. A bounty the task has the performer examine is not the bounty submitted to. Gates, weights and the recommended threshold are unchanged.
+- The delivery note asks for exact file names, image attachments and disclosure of conversions.
+- New challenge tokens use `ACDEFHJKMNPQRTUVWXY3479` and hyphens only (no 0/O, 1/I/L, 5/S, 2/Z, 6/G, 8/B). `scripts/challenge-token.mjs` prints one; a draft whose token has a look-alike character is `NEEDS_SCOPE` (`validateDraftRequest`). Existing bounties keep their tokens: the hunter-side check does not apply the rule.
+- `scripts/check-result.bundle.mjs --files <names...>`: for a real-world task, every evidence filename in `result.json` must be one of the attached files, and one of them must be `result.json` (`evidenceFileErrors`).
+- `references/fulfilment.md`: matching file names, images rather than PDFs and a size expectation, links as archival, what handling to disclose, writing the token, and naming the examined bounty apart from the submitted-to bounty. `references/drafting.md` and `references/service-templates.md` carry the token alphabet and the same points for the drafter.
+- The example request's token is now `FAKE-7QKM-4W9P`.
+
 ## 1.1.0 (2026-10-06)
 
 Two new service templates and a wider source rule. A draft made with 1.0.x does not re-derive under 1.1.0 (the rubrics changed): regenerate it from the assessment input.

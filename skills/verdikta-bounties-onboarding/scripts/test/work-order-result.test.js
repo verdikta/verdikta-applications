@@ -35,10 +35,17 @@ test('checkWorkOrderResult: no work order means nothing to check; a work order n
     const resultFile = `${dir}/result.json`, evidence = `${dir}/evidence.md`;
     await writeFile(evidence, '# evidence');
     await writeFile(resultFile, JSON.stringify(good));
-    const ok = await checkWorkOrderResult({ description, files: [resultFile, evidence] });
+    // A real-world task also uploads every evidence file result.json names, under that exact name.
+    const named = (good.evidence || []).map(e => `${dir}/${e.filename}`).filter(f => f !== evidence);
+    const ok = await checkWorkOrderResult({ description, files: [resultFile, evidence, ...named] });
     assert.deepEqual(ok, { workOrder: true, templateId: kind, errors: [] }, kind);
+    if (kind === 'real-world-task-v1') {
+      assert.ok(named.length > 0);
+      const renamed = await checkWorkOrderResult({ description, files: [resultFile, evidence, `${dir}/IMG_1094.jpeg`, ...named.slice(1)] });
+      assert.deepEqual(renamed.errors, [`result.json lists ${good.evidence[0].filename}, which is not among the attached files`]);
+    }
     await writeFile(resultFile, JSON.stringify(bad));
-    const digest = await checkWorkOrderResult({ description, files: [resultFile, evidence] });
+    const digest = await checkWorkOrderResult({ description, files: [resultFile, evidence, ...named] });
     assert.ok(digest.errors.some(e => /digest/.test(e)), `${kind}: ${digest.errors}`);
     const missing = await checkWorkOrderResult({ description, files: [evidence] });
     assert.match(missing.errors[0], /needs a result\.json/);

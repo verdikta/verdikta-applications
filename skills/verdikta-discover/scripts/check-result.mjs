@@ -5,14 +5,17 @@
 //
 //   node scripts/check-result.bundle.mjs --description bounty-description.txt --result result.json
 //   node scripts/check-result.bundle.mjs --request request.json --result result.json [--template <id>] [--allow-fixture]
+//   ... --files result.json evidence.md E1_token_photo.jpg ...   (a real-world task: the files you will attach)
 //
 // --description takes the bounty's evaluation description (GET /api/jobs/:id -> description, or the text on the bounty page):
 // the template, the exact request bytes and the digest result.input_sha256 must carry are read from it. --request takes the
 // request as a file whose bytes are exactly the committed ones (the digest is computed from the file). Prints one JSON object:
-// { ok, template_id, task_id, input_sha256, errors } and exits 1 when the result would fail.
+// { ok, template_id, task_id, input_sha256, errors } and exits 1 when the result would fail. --files takes the names (or paths) of
+// every file you will attach, to the end of the command line: each evidence filename in result.json must be one of them, exactly.
+// Only the names are used; the files are not opened.
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { validateResult } from './validation.mjs';
+import { validateResult, evidenceFileErrors } from './validation.mjs';
 import { parseWorkOrderDescription } from './work-order.mjs';
 import { inferTemplateId } from './preview-core.mjs';
 
@@ -24,7 +27,7 @@ const out = (obj, code) => { process.stdout.write(`${JSON.stringify(obj, null, 2
 
 try {
   const resultPath = flag('--result');
-  if (!resultPath || (!flag('--description') && !flag('--request'))) throw new Error('Usage: check-result.mjs (--description FILE | --request FILE [--template ID]) --result FILE [--allow-fixture]');
+  if (!resultPath || (!flag('--description') && !flag('--request'))) throw new Error('Usage: check-result.mjs (--description FILE | --request FILE [--template ID]) --result FILE [--allow-fixture] [--files NAME...]');
   const result = JSON.parse(await read(resultPath));
   let templateId, request, digest, parseErrors = [];
   if (flag('--description')) {
@@ -37,7 +40,8 @@ try {
     templateId = flag('--template') ?? inferTemplateId(request);
     if (!templateId) throw new Error('Name the template with --template; the request shape does not identify one');
   }
-  const errors = parseErrors.length ? parseErrors : validateResult(templateId, request, result, digest, { production: !has('--allow-fixture') });
+  const errors = parseErrors.length ? [...parseErrors] : validateResult(templateId, request, result, digest, { production: !has('--allow-fixture') });
+  if (has('--files') && templateId === 'real-world-task-v1') errors.push(...evidenceFileErrors(result, args.slice(args.indexOf('--files') + 1).map(f => f.split(/[\\/]/).pop())));
   out({ ok: errors.length === 0, template_id: templateId, task_id: request?.task_id ?? null, input_sha256: digest, errors }, errors.length ? 1 : 0);
 } catch (error) {
   out({ ok: false, errors: [error.message] }, 1);

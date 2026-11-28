@@ -1,5 +1,5 @@
 import { supplierAddress } from './address.mjs';
-import { validateRequest, validateLocalSummary, validateMarketContext, requestItemIds } from './validation.mjs';
+import { validateDraftRequest, validateLocalSummary, validateMarketContext, requestItemIds } from './validation.mjs';
 import sourceTemplate from '../templates/source-check-v1.template.json' with { type: 'json' };
 import packTemplate from '../templates/evidence-pack-v1.template.json' with { type: 'json' };
 import reviewTemplate from '../templates/review-v1.template.json' with { type: 'json' };
@@ -42,7 +42,7 @@ export function preview(input = {}) {
   sharing_authorized, unsuitable_reason = '', handoff_requested = false,
   procurement_mode = 'UNSELECTED', targetHunter = null, local_summary = null, market_context = null, network = 'UNSELECTED' } = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const kind = template_id ?? inferTemplateId(request);
-  const errors = validateRequest(kind, request);
+  const errors = validateDraftRequest(kind, request);
   let decision = 'PREVIEW', reason = local_summary?.mode === 'RESIDUAL'
     ? 'Part of the request was resolved locally by the agent, which is not independent verification. Only the remaining items need outside work.'
     : local_summary?.mode === 'NON_INDEPENDENT_PASS'

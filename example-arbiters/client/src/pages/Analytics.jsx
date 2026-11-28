@@ -1252,6 +1252,7 @@ function Analytics() {
                       <th key={key} className="tooltip-header" title={ARBITER_STATUS_DESCRIPTIONS[label]}>{label}</th>
                     ))}
                     <th className="tooltip-header" title="The keeper's scansAll(cls): whether a draw walks the whole class list (it is no longer than maxScan). When it does not, whether a draw finds enough arbiters depends on the seed, so a beacon round whose draw fails sends its prepay to the arbiter pool instead of refunding it.">Full scan</th>
+                    <th className="tooltip-header" title="The class list's slots against the arbiters listed in it (the keeper's classStats). A draw visits at most maxScan slots, holes and idle arbiters included, so a list much longer than its arbiters, or longer than maxScan, gives thin juries. Exits close their own hole; anyone can close the rest (compact) and take idle arbiters out (evict).">Slots / listed</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1275,6 +1276,23 @@ function Analytics() {
                           <td key={key} style={{ color: COLORS[key], fontWeight: 600 }}>{c[key] ?? 0}</td>
                         ))}
                         <td>{c.scansAll == null ? '—' : c.scansAll ? 'Yes' : 'No'}</td>
+                        {(() => {
+                          // the list's health (keeper classStats): slots a draw walks against the arbiters in it
+                          if (c.slots == null) return <td>—</td>;
+                          const empty = c.slots - c.listed;
+                          const over = data.arbiters.maxScan != null && c.slots > data.arbiters.maxScan;
+                          const warn = over || empty > Math.max(2, c.listed / 4);
+                          return (
+                            <td
+                              style={warn ? { color: COLORS.blocked, fontWeight: 600 } : undefined}
+                              title={`${c.slots} slots, ${c.listed} arbiters listed, ${c.ghosts} moved slot(s) waiting out their day. ` +
+                                (over ? `A draw visits at most ${data.arbiters.maxScan} slots, so it reaches only part of this class. ` : '') +
+                                (empty > 0 ? `${empty} slot(s) hold no arbiter: anyone can close them with the keeper's compact(${c.classId}, n).` : 'The list is dense.')}
+                            >
+                              {c.slots} / {c.listed}{warn ? ' ⚠' : ''}
+                            </td>
+                          );
+                        })()}
                       </tr>
                     ))}
                 </tbody>

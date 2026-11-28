@@ -50,6 +50,8 @@ const KEEPER_ABI = [
   'function isFrozen(bytes32 key) view returns (bool)',
   'function classSize(uint64 cls) view returns (uint256)',
   'function scansAll(uint64 cls) view returns (bool)',
+  'function classStats(uint64 cls) view returns (uint256 slots, uint256 listed, uint256 ghosts)',
+  'function maxScan() view returns (uint16)',
   'function points() view returns (uint16 gain, uint16 minor, uint16 major, uint16 fail, uint16 nocommit, uint16 start, uint16 cap)',
   'function stakeRequirement() view returns (uint256)',
   'function callDeadline() view returns (uint40)',
@@ -416,6 +418,22 @@ class VerdiktaService {
         scansAll = Boolean(await this._withRetry(() => keeper.scansAll(cls), 'scansAll'));
       } catch (_) { /* unknown */ }
     }
+    // The class list's health (review 2026-11-27, item 1): a draw visits at most maxScan slots of the
+    // list, holes and idle arbiters included, so a list longer than that, or one with many slots that
+    // hold no arbiter, finds fewer arbiters than the class has. Unknown when it cannot be read.
+    let classSlots = null;
+    let classListed = null;
+    let maxScan = null;
+    try {
+      const keeper = await this.getReputationKeeper();
+      const [st, ms] = await Promise.all([
+        this._withRetry(() => keeper.classStats(cls), 'classStats'),
+        this._withRetry(() => keeper.maxScan(), 'maxScan'),
+      ]);
+      classSlots = Number(st.slots);
+      classListed = Number(st.listed);
+      maxScan = Number(ms);
+    } catch (_) { /* unknown (an older keeper, or the chain could not be read) */ }
     const drawSize = K;
 
     const now = Math.floor(Date.now() / 1000);
@@ -471,6 +489,12 @@ class VerdiktaService {
         warnings.push(`Class ${cls} is longer than one selection walk covers, so how many eligible arbiters a draw finds depends on the seed. After a beacon stage a draw that finds none sends the unspent prepay to the arbiter pool, not back to the requester.`);
       }
     }
+    if (classSlots != null && maxScan != null && classSlots > maxScan) {
+      const share = Math.round((maxScan / classSlots) * 100);
+      warnings.push(`Class ${cls}'s list has ${classSlots} slots (${classListed} arbiters listed) and a draw visits at most ${maxScan} of them, about ${share}%: ` +
+        `it will find only about that share of the class's eligible arbiters, and a jury larger than what it finds repeats arbiters. ` +
+        (classSlots - classListed > 0 ? `${classSlots - classListed} of the slots hold no arbiter (anyone can close them: the keeper's compact).` : `Idle arbiters can be evicted from the list (the keeper's evict).`));
+    }
     if (pricedOut > 0) {
       warnings.push(`${pricedOut} selectable arbiter(s) in class ${cls} charge more than this bounty's fee ceiling (${ethers.formatEther(maxFeeWei)} ETH) and will not be drawn.`);
     }
@@ -515,6 +539,9 @@ class VerdiktaService {
       beaconQuorum,
       beaconsServable,
       scansAll,
+      classSlots,
+      classListed,
+      maxScan,
       pricedOutCount: pricedOut,
       distinctOwnersEligible,
       dominantOwner: dominantOwner && !dominantOwner.startsWith('unknown:') ? dominantOwner : null,

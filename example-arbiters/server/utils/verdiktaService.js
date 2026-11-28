@@ -154,6 +154,7 @@ const KEEPER_ABI = [
   "function liveRandom() view returns (uint8)",
   "function points() view returns (uint16 gain, uint16 minor, uint16 major, uint16 fail, uint16 nocommit, uint16 start, uint16 cap)",
   "function scansAll(uint64 cls) view returns (bool)",
+  "function classStats(uint64 cls) view returns (uint256 slots, uint256 listed, uint256 ghosts)",
   // Emitted by applyOutcomes inside the aggregator's settle transaction, so the
   // RoundSettled transaction's receipt holds each arbiter's new scores.
   "event ScoresUpdated(bytes32 indexed key, uint256 quality, uint256 timeliness)",
@@ -728,6 +729,11 @@ class VerdiktaService {
    * `scansAll` is the keeper's scansAll(cls): false means a draw walks only part
    * of the class list, so a beacon round whose draw then fails pays the
    * arbiter pool, not the requester.
+   * `slots` / `listed` / `ghosts` are the keeper's classStats(cls) (review
+   * 2026-11-27, item 1): the list's slots (a draw visits at most maxScan of
+   * them), the arbiters listed in it, and moved arbiters' old slots still
+   * waiting out their day. `maxScan` is returned beside maxJury. null when the
+   * keeper has no classStats (an older deployment).
    */
   async getArbiterAvailabilityByClass() {
     try {
@@ -794,11 +800,17 @@ class VerdiktaService {
 
       await mapWithConcurrency(Object.keys(byClass), 4, async (classId) => {
         byClass[classId].scansAll = await withRetry(() => keeper.scansAll(BigInt(classId))).then(Boolean).catch(() => null);
+        const st = await withRetry(() => keeper.classStats(BigInt(classId))).catch(() => null);
+        byClass[classId].slots = st ? Number(st.slots) : null;
+        byClass[classId].listed = st ? Number(st.listed) : null;
+        byClass[classId].ghosts = st ? Number(st.ghosts) : null;
       });
+      const maxScan = await withRetry(() => keeper.maxScan()).then(Number).catch(() => null);
 
       return {
         byClass,
         maxJury,
+        maxScan,
         totalOracles: oracles.filter(o => !o.error).length,
         timestamp: Date.now()
       };

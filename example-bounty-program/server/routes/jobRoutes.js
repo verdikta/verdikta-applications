@@ -6632,7 +6632,7 @@ function deadlineMismatchWarning(job, chainBounty) {
 router.patch('/:jobId/bountyId', async (req, res) => {
   try {
     const { jobId } = req.params;
-    const { bountyId, txHash, blockNumber } = req.body || {};
+    const { bountyId, txHash } = req.body || {};
 
     // Security: a link must be proven by the createBounty receipt. Without txHash this
     // route used to renumber any job to any bountyId and mark it onChain, so a caller
@@ -6663,6 +6663,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     }
     let eventEvaluationCid = null; // from the receipt's BountyCreated — identifies the job authoritatively
     let eventCreator = null;       // ...and its creator, which must be the job's (sec4-outside)
+    let receiptBlock = null;       // the receipt's block: what is stored (the body's blockNumber is ignored)
     if (txHash && currentContract) {
       try {
         const contractService = getContractService();
@@ -6730,6 +6731,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
           });
         }
 
+        receiptBlock = Number(receipt.blockNumber);
         logger.info('[jobs/bountyId] txHash verified', { txHash, foundBountyId, emittingContract });
       } catch (verifyErr) {
         // Do NOT proceed on an unverified claim: with several bounties created in parallel
@@ -6794,14 +6796,26 @@ router.patch('/:jobId/bountyId', async (req, res) => {
         }
       }
       if (!freshJob) { ctx.skipWrite = true; return { notFound: true }; }
-      // The evaluationCid of a pending job is public, so someone else's createBounty can carry it.
-      if (isUnlinked(freshJob) && !creatorMatches(freshJob, eventCreator)) {
+      // A job already linked to a bounty (by an earlier PATCH or by the sync) is never moved: the
+      // receipt may only confirm the link it has. An evaluationCid is public, so anyone can create a
+      // dust bounty that carries it and send that receipt here; before this check such a receipt
+      // renumbered the victim's record onto the attacker's bounty (review 2026-11-27, item 4).
+      if (freshJob.onChain || freshJob.syncedFromBlockchain) {
+        if (freshJob.jobId !== Number(bountyId) || freshJob.evaluationCid !== eventEvaluationCid) {
+          ctx.skipWrite = true;
+          return { alreadyLinked: { jobId: freshJob.jobId } };
+        }
+      } else if (!creatorMatches(freshJob, eventCreator)) {
+        // Unlinked (or orphaned): the evaluationCid of a pending job is public too, so the
+        // createBounty must come from the creator the job names.
         ctx.skipWrite = true;
         return { creatorMismatch: { jobCreator: freshJob.creator, eventCreator } };
       }
 
+      // Both from the verified receipt, never from the body (blockNumber used to be stored as sent:
+      // any JSON value up to the body limit, kept by the sync).
       freshJob.txHash      = txHash;
-      freshJob.blockNumber = blockNumber;
+      freshJob.blockNumber = receiptBlock;
       freshJob.onChain     = true;
 
       // Reconcile jobId to match on-chain ID (aligned ID system)
@@ -6906,6 +6920,14 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     }
     if (outcome.notFound) {
       return res.status(404).json({ success: false, error: 'Job not found' });
+    }
+    if (outcome.alreadyLinked) {
+      return res.status(409).json({
+        success: false,
+        error: 'Job already linked to another bounty',
+        details: `Job ${outcome.alreadyLinked.jobId} is already linked on chain and this receipt is for bounty #${Number(bountyId)}. A linked job is never moved.`,
+        fix: 'Use the jobId returned by your own POST /jobs/create, or GET /api/jobs/lookup?txHash=<your-createBounty-tx>.'
+      });
     }
     if (outcome.conflict) {
       return res.status(409).json({

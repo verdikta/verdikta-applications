@@ -157,7 +157,8 @@ library ClaimLogic {
         require(o.minOracleFee <= type(uint96).max, "bad fee floor");
         IVerdiktaAggregator.Jury calldata j = o.jury;
         require(
-            j.P != 0 && j.P <= j.N && j.N <= j.M && j.M <= j.K && j.N <= 40 && (j.P != 1 || j.N == 1) && j.timeout != 0,
+            j.P != 0 && j.P <= j.N && j.N <= j.M && j.M <= j.K && j.K - j.M < j.M && j.N <= 40 &&
+                (j.P != 1 || j.N == 1) && j.timeout != 0,
             "bad jury"
         );
         _checkBudget(verdikta, o.maxOracleFee, o);

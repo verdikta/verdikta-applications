@@ -166,7 +166,7 @@ function ReliabilityRow({ o, rowKey, lead, colSpan }) {
         {lead}
         <td>
           <strong>{o.timesSelected}</strong>
-          {o.skipped ? <span className="gas-muted" title="Slots skipped at the draw: its operator's owner() call failed or the request dispatch reverted. Never paid; charged the no-commit penalty if the round failed for lack of commits."> · {o.skipped} skipped</span> : ''}
+          {o.skipped ? <span className="gas-muted" title="Slots skipped at the draw: its operator's owner() call failed or the request dispatch reverted. Never paid and never charged: the job was not sent to them."> · {o.skipped} skipped</span> : ''}
         </td>
         <td style={{ color: rateColor(o.commitRatePct), fontWeight: 600 }}>
           {o.commits}{o.commitRatePct == null ? '' : ` (${o.commitRatePct}%)`}
@@ -247,7 +247,7 @@ const RELIABILITY_HEAD = (hData) => (
     <th className="tooltip-header" title="Commits received, and commits ÷ times drawn">Commits</th>
     <th className="tooltip-header" title="Times one of its commits was promoted (asked to reveal). Each round promotes M of the commits at random.">Promoted</th>
     <th className="tooltip-header" title="Reveals received, and reveals ÷ times promoted. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
-    <th className="tooltip-header" title={`Failed rounds charged here. A round needs M commits, then N reveals from the promoted commits (each request sets its own jury${juriesText(hData?.requirements?.juries)}). When a round fails with fewer than M commits, every slot that didn't commit is charged, including slots skipped at the draw; when it fails in the reveal phase, every promoted slot that didn't reveal is. Rounds where no arbiter committed are counted as likely malformed requests and not listed here, although the keeper still docks every drawn arbiter its no-commit penalty. Rounds that never got going are not charged at all: no jury drawable, beacon quorum missed, or M commits that were never closed or promoted.`}>Blameworthy</th>
+    <th className="tooltip-header" title={`Failed rounds charged here. A round needs M commits, then N reveals from the promoted commits (each request sets its own jury${juriesText(hData?.requirements?.juries)}). When a round fails with fewer than M commits, each slot that was sent the job and didn't commit is charged, but only if at least half of the round's K seats committed (with fewer, the request or a shared outage is at fault and nobody is charged); when it fails in the reveal phase, every promoted slot that didn't reveal is. Rounds where no arbiter committed are counted as likely malformed requests and not listed here; nobody is charged for them. Rounds that never got going are not charged at all: no jury drawable, beacon quorum missed, or M commits that were never closed or promoted.`}>Blameworthy</th>
   </>
 );
 
@@ -1335,7 +1335,7 @@ function Analytics() {
                 </div>
                 <div
                   className="health-stat"
-                  title={`Requests where not a single drawn arbiter committed. Every arbiter rejecting the same request usually means the request itself is unusable (e.g. a CID that isn't a valid archive or a manifest that fails validation), so these count as neither successes nor failures. The keeper still docks every drawn arbiter that didn't commit ${healthData.points?.nocommit != null ? `${healthData.points.nocommit} timeliness points (the no-commit penalty)` : 'the no-commit timeliness penalty'}, unless the arbiter was frozen at the round end.`}
+                  title={`Requests where not a single drawn arbiter committed. Every arbiter rejecting the same request usually means the request itself is unusable (e.g. a CID that isn't a valid archive or a manifest that fails validation), so these count as neither successes nor failures. Nobody is charged for such a round.`}
                 >
                   <span className="health-stat-value" style={{ color: COLORS.inactive }}>{healthData.success.likelyMalformed ?? 0}</span>
                   <span className="health-stat-label">Likely malformed</span>

@@ -311,15 +311,15 @@ function parseJuryOverride(v) {
 
 /**
  * BountyEscrow.createBounty's jury rule (the aggregator's structural one): K >= M >= N >= P >= 1,
- * N <= 40, P >= 2 unless N = 1, and a timeout. Returns an error string or null. The aggregator's
+ * 2M > K (more than half of the seats are promoted), N <= 40, P >= 2 unless N = 1, and a timeout. Returns an error string or null. The aggregator's
  * live limits (K <= maxJury and the keeper's shortlist, T+ < timeout <= maxTimeout and <= 1 day) are checked
  * separately when it can be read; each request checks them again.
  */
 function juryRuleError(j) {
   if (!j || typeof j !== 'object') return 'jury is missing';
   const { K, M, N, P, timeout } = j;
-  if (!(P >= 1 && P <= N && N <= M && M <= K && N <= 40 && (P !== 1 || N === 1))) {
-    return `jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury")`;
+  if (!(P >= 1 && P <= N && N <= M && M <= K && 2 * M > K && N <= 40 && (P !== 1 || N === 1))) {
+    return `jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, 2M > K, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury")`;
   }
   if (!(timeout > 0)) return 'jury.timeout must be a positive number of seconds';
   return null;
@@ -762,7 +762,7 @@ router.post('/create', limitPins, async (req, res) => {
       return res.status(400).json({
         error: 'Invalid oracle settings',
         details: oracleErr.message,
-        fix: 'Optional fields: bountyClass (' + CLASS_PRESETS.map((c) => c.key).join(' | ') + '; presets the rest, by default the smallest class offered for bountyAmountUSD), jury ({ K, M, N, P, timeout }: any of them, over the preset\'s; K >= M >= N >= P >= 1, N <= 40), quota (1 <= Q <= N), forfeitLine (R <= Q), bond (decimal ETH or integer wei), oracleMaxOracleFee (decimal ETH or integer wei, > 0, <= the aggregator\'s ceiling), oracleMinOracleFee (fee floor, decimal ETH or wei), oracleWithBeacons (bool), oracleAlpha (0..1000), oracleEstimatedBaseCost (decimal ETH or wei, < oracleMaxOracleFee), oracleMaxFeeBasedScaling (1..1000). Omit them to use the preset and the server defaults. GET /api/classes/presets lists the presets.',
+        fix: 'Optional fields: bountyClass (' + CLASS_PRESETS.map((c) => c.key).join(' | ') + '; presets the rest, by default the smallest class offered for bountyAmountUSD), jury ({ K, M, N, P, timeout }: any of them, over the preset\'s; K >= M >= N >= P >= 1, 2M > K, N <= 40), quota (1 <= Q <= N), forfeitLine (R <= Q), bond (decimal ETH or integer wei), oracleMaxOracleFee (decimal ETH or integer wei, > 0, <= the aggregator\'s ceiling), oracleMinOracleFee (fee floor, decimal ETH or wei), oracleWithBeacons (bool), oracleAlpha (0..1000), oracleEstimatedBaseCost (decimal ETH or wei, < oracleMaxOracleFee), oracleMaxFeeBasedScaling (1..1000). Omit them to use the preset and the server defaults. GET /api/classes/presets lists the presets.',
         defaults: {
           oracleMaxOracleFee: config.submissionDefaults.maxOracleFeeWei,
           oracleAlpha: config.submissionDefaults.alpha,

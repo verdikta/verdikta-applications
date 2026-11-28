@@ -26,16 +26,16 @@ test('a settled round is completed, a finalized one awaits settlement', () => {
   assert.equal(describeRound({ phase: PHASE.FINAL, slots, M, N }).label, 'COMPLETED (awaiting settlement)');
 });
 
-test('commit-phase failure blames every slot that did not commit, skipped slots included', () => {
+test('commit-phase failure blames the dispatched slots that did not commit, when half of the seats committed', () => {
   const slots = asSlots([D | C, D | C, D, D, D | C, 0]);
   slots[5].skipReason = 'operator owner() call failed';
   const r = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.COMMIT, slots, M, N });
   assert.equal(r.kind, 'failed');
   assert.equal(r.failStage, 'commit');
+  // 3 of 6 seats committed: the contract charges slots 2 and 3; slot 5 was never sent the job
   assert.deepEqual(r.blame, [
     { slot: 2, stage: 'commit' },
     { slot: 3, stage: 'commit' },
-    { slot: 5, stage: 'commit', skipped: 'operator owner() call failed' },
   ]);
   assert.equal(r.analysis.skipped, 1);
   assert.equal(r.analysis.nonResponding, 3);
@@ -45,10 +45,10 @@ test('no commit at all is likely malformed, kept out of the blame list', () => {
   const r = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.COMMIT, slots: asSlots([D, D, D, D, D, D]), M, N });
   assert.equal(r.kind, 'malformed');
   assert.deepEqual(r.blame, []);
-  // every slot is skipped at the draw: not a malformed request, the skipped slots are charged
+  // every slot is skipped at the draw: not a malformed request, and nobody was sent the job to be charged for
   const sk = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.COMMIT, slots: asSlots([0, 0, 0, 0, 0, 0]), M, N });
   assert.equal(sk.kind, 'failed');
-  assert.equal(sk.blame.length, 6);
+  assert.deepEqual(sk.blame, []);
 });
 
 test('M commits but never closed, or closed and never promoted, is notProgressed: committers paid, no blame', () => {
@@ -110,7 +110,7 @@ test('late reveals and quality codes are tallied', () => {
 });
 
 const pts = DEFAULT_POINTS;
-const so = (over) => slotOutcome({ commits: 5, M, qcode: 0, points: pts, ...over });
+const so = (over) => slotOutcome({ commits: 5, M, K: 6, qcode: 0, points: pts, ...over });
 
 test('slotOutcome: finished round', () => {
   const close = so({ settlePhase: PHASE.FINAL, flags: D | C | P | R | CT, qcode: 1 });
@@ -137,7 +137,7 @@ test('slotOutcome: failed in the reveal phase', () => {
   assert.equal(miss.frozenSkip, false);
 });
 
-test('slotOutcome: commit phase charges a dispatched non-committer only with M/2..M-1 commits', () => {
+test('slotOutcome: commit phase charges a dispatched non-committer only with K/2..M-1 commits', () => {
   const nc = so({ settlePhase: PHASE.COMMIT, commits: 3, flags: D });
   assert.equal(nc.code, CODE.NOCOMMIT_FAILED);
   assert.equal(nc.tDelta, -pts.nocommit);
@@ -145,7 +145,7 @@ test('slotOutcome: commit phase charges a dispatched non-committer only with M/2
   // a slot whose dispatch failed was never sent the job (review 2026-11-26 #7)
   assert.equal(so({ settlePhase: PHASE.COMMIT, commits: 3, flags: 0 }).scored, false);
   assert.match(so({ settlePhase: PHASE.COMMIT, commits: 3, flags: 0 }).note, /never dispatched/);
-  // fewer than half of M (5) committed: nobody is charged, a lone commit included
+  // fewer than half of K (6) committed: nobody is charged, a lone commit included
   for (const commits of [0, 1, 2]) assert.equal(so({ settlePhase: PHASE.COMMIT, commits, flags: D }).scored, false);
   assert.match(so({ settlePhase: PHASE.COMMIT, commits: 1, flags: D }).note, /fewer than half/);
   assert.equal(so({ settlePhase: PHASE.COMMIT, commits: 3, flags: D | C }).scored, false);
@@ -153,4 +153,17 @@ test('slotOutcome: commit phase charges a dispatched non-committer only with M/2
   assert.equal(so({ settlePhase: PHASE.COMMIT, commits: 5, flags: D }).scored, false);
   assert.equal(so({ settlePhase: PHASE.CLOSING, commits: 6, flags: D }).scored, false);
   assert.match(so({ settlePhase: PHASE.CLOSING, commits: 6, flags: D }).note, /never promoted/);
+});
+
+test('the no-commit rule counts against K, not M (review 2026-11-28): K 12, M 7', () => {
+  const big = (commits, flags) => slotOutcome({ settlePhase: PHASE.COMMIT, commits, M: 7, K: 12, flags, qcode: 0, points: pts });
+  for (const commits of [4, 5]) assert.equal(big(commits, D).scored, false, `${commits} commits: more than half of M, fewer than half of K`);
+  assert.equal(big(6, D).code, CODE.NOCOMMIT_FAILED);
+  assert.equal(big(6, D | C).scored, false);
+  // describeRound's blame follows the same rule: dispatched non-committers, only when half of the seats committed
+  const few = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.COMMIT, slots: asSlots([D | C, D, D, D, D, D]), M, N });
+  assert.deepEqual(few.blame ?? [], []);
+  assert.match(few.label, /nobody is charged/);
+  const half = describeRound({ phase: PHASE.FAILED, failedPhase: PHASE.COMMIT, slots: asSlots([D | C, D | C, D | C, D, D, 0]), M, N });
+  assert.deepEqual(half.blame.map((b) => b.slot), [3, 4]);   // the undispatched slot 5 is not blamed
 });

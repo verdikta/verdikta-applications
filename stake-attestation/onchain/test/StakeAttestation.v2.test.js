@@ -125,6 +125,9 @@ describe("StakeAttestation: the v2 aggregator", function () {
       ["P = 1 with N > 1", { ...SMALL, P: 1 }],
       ["N above 40", { K: 50, M: 45, N: 41, P: 17, timeout: 600 }],
       ["a zero timeout", { ...SMALL, timeout: 0 }],
+      // review 2026-11-28: more than half of the seats must be promoted (2M > K), as the aggregator requires
+      ["half of its seats or fewer promoted (K 12, M 6)", { K: 12, M: 6, N: 4, P: 3, timeout: 300 }],
+      ["many seats and M = 2", { K: 50, M: 2, N: 2, P: 2, timeout: 300 }],
     ]) {
       it(`list refuses a jury with ${label} ("bad jury")`, async function () {
         const { sa, maker } = await loadFixture(fixture);

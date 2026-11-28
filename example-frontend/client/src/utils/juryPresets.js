@@ -9,7 +9,7 @@
 // and the beacon flag only; Bondless Small has Small's jury). A copy, because
 // create-react-app does not import from outside src/: keep the two in step.
 //
-// The aggregator refuses a request with BadJury unless K >= M >= N >= P >= 1, N <= 40,
+// The aggregator refuses a request with BadJury unless K >= M >= N >= P >= 1, 2M > K, N <= 40,
 // P >= 2 (unless N = 1), K <= maxJury() and the keeper's shortlist, and
 // tPlus() < timeout <= maxTimeout() and <= 1 day (AggregatorLib.MAX_TIMEOUT). With fewer than K eligible arbiters the draw repeats
 // arbiters; it fails (refunded) only when none is eligible.
@@ -43,6 +43,7 @@ export function juryShapeError(jury) {
   const { K, M, N, P } = jury;
   if (![K, M, N, P].every((v) => Number.isInteger(v) && v >= 1 && v <= 255)) return 'K, M, N and P must be integers from 1 to 255';
   if (!(K >= M && M >= N && N >= P)) return 'need K >= M >= N >= P >= 1';
+  if (2 * M <= K) return 'M must be more than half of K';
   if (N > 40) return 'N may be at most 40';
   if (P < 2 && N !== 1) return 'P must be at least 2 unless N = 1';
   if (!Number.isInteger(jury.timeout) || jury.timeout <= 0) return 'timeout must be a positive number of seconds';

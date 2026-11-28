@@ -858,7 +858,7 @@ Easiest: POST /api/jobs/create and sign its onChain.transaction (the exact struc
   "bad fee floor", "bad budget".
 - jury, quota, forfeitLine, bond: the decision settings (see "Size classes" under
   "Evaluation Lifecycle (v2)"). jury is the bounty's own (K, M, N, P, timeout), sent with every
-  request to the escrow's one aggregator: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1
+  request to the escrow's one aggregator: K >= M >= N >= P >= 1, 2M > K, N <= 40, P >= 2 unless N = 1
   ("bad jury"); R <= Q <= N ("bad quota"); bond in wei ("bad bond"). Each request also checks
   the aggregator's live limits (K <= maxJury() and the keeper's shortlist, T+ < timeout <=
   maxTimeout(), from tPlus(), and timeout <= 86400 s, one day, whatever maxTimeout() says; BadJury).
@@ -1683,7 +1683,7 @@ router.get('/api/docs', (req, res) => {
           signature: 'createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, uint256 minOracleFee, bool withBeacons) oracle, (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout) jury, uint8 quota, uint8 forfeitLine, uint256 bond) p) payable returns (uint256 bountyId)',
           notes: [
             'ONE function taking a CreateParams struct — no overloads. Encode with ethers: contract.createBounty({ evaluationCid, requestedClass, threshold, submissionDeadline, targetHunter, creatorDeterminationPayment, arbiterDeterminationPayment, creatorAssessmentWindowSize, oracle: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling, minOracleFee, withBeacons }, jury: { K, M, N, P, timeout }, quota, forfeitLine, bond }, { value }) — or sign the onChain.transaction POST /jobs/create returns',
-            'Decision settings: jury (the bounty\'s own { K, M, N, P, timeout }: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, else "bad jury"; getBounty returns it flat as juryK..juryTimeout), quota Q and forfeitLine R with R <= Q <= the jury\'s N ("bad quota"), bond (wei each hunter posts at start: "bad bond"); oracle.minOracleFee is a per-juror fee floor ("bad fee floor"), oracle.withBeacons a beacon-drawn jury. Size-class presets: GET /api/classes/presets',
+            'Decision settings: jury (the bounty\'s own { K, M, N, P, timeout }: K >= M >= N >= P >= 1, 2M > K, N <= 40, P >= 2 unless N = 1, else "bad jury"; getBounty returns it flat as juryK..juryTimeout), quota Q and forfeitLine R with R <= Q <= the jury\'s N ("bad quota"), bond (wei each hunter posts at start: "bad bond"); oracle.minOracleFee is a per-juror fee floor ("bad fee floor"), oracle.withBeacons a beacon-drawn jury. Size-class presets: GET /api/classes/presets',
             'submissionDeadline is a unix timestamp in SECONDS (not milliseconds); both prepareSubmission and startPreparedSubmission must happen BEFORE it',
             'targetHunter: full wallet address for targeted bounties, address(0) for open bounties',
             'msg.value = max(creatorDeterminationPayment, arbiterDeterminationPayment); for no window pass both equal to the amount and creatorAssessmentWindowSize 0',

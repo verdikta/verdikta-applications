@@ -153,19 +153,17 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
       });
     }
     if (dispatched.length > 0 && committed.length === 0) {
-      // Every drawn arbiter is still docked points.nocommit by the keeper (unless
-      // frozen at the round end); the classification only keeps these rounds out
-      // of the arbiter-failure count, since a request every node rejects is
-      // usually unusable.
-      return out('malformed', 'LIKELY MALFORMED (no arbiter committed; each drawn arbiter still loses the no-commit timeliness penalty unless frozen at the round end)', { failStage: 'commit' });
+      // Nobody is charged for a round with no commit at all: the failure is the
+      // request's (one every node refuses) or a shared outage's.
+      return out('malformed', 'LIKELY MALFORMED (no arbiter committed; nobody is charged)', { failStage: 'commit' });
     }
-    // _settle charges T_NOCOMMIT_FAILED to every slot without a commit, including
-    // slots skipped at the draw (key set, flags 0)
-    return out('failed', `FAILED (commit phase: ${committed.length}/${M} commits)`, {
+    // _settle charges T_NOCOMMIT_FAILED only to a DISPATCHED slot without a commit, and only
+    // when at least half of the K seats committed (ReputationAggregator.settle; the rule was
+    // half of M until 2026-11-28). With fewer, nobody is to blame.
+    const charged = 2 * committed.length >= decoded.length;
+    return out('failed', `FAILED (commit phase: ${committed.length}/${M} commits${charged ? '' : '; fewer than half of the seats committed, nobody is charged'})`, {
       failStage: 'commit',
-      blame: notCommitted.map((s) => ({
-        slot: s.slot, stage: 'commit', ...(s.dispatched ? {} : { skipped: s.skipReason || 'skipped at the draw' }),
-      })),
+      blame: charged ? notCommitted.filter((s) => s.dispatched).map((s) => ({ slot: s.slot, stage: 'commit' })) : [],
     });
   }
   if (fp === PHASE.CLOSING) {
@@ -190,6 +188,7 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
  *   settled as finished). Draw / beacon failures are never settled.
  * @param {number} p.commits  commits the round received
  * @param {number} p.M        commits required
+ * @param {number} p.K        seats drawn (the jury's K): the no-commit rule counts against it
  * @param {number} p.flags    the slot's flags
  * @param {number} [p.qcode]  the slot's quality code (1 close, 2 off, 3 far)
  * @param {object} p.points   keeper points() (gain, minor, major, fail, nocommit, start, cap)
@@ -200,17 +199,18 @@ function describeRound({ phase, failedPhase = null, slots = [], M, N, fulfilled 
  *   frozenSkip: the keeper skips this outcome (OutcomeSkippedFrozen) if the
  *   arbiter was frozen at the round end — true only for a scored slot without a commit.
  */
-function slotOutcome({ settlePhase, commits, M, flags, qcode = 0, points }) {
+function slotOutcome({ settlePhase, commits, M, K, flags, qcode = 0, points }) {
   const f = decodeSlotFlags(flags);
   const ph = Number(settlePhase);
   const failed = ph !== PHASE.FINAL;
   let code = CODE.NONE;
   if (ph === PHASE.COMMIT) {
     // -nocommit only to a dispatched slot that did not commit, only if the round failed for lack of
-    // commits (not for want of a closeCommits call), and only if at least half of M committed
-    // (ReputationAggregator.settle; review 2026-11-26 #7)
+    // commits (not for want of a closeCommits call), and only if at least half of the K seats
+    // committed (ReputationAggregator.settle; review 2026-11-26 #7; half of M until 2026-11-28,
+    // which a requester could shape: K 50, M 2 let one junk commit charge the other 49)
     const c = Number(commits);
-    if (f.dispatched && !f.committed && c < Number(M) && 2 * c >= Number(M)) code = CODE.NOCOMMIT_FAILED;
+    if (f.dispatched && !f.committed && c < Number(M) && 2 * c >= Number(K)) code = CODE.NOCOMMIT_FAILED;
   } else if (ph === PHASE.CLOSING) {
     code = CODE.NONE;   // enough commits arrived; nobody promoted, so nobody failed to deliver
   } else if (f.promoted) {
@@ -231,8 +231,8 @@ function slotOutcome({ settlePhase, commits, M, flags, qcode = 0, points }) {
       ? 'not scored: the round had enough commits but was never promoted'
       : ph === PHASE.COMMIT && !f.dispatched
         ? 'not scored: the job was never dispatched to this slot'
-        : ph === PHASE.COMMIT && !f.committed && 2 * Number(commits) < Number(M)
-          ? 'not scored: fewer than half of M committed (the request\'s or a shared failure)'
+        : ph === PHASE.COMMIT && !f.committed && 2 * Number(commits) < Number(K)
+          ? 'not scored: fewer than half of the K seats committed (the request\'s or a shared failure)'
           : 'not scored';
   } else if (frozenSkip) {
     note = 'skipped by the keeper if the arbiter was frozen at the round end';

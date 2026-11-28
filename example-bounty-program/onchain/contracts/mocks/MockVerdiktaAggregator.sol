@@ -13,7 +13,7 @@ import {IVerdiktaAggregator} from "../interfaces/IVerdiktaAggregator.sol";
 ///           max(eff, minFee) x (K + B x P [+ quorum]) + eff x (drawRewardFees + promoteRewardFees):
 ///           msg.value first, then credit for any shortfall, any excess value to credit.
 ///         - The jury (K, M, N, P, timeout) is the request's, stored per round (getJury), and checked
-///           by the real rules (BadJury): K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1,
+///           by the real rules (BadJury): K >= M >= N >= P >= 1, 2M > K, N <= 40, P >= 2 unless N = 1,
 ///           K <= maxJury (no keeper here, so no separate shortlist bound), tPlus < timeout <= maxTimeout,
 ///           and timeout <= MAX_TIMEOUT (1 day, AggregatorLib's cap, whatever maxTimeout says).
 ///         - Sequential ids from 1, the same input limits (BadInput), pause gate, errors and events.
@@ -254,7 +254,7 @@ contract MockVerdiktaAggregator is IVerdiktaAggregator, ReentrancyGuard, Pausabl
         if (cids.length == 0 || cids.length > MAX_CID_COUNT || bytes(addendumText).length > MAX_ADDENDUM_LENGTH)
             revert BadInput();
         for (uint256 i = 0; i < cids.length; i++) if (bytes(cids[i]).length > MAX_CID_LENGTH) revert BadInput();
-        if (!(j.K >= j.M && j.M >= j.N && j.N >= j.P && j.N >= 1 && j.N <= 40 && (j.P >= 2 || j.N == 1) && j.P >= 1)
+        if (!(j.K >= j.M && 2 * uint256(j.M) > j.K && j.M >= j.N && j.N >= j.P && j.N >= 1 && j.N <= 40 && (j.P >= 2 || j.N == 1) && j.P >= 1)
             || j.K > maxJury || j.timeout <= tPlus || j.timeout > maxTimeout || j.timeout > MAX_TIMEOUT) revert BadJury();
 
         uint256 eff = maxFee < maxOracleFee ? maxFee : maxOracleFee;

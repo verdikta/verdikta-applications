@@ -211,7 +211,7 @@ test('create sends every v2 setting explicitly and checks the aggregator\'s live
  await assert.rejects(creationFixture(t,{quota:5,forfeitLine:1}),/quota 5 exceeds the jury's N \(4\)/);
  const g=await creationFixture(t,{jury:{timeout:5000}});
  await assert.rejects(runCreate(g.lib,g.env),/jury.timeout 5000 s must be above T\+ \(155 s\) and at most the aggregator's maxTimeout \(3600 s\)/);assert.equal(g.counts().creates,0);
- const k=await creationFixture(t,{jury:{K:60}});
+ const k=await creationFixture(t,{jury:{K:60,M:31}});   // 2M > K (the shape rule), K above the live limit
  await assert.rejects(runCreate(k.lib,k.env),/jury.K 60 exceeds the aggregator's maxJury \(50\)/);assert.equal(k.counts().creates,0);
  const h=await creationFixture(t);const other=h.env.contract;h.env.contract=(...a)=>({...other(...a),maxOracleFee:async()=>99n});
  await assert.rejects(runCreate(h.lib,h.env),/exceeds the aggregator's live ceiling/);assert.equal(h.counts().creates,0);

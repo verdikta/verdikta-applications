@@ -431,12 +431,14 @@ contract BountyEscrow {
         );
 
         // Oracle settings: reject anything the aggregator/keeper would reject at start.
-        // The jury: the aggregator's structural rules (AggregatorLib.checkJury), so a bad jury is
+        // The jury: the aggregator's structural rules (AggregatorLib.checkJury: K >= M >= N >= P >= 1,
+        // 2M > K, N <= 40, P >= 2 unless N = 1), so a bad jury is
         // refused here rather than at the first start. Its live limits (maxJury, the keeper's
         // shortlist, T+ < timeout <= maxTimeout) are owner-set and checked by each request.
         IVerdiktaAggregator.Jury memory j = p.jury;
         require(
-            j.P != 0 && j.P <= j.N && j.N <= j.M && j.M <= j.K && j.N <= 40 && (j.P != 1 || j.N == 1),
+            j.P != 0 && j.P <= j.N && j.N <= j.M && j.M <= j.K && 2 * uint256(j.M) > j.K && j.N <= 40 &&
+                (j.P != 1 || j.N == 1),
             "bad jury"
         );
         IVerdiktaAggregator agg = aggregator;

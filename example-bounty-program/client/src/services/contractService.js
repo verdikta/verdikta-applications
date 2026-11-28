@@ -90,7 +90,7 @@ const REVERT_MESSAGES = [
   ['rerun limit reached', 'This submission has used all 6 rounds.'],
   ['rerun window open', 'The re-run window is still open — only the hunter or bond funder can act until it closes.'],
   ['bad quota', 'Quota and forfeit line must satisfy 1 ≤ Q, R ≤ Q and Q ≤ the jury\'s N.'],
-  ['bad jury', 'The jury must satisfy K ≥ M ≥ N ≥ P ≥ 1, N ≤ 40, and P ≥ 2 unless N = 1.'],
+  ['bad jury', 'The jury must satisfy K ≥ M ≥ N ≥ P ≥ 1, 2M > K, N ≤ 40, and P ≥ 2 unless N = 1.'],
   ['badjury', 'The aggregator refused this bounty\'s jury: K above its maxJury (or the keeper\'s shortlist), or a timeout outside T+ < timeout ≤ maxTimeout (and at most one day).'],
   ['bad bond', 'The bond is too large.'],
   ['bad fee floor', 'The fee floor is too large.'],
@@ -415,7 +415,7 @@ class ContractService {
    * { K, M, N, P, timeout } (K drawn, M promoted, N counted, P clustered, the round timeout in
    * seconds), quota Q (arbiter scores at the threshold needed to pass), forfeitLine R (below R the
    * hunter's bond goes to the creator) and bond (wei). Defaults: the Small class (its jury, Q 3,
-   * R 1, no bond). Checked as the escrow does: K >= M >= N >= P >= 1, N <= 40, P >= 2 unless
+   * R 1, no bond). Checked as the escrow does: K >= M >= N >= P >= 1, 2M > K, N <= 40, P >= 2 unless
    * N = 1, and R <= Q <= N.
    */
   static resolveDecisionParams(decision = {}) {
@@ -437,8 +437,8 @@ class ContractService {
       if (!Number.isInteger(jury[f]) || jury[f] < 1 || jury[f] > 255) throw new Error(`Jury ${f} must be an integer from 1 to 255`);
     }
     if (!Number.isInteger(jury.timeout) || jury.timeout < 1 || jury.timeout > 2 ** 40 - 1) throw new Error('Jury timeout must be a positive whole number of seconds');
-    if (!(jury.P <= jury.N && jury.N <= jury.M && jury.M <= jury.K && jury.N <= 40 && (jury.P !== 1 || jury.N === 1))) {
-      throw new Error(`Jury ${jury.K}/${jury.M}/${jury.N}/${jury.P} must satisfy K >= M >= N >= P >= 1, N <= 40 and P >= 2 unless N = 1`);
+    if (!(jury.P <= jury.N && jury.N <= jury.M && jury.M <= jury.K && 2 * jury.M > jury.K && jury.N <= 40 && (jury.P !== 1 || jury.N === 1))) {
+      throw new Error(`Jury ${jury.K}/${jury.M}/${jury.N}/${jury.P} must satisfy K >= M >= N >= P >= 1, 2M > K, N <= 40 and P >= 2 unless N = 1`);
     }
     if (!Number.isInteger(quota) || quota < 1 || quota > 255) throw new Error('Quota (Q) must be an integer of at least 1');
     if (!Number.isInteger(forfeitLine) || forfeitLine < 0 || forfeitLine > quota) throw new Error('Forfeit line (R) must be an integer between 0 and Q');

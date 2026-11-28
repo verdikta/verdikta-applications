@@ -514,7 +514,7 @@ function juryProblem(j) {
   for (const k of ['K', 'M', 'N', 'P']) if (!int(j[k], 1, 255)) return `decision.jury.${k} must be an integer from 1 to 255.`;
   if (!int(j.timeout, 1, 2 ** 40 - 1)) return 'decision.jury.timeout must be a positive whole number of seconds.';
   const [K, M, N, P] = ['K', 'M', 'N', 'P'].map((k) => Number(j[k]));
-  if (!(P <= N && N <= M && M <= K && N <= 40 && (P !== 1 || N === 1))) return `decision.jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury").`;
+  if (!(P <= N && N <= M && M <= K && 2 * M > K && N <= 40 && (P !== 1 || N === 1))) return `decision.jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, 2M > K, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury").`;
   return null;
 }
 

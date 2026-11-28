@@ -72,7 +72,7 @@ const POINT_ROWS = [
   { label: '… and far', desc: 'More than 3 × the spread from the median of the counted reveals.', t: null, q: (p) => -p.major },
   { label: 'Promoted, no reveal (round finished)', desc: 'Asked to reveal and never did; the round finished anyway.', t: (p) => -p.major, q: null },
   { label: 'Promoted, no reveal (round failed)', desc: 'Asked to reveal and never did; the round failed for lack of reveals.', t: (p) => -p.fail, q: null },
-  { label: 'No commit (round failed)', desc: 'Sent the job but never committed, and the round failed for lack of commits with at least half of M committed.', t: (p) => -p.nocommit, q: null },
+  { label: 'No commit (round failed)', desc: 'Sent the job but never committed, and the round failed for lack of commits although at least half of its K seats committed.', t: (p) => -p.nocommit, q: null },
 ];
 // Render an address with a copyable code block and a block-explorer link.
 function AddressRow({ label, address, explorer }) {

@@ -283,7 +283,7 @@ export class ContractDebugger {
       recommendations.push({
         priority: 'CRITICAL',
         issue: 'Transaction will revert',
-        solution: `Dry run reverted: ${report.dryRun.revertReason}. Common causes: BadJury (the jury breaks K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, K <= maxJury and the keeper's shortlist, or tPlus < timeout <= maxTimeout and <= 1 day), BadInput (estimatedBaseCost not below the clamped fee ceiling, alpha above 1000, or scaling outside 1..65535), InsufficientPayment (value plus credit below maxTotalFee), or a beacon request on an aggregator without a beacon contract. In v2 the request does not draw the jury, so an empty arbiter pool shows up at drawJury(), not here.`
+        solution: `Dry run reverted: ${report.dryRun.revertReason}. Common causes: BadJury (the jury breaks K >= M >= N >= P >= 1, 2M > K, N <= 40, P >= 2 unless N = 1, K <= maxJury and the keeper's shortlist, or tPlus < timeout <= maxTimeout and <= 1 day), BadInput (estimatedBaseCost not below the clamped fee ceiling, alpha above 1000, or scaling outside 1..65535), InsufficientPayment (value plus credit below maxTotalFee), or a beacon request on an aggregator without a beacon contract. In v2 the request does not draw the jury, so an empty arbiter pool shows up at drawJury(), not here.`
       });
     }
 

@@ -2167,7 +2167,7 @@ class VerdiktaService {
     const slots = rawSlots.map((s, n) => {
       const flags = decodeSlotFlags(s.flags);
       const expected = settlePhase != null
-        ? slotOutcome({ settlePhase, commits: roundInfo.commits, M, flags: s.flags, qcode: s.qcode, points })
+        ? slotOutcome({ settlePhase, commits: roundInfo.commits, M, K: rawSlots.length, flags: s.flags, qcode: s.qcode, points })
         : null;
       return {
         slot: s.index,

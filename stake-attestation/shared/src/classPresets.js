@@ -78,7 +78,7 @@ export function listingOracleOf(key) {
 }
 
 /**
- * What ClaimLogic.setOracle refuses as "bad jury" (K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, a
+ * What ClaimLogic.setOracle refuses as "bad jury" (K >= M >= N >= P >= 1, 2M > K, N <= 40, P >= 2 unless N = 1, a
  * timeout above 0), and what the ABI cannot hold (each count a uint8, the timeout a uint40): a sentence, or
  * null for a jury the contract takes. The aggregator's live limits (maxJury, the keeper's shortlist,
  * T+ < timeout <= maxTimeout and one day) are checked by each request, not here.
@@ -92,6 +92,7 @@ export function juryProblem(j) {
   }
   if (!Number.isSafeInteger(j.timeout) || j.timeout < 1 || j.timeout > 2 ** 40 - 1) return 'the timeout is a whole number of seconds above 0';
   if (!(j.P >= 1 && j.P <= j.N && j.N <= j.M && j.M <= j.K)) return 'the jury must have K >= M >= N >= P >= 1';
+  if (2 * j.M <= j.K) return 'M is more than half of K';
   if (j.N > MAX_COUNTED) return `N is at most ${MAX_COUNTED}`;
   if (j.P === 1 && j.N !== 1) return 'P is at least 2 unless N is 1';
   return null;

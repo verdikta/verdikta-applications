@@ -20,7 +20,7 @@ test('the presets the skill defaults to: Bondless Small needs no ETH price, the 
   const b = presets.presetByKey('bondless-small');
   assert.deepEqual([b.jury, b.quota, b.forfeitLine, b.bondUsd, b.feeFloorUsd, b.withBeacons], [{ K: 6, M: 5, N: 4, P: 3, timeout: 300 }, 3, 1, 0, 0, false]);
   assert.equal(presets.JURIES, undefined);
-  // Every preset's jury passes the escrow's createBounty rule (K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1;
+  // Every preset's jury passes the escrow's createBounty rule (K >= M >= N >= P >= 1, 2M > K, N <= 40, P >= 2 unless N = 1;
   // R <= Q <= N), and its timeout is within the aggregator's defaults (T+ 155 < timeout <= maxTimeout 3600, K <= maxJury 50).
   for (const c of presets.CLASS_PRESETS) {
     const { K, M, N, P, timeout } = c.jury;

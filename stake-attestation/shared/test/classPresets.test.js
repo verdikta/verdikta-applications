@@ -66,8 +66,11 @@ test('every class\'s jury passes the contract\'s check', () => {
 test('juryProblem refuses what ClaimLogic.setOracle refuses as "bad jury", and what the ABI cannot hold', () => {
   const ok = { K: 6, M: 5, N: 4, P: 3, timeout: 300 };
   assert.equal(juryProblem({ K: 1, M: 1, N: 1, P: 1, timeout: 1 }), null, 'N = 1 with P = 1');
-  assert.equal(juryProblem({ K: 255, M: 40, N: 40, P: 2, timeout: 3600 }), null);
+  assert.equal(juryProblem({ K: 79, M: 40, N: 40, P: 2, timeout: 3600 }), null);
   const bad = [
+    // review 2026-11-28: more than half of the seats are promoted (2M > K), as the aggregator requires
+    [{ K: 255, M: 40, N: 40, P: 2, timeout: 3600 }, /M is more than half of K/],
+    [{ K: 12, M: 6, N: 4, P: 3, timeout: 300 }, /M is more than half of K/],
     [{ ...ok, P: 0 }, /K >= M >= N >= P >= 1/],
     [{ ...ok, P: 5 }, /K >= M >= N >= P >= 1/],
     [{ ...ok, N: 6 }, /K >= M >= N >= P >= 1/],

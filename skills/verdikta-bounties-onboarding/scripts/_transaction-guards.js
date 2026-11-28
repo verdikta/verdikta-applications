@@ -121,7 +121,7 @@ export function decisionTerms(config) {
   const quota = uint(merged.quota, 'quota', 255n), forfeitLine = uint(merged.forfeitLine, 'forfeitLine', 255n);
   // BountyEscrow.createBounty's jury rule (the aggregator's structural one); its live limits are checked per request.
   const { K, M, N, P } = jury;
-  if (!(P >= 1n && P <= N && N <= M && M <= K && N <= 40n && (P !== 1n || N === 1n))) throw new Error(`jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury")`);
+  if (!(P >= 1n && P <= N && N <= M && M <= K && 2n * M > K && N <= 40n && (P !== 1n || N === 1n))) throw new Error(`jury ${K}/${M}/${N}/${P} must satisfy K >= M >= N >= P >= 1, 2M > K, N <= 40 and P >= 2 unless N = 1 (contract: "bad jury")`);
   if (jury.timeout < 1n) throw new Error('jury.timeout must be a positive number of seconds');
   if (quota < 1n || forfeitLine > quota) throw new Error('quota must be at least 1 and forfeitLine at most quota');
   if (quota > N) throw new Error(`quota ${quota} exceeds the jury's N (${N}) (contract: "bad quota")`);

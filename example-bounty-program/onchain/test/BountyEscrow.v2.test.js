@@ -139,6 +139,9 @@ describe("BountyEscrow v2 (draw, Q-of-N, bond, re-runs, juries)", function () {
       ["a jury with P = 0", { jury: { ...SMALL, P: 0 } }, "bad jury"],
       ["a jury with P = 1 and N > 1", { jury: { ...SMALL, P: 1 }, quota: 1, forfeitLine: 1 }, "bad jury"],
       ["a jury with N above 40", { jury: { K: 50, M: 45, N: 41, P: 17, timeout: 600 } }, "bad jury"],
+      // review 2026-11-28: more than half of the seats must be promoted (2M > K), as the aggregator requires
+      ["a jury that promotes half of its seats or fewer (K 12, M 6)", { jury: { K: 12, M: 6, N: 4, P: 3, timeout: 300 } }, "bad jury"],
+      ["a jury of many seats and M = 2", { jury: { K: 50, M: 2, N: 2, P: 2, timeout: 300 }, quota: 2, forfeitLine: 1 }, "bad jury"],
       ["Q = 0", { quota: 0, forfeitLine: 0 }, "bad quota"],
       ["R above Q", { quota: 2, forfeitLine: 3 }, "bad quota"],
       ["Q above the jury's N", { quota: 5, forfeitLine: 1 }, "bad quota"],

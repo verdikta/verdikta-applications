@@ -32,7 +32,7 @@ interface IVerdiktaAggregator {
     /// @notice The jury a request asks for (ReputationAggregator.Jury; item 15's class presets): K drawn,
     ///         M promoted, N counted, P clustered, and the round timeout (seconds, from the draw). One
     ///         aggregator serves every class. The request reverts BadJury (AggregatorLib) unless
-    ///         K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N = 1, K <= maxJury() and the keeper's
+    ///         K >= M >= N >= P >= 1, 2M > K, N <= 40, P >= 2 unless N = 1, K <= maxJury() and the keeper's
     ///         shortlistSize(), and tPlus() < timeout <= maxTimeout().
     struct Jury {
         uint8 K;

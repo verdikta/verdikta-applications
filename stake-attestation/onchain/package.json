@@ -10,6 +10,7 @@
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
+    "test:quick": "node scripts/test-quick.js",
     "gas": "REPORT_GAS=1 hardhat test",
     "coverage": "hardhat coverage",
     "coverage:check": "hardhat coverage && node scripts/check-coverage.js",

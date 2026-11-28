@@ -65,7 +65,7 @@ export function noVerdictMeans(timeoutSeconds = null) {
 }
 
 /** Why a re-trigger of the same claim is likely to fail as the last round did (node P32). */
-export const RETRIGGER_SAME_CLAIM = 'A re-trigger sends the same committed claim to the same arbiters, so unless the cause was on their side it is likely to fail the same way: run check on this claim first, and re-trigger only once it does not abstain there.';
+export const RETRIGGER_SAME_CLAIM = 'A re-trigger sends the same committed claim to the same arbiters, so unless the cause was on their side it is likely to fail the same way: run check on this claim first, and re-trigger only once it does not abstain there. A claim round can be re-triggered once: if that round fails too, the claim can only be expired.';
 export const ABSTAIN_BY_CLAIM = `A run that ends this way decides nothing: every arbiter abstains the same way, with no commit and no verdict, unless its host differs. ${ABSTAIN_COSTS} So this check is the one place you can see it.`;
 export const ABSTAIN_BY_HOST = `No forecast: this machine's runner could not finish the run, which says nothing of your claim. Fix it and run check again. On the arbiters, an abstain costs this: ${ABSTAIN_COSTS}`;
 
@@ -227,7 +227,7 @@ export function retriggerNotice({ claimId, valueWei, deadline }) {
     `Re-trigger claim ${claimId}'s failed round: the request its reveal sent goes to the arbiters again, as a new round.`,
     `This sends ${eth(valueWei)} from this wallet: the top-up the contract quotes now, the live maximum fee less any prepay a refused submission left held. A round that ran took its prepay, so after one this is a fresh prepay in full.`,
     `If this round fails too: ${ABSTAIN_COSTS}`,
-    `Re-trigger before ${deadline} on the chain's clock: a round that fails again does not move that time.`,
+    `Re-trigger before ${deadline} on the chain's clock. This is the claim's one re-trigger after a round that ran: if this round fails too, no other can be sent and anyone may expire the claim.`,
   ].join('\n');
 }
 

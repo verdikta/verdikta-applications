@@ -626,7 +626,12 @@ describe("StakeAttestation: disputes, failed rounds, re-trigger and leftover rec
       await failAgain(sa, aggregator, claimId);
       c = await sa.getClaim(claimId);
       expect(c.failedAt).to.equal(failedAt); // a failed re-trigger does not extend the window
-      expect(await sa.retriggerDeadline(claimId)).to.equal(failedAt + REVEAL);
+      // review 2026-11-27, item 2: the one re-trigger after a round that ran was spent by the refused
+      // attempt's resend (the refused one drew no jury and was free to send again), so a second
+      // jury ran and no third can: the lens dates the expiry from the first failure
+      expect(await sa.claimRetriggered(claimId)).to.equal(true);
+      expect(await sa.retriggerDeadline(claimId)).to.equal(failedAt);
+      await expect(sa.connect(hunter).retrigger(claimId, { value: FEE })).to.be.revertedWith("already retriggered");
       await time.setNextBlockTimestamp(failedAt + REVEAL);
       await expect(sa.connect(hunter).retrigger(claimId, { value: FEE })).to.be.revertedWith("retrigger window over");
     });

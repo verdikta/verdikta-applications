@@ -104,10 +104,12 @@ test('a claim whose round ended with no verdict keeps its place until the re-tri
   // the lens answers a retriggerDeadline for a judged appeal too: that row is the appeal's, not this one
   for (const state of ['Committed', 'Revealable', 'Revealed', 'Judged', 'Disputed', 'Settled', 'Expired']) assert.equal(retriggerRow({ state, retriggerDeadline: NOW + DAY, now: NOW }), null, state);
   assert.equal(retriggerRow({ state: 'RoundFailed', retriggerDeadline: 0n, now: NOW }), null);
-  assert.match(fn(lens, 'retriggerDeadline'), /if \(c\.state == StakeAttestation\.ClaimState\.RoundFailed\) return ClaimRules\.retriggerDeadline\(c\.failedAt, window\);/);
+  // review 2026-11-27, item 2: once the one re-trigger is spent the lens answers failedAt (expirable at once)
+  assert.match(fn(lens, 'retriggerDeadline'), /if \(c\.state == StakeAttestation\.ClaimState\.RoundFailed\) \{[\s\S]*?if \(_retriggerSpent\(claimId, c\)\) return c\.failedAt;\s*return ClaimRules\.retriggerDeadline\(c\.failedAt, window\);/);
+  assert.match(fn(logic, 'retrigger'), /require\(used == 0, "already retriggered"\);/);
   assert.match(fn(logic, 'retrigger'), /require\(block\.timestamp < ClaimRules\.retriggerDeadline\(c\.failedAt, l\.revealWindow\), "retrigger window over"\);/);
-  assert.match(fn(logic, 'expire'), /if \(c\.state == StakeAttestation\.ClaimState\.RoundFailed\) \{[\s\S]*?block\.timestamp >= ClaimRules\.retriggerDeadline\(c\.failedAt, l\.revealWindow\), "retrigger window open"/);
-  assert.equal(fill(STRINGS.claim.retriggerOver, { time: 'T' }), 'the time to send the round again ended at T: anyone may expire the claim, which takes it out of commit order. Its bond goes to the maker if a round\'s jury answered with a result that is no verdict, and back to the hunter if every round ended with no result');
+  assert.match(fn(logic, 'expire'), /if \(c\.state == StakeAttestation\.ClaimState\.RoundFailed\) \{[\s\S]*?block\.timestamp >= ClaimRules\.retriggerDeadline\(c\.failedAt, l\.revealWindow\),\s*"retrigger window open"/);
+  assert.equal(fill(STRINGS.claim.retriggerOver, { time: 'T' }), 'no round can be sent again (the one re-trigger was used, or its time ended; since T): anyone may expire the claim, which takes it out of commit order. Its bond goes to the maker if a round\'s jury answered with a result that is no verdict, and back to the hunter if every round ended with no result');
   // the bond rule the text states is ClaimLogic.expire's (erratum E6 on the v2 aggregator)
   assert.match(fn(logic, 'expire'), /if \(c\.juryAnswered\) \{\s*why = StakeAttestation\.Expiry\.RoundsFailed;\s*\} else \{[\s\S]*?bondTo = c\.hunter;/);
   assert.match(component('ClaimPage.jsx'), /retriggerRow\(\{ state: d\.state, retriggerDeadline: d\.safeguards\.retriggerDeadline, now: d\.now \}\)/);

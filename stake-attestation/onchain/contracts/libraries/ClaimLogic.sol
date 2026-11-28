@@ -309,6 +309,15 @@ library ClaimLogic {
         }
         require(c.state == StakeAttestation.ClaimState.RoundFailed, "not failed");
         require(block.timestamp < ClaimRules.retriggerDeadline(c.failedAt, l.revealWindow), "retrigger window over");
+        // One re-trigger after a round that ran: a second jury, never a third (the hunter can sink
+        // a round by keeping the claim offline). A refused submission drew no jury: not counted.
+        if (c.requestId != bytes32(0)) {
+            bytes32 slot = ClaimRules.claimRetriggeredSlot(claimId);
+            uint256 used;
+            assembly ("memory-safe") { used := sload(slot) }
+            require(used == 0, "already retriggered");
+            assembly ("memory-safe") { sstore(slot, 1) }
+        }
         // A refused submission (requestId 0) left its prepay here; a round that ran spent it.
         uint256 held = c.requestId == bytes32(0) ? c.prepayWei : 0;
         emit StakeAttestation.Retriggered(claimId, c.listingId);
@@ -336,8 +345,14 @@ library ClaimLogic {
             //   commits or reveals, never promoted): nothing the hunter answers for, so the bond
             //   comes back;
             // - SubmissionsRefused: the aggregator refused every attempt: the bond comes back.
+            // ...or at once when the one re-trigger is spent: nothing is left to wait for.
+            bytes32 slot = ClaimRules.claimRetriggeredSlot(claimId);
+            uint256 used;
+            assembly ("memory-safe") { used := sload(slot) }
             require(
-                block.timestamp >= ClaimRules.retriggerDeadline(c.failedAt, l.revealWindow), "retrigger window open"
+                (used != 0 && c.requestId != bytes32(0)) ||
+                    block.timestamp >= ClaimRules.retriggerDeadline(c.failedAt, l.revealWindow),
+                "retrigger window open"
             );
             if (c.juryAnswered) {
                 why = StakeAttestation.Expiry.RoundsFailed;

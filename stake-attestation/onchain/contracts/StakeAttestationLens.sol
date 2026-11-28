@@ -59,6 +59,22 @@ contract StakeAttestationLens {
         assembly ("memory-safe") { claimId := sload(slot) }
     }
 
+    /// @notice Whether the claim's one re-trigger after a round that ran has been used (review
+    ///         2026-11-27, item 2; ClaimLogic.retrigger). Reads the namespaced slot
+    ///         ClaimRules.claimRetriggeredSlot names, which is the host's storage: at the
+    ///         StakeAttestation address directly, otherwise through it.
+    function claimRetriggered(uint256 claimId) public view returns (bool used) {
+        if (address(this) != address(host)) return StakeAttestationLens(address(host)).claimRetriggered(claimId);
+        bytes32 slot = ClaimRules.claimRetriggeredSlot(claimId);
+        assembly ("memory-safe") { used := sload(slot) }
+    }
+
+    /// @dev A RoundFailed claim with no re-trigger left: the one after a round that ran is spent
+    ///      and its last attempt was a round too (a refused submission, requestId 0, may be sent again).
+    function _retriggerSpent(uint256 claimId, StakeAttestation.Claim memory c) private view returns (bool) {
+        return c.requestId != bytes32(0) && claimRetriggered(claimId);
+    }
+
     /// @notice A claim's state as of now. The stored state, except that a Committed claim whose
     ///         fix window has ended (by time, release or roll-forward) is Revealable. Revealable
     ///         says nothing about commit order: a revealable claim still waits for every earlier
@@ -239,7 +255,11 @@ contract StakeAttestationLens {
     function retriggerDeadline(uint256 claimId) external view returns (uint256) {
         StakeAttestation.Claim memory c = host.getClaim(claimId);
         uint32 window = host.getListing(c.listingId).revealWindow;
-        if (c.state == StakeAttestation.ClaimState.RoundFailed) return ClaimRules.retriggerDeadline(c.failedAt, window);
+        if (c.state == StakeAttestation.ClaimState.RoundFailed) {
+            // the one re-trigger after a round that ran is spent: no re-trigger, expirable since it failed
+            if (_retriggerSpent(claimId, c)) return c.failedAt;
+            return ClaimRules.retriggerDeadline(c.failedAt, window);
+        }
         if (_appealRetriggerable(c)) return ClaimRules.retriggerDeadline(c.disputeEndedAt, window);
         return 0;
     }
@@ -253,6 +273,7 @@ contract StakeAttestationLens {
         StakeAttestation.Listing memory l = host.getListing(c.listingId);
         if (_appealRetriggerable(c)) return _disputeFee(l);
         if (c.state != StakeAttestation.ClaimState.RoundFailed) return 0;
+        if (_retriggerSpent(claimId, c)) return 0;
         uint256 held = c.requestId == bytes32(0) ? c.prepayWei : 0;
         uint256 live = _liveFee(l);
         return live > held ? live - held : 0;

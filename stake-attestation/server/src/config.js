@@ -96,6 +96,9 @@
 //   SA_ARCHIVE_TIMEOUT_MS          per gateway request, for a justification too (30000)
 //   SA_ARCHIVE_RETRY_MS            after a failed fetch, a justification's too, the first wait before the
 //                                  next; it doubles per failure, up to 6 h (30000)
+//   SA_KEEP_CLAIM_CONTENT          0 turns off pinning the content of unresolved claims (their ciphertext and
+//                                  claim archive, src/site/keepContent.js; on by default)
+//   SA_KEEP_MAX_BYTES              the largest claim content fetched to pin (67108864, the arbiters' cap)
 //   SA_ETH_USD_FEED                Chainlink's ETH/USD aggregator on the chain (Base mainnet:
 //                                  0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70); under-staked needs it
 //   SA_ETH_USD_MAX_AGE_SECONDS     an older answer is no price (3600)
@@ -506,6 +509,12 @@ export function loadConfig(env = process.env) {
       maxBytes: integer(env, 'SA_ARCHIVE_MAX_BYTES', 8 * 1024 * 1024, { min: 1024 }),
       timeoutMs: integer(env, 'SA_ARCHIVE_TIMEOUT_MS', 30000, { min: 100 }),
       retryMs: integer(env, 'SA_ARCHIVE_RETRY_MS', 30000),
+    }),
+    // Pinning the content of unresolved claims (src/site/keepContent.js): on by default; the cap is the
+    // arbiters' download cap, since a larger claim is one no jury reads.
+    keepContent: Object.freeze({
+      enabled: env.SA_KEEP_CLAIM_CONTENT !== '0',
+      maxBytes: integer(env, 'SA_KEEP_MAX_BYTES', 64 * 1024 * 1024, { min: 1024 }),
     }),
   });
 }

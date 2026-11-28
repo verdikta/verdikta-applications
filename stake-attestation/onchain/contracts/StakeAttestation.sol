@@ -1217,6 +1217,13 @@ contract StakeAttestation is Ownable2Step {
     ///         claim holds the queue for at most revealWindow plus one round). Failed means: a
     ///         round the arbiters ran that settled no verdict, a completed result that is no
     ///         verdict, or a submission the aggregator refused.
+    ///         ONCE after a round that ran ("already retriggered" after that; the lens's
+    ///         claimRetriggered): the hunter pins the claim and its ciphertext, a jury that cannot
+    ///         fetch them does not commit, and such a round costs only its base fees, so without
+    ///         the cap each re-trigger was another jury to choose from (review 2026-11-27, item
+    ///         2). A claim gets at most two juries. A refused submission drew no jury and may be
+    ///         sent again inside the window. Once the re-trigger is spent and its round has
+    ///         failed too, anyone may expire the claim at once.
     /// @dev Payable (erratum E3): msg.value tops the held prepay up to the live maxTotalFee (the
     ///      lens quotes it as retriggerTopUp). After a round that ran its prepay was spent, so a
     ///      fresh one is due in full; after a refused submission the held prepay goes into the new

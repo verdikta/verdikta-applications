@@ -86,7 +86,8 @@ Node 22 (`.nvmrc`; the packages also run on Node 20). Each package installs on
 its own:
 
 ```bash
-cd stake-attestation/onchain && npm ci && npx hardhat test
+cd stake-attestation/onchain && npm ci && npx hardhat test   # the full suite, about half an hour
+cd stake-attestation/onchain && npm run test:quick           # about 2 minutes: everything but the three long files (below)
 cd stake-attestation/server && npm ci && npm test
 cd stake-attestation/client && npm ci && npm test && npx playwright install chromium && npx playwright test
 cd stake-attestation/tool && npm ci && npm test
@@ -94,6 +95,13 @@ cd stake-attestation/shared && npm ci && npm test
 cd stake-attestation/builder && npm ci && npm test && npm run test:docker
 cd stake-attestation/e2e && npm ci && npm test
 ```
+
+`npm run test:quick` in `onchain/` (`scripts/test-quick.js`) is for everyday use: every test file
+except the random-sequence funds-conservation check (`StakeAttestation.invariant.test.js`, most of
+the full run), the differential check against `@verdikta/common` and the launch smoke test; a new
+test file is in it unless the script names it. `npm run test:quick -- claims hold` runs only the
+quick files whose names contain those words. Run the full suite (`npm test`) periodically, before a
+review package, and always before a deployment.
 
 `npm run gas` in `onchain/` prints the gas report, `npm run coverage` runs
 solidity-coverage, `npm run coverage:check` runs it and fails below 95% line
@@ -250,7 +258,16 @@ the one-line disclosure addendum of erratum E1.
 - **Failed rounds and the bond** (erratum E6, as the v2 aggregator lets it be
   applied). A round that ends with no verdict leaves the claim `RoundFailed`; the
   hunter may `retrigger` it (a fresh prepay) until `revealWindow` after its first
-  failure, and then anyone may `expire` it. Where the bond goes depends on how the
+  failure, and then anyone may `expire` it. **One re-trigger after a round that ran**
+  (review 2026-11-27, item 2; `already retriggered`, the lens's `claimRetriggered`):
+  the hunter pins the claim and its ciphertext, a jury that cannot fetch them does not
+  commit, and such a round costs only its base fees, so unlimited re-triggers were
+  unlimited juries to choose from. A claim gets at most two juries; a submission the
+  aggregator refused drew none and may be sent again inside the window. Once the
+  re-trigger is spent and its round has failed too, anyone may `expire` the claim at
+  once (`retriggerDeadline` then answers `failedAt`, `retriggerTopUp` 0). The flag is a
+  namespaced storage slot (`ClaimRules.claimRetriggeredSlot`), so the `Claim` struct,
+  its ABI and StakeAttestation's size are unchanged. Where the bond goes depends on how the
   rounds failed: **to the maker** (`Expiry.RoundsFailed`) if some round's jury
   answered with a result that is no verdict (a vector of the wrong length or sum, a
   one-number answer: the claim's `juryAnswered`); **back to the hunter** if every
@@ -975,6 +992,18 @@ the server writes goes through the shared banned-words helper. The feed reads a 
 download (`SA_ARCHIVE_MAX_BYTES`) and on each member read, inflated or not. Archive reads run
 beside the indexer, one run at a time, so a slow gateway never delays a chain read; a failed
 fetch is retried after `SA_ARCHIVE_RETRY_MS`, doubling, counted from the failure.
+
+**Claims' content is pinned** (review 2026-11-27, item 2; `src/site/keepContent.js`). Every round of
+a claim has its jury fetch the hunter-pinned ciphertext and claim archive, and a jury that cannot
+does not commit: a hunter with one favourable verdict could take them offline and have the maker's
+dispute and both confirmations end with no verdict. So, beside the indexer, the site fetches the
+`ciphertextCid` of each `Disclosed` and the `bcid` of each `Revealed` while the claim is unresolved
+(at most `SA_KEEP_MAX_BYTES`, default 64 MiB, the arbiters' cap) and pins them with the site's
+pinning backend, which must answer the same CID (a raw sha2-256 CID always does; another form when
+the backend chunks as the hunter's pinner did; otherwise it is logged as `KEEP_OTHER_CID` and not
+kept). A fetch or pin that fails is retried with the archives' backoff, four CIDs per run.
+`SA_KEEP_CLAIM_CONTENT=0` turns it off. It cannot help a round whose content was never online: the
+contract's one re-trigger per claim round bounds that.
 
 **Claims that failed integrity** (node P10, owner decision Q35; `server/src/site/evidence.js`,
 `server/src/record/integrity.js`). A failed integrity check with no tamper flag settles with all weight

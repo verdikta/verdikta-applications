@@ -127,6 +127,7 @@
   {"stateMutability":"payable","type":"receive"},
   {"inputs":[{"internalType":"uint256","name":"listingId","type":"uint256"}],"name":"acceptsLateClaims","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},
   {"inputs":[{"internalType":"uint256","name":"claimId","type":"uint256"}],"name":"appealDeadline","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+  {"inputs":[{"internalType":"uint256","name":"claimId","type":"uint256"}],"name":"claimRetriggered","outputs":[{"internalType":"bool","name":"used","type":"bool"}],"stateMutability":"view","type":"function"},
   {"inputs":[{"internalType":"uint256","name":"claimId","type":"uint256"}],"name":"claimState","outputs":[{"internalType":"enum StakeAttestation.ClaimState","name":"","type":"uint8"}],"stateMutability":"view","type":"function"},
   {"inputs":[{"internalType":"uint256","name":"claimId","type":"uint256"}],"name":"claimTimes","outputs":[{"internalType":"uint256","name":"discloseDeadline","type":"uint256"},{"internalType":"uint256","name":"revealableAt","type":"uint256"},{"internalType":"uint256","name":"revealDeadline","type":"uint256"}],"stateMutability":"view","type":"function"},
   {"inputs":[{"internalType":"uint256","name":"listingId","type":"uint256"}],"name":"commitPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},

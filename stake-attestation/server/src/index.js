@@ -1,5 +1,6 @@
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
+import { createPinner } from './pinning/index.js';
 import { createGatewayFetcher } from './site/archives.js';
 import { createJustificationFetcher } from './site/evidence.js';
 import { createChainProvider, createSite } from './site/index.js';
@@ -15,6 +16,9 @@ const logger = {
   debug: () => {},
 };
 
+// One pinning backend for the listing archives (the app) and for claims' content (the site).
+const pinner = createPinner(config.pinning);
+
 // The chain side (indexer, keeper, feed, record, badge) when a deployment is configured.
 let site = null;
 if (config.chain) {
@@ -24,6 +28,8 @@ if (config.chain) {
     env: process.env,
     fetchArchive: createGatewayFetcher(config.archives, logger),
     fetchJustification: createJustificationFetcher(config.archives, logger),
+    fetchContent: createGatewayFetcher({ ...config.archives, maxBytes: config.keepContent.maxBytes }, logger),
+    pinner,
     logger,
   });
   site.start();
@@ -35,7 +41,7 @@ if (config.chain) {
   }
 }
 
-const app = createApp({ config, logger, site });
+const app = createApp({ config, logger, site, pinner });
 // What the last server started and nothing follows now is cancelled first (node P15).
 app.buildRuns?.start();
 app.listen(config.port, config.host, () => {

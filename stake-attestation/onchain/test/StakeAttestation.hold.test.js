@@ -506,10 +506,13 @@ describe("StakeAttestation: the maker's hold (P39)", function () {
       "function hold(uint256 listingId)",
     ];
 
+    // added after the hold, also without touching a fragment that was there (review 2026-11-27, item 2)
+    const ADDED_SINCE = ["function claimRetriggered(uint256 claimId) view returns (bool used)"];
+
     it("additive: every fragment the merged ABI had before the hold is unchanged, and the additions are hold, heldAt and Held", function () {
       const lines = mergedAbi(hre.artifacts).map((x) => ethers.Fragment.from(x).format("full"));
-      for (const a of ADDED) expect(lines, a).to.include(a);
-      const before = lines.filter((l) => !ADDED.includes(l)).sort();
+      for (const a of [...ADDED, ...ADDED_SINCE]) expect(lines, a).to.include(a);
+      const before = lines.filter((l) => !ADDED.includes(l) && !ADDED_SINCE.includes(l)).sort();
       expect(before.length).to.equal(145);
       expect(ethers.id(before.join("\n"))).to.equal(ABI_BEFORE_HOLD);
     });

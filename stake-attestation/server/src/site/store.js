@@ -118,6 +118,7 @@ function emptyState(identity) {
     archives: {}, // listingCid -> what the listing archive says (image, scope), or why it could not be read
     control: { repositories: {}, deployments: {}, terms: {}, forks: {}, devKeys: [] }, // the control facts' answers (src/control/); a file from before them has none or some
     evidence: {}, // justification CID -> what its upload says of integrity (src/site/evidence.js); a file from before it has none
+    kept: {}, // claim content CID -> whether this site pinned it (src/site/keepContent.js); a file from before it has none
     keeper: { inflight: null, foreign: [], last: null },
   };
 }

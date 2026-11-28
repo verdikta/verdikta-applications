@@ -100,6 +100,15 @@ library ClaimRules {
     ///         once): a re-triggered round that fails again does not extend the window. §12 puts
     ///         the re-trigger "inside the reveal window"; measured from the failure, because a
     ///         round can fail after the reveal deadline it was sent before.
+    /// @notice Review 2026-11-27, item 2: the storage slot that holds 1 once the claim's one
+    ///         re-trigger after a round that ran has been used (ClaimLogic.retrigger), else 0. A
+    ///         namespaced slot of StakeAttestation's storage, as validArchiveSlot: no change to
+    ///         the Claim struct, its ABI or StakeAttestation's size. Read by the lens
+    ///         (claimRetriggered).
+    function claimRetriggeredSlot(uint256 claimId) internal pure returns (bytes32) {
+        return keccak256(abi.encode(keccak256("verdikta.stakeAttestation.claimRetriggered"), claimId));
+    }
+
     function retriggerDeadline(uint64 failedAt, uint32 revealWindow) internal pure returns (uint256) {
         return uint256(failedAt) + revealWindow;
     }

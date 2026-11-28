@@ -54,6 +54,7 @@ import { refreshArchives } from './archives.js';
 import { refreshEvidence } from './evidence.js';
 import { buildFeed } from './feed.js';
 import { createIndexer } from './indexer.js';
+import { keepClaimContent } from './keepContent.js';
 import { createKeeper, keeperWallet } from './keeper.js';
 import { feedEvents, listingOf, project, publicEvent } from './projection.js';
 import { sameRepository, stateReader, withCounted } from './sameRepository.js';
@@ -120,7 +121,7 @@ const blockOf = (c) => ({ number: c.number, hash: c.hash, timestamp: c.timestamp
  * @param {(o: { repo: string }) => Promise<object>} [o.checkFork] - what the host says of a repository
  *   (default: its API, src/control/forkCheck.js)
  */
-export function createSite({ config, provider, env = process.env, fetchArchive, fetchJustification = fetchArchive, logger, keeperHooks, now = Date.now, checkRepository, chainProviderFor, checkFork }) {
+export function createSite({ config, provider, env = process.env, fetchArchive, fetchJustification = fetchArchive, fetchContent = null, pinner = null, logger, keeperHooks, now = Date.now, checkRepository, chainProviderFor, checkFork }) {
   const chain = config.chain;
   if (!chain) throw new TypeError('createSite needs config.chain (SA_CONTRACT_ADDRESS)');
   const store = new StateStore(chain.dataDir, { chainId: chain.chainId, address: chain.address, fromBlock: chain.fromBlock });
@@ -273,6 +274,24 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     return evidenceRun;
   }
 
+  /**
+   * Claims' content (ciphertext and claim archive) pinned beside the indexer in the same way (review
+   * 2026-11-27, item 2; keepContent.js): off unless the site was given a pinner and a fetcher.
+   */
+  let keepRun = null;
+  function keepContentBeside() {
+    if (!pinner || !fetchContent || !config.keepContent?.enabled) return null;
+    if (keepRun) return keepRun;
+    keepRun = keepClaimContent({ fetchContent, pinner, store, now, retryMs: config.archives.retryMs, logger })
+      .catch((err) => {
+        if (store.locked) logger.warn(`keep: pinning claim content failed (${err?.code ?? err?.name ?? 'error'})`);
+      })
+      .finally(() => {
+        keepRun = null;
+      });
+    return keepRun;
+  }
+
   /** One indexer pass; the archives of the listings it found are read beside it, their control facts checked, and the justifications of its settled duplicates read. */
   async function sync() {
     try {
@@ -284,6 +303,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
       refreshArchivesBeside();
       refreshControlBeside();
       refreshEvidenceBeside();
+      keepContentBeside();
       return r;
     } catch (err) {
       status.syncError = err?.code ?? 'SYNC_FAILED';
@@ -571,6 +591,7 @@ export function createSite({ config, provider, env = process.env, fetchArchive, 
     controlIdle: () => controlRun ?? Promise.resolve(),
     /** Resolves once the justification reads started so far have finished (for tests and shutdown). */
     evidenceIdle: () => evidenceRun ?? Promise.resolve(),
+    keepIdle: () => keepRun ?? Promise.resolve(),
     submitControlProof,
     /** Refused listing attempts by reason; they live beside this site's state. */
     refusals,

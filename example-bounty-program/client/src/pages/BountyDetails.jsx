@@ -38,6 +38,7 @@ import {
   isBountyOpen,
   isSubmissionPending,
   isSubmissionOnChain,
+  roundVerdict,
   getSubmissionStatusLabel,
   getSubmissionStatusIcon,
   getSubmissionBadgeProps,
@@ -3619,6 +3620,12 @@ function SubmissionCard({
   // Only allow finalize for on-chain submissions (not Prepared)
   const canFinalize = isOnChain && !isPolling;
   const hasEvalReady = evaluationResult?.ready;
+  // The verdict is the contract's Q-of-N count, not the aggregate score against the threshold
+  // (review 2026-11-27, item 5): see roundVerdict.
+  const verdict = roundVerdict(submission.status, roundState);
+  const evalPassed = verdict === 'pass';
+  const evalSoftFail = verdict === 'soft_fail';
+  const verdictLabel = evalPassed ? '✅ Accepted' : evalSoftFail ? '↻ Soft fail (re-run possible)' : '❌ Not Accepted';
 
   return (
     <div className="submission-card" style={{
@@ -3643,12 +3650,12 @@ function SubmissionCard({
               borderRadius: '4px',
               fontSize: '0.85rem',
               fontWeight: 'normal',
-              backgroundColor: evaluationResult.scores.acceptance >= threshold ? '#c8e6c9' : '#ffcdd2',
-              color: evaluationResult.scores.acceptance >= threshold ? '#2e7d32' : '#c62828',
+              backgroundColor: evalPassed ? '#c8e6c9' : evalSoftFail ? '#fff3e0' : '#ffcdd2',
+              color: evalPassed ? '#2e7d32' : evalSoftFail ? '#b57c00' : '#c62828',
               cursor: 'default'
             }}
           >
-            {evaluationResult.scores.acceptance >= threshold ? '✅ Accepted' : '❌ Not Accepted'}
+            {verdictLabel}
           </span>
         ) : (
           <span
@@ -3853,7 +3860,7 @@ function SubmissionCard({
       {/* NEW: Evaluation ready indicator */}
       {hasEvalReady && (() => {
         const score = evaluationResult.scores.acceptance;
-        const passed = score >= threshold;
+        const passed = evalPassed;
         return (
           <div style={{
             marginTop: '0.75rem',
@@ -3864,10 +3871,11 @@ function SubmissionCard({
             textAlign: 'center'
           }}>
             <div style={{ fontSize: '1rem', color: passed ? '#2e7d32' : '#b57c00', fontWeight: 'bold', marginBottom: '0.25rem' }}>
-              {passed ? '✅' : '❌'} AI Evaluation Complete — {passed ? 'Accepted' : 'Not Accepted'}
+              AI Evaluation Complete — {verdictLabel}
             </div>
             <div style={{ fontSize: '0.9rem', color: passed ? '#388e3c' : '#c68200' }}>
-              Score: {score.toFixed(1)}% ({threshold}% required)
+              Aggregate score: {score.toFixed(1)}%. The verdict counts the arbiters that scored {threshold}% or more
+              {roundState?.passCount != null ? ` (${roundState.passCount} did)` : ''}, not this average.
             </div>
           </div>
         );
@@ -4096,7 +4104,7 @@ function SubmissionCard({
               {isFinalizing
                 ? '⏳ Processing transaction...'
                 : hasEvalReady
-                  ? (evaluationResult.scores.acceptance >= threshold
+                  ? (evalPassed
                       ? '🎉 Claim Bounty & Update Status'
                       : 'Finalize & Update Status')
                   : '✅ Finalize Submission (check results)'}
@@ -4260,7 +4268,7 @@ function SubmissionCard({
           return (
             <JustificationDisplay
               justificationCids={evaluationResult.justificationCids}
-              passed={evaluationResult.scores.acceptance >= threshold}
+              passed={evalPassed}
               score={evaluationResult.scores.acceptance}
               threshold={threshold}
               juryNodes={juryNodes}

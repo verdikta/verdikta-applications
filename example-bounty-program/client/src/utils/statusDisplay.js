@@ -403,6 +403,25 @@ export const ROUND_OUTCOME_LABELS = {
 };
 
 /**
+ * A judged round's verdict as the CONTRACT decides it (BountyRules, item 12): the number of
+ * arbiters scoring at or above the threshold against Q and R, never the aggregate score against
+ * the threshold (scores 100/100/70/70 at threshold 80 average 85, yet two of four is a soft fail
+ * at Q = 3). The lens's outcome wins when the page has it; otherwise the server's status, which
+ * the sync derives from the same outcome.
+ * @param {string} status - the submission's status
+ * @param {{outcome?: string}} [roundState] - the lens's round state (getOracleResult)
+ * @returns {'pass'|'soft_fail'|'hard_fail'|null} null when no verdict is known
+ */
+export function roundVerdict(status, roundState) {
+  const o = roundState?.outcome;
+  if (o === 'pass' || o === 'soft_fail' || o === 'hard_fail') return o;
+  if (status === 'ACCEPTED_PENDING_CLAIM') return 'pass';
+  if (status === 'SOFT_FAIL_PENDING_FINALIZATION') return 'soft_fail';
+  if (status === 'REJECTED_PENDING_FINALIZATION') return 'hard_fail';
+  return null;
+}
+
+/**
  * Check if submission status is successful
  */
 export function isSubmissionSuccess(status, onChainStatus) {

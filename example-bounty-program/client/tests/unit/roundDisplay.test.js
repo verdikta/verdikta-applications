@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  getSubmissionStatusLabel, isSubmissionOnChain, isSubmissionPending, isAwaitingRerun,
+  getSubmissionStatusLabel, isSubmissionOnChain, isSubmissionPending, isAwaitingRerun, roundVerdict,
 } from '../../src/utils/statusDisplay.js';
 import { jobDecision, fmtEth, ROUND_ACTION_LABELS, MAX_ROUNDS, RERUN_WINDOW_SECONDS } from '../../src/utils/roundDisplay.js';
 
@@ -45,4 +45,16 @@ test('helpers', () => {
   assert.equal(MAX_ROUNDS, 6);
   assert.equal(RERUN_WINDOW_SECONDS, 7200);
   for (const a of ['DRAW', 'CLOSE_COMMITS', 'PROMOTE', 'CLOSE_FAILED', 'RERUN', 'EXPIRE_RERUN', 'AWAIT_EXPIRY']) assert.ok(ROUND_ACTION_LABELS[a], a);
+});
+
+test('roundVerdict follows the Q-of-N outcome, never the aggregate score (review 2026-11-27, item 5)', () => {
+  // scores 100/100/70/70 at threshold 80: the mean is 85, but two of four at Q = 3 is a soft fail
+  assert.equal(roundVerdict('PENDING_EVALUATION', { outcome: 'soft_fail', passCount: 2 }), 'soft_fail');
+  assert.equal(roundVerdict('SOFT_FAIL_PENDING_FINALIZATION', undefined), 'soft_fail');
+  assert.equal(roundVerdict('ACCEPTED_PENDING_CLAIM', undefined), 'pass');
+  assert.equal(roundVerdict('REJECTED_PENDING_FINALIZATION', undefined), 'hard_fail');
+  // the lens (chain) wins over a stale server status
+  assert.equal(roundVerdict('ACCEPTED_PENDING_CLAIM', { outcome: 'soft_fail' }), 'soft_fail');
+  assert.equal(roundVerdict('REJECTED_PENDING_FINALIZATION', { outcome: 'not_ready' }), 'hard_fail');
+  assert.equal(roundVerdict('Prepared', { outcome: 'no_result' }), null);
 });

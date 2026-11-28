@@ -13,8 +13,24 @@ const PUBLIC_NAMES = new Set(['FRONTEND_CLIENT_KEY', 'PUBLIC_SITE_URL', 'IPFS_GA
 const URL_KEY_PATTERNS = [
   /(infura\.io\/v3\/)[0-9a-fA-F]{32}/g,                                  // Infura
   /(alchemy\.com\/v2\/)[A-Za-z0-9_-]{24,}/g,                             // Alchemy
-  /(https?:\/\/[^\s"?]+\?(?:[^\s"&]*&)*(?:apikey|api_key|key|token)=)[^&"\s]+/gi,
 ];
+// The query form (an http(s) URL with ?apikey= / api_key= / key= / token=) is scanned token by
+// token, in linear time. As one regex, /https?:\/\/[^\s"?]+\?.../ rescanned to the end of the string
+// from every "http://" when no "?" followed: quadratic, and a submitted text file of "http://x"
+// repeated (served by GET .../content) held the event loop for minutes (review 2026-11-27, item 3).
+const TOKEN = /[^\s"]+/g;
+const QUERY_KEY = /([?&](?:apikey|api_key|key|token)=)[^&]+/gi;
+
+function redactQueryKeys(s) {
+  if (!s.includes('://')) return s;
+  return s.replace(TOKEN, (tok) => {
+    const m = /https?:\/\//i.exec(tok);
+    if (!m) return tok;
+    const q = tok.indexOf('?', m.index + m[0].length);
+    if (q < 0) return tok;
+    return tok.slice(0, q) + tok.slice(q).replace(QUERY_KEY, '$1[redacted]');
+  });
+}
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -41,7 +57,7 @@ function redact(text, values = currentSecrets()) {
   let s = String(text);
   for (const v of values) if (s.includes(v)) s = s.replace(new RegExp(escapeRe(v), 'g'), '[redacted]');
   for (const re of URL_KEY_PATTERNS) s = s.replace(re, '$1[redacted]');
-  return s;
+  return redactQueryKeys(s);
 }
 
 /** Express middleware: res.json bodies are redacted before they leave. */

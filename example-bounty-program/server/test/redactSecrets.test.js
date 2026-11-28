@@ -55,3 +55,21 @@ describe('redaction leaves submitted content intact (sec5 fix review)', () => {
     expect(s).not.toMatch(/0123456789abcdef0123456789abcdef|AbCdEfGhIjKlMnOpQrStUvWxYz012345|SECRETSECRET/);
   });
 });
+
+describe('redaction runs in linear time (review 2026-11-27, item 3)', () => {
+  const { redact } = require('../utils/redactSecrets');
+
+  it('a 2 MB file of "http://x" does not hold the event loop', () => {
+    const body = JSON.stringify({ content: 'http://x'.repeat(250000) });
+    const t = Date.now();
+    expect(redact(body, [])).toBe(body);
+    expect(Date.now() - t).toBeLessThan(1000);   // was minutes: quadratic in the body length
+  });
+
+  it('still scrubs every key parameter of a long query string', () => {
+    const s = redact('https://h.example/p?a=1&apikey=AAAA1111&b=2&token=BBBB2222 and https://h.example/q?key=CCCC3333', []);
+    expect(s).not.toMatch(/AAAA1111|BBBB2222|CCCC3333/);
+    expect(s).toContain('a=1');
+    expect(s).toContain('b=2');
+  });
+});

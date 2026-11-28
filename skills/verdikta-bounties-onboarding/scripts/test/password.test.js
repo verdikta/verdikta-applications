@@ -115,5 +115,7 @@ test('migration finds the stable .env when VERDIKTA_SECRETS_DIR is written with 
   const { dir, config } = await home(t, ['VERDIKTA_SECRETS_DIR=~/.config/verdikta-bounties', 'VERDIKTA_WALLET_PASSWORD=pw-123'], 'pw-123');
   const r = run(dir, ['onboard.js', '--migrate-password', '--to-file', `${dir}/secrets/pw`]);
   assert.equal(r.status, 0, r.stderr);
-  assert.doesNotMatch(await readFile(`${config}/.env`, 'utf8'), /^VERDIKTA_WALLET_PASSWORD=/m);
+  const envContent = await readFile(`${config}/.env`, 'utf8');
+  assert.doesNotMatch(envContent, /^VERDIKTA_WALLET_PASSWORD=/m);
+  assert.match(envContent, /VERDIKTA_WALLET_PASSWORD_FILE=/);
 });
